@@ -92,7 +92,8 @@ function withCodexUrl(home: string, url: string, secret?: string): void {
  * script or reads the developer's own Node installs. `probeEnv` keeps the
  * environment that probe was handed, which is the only way to check that
  * doctor asks the question under the *agent's* environment and not this
- * process's.
+ * process's. A `bootout` takes the canned job away until the next
+ * `bootstrap`, as launchd's would, so an install never waits on it.
  */
 function recorder(print?: string, node: { code: number; stdout: string } = NODE_PROBE): {
   exec: Exec;
@@ -101,16 +102,68 @@ function recorder(print?: string, node: { code: number; stdout: string } = NODE_
 } {
   const calls: string[][] = [];
   let probed: NodeJS.ProcessEnv | undefined;
+  let bootedOut = false;
   const exec: Exec = async (file, args, env) => {
     calls.push([path.basename(file), ...args]);
     if (path.basename(file) === 'agstatus') {
       probed = env;
       return node;
     }
-    if (args[0] === 'print') return print ? { code: 0, stdout: print } : { code: 113, stdout: '' };
+    if (args[0] === 'bootout') bootedOut = true;
+    if (args[0] === 'bootstrap') bootedOut = false;
+    if (args[0] === 'print') return print && !bootedOut ? { code: 0, stdout: print } : { code: 113, stdout: '' };
     return { code: 0, stdout: '' };
   };
   return { exec, calls, probeEnv: () => probed };
+}
+
+/**
+ * launchd across a reinstall, which the recorder above cannot be: the job is
+ * running until `bootout`, which returns at once while the job stays listed
+ * for `exiting` more `print`s (Infinity: a job that never goes) — and only
+ * then is it gone, when `onExit` runs, as the listener's own last act would.
+ * A `bootstrap` while the old job is still listed fails with 5, as launchd's
+ * does; after that each answers the next of `boots`, the last one repeating.
+ * `slept` is every wait the installer asked for, in ms, none of them real.
+ */
+function launchd(opts: { exiting: number; boots?: number[]; onExit?: () => void }): {
+  exec: Exec;
+  sleep: (ms: number) => Promise<void>;
+  calls: string[][];
+  slept: number[];
+} {
+  const calls: string[][] = [];
+  const slept: number[] = [];
+  const boots = opts.boots ?? [0];
+  let state: 'loaded' | 'exiting' | 'gone' = 'loaded';
+  let listedFor = 0;
+  let booted = 0;
+  const exec: Exec = async (file, args) => {
+    calls.push([path.basename(file), ...args]);
+    switch (args[0]) {
+      case 'bootout':
+        if (state === 'loaded') {
+          state = 'exiting';
+          listedFor = opts.exiting;
+        }
+        return { code: 0, stdout: '' };
+      case 'print':
+        if (state === 'exiting' && listedFor-- <= 0) {
+          state = 'gone';
+          opts.onExit?.();
+        }
+        return state === 'gone' ? { code: 113, stdout: '' } : { code: 0, stdout: PRINTS_RUNNING };
+      case 'bootstrap': {
+        if (state !== 'gone') return { code: 5, stdout: '' };
+        const code = boots[Math.min(booted++, boots.length - 1)];
+        if (code === 0) state = 'loaded';
+        return { code, stdout: '' };
+      }
+      default:
+        return { code: 0, stdout: '' };
+    }
+  };
+  return { exec, sleep: async (ms) => void slept.push(ms), calls, slept };
 }
 
 /** What the shim's own resolution answers on a healthy machine. */
@@ -298,6 +351,7 @@ describe('install', () => {
 
     expect(calls).toEqual([
       ['launchctl', 'bootout', 'gui/501/com.agstatus.listener'],
+      ['launchctl', 'print', 'gui/501/com.agstatus.listener'], // already gone: nothing was loaded
       ['launchctl', 'bootstrap', 'gui/501', plist],
     ]);
 
@@ -408,6 +462,82 @@ describe('install', () => {
     expect(plistUrlFlag(renderPlist({
       label: LAUNCH_AGENT_LABEL, program: '/p/bin/agstatus', args: ['listener', 'run', '--url', 'not a url'], path: '', logFile: '/l',
     }))).toBeUndefined();
+  });
+});
+
+describe('reloading a running agent', () => {
+  const TARGET = 'gui/501/com.agstatus.listener';
+  const BOOTOUT = ['launchctl', 'bootout', TARGET];
+  const PRINT = ['launchctl', 'print', TARGET];
+  const bootstrap = (): string[] => ['launchctl', 'bootstrap', 'gui/501', plistPath(ws.home)];
+
+  it('waits for the old job to leave launchd, and retries a bootstrap that fails the first time', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    // Listed for two polls after bootout while it exits; the first bootstrap
+    // after that still fails, as the 2026-10-05 one did.
+    const fake = launchd({ exiting: 2, boots: [5, 0] });
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ exec: fake.exec, sleep: fake.sleep, log }))).toBe(0);
+
+    expect(fake.calls).toEqual([BOOTOUT, PRINT, PRINT, PRINT, bootstrap(), bootstrap()]);
+    // Two short polls while it exited, then one pause before the retry.
+    expect(fake.slept).toEqual([200, 200, 1000]);
+    expect(out()).toContain('✔ Focus listener installed.');
+    expect(out()).not.toContain('✖');
+  });
+
+  it('gives up on a job that never leaves after a few seconds, and says what to run', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const fake = launchd({ exiting: Infinity });
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ exec: fake.exec, sleep: fake.sleep, log }))).toBe(1);
+
+    // Bounded: 5 s of polling at 200 ms, then every bootstrap try anyway — each
+    // is more time for the job to go, and only bootstrap can say it went.
+    const polls = fake.calls.filter((c) => c[1] === 'print');
+    expect(polls).toHaveLength(26);
+    expect(fake.calls).toEqual([BOOTOUT, ...polls, bootstrap(), bootstrap(), bootstrap(), bootstrap()]);
+    expect(fake.slept.reduce((a, b) => a + b, 0)).toBe(5000 + 3 * 1000);
+
+    expect(out()).toContain('✖ launchd still had the previous agent 5 s after `launchctl bootout`');
+    expect(out()).toContain('`launchctl bootstrap` exited with 5 on all 4 tries. The new agent is written but NOT loaded.');
+    expect(out()).toContain(`\`launchctl print ${TARGET}\` says it cannot find the service, run:`);
+    expect(out().split('\n')).toContain(`    launchctl bootstrap gui/501 ${plistPath(ws.home)}`);
+    expect(out()).not.toContain('Focus listener installed');
+  });
+
+  it('says the machine stays offline when bootstrap fails with the old job gone, quoting a path that needs it', async () => {
+    const home = path.join(ws.home, 'with space');
+    fs.mkdirSync(home);
+    process.env.HOME = home;
+    withSettingsUrl(home, BOARD);
+    const fake = launchd({ exiting: 0, boots: [5] });
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ exec: fake.exec, sleep: fake.sleep, log }))).toBe(1);
+
+    expect(fake.calls.filter((c) => c[1] === 'bootstrap')).toHaveLength(4);
+    expect(out()).toContain('✖ `launchctl bootstrap` exited with 5 on all 4 tries. The agent is written but NOT loaded');
+    expect(out()).toContain('machine offline on every board until it is — left alone, that is the next login.');
+    expect(out().split('\n')).toContain(`    launchctl bootstrap gui/501 '${plistPath(home)}'`);
+  });
+
+  it('lets a running listener finish exiting before --purge takes its log', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    const logFile = path.join(ws.state, 'listener.log');
+    fs.writeFileSync(logFile, 'hello\n');
+    // Its last act, by path, exactly as run.ts's Logger does it.
+    const fake = launchd({ exiting: 2, onExit: () => fs.appendFileSync(logFile, 'listener stop\n') });
+    const { log, out } = quiet();
+
+    expect(await uninstall(darwin({ exec: fake.exec, sleep: fake.sleep, log, purge: true }))).toBe(0);
+
+    expect(fake.calls).toEqual([BOOTOUT, PRINT, PRINT, PRINT]);
+    expect(fs.existsSync(logFile)).toBe(false);
+    expect(out()).not.toContain('⚠');
   });
 });
 

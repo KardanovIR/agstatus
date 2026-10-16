@@ -216,6 +216,8 @@ export interface ListenerCommandOptions {
   resume?: boolean;
   log?: (line: string) => void;
   exec?: Exec;
+  /** How install and uninstall wait between launchctl calls; tests pass one that returns at once. */
+  sleep?: Sleep;
   platform?: NodeJS.Platform;
   stateDir?: string;
   uid?: number;
@@ -230,9 +232,14 @@ export interface ListenerCommandOptions {
   nodePath?: string;
 }
 
+export type Sleep = (ms: number) => Promise<void>;
+
+const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 interface Context {
   log: (line: string) => void;
   exec: Exec;
+  sleep: Sleep;
   platform: NodeJS.Platform;
   stateDir: string;
   uid: number;
@@ -244,6 +251,7 @@ function context(opts: ListenerCommandOptions): Context {
   return {
     log: opts.log ?? console.log,
     exec: opts.exec ?? defaultExec,
+    sleep: opts.sleep ?? defaultSleep,
     platform: opts.platform ?? process.platform,
     stateDir: opts.stateDir ?? defaultStateDir(),
     uid: opts.uid ?? currentUid(),
@@ -252,6 +260,60 @@ function context(opts: ListenerCommandOptions): Context {
 
 const domain = (uid: number): string => `gui/${uid}`;
 const serviceTarget = (uid: number): string => `${domain(uid)}/${LAUNCH_AGENT_LABEL}`;
+
+/** One argument as a POSIX shell would need it typed: bare when that is safe, else single-quoted. */
+const shellArg = (s: string): string => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
+/** The command that loads the agent by hand, ready to paste. */
+const bootstrapCommand = (uid: number, plist: string): string => `launchctl bootstrap ${domain(uid)} ${shellArg(plist)}`;
+
+/**
+ * `launchctl bootout` returns before a *running* job has finished exiting, and
+ * launchd keeps the label until it has: a `bootstrap` straight after it then
+ * fails, typically with "5: Input/output error". That is how a CLI update on
+ * 2026-10-05 left one machine's agent unloaded — `listener stop` in the log a
+ * second after the install, nothing after it — and Focus showing it offline
+ * for 11 days, until a by-hand bootstrap. So the old job is waited out, and
+ * bootstrap gets a few more tries besides.
+ *
+ * The wait is counted in polls, not read off a clock, so a test's instant
+ * sleep exercises exactly the bound the real one does.
+ */
+const GONE_POLL_MS = 200;
+const GONE_TIMEOUT_MS = 5_000;
+const BOOTSTRAP_TRIES = 4;
+const BOOTSTRAP_RETRY_MS = 1_000;
+
+/** Polls until launchd has no job under the label. False when it is still there after GONE_TIMEOUT_MS. */
+async function waitForJobGone(exec: Exec, sleep: Sleep, uid: number): Promise<boolean> {
+  for (let waited = 0; ; waited += GONE_POLL_MS) {
+    if ((await serviceState(exec, uid)) === null) return true;
+    if (waited >= GONE_TIMEOUT_MS) return false;
+    await sleep(GONE_POLL_MS);
+  }
+}
+
+interface Reload {
+  /** The last bootstrap's exit code; 0 is loaded. */
+  code: number;
+  /** Whether the old job had left launchd before the first bootstrap. */
+  gone: boolean;
+}
+
+/**
+ * Takes down whatever runs under the label and loads `plist` in its place.
+ * A job that outlives the wait still gets its bootstraps — the retries are
+ * more waiting, and bootstrap's own exit code is the only real verdict.
+ */
+async function reloadAgent(exec: Exec, sleep: Sleep, uid: number, plist: string): Promise<Reload> {
+  await exec(LAUNCHCTL, ['bootout', serviceTarget(uid)]); // not loaded yet is fine
+  const gone = await waitForJobGone(exec, sleep, uid);
+  for (let tries = 1; ; tries++) {
+    const { code } = await exec(LAUNCHCTL, ['bootstrap', domain(uid), plist]);
+    if (code === 0 || tries === BOOTSTRAP_TRIES) return { code, gone };
+    await sleep(BOOTSTRAP_RETRY_MS);
+  }
+}
 
 type PickedUrl = { url: string; source: ConfigSource | 'flag' };
 
@@ -482,7 +544,7 @@ const nodeAdvice = (): string[] => [
 const defaultCliPath = (): string => path.resolve(__dirname, '..', 'cli.js');
 
 export async function install(opts: ListenerCommandOptions = {}): Promise<number> {
-  const { log, exec, platform, stateDir, uid } = context(opts);
+  const { log, exec, sleep, platform, stateDir, uid } = context(opts);
   if (platform !== 'darwin') {
     log('✖ The Focus listener v1 installs as a macOS LaunchAgent only.');
     log('  `agstatus listener run` still works anywhere, in the foreground.');
@@ -600,11 +662,18 @@ export async function install(opts: ListenerCommandOptions = {}): Promise<number
     { mode: 0o644 }
   );
 
-  await exec(LAUNCHCTL, ['bootout', serviceTarget(uid)]); // not loaded yet is fine
-  const boot = await exec(LAUNCHCTL, ['bootstrap', domain(uid), plist]);
-  if (boot.code !== 0) {
-    log(`✖ launchctl bootstrap exited with ${boot.code}; the agent is written but not running.`);
-    log(`  Try: launchctl bootstrap ${domain(uid)} ${plist}`);
+  const reload = await reloadAgent(exec, sleep, uid, plist);
+  if (reload.code !== 0) {
+    const failed = `\`launchctl bootstrap\` exited with ${reload.code} on all ${BOOTSTRAP_TRIES} tries`;
+    if (reload.gone) {
+      log(`✖ ${failed}. The agent is written but NOT loaded, so Focus shows this`);
+      log('  machine offline on every board until it is — left alone, that is the next login. Run:');
+    } else {
+      log(`✖ launchd still had the previous agent ${GONE_TIMEOUT_MS / 1000} s after \`launchctl bootout\`, and`);
+      log(`  ${failed}. The new agent is written but NOT loaded. Once`);
+      log(`  \`launchctl print ${serviceTarget(uid)}\` says it cannot find the service, run:`);
+    }
+    log(`    ${bootstrapCommand(uid, plist)}`);
     return 1;
   }
 
@@ -680,7 +749,7 @@ export function listenerInstalled(home: string = os.homedir()): boolean {
 }
 
 export async function uninstall(opts: ListenerCommandOptions = {}): Promise<number> {
-  const { log, exec, platform, stateDir, uid } = context(opts);
+  const { log, exec, sleep, platform, stateDir, uid } = context(opts);
   const plist = plistPath();
   const file = agstatusJsonPath();
   // Read — and so validate — ~/.agstatus.json before anything comes down: a
@@ -720,6 +789,13 @@ export async function uninstall(opts: ListenerCommandOptions = {}): Promise<numb
   if (removeLauncher(stateDir)) log(`✔ Removed ${launcherPath(stateDir)}`);
 
   if (opts.purge) {
+    // Nothing is loaded again here, so the bootout above needs no retry — but
+    // it returns while a running listener is still on its way out, and that
+    // listener's last act is to append "listener stop" to listener.log, by
+    // path. Purge first and the log is back a moment after we said it went.
+    if (platform === 'darwin' && !(await waitForJobGone(exec, sleep, uid))) {
+      log(`⚠ The listener was still exiting ${GONE_TIMEOUT_MS / 1000} s after bootout; it may yet write one line to its log.`);
+    }
     const targets = [
       path.join(stateDir, 'sessions'),
       path.join(stateDir, 'listener.log'),
@@ -1186,7 +1262,7 @@ export async function doctor(opts: ListenerCommandOptions = {}): Promise<number>
       const svc = await serviceState(exec, uid);
       if (svc === null) {
         bad(`  ✖ launchctl has no job ${serviceTarget(uid)} — the plist is on disk but not loaded`);
-        log(`    — run \`launchctl bootstrap ${domain(uid)} ${plist}\`, or reinstall`);
+        log(`    — run \`${bootstrapCommand(uid, plist)}\`, or reinstall`);
       } else {
         log(svc.pid === null ? '  ⚠ not running at this moment (KeepAlive restarts it within 10 s)' : `  ✔ running, pid ${svc.pid}`);
         if (svc.lastExit === 127) {
