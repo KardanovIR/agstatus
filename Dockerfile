@@ -26,8 +26,11 @@ RUN native=$(find node_modules \( -name '*.node' -o -name binding.gyp -o -name p
     fi
 
 # One per target platform, and only COPY: nothing here runs, so building the
-# foreign platform needs its base image and no emulator. Keep it that way.
-# release.yml and CI install no emulator, so a RUN added here fails there.
+# foreign platform needs its base image and no emulator. Keep it that way. A
+# RUN added here would not fail for want of an emulator: the BuildKit that
+# release.yml and CI start ships its own QEMU and would run it under that for
+# arm64. scripts/check-dockerfile-platforms.sh, which both run before they
+# build, is what refuses a RUN outside a $BUILDPLATFORM stage.
 FROM node:20-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app

@@ -46,13 +46,18 @@ jobs:
     # Dockerfile's build stage runs once, natively on this amd64 runner, and
     # the arm64 image only pulls its base and copies that stage's output in.
     # The arm64 half of 1.6.2 died twice in `npm ci` under QEMU and hung to
-    # the old 45-minute limit. With no emulator, a RUN added to the runtime
-    # stage fails with "exec format error" instead of bringing emulation
-    # back, and CI's docker job, built the same way, fails first on the PR.
+    # the old 45-minute limit. Leaving out the QEMU step does not keep
+    # emulation out on its own: the BuildKit that setup-buildx-action starts
+    # ships its own QEMU, and would run a RUN added to the runtime stage
+    # under it for arm64. The first step below refuses such a RUN, and CI's
+    # docker job runs the same check, so it fails on the PR first.
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      # buildx for the multi-platform manifest list; it needs no emulator.
+      - name: Every RUN is on the build platform
+        run: sh scripts/check-dockerfile-platforms.sh
+      # buildx for the multi-platform manifest list. This Dockerfile needs no
+      # emulator, so there is no setup-qemu-action.
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
