@@ -192,4 +192,4 @@ history is public in the project repository.
 ## Contact
 
 Questions or requests: open an issue at
-<https://github.com/KardanovIR/claude-status-dashboard/issues>.
+<https://github.com/KardanovIR/agstatus/issues>.

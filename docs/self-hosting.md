@@ -133,7 +133,7 @@ for `/healthz`.
 Server-side setup is one command as root (idempotent):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/KardanovIR/claude-status-dashboard/master/deploy/bootstrap-droplet.sh | bash
+curl -fsSL https://raw.githubusercontent.com/KardanovIR/agstatus/master/deploy/bootstrap-droplet.sh | bash
 ```
 
 It installs Docker, authorizes the workflow's deploy key, clones the repo,

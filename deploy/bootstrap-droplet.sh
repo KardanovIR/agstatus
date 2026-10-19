@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time setup of the AgStatus production droplet (Ubuntu/Debian, run as root):
 #
-#   curl -fsSL https://raw.githubusercontent.com/KardanovIR/claude-status-dashboard/master/deploy/bootstrap-droplet.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/KardanovIR/agstatus/master/deploy/bootstrap-droplet.sh | bash
 #
 # What it does, in order:
 #   1. Installs Docker (with the compose plugin) and git if missing.
@@ -16,7 +16,7 @@
 # .github/workflows/deploy.yml. Idempotent — safe to re-run.
 set -euo pipefail
 
-REPO="https://github.com/KardanovIR/claude-status-dashboard.git"
+REPO="https://github.com/KardanovIR/agstatus.git"
 APP_DIR="/opt/agstatus"
 DOMAIN="agstatus.online"
 DEPLOY_PUBKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINYlSN5o96TtkXViNlEDd2c2rBrHjKtCLntdy0q/rvgZ agstatus-deploy@github-actions"

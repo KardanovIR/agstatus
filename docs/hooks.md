@@ -164,7 +164,7 @@ The same hook, packaged as a Claude Code plugin — nothing touches
 `~/.claude/settings.json`. Inside Claude Code:
 
 ```
-/plugin marketplace add KardanovIR/claude-status-dashboard
+/plugin marketplace add KardanovIR/agstatus
 /plugin install agstatus@agstatus
 /agstatus:setup
 ```

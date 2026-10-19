@@ -2,8 +2,8 @@
 
 **Live status board + push alerts for your coding agents — see every Claude Code and Codex session at a glance.**
 
-[![CI](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/ci.yml)
-[![Secret scan](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/KardanovIR/claude-status-dashboard/actions/workflows/gitleaks.yml)
+[![CI](https://github.com/KardanovIR/agstatus/actions/workflows/ci.yml/badge.svg)](https://github.com/KardanovIR/agstatus/actions/workflows/ci.yml)
+[![Secret scan](https://github.com/KardanovIR/agstatus/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/KardanovIR/agstatus/actions/workflows/gitleaks.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <p align="center">
@@ -54,7 +54,7 @@ so you step away from the keyboard without losing the thread.
 
    Claude Code-only machines can skip the CLI entirely and use the
    [plugin](docs/hooks.md#claude-code-plugin): `/plugin marketplace add
-   KardanovIR/claude-status-dashboard`, `/plugin install agstatus@agstatus`,
+   KardanovIR/agstatus`, `/plugin install agstatus@agstatus`,
    `/agstatus:setup`.
 
 3. **Start a Claude Code session** — a card appears on the board and follows

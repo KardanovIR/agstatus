@@ -16,7 +16,7 @@ const path = require('path');
 const { marked } = require('marked');
 
 const ROOT = path.join(__dirname, '..');
-const REPO = 'https://github.com/KardanovIR/claude-status-dashboard';
+const REPO = 'https://github.com/KardanovIR/agstatus';
 
 // Order is the reading order: setup first, then what Focus reaches, then how to
 // drive it, then running your own, then API. Focus support sits second because

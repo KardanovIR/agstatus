@@ -9,7 +9,7 @@ self-hosters should update regularly.
 
 Use GitHub's private vulnerability reporting on this repository:
 **Security tab → Report a vulnerability**
-([direct link](https://github.com/KardanovIR/claude-status-dashboard/security/advisories/new)).
+([direct link](https://github.com/KardanovIR/agstatus/security/advisories/new)).
 
 **Do not open public issues or PRs for security reports.** You'll get an
 acknowledgment as soon as the report is read, and a fix or a response with

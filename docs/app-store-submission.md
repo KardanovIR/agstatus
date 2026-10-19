@@ -58,7 +58,7 @@ TestFlight and in the version's Build section.
 | Name (28/30) | AgStatus: Coding Agent Board |
 | Subtitle (27/30) | Live status and plan limits |
 | Category | Developer Tools / Productivity |
-| Support URL | https://github.com/KardanovIR/claude-status-dashboard/issues |
+| Support URL | https://github.com/KardanovIR/agstatus/issues |
 | Marketing URL | https://agstatus.online |
 | Privacy Policy URL | https://agstatus.online/privacy |
 
@@ -176,8 +176,8 @@ OTHER DETAILS
 - iPhone only, iOS 17+, dark interface by design.
 - No analytics, no ad SDKs, no tracking; the bundled privacy manifest declares no collected data.
 - A board is an unguessable token in a URL, stored in the Keychain, and can be deleted from the app at any time.
-- Source for app, server, and CLI: https://github.com/KardanovIR/claude-status-dashboard
-- Privacy policy: https://agstatus.online/privacy — questions: https://github.com/KardanovIR/claude-status-dashboard/issues
+- Source for app, server, and CLI: https://github.com/KardanovIR/agstatus
+- Privacy policy: https://agstatus.online/privacy — questions: https://github.com/KardanovIR/agstatus/issues
 ```
 
 ## App Privacy answers

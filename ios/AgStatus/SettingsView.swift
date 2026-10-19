@@ -224,7 +224,7 @@ struct SettingsView: View {
             )
             Link(
                 "Source code",
-                destination: URL(string: "https://github.com/KardanovIR/claude-status-dashboard")!
+                destination: URL(string: "https://github.com/KardanovIR/agstatus")!
             )
         }
         .listRowBackground(Theme.card)

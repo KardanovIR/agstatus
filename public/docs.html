@@ -131,7 +131,7 @@
       <a href="#hooks" class="hide-sm">Integration</a>
       <a href="#self-hosting" class="hide-sm">Self-hosting</a>
       <a href="#api" class="hide-sm">API</a>
-      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+      <a href="https://github.com/KardanovIR/agstatus">GitHub</a>
     </div>
   </div>
 </nav>
@@ -354,7 +354,7 @@ around to it.</p>
 <h3 id="hooks-claude-code-plugin"><a class="anchor" href="#hooks-claude-code-plugin">Claude Code plugin</a></h3>
 <p>The same hook, packaged as a Claude Code plugin — nothing touches
 <code>~/.claude/settings.json</code>. Inside Claude Code:</p>
-<pre><code>/plugin marketplace add KardanovIR/claude-status-dashboard
+<pre><code>/plugin marketplace add KardanovIR/agstatus
 /plugin install agstatus@agstatus
 /agstatus:setup
 </code></pre>
@@ -536,7 +536,7 @@ readiness tests in a fresh disposable PostgreSQL cluster?&quot; — taken from
 <code>tool_input.description</code>, instead of the generic &quot;Needs approval&quot;.
 <code>--minimal</code> still replaces it with the generic label.</p>
 <p>The reasoning, and the capture that found it, are in
-<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/codex-approvals.md">docs/design/codex-approvals.md</a>.</p>
+<a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/codex-approvals.md">docs/design/codex-approvals.md</a>.</p>
 <h4 id="hooks-what-each-status-means"><a class="anchor" href="#hooks-what-each-status-means">What each status means</a></h4>
 <div class="table-wrap"><table>
 <thead>
@@ -822,7 +822,7 @@ session-end hook. <code>AGSTATUS_FOCUS=off</code> in the
 environment switches off both the <code>host</code> object and the record even when the
 file says <code>true</code>. The full protocol — what the listener may run, how it
 validates a command, which terminals get pane-level focus — is in
-<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>.</p>
+<a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>.</p>
 <p>Codex users: what Codex trusts is a hash of the registered command string, so
 an upgrade that changes that command leaves the stored hash stale and the hook
 unrun — silently. If Codex sessions stop reporting after an upgrade, run
@@ -854,7 +854,7 @@ which runs <code>~/.agstatus/bin/agstatus listener run</code>. That first argume
 an absolute path on purpose: launchd resolves a job&#39;s program against its
 own <code>/usr/bin:/bin:/usr/sbin:/sbin</code> and never against the job&#39;s
 <code>EnvironmentVariables.PATH</code> (see
-<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>, &quot;A LaunchAgent&#39;s
+<a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>, &quot;A LaunchAgent&#39;s
 PATH&quot;), and no nvm, fnm or Volta install of Node lives in those four
 directories. The launcher is a small <code>sh</code> script that finds a Node ≥ 18 at
 every start rather than baking one in, so upgrading Node does not silently
@@ -1105,7 +1105,7 @@ usage at all), <strong>card removal on <code>SessionEnd</code></strong>, and <st
 hook you can read end to end in one sitting, or you would rather not have
 Node in the loop.</p>
 </blockquote>
-<p>The original hook at <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/hooks/claude-status-hook.sh"><code>hooks/claude-status-hook.sh</code></a>
+<p>The original hook at <a href="https://github.com/KardanovIR/agstatus/blob/master/hooks/claude-status-hook.sh"><code>hooks/claude-status-hook.sh</code></a>
 does the same job with <code>curl</code> + <code>jq</code>, and is the easiest one to customize.</p>
 <h4 id="hooks-1-prerequisites"><a class="anchor" href="#hooks-1-prerequisites">1. Prerequisites</a></h4>
 <ul>
@@ -1477,7 +1477,7 @@ you are typing, and the listener does not pretend otherwise.</p>
 six keys and the board becomes something you <em>drive</em>: glance at the iPad, press
 the key for the agent that needs you, and its terminal is in front of you.</p>
 <p>This is the same action as the board&#39;s <strong>Focus</strong> button — it needs the
-<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">Focus listener</a> installed (<code>agstatus listener install</code>), and nothing else.</p>
+<a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md">Focus listener</a> installed (<code>agstatus listener install</code>), and nothing else.</p>
 <h3 id="focus-keys-slots"><a class="anchor" href="#focus-keys-slots">Slots</a></h3>
 <pre><code>$ agstatus focus --list
 Slot  Session
@@ -1881,12 +1881,12 @@ node scripts/migrate-sqlite-to-postgres.js ./data/agstatus.db &quot;$DATABASE_UR
 <h3 id="self-hosting-production-deploy-github-actions-droplet"><a class="anchor" href="#self-hosting-production-deploy-github-actions-droplet">Production deploy (GitHub Actions → droplet)</a></h3>
 <p>The hosted instance at <code>https://agstatus.online</code> deploys itself from this
 repo: every push to <code>master</code> runs
-<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/.github/workflows/deploy.yml"><code>.github/workflows/deploy.yml</code></a>, which
+<a href="https://github.com/KardanovIR/agstatus/blob/master/.github/workflows/deploy.yml"><code>.github/workflows/deploy.yml</code></a>, which
 SSHes into the droplet, fast-forwards the checkout at <code>/opt/agstatus</code>, and
 rebuilds the stack (<code>docker compose --profile tls up -d --build</code>), then waits
 for <code>/healthz</code>.</p>
 <p>Server-side setup is one command as root (idempotent):</p>
-<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/KardanovIR/claude-status-dashboard/master/deploy/bootstrap-droplet.sh | bash
+<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/KardanovIR/agstatus/master/deploy/bootstrap-droplet.sh | bash
 </code></pre>
 <p>It installs Docker, authorizes the workflow&#39;s deploy key, clones the repo,
 writes a production <code>.env</code> (random Postgres password), and starts
@@ -1894,7 +1894,7 @@ app + PostgreSQL + Caddy. The private deploy key lives in the repo&#39;s
 <code>DEPLOY_SSH_KEY</code> secret; rotating it means generating a new keypair, updating
 the secret, and re-running the bootstrap.</p>
 <h3 id="self-hosting-tls-with-the-bundled-caddy-profile"><a class="anchor" href="#self-hosting-tls-with-the-bundled-caddy-profile">TLS with the bundled Caddy profile</a></h3>
-<p>The repo ships a ready-made Caddy setup (<a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/deploy/Caddyfile"><code>deploy/Caddyfile</code></a>)
+<p>The repo ships a ready-made Caddy setup (<a href="https://github.com/KardanovIR/agstatus/blob/master/deploy/Caddyfile"><code>deploy/Caddyfile</code></a>)
 wired into <code>docker-compose.yml</code> under the <code>tls</code> profile. Point your domain&#39;s
 DNS at the host, open ports 80/443, then:</p>
 <pre><code class="language-bash">cp .env.example .env
@@ -2400,7 +2400,7 @@ soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return <code>[]</code>.</p>
 <h3 id="api-focus-commands"><a class="anchor" href="#api-focus-commands">Focus commands</a></h3>
 <p>Focus lets a tap on a card bring the session&#39;s terminal to the front on the
-machine running it (design: <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>).
+machine running it (design: <a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>).
 Three parties take part: a <strong>viewer</strong> (the phone or web board), the
 <strong>server</strong>, and a <strong>listener</strong> — the AgStatus process on each machine that
 opted in. A session can be focused only when its <code>host</code> is set and that
@@ -2437,7 +2437,7 @@ Authorization: Bearer &lt;machine_key&gt;
 </tr>
 <tr>
 <td><code>Authorization: Bearer &lt;key&gt;</code></td>
-<td>Required. The <strong>machine key</strong>: 64 lowercase hex, the value the id is derived from (<code>machine_id = sha256(key)[0..32]</code>, see the <a href="https://github.com/KardanovIR/claude-status-dashboard/blob/master/docs/design/focus-protocol.md#32-wire-summary--the-host-webhook-field">design</a>). <code>400</code> when malformed; <code>403 {&quot;error&quot;: &quot;wrong_key&quot;}</code> when it does not hash to <code>?listener=</code>. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine&#39;s slot nor end its stream. A header, not a query parameter, because nginx, Cloudflare and most PaaS record <code>$request_uri</code> verbatim: a key in the URL lands in access logs, which are shipped to aggregators and shared far more widely than the board token. And <code>Authorization</code> rather than a name of our own, because log pipelines that redact credentials match on the header name — Caddy&#39;s <code>log_credentials</code> covers exactly Cookie, Set-Cookie, Authorization and Proxy-Authorization, so a custom name would be logged in full.</td>
+<td>Required. The <strong>machine key</strong>: 64 lowercase hex, the value the id is derived from (<code>machine_id = sha256(key)[0..32]</code>, see the <a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md#32-wire-summary--the-host-webhook-field">design</a>). <code>400</code> when malformed; <code>403 {&quot;error&quot;: &quot;wrong_key&quot;}</code> when it does not hash to <code>?listener=</code>. Only the machine holds the key — every viewer sees the id in the snapshot, so the id alone proves nothing, and a viewer can neither take a machine&#39;s slot nor end its stream. A header, not a query parameter, because nginx, Cloudflare and most PaaS record <code>$request_uri</code> verbatim: a key in the URL lands in access logs, which are shipped to aggregators and shared far more widely than the board token. And <code>Authorization</code> rather than a name of our own, because log pipelines that redact credentials match on the header name — Caddy&#39;s <code>log_credentials</code> covers exactly Cookie, Set-Cookie, Authorization and Proxy-Authorization, so a custom name would be logged in full.</td>
 </tr>
 <tr>
 <td><code>?name=</code></td>
@@ -2954,7 +2954,7 @@ Push alerts per (session, kind) are debounced to one per minute.</p>
     <span>MIT licensed · Built by Inal Kardanov</span>
     <div class="foot-links">
       <a href="/">Home</a>
-      <a href="https://github.com/KardanovIR/claude-status-dashboard">GitHub</a>
+      <a href="https://github.com/KardanovIR/agstatus">GitHub</a>
       <a href="/privacy">Privacy</a>
     </div>
   </div>

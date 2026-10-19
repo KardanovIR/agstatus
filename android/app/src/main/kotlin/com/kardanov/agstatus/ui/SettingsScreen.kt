@@ -67,7 +67,7 @@ import kotlinx.coroutines.launch
 
 /** Same canonical URLs the store listing points at, so they can't drift apart. */
 private const val PRIVACY_URL = "https://agstatus.online/privacy"
-private const val SOURCE_URL = "https://github.com/KardanovIR/claude-status-dashboard"
+private const val SOURCE_URL = "https://github.com/KardanovIR/agstatus"
 
 /** Board details, demo mode, and the dangerous stuff. */
 @OptIn(ExperimentalMaterial3Api::class)

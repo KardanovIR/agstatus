@@ -11,7 +11,7 @@ permissions:
 jobs:
   # The tag IS the version as far as install.sh and install.ps1 are concerned:
   # both resolve the newest release through the 302 on
-  # https://github.com/KardanovIR/claude-status-dashboard/releases/latest and
+  # https://github.com/KardanovIR/agstatus/releases/latest and
   # then build the asset name from the vX.Y.Z they land on. So a tag that
   # disagrees with cli/package.json ships an artifact whose directory name and
   # whose `agstatus --version` do not match what the installer asked for.

@@ -8,7 +8,7 @@
     "url": "https://github.com/KardanovIR"
   },
   "homepage": "https://agstatus.online",
-  "repository": "https://github.com/KardanovIR/claude-status-dashboard",
+  "repository": "https://github.com/KardanovIR/agstatus",
   "license": "MIT",
   "keywords": ["status", "dashboard", "monitoring", "hooks", "push-notifications"]
 }
