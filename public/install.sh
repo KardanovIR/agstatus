@@ -3,7 +3,12 @@
 #
 #   curl -fsSL https://agstatus.online/install.sh | sh
 #   curl -fsSL https://agstatus.online/install.sh | sh -s -- --code ABCD-1234
-#   curl -fsSL https://agstatus.online/install.sh | AGSTATUS_VERSION=1.3.0 sh
+#   curl -fsSL https://agstatus.online/install.sh | AGSTATUS_VERSION=X.Y.Z sh
+#
+# AGSTATUS_VERSION pins a release, 1.4.0 or later, from
+# https://github.com/KardanovIR/agstatus/releases. 1.3.0 and everything
+# before it shipped through npm and the Homebrew tap, so those releases have no
+# artifact for this script to download.
 #
 # It downloads the release artifact for the current version from GitHub,
 # verifies it against that release's SHA256SUMS, unpacks it under
@@ -460,7 +465,8 @@ resolve_version() {
     VERSION=${AGSTATUS_VERSION#v}
     valid_version "$VERSION" || die \
       "AGSTATUS_VERSION is not a release version: ${AGSTATUS_VERSION}" \
-      'Expected X.Y.Z, for example AGSTATUS_VERSION=1.3.0.'
+      'Expected X.Y.Z, one of the versions listed at' \
+      '  https://github.com/KardanovIR/agstatus/releases'
     return 0
   fi
 
@@ -496,7 +502,8 @@ resolve_version() {
     'Could not work out the latest AgStatus version.' \
     "  $rv_next did not answer with a release." \
     'Offline, or behind a proxy that eats redirects? Nothing was installed.' \
-    'You can pin one instead:  AGSTATUS_VERSION=1.3.0 sh install.sh'
+    'You can pin one instead:  AGSTATUS_VERSION=X.Y.Z sh install.sh' \
+    '  with X.Y.Z from https://github.com/KardanovIR/agstatus/releases'
 
   # Everything up to and including the last /tag/v goes; a URL that never had
   # one leaves the whole string behind, which valid_version then rejects.
@@ -504,7 +511,8 @@ resolve_version() {
   valid_version "$VERSION" || die \
     'The latest release does not look like a version we can install.' \
     "  $rv_next -> $rv_raw" \
-    'Pin a known one:  AGSTATUS_VERSION=1.3.0'
+    'Pin one instead:  AGSTATUS_VERSION=X.Y.Z, with X.Y.Z from' \
+    '  https://github.com/KardanovIR/agstatus/releases'
 }
 
 fetch_release() {
