@@ -27,8 +27,8 @@ android {
         // versionCode is Play's monotonic counter and has nothing to do with
         // versionName: every upload needs a higher one, including a rejected
         // build's replacement. versionName tracks this repo's releases.
-        versionCode = 5
-        versionName = "1.6.0"
+        versionCode = 6
+        versionName = "1.6.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

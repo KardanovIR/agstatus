@@ -3,8 +3,9 @@
 The mechanical parts are scripted; the parts that need a human are the
 metadata and the review notes. This is the order that works.
 
-Written while preparing **1.3.0 (build 4)**. Version numbers below are that
-release; everything else is reusable.
+Written while preparing **1.3.0 (build 4)** and last brought up to date for
+**1.6.2 (build 7)**. Where an example needs a version it uses one of those two;
+everything else is reusable.
 
 ## 0. Before you start
 
@@ -18,8 +19,12 @@ grep -m1 CURRENT_PROJECT_VERSION ios/AgStatus.xcodeproj/project.pbxproj
 ```
 
 `CURRENT_PROJECT_VERSION` must be higher than any build already uploaded for
-this marketing version — App Store Connect rejects a repeat. 1.2.0 shipped as
-build 3, so 1.3.0 starts at 4.
+this marketing version — App Store Connect rejects a repeat. This project keeps
+one counter across versions and moves it once per uploaded version: 1.2.0
+shipped as build 3, 1.3.0 as 4, and 1.5.0 went to review as 6 (5 was 1.4.x,
+which never reached the store), so 1.6.2 is 7. `MARKETING_VERSION` is the repo
+release the build is cut from, so it skips the releases that left the app
+alone.
 
 These are already correct and need no thought each release:
 
@@ -101,26 +106,31 @@ the version's **Build** section.
 ## 3. Fill in the version in App Store Connect
 
 Create the new version (**+ Version or Platform** → the `MARKETING_VERSION` in
-`ios/AgStatus.xcodeproj/project.pbxproj`, currently `1.4.0`), then:
+`ios/AgStatus.xcodeproj/project.pbxproj`, currently `1.6.2`), then:
 
-- **What's New** — required for every update. The Play copy in
-  `distribution/google-play/listing/whats-new.txt` is written for the same
-  release and reads well here with light edits.
+- **What's New** — required for every update. Each version's copy is in
+  `listing-<version>.md` beside this file (`listing-1.6.2.md` now). Do not
+  reuse the Play text: the Android app has never been published, so its
+  what's-new is written for a first release and covers different ground.
 - **Screenshots** — upload the refreshed sets, iPhone and iPad. The first image
   is what appears in search results.
 - **Build** — select the build you just uploaded.
 - **App Review Information → Notes** — see below.
 
 Nothing else needs revisiting for a feature release: the description, keywords,
-category, age rating, and the privacy answers all carry over. The privacy
-answers in particular stay correct — the app only ever *reads* a board, and
-anything new it displays is reported by the hook on the user's own machine.
+category, age rating, and the privacy answers all carry over. The exception for
+1.6.2 is the description: two of its lines stopped being true in 1.2.0 and
+1.5.0, and `listing-1.6.2.md` has the replacements. The privacy answers in
+particular stay correct — the app only ever *reads* a board, and anything new
+it displays is reported by the hook on the user's own machine.
 
 ## 4. Review notes
 
 Keep the notes from the previous submission; they answer the questions this app
 reliably attracts. The full text is in
-`~/Desktop/claude-status-private/appstore-resubmission.md` — it explains that
+`~/Desktop/claude-status-private/appstore-resubmission.md` (or wherever
+iCloud's Desktop sync has moved that folder, as it has on the development
+Mac) — it explains that
 
 - there are **no accounts or credentials**, so no demo login exists;
 - the app is a **companion viewer for a web service**, not a hardware

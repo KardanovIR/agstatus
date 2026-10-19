@@ -9,7 +9,7 @@ the Apple Developer portal.
 | Step | Status |
 | --- | --- |
 | `DEVELOPMENT_TEAM` set so `xcodebuild archive` succeeds | **done** |
-| Version 1.1.0 (build 2) | **done** |
+| Version 1.6.2 (build 7) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.6.2.md](appstore/listing-1.6.2.md) | **done** |
 | `aps-environment` driven by `APS_ENVIRONMENT` (production in Release) | **done** |
 | In-app privacy link → https://agstatus.online/privacy | **done** |
 | APNs configured on the hosted server (`/api/config` reports `push: true`) | **done** |
@@ -72,7 +72,7 @@ ai,monitor,dashboard,session,developer,terminal,cli,devtool,tracker,remote,usage
 
 > Agents run for minutes, then quietly wait for you. See every session, what it is doing, and how much of your plan is left — without walking back to the desk.
 
-**Description** (3346/4000)
+**Description** (3403/4000)
 
 ```
 AgStatus turns your phone into a live status board for the AI coding agents running on your computer.
@@ -85,7 +85,7 @@ A small open-source hook on your computer posts an update whenever an agent star
 ON THE BOARD
 • One card per session, color-coded through six states: idle, planning, coding, testing, blocked, done
 • The last thing the agent reported — the file it is editing, the test command it ran, the approval it is waiting for
-• Blocked cards glow; finished and long-silent ones fade, so the sessions that need you stand out
+• Blocked and finished cards carry the color while busy ones recede, and a session that has gone quiet dims, so the ones that need you stand out
 • Updates stream in as they happen — no polling, no refresh button
 • Swipe a card away when you are done with it
 • Keep-screen-awake option for when the board lives on a desk or a shelf
@@ -112,12 +112,13 @@ The server, the command-line tool, the hook, and this app are open source under 
 TRY IT BEFORE YOU SET ANYTHING UP
 Tap “Try the demo” on the welcome screen for a fully populated board — sample sessions moving through their states, usage bars, and timelines. Demo mode runs entirely on your device and sends nothing anywhere.
 
-Designed for iPhone with a dark interface. Showing real sessions requires a computer running a compatible coding agent.
+Designed for iPhone and iPad, with a dark interface. Showing real sessions requires a computer running a compatible coding agent.
 
 AgStatus is an independent open-source project that works with the hook systems of Claude Code and OpenAI Codex. It is not affiliated with, endorsed by, or sponsored by Anthropic or OpenAI. All product names and trademarks are the property of their respective owners.
 ```
 
-**What's new in 1.1.0**
+**What's new in 1.1.0** — kept for the record. Each later version's text is in
+`appstore/listing-<version>.md`.
 
 ```
 Plan limits, session history, and a new home.
@@ -173,7 +174,7 @@ THIRD-PARTY NAMES
 Claude Code (Anthropic) and Codex (OpenAI) are named only to describe compatibility: AgStatus reads their public hook systems. This is an independent open-source project (MIT), not affiliated with, endorsed by, or sponsored by Anthropic or OpenAI, and the description says so explicitly.
 
 OTHER DETAILS
-- iPhone only, iOS 17+, dark interface by design.
+- iPhone and iPad, iOS 17+, dark interface by design.
 - No analytics, no ad SDKs, no tracking; the bundled privacy manifest declares no collected data.
 - A board is an unguessable token in a URL, stored in the Keychain, and can be deleted from the app at any time.
 - Source for app, server, and CLI: https://github.com/KardanovIR/agstatus

@@ -29,8 +29,11 @@ AAB="$ANDROID/app/build/outputs/bundle/release/app-release.aab"
 mkdir -p "$DEST"
 cp "$AAB" "$DEST/agstatus-release.aab"
 
-VERSION_NAME="$(grep -m1 'versionName' "$ANDROID/app/build.gradle.kts" | sed 's/.*"\(.*\)".*/\1/')"
-VERSION_CODE="$(grep -m1 'versionCode' "$ANDROID/app/build.gradle.kts" | sed 's/[^0-9]//g')"
+# Anchored to the assignment: the comment above versionCode in build.gradle.kts
+# names both properties, and an unanchored grep reported that comment line as
+# the versionName and an empty versionCode.
+VERSION_NAME="$(grep -m1 -E '^[[:space:]]*versionName[[:space:]]*=' "$ANDROID/app/build.gradle.kts" | sed 's/.*"\(.*\)".*/\1/')"
+VERSION_CODE="$(grep -m1 -E '^[[:space:]]*versionCode[[:space:]]*=' "$ANDROID/app/build.gradle.kts" | sed 's/[^0-9]//g')"
 
 echo "==> $DEST/agstatus-release.aab"
 echo "    versionName $VERSION_NAME, versionCode $VERSION_CODE, $(du -h "$DEST/agstatus-release.aab" | cut -f1)"
