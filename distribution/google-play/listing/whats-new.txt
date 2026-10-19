@@ -1,4 +1,4 @@
-- Pairing a computer is safer: the app accepts only a pairing code the server could have issued and a board address made of host-name characters, and quotes both in the command you paste.
+- When you pair a computer, the app accepts only a pairing code the server could have issued and a board address made of host-name characters, and quotes both in the command you paste.
 - A low-glare dark board, every card tinted by what its session is doing.
 - Each status has a mark as well as a colour, so the board reads the same if you cannot tell red from green.
 - A card shows which machine its session runs on.

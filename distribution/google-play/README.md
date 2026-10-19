@@ -9,8 +9,8 @@ distribution/google-play/
 ├── listing/
 │   ├── title.txt                 28 / 30 chars
 │   ├── short-description.txt     72 / 80
-│   ├── full-description.txt      3850 / 4000
-│   └── whats-new.txt             479 / 500
+│   ├── full-description.txt      3987 / 4000
+│   └── whats-new.txt             476 / 500
 ├── graphics/
 │   ├── icon-512.png              512×512, no alpha
 │   ├── feature-graphic.png       1024×500, no alpha
