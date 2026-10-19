@@ -7,7 +7,7 @@
 > "Children" and "Changes" sections and the `Timestamps` row — so if you change
 > one, change both, and keep the dates equal.
 
-_Last updated: October 16, 2026_
+_Last updated: October 19, 2026_
 
 AgStatus is an open-source status board for coding agents such as Claude Code
 and OpenAI Codex. This policy covers the AgStatus iOS app and the hosted server
