@@ -415,11 +415,69 @@ class ApiParsingTest {
             "https://evil.example\\agstatus.online/w/$TOKEN",
             "https://agstatus.online?x=1",
             "https://agstatus.online#frag",
-            // Not shell syntax, but not a host a public CA certifies either.
-            "https://my_host.example/w/$TOKEN",
         )
 
         rejected.forEach { assertNull("expected null for $it", Board.parse(it)) }
+    }
+
+    @Test
+    fun aUnicodeHostIsAdoptedAsThePunycodeOfTheSameHost() {
+        // What OkHttp has always resolved, and what the iPhone adopts for the
+        // same QR (DemoData.verifyPairing): both clients take this board.
+        val board = Board.parse("https://bücher.example/w/$TOKEN")
+        assertEquals(Board("https://xn--bcher-kva.example", TOKEN), board)
+        assertEquals(
+            Board("https://xn--bcher-kva.example:8443", null),
+            Board.parse("https://BÜCHER.Example:8443/"),
+        )
+        assertEquals("https://xn--80aai0dbebi.xn--p1ai", Board.origin("https://агстатус.рф"))
+        // Saved in its punycode form, it reads back as itself; saved as typed
+        // by a build that kept the raw text, it is repaired to the same.
+        assertEquals(board, Board.restore(board!!.baseUrl, board.token))
+        assertEquals(board, Board.restore("https://bücher.example", TOKEN))
+        assertEquals(
+            "curl -fsSL https://agstatus.online/install.sh | sh -s -- --code 'ABCD-EFGH'" +
+                " --url 'https://xn--bcher-kva.example'",
+            PairCode("ABCD-EFGH", 900).command(board),
+        )
+    }
+
+    @Test
+    fun aUnicodeHostIsHeldToTheClassAfterIdnaAsWellAsBefore() {
+        // Each is let past the as-typed check (non-ASCII) and comes out of
+        // OkHttp's NFKC mapping as ASCII shell syntax, which it keeps in a host.
+        val rejected = listOf(
+            "https://a；b.example/w/$TOKEN",               // fullwidth semicolon -> a;b
+            "https://a＄（id）.example/w/$TOKEN",  // fullwidth $( ) -> a$(id)
+            "https://a＇b.example/w/$TOKEN",               // fullwidth apostrophe -> a'b
+            "https://a｀id｀.example/w/$TOKEN",        // fullwidth grave -> a`id`
+            "https://a｜b.example/w/$TOKEN",               // fullwidth vertical line -> a|b
+            "https://a;b.example/w/$TOKEN",               // Greek question mark -> a;b
+            // Mixed: the ASCII half is refused as typed, before IDNA is reached.
+            "https://a＄(id).example/w/$TOKEN",
+            // A fullwidth @ maps to `@`, which OkHttp refuses in a host outright.
+            "https://x＠agstatus.online/w/$TOKEN",
+        )
+
+        rejected.forEach { assertNull("expected null for $it", Board.parse(it)) }
+        rejected.forEach { assertNull("expected null for $it", Board.origin(it)) }
+        // restore() holds a saved one to the same rule, through origin().
+        assertNull(Board.restore("https://a；b.example", TOKEN))
+    }
+
+    @Test
+    fun anUnderscoreIsNotShellSyntaxAndIsAccepted() {
+        // The same board iOS accepts. Android reaches it over HTTPS only, and
+        // that is network_security_config's doing, not the authority class.
+        assertEquals(Board("http://dev_pc.local:3000", null), Board.parse("http://dev_pc.local:3000"))
+        val board = Board.parse("https://my_host.example/w/$TOKEN")
+        assertEquals(Board("https://my_host.example", TOKEN), board)
+        assertEquals(board, Board.restore(board!!.baseUrl, board.token))
+        assertEquals(
+            "curl -fsSL https://agstatus.online/install.sh | sh -s -- --code 'ABCD-EFGH'" +
+                " --url 'https://my_host.example'",
+            PairCode("ABCD-EFGH", 900).command(board),
+        )
     }
 
     @Test

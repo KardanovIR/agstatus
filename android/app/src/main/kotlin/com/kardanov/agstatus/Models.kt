@@ -522,11 +522,14 @@ data class Board(
         val TOKEN_REGEX = Regex("^ags_[A-Za-z0-9_-]{32}$")
 
         /**
-         * Everything a board's authority may be spelled with: a host name,
-         * an IPv4 address or a bracketed IPv6 one, and a port. No `@`, so no
-         * userinfo, and nothing a shell reads as syntax: no `;`, `$`, `(`,
-         * quote, backtick or space. Nor `%`, `\`, `?` or `#`, for the reason
-         * in the last paragraph.
+         * Everything a board's authority may be spelled with, in ASCII: a host
+         * name, an IPv4 address or a bracketed IPv6 one, and a port. No `@`, so
+         * no userinfo, and nothing a shell reads as syntax: no `;`, `$`, `(`,
+         * `|`, `&`, quote, backtick or space. Nor `%`, `\`, `?` or `#`, for the
+         * reason in the third paragraph. `_` is in: no shell gives it a
+         * meaning, quoted or not, OkHttp takes it in a host, and iOS reaches
+         * `dev_pc.local` boards over plain HTTP on a LAN. This is an allow-list
+         * of harmless characters, not a ruling on which host names are proper.
          *
          * Why so narrow, when OkHttp would take more: [baseUrl] is not only an
          * address. PairCode.command() hands it to a shell as `--url`, and the
@@ -539,20 +542,42 @@ data class Board(
          * into a terminal. A real token is free; the attacker needed no server,
          * only a QR code.
          *
-         * The raw text is checked, not only OkHttp's parse of it, because that
-         * is what makes the two parsers agree: with none of `@ \ ? # %`
-         * present, OkHttp's authority ends exactly where this one's does.
-         * Underscores and raw IDN are the casualties — neither is a host name a
-         * public CA will certify, and the punycode spelling still parses.
+         * [origin] applies the class twice, and needs both. First to the raw
+         * text, where it refuses ASCII outside the class and lets anything
+         * non-ASCII through. That pass is what makes the two parsers agree:
+         * OkHttp ends an authority at an ASCII `/ \ ? #` and at nothing else,
+         * so with none of `@ \ ? # %` present its authority ends exactly where
+         * this one's does. Non-ASCII there is a Unicode host name —
+         * `bücher.example`, `агстатус.рф` — which OkHttp IDNA-encodes to the
+         * `xn--` spelling a certificate names: the same host, not a lesser
+         * one. Refusing it outright would be simpler and wrong, because it
+         * turns away a board this client adopted before and the iPhone still
+         * adopts (Foundation IDNA-encodes before iOS's check, DemoData pins it).
+         *
+         * Then to the rebuilt origin, with no exception, because IDNA's NFKC
+         * mapping turns look-alikes into the very syntax the first pass kept
+         * out. A fullwidth `；`, `＄（）`, `＇` or `｜`, or the Greek question
+         * mark, comes out of OkHttp 4 as ASCII `;`, `$()`, `'`, `|` or `;`, and
+         * OkHttp keeps every one of those in a host. Foundation does the same
+         * to the same characters, which is why iOS checks after it too.
          *
          * Rebuilding alone would not have been enough, which is why [origin]
-         * does both. iOS never had the userinfo form, because its
+         * checks as well as rebuilds. iOS never had the userinfo form, because its
          * normalizedOrigin rebuilds from scheme + host + port — but OkHttp
          * and Foundation both accept `$`, `(` and `;` inside a host name
          * (RFC 3986 allows them there), and a rebuild keeps the host. iOS
-         * refuses the same class now, in API.swift.
+         * holds the host to this class now, in API.swift, so the two clients
+         * refuse the same characters. Where Android reaches fewer boards it is
+         * network_security_config, not this class: cleartext only to
+         * localhost and 10.0.2.2, where iOS allows plain HTTP on a LAN. The
+         * IDNA mapping before the check is each platform's own (java.net.IDN
+         * is IDNA2003, Foundation UTS 46), and they part at the edges: `ß`
+         * becomes `ss` here and `xn--strae-oqa` there, and an emoji label is
+         * refused here and encoded there. Neither difference gets a character
+         * outside this class past either client.
          */
-        private val AUTHORITY_REGEX = Regex("^[A-Za-z0-9.:\\[\\]-]+$")
+        private fun isAuthorityChar(c: Char): Boolean =
+            c in 'a'..'z' || c in 'A'..'Z' || c in '0'..'9' || c in ".:[]_-"
 
         /**
          * `scheme://host[:port]`, rebuilt from OkHttp's parse of [raw] — the
@@ -560,8 +585,9 @@ data class Board(
          * app actually talks to. OkHttp's canonical form lowercases the host
          * and drops a default port, which also makes
          * `https://AgStatus.Online:443` the default server rather than a
-         * self-hosted one. Null for anything that is not http(s) with an
-         * authority [AUTHORITY_REGEX] accepts.
+         * self-hosted one, and spells a Unicode host as its punycode. Null for
+         * anything that is not http(s) with an authority [isAuthorityChar]
+         * accepts, both as typed (ASCII only) and as rebuilt (all of it).
          *
          * WelcomeScreen's server field goes through here too, so a typed
          * server and a scanned board cannot disagree about what an origin is.
@@ -570,12 +596,16 @@ data class Board(
             val trimmed = raw.trim()
             if (!hasHttpScheme(trimmed)) return null
             val authority = trimmed.substringAfter("://").substringBefore('/')
-            if (!AUTHORITY_REGEX.matches(authority)) return null
+            // As typed: ASCII is held to the class, non-ASCII is left to IDNA.
+            if (authority.isEmpty() || !authority.all { it.code > 0x7F || isAuthorityChar(it) }) return null
             val url = trimmed.toHttpUrlOrNull() ?: return null
-            // Unreachable past the regex (it has no `@`); kept so the rule
-            // reads in one place rather than as a property of a character class.
+            // Unreachable past the check above (it lets no `@` through); kept so
+            // the rule reads in one place rather than as a property of a class.
             if (url.username.isNotEmpty() || url.password.isNotEmpty()) return null
-            return rebuiltOrigin(url)
+            val rebuilt = rebuiltOrigin(url)
+            // As rebuilt: all of it, because NFKC can make `；` into `;`.
+            if (!rebuilt.substringAfter("://").all(::isAuthorityChar)) return null
+            return rebuilt
         }
 
         /**
@@ -618,8 +648,11 @@ data class Board(
          *
          * What cannot be repaired is dropped: text OkHttp cannot parse (no
          * request could ever have reached it), and a host that itself carries
-         * a character [AUTHORITY_REGEX] refuses. OkHttp 4 accepts `$` and `(`
+         * a character [isAuthorityChar] refuses. OkHttp 4 accepts `$` and `(`
          * inside a host name, and there is no cleaner host to fall back to.
+         * A Unicode host saved as typed is not in that second group: OkHttp
+         * rebuilds it as the punycode it has been resolving all along, and
+         * that passes.
          */
         fun restore(baseUrl: String, token: String?): Board? {
             val url = baseUrl.trim().toHttpUrlOrNull() ?: return null

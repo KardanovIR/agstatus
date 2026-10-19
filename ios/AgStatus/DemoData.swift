@@ -520,14 +520,24 @@ enum DemoData {
         // The host is guarded: the rebuild keeps it, so shell syntax in it is refused.
         for raw in ["https://x$(id).example/w/\(token)", "http://a$(id).local:3000",
                     "https://a;b.example/w/\(token)", "https://a'b.example",
-                    "https://a%3Bb.example/w/\(token)", "https://my_host.example"] {
+                    "https://a%3Bb.example/w/\(token)",
+                    // Look-alikes Foundation's IDNA maps to ASCII `;`, `$()`, `'`
+                    // and `;` again: the guard sees the mapped host, not these.
+                    "https://a\u{FF1B}b.example/w/\(token)", "https://a\u{FF04}\u{FF08}id\u{FF09}.example",
+                    "https://a\u{FF07}b.example", "https://a\u{037E}b.example"] {
             assert(board(raw) == nil, "host refused: \(raw)")
         }
-        // ...and nothing a real board uses is.
+        // ...and nothing a real board uses is. ApiParsingTest takes the same ones.
         assert(board("http://192.168.1.10:8080/")?.baseURL.absoluteString == "http://192.168.1.10:8080", "LAN IPv4")
         assert(board("http://agstatus.local:4000")?.baseURL.absoluteString == "http://agstatus.local:4000", ".local")
+        assert(board("http://dev_pc.local:3000")?.baseURL.absoluteString == "http://dev_pc.local:3000",
+               "an underscore is not shell syntax")
+        assert(board("https://my_host.example/w/\(token)")?.baseURL.absoluteString == "https://my_host.example",
+               "nor over https")
         assert(board("https://bücher.example/w/\(token)")?.baseURL.absoluteString
                == "https://xn--bcher-kva.example", "IDN arrives as punycode")
+        assert(board("https://агстатус.рф/w/\(token)")?.baseURL.absoluteString
+               == "https://xn--80aai0dbebi.xn--p1ai", "a whole IDN host too")
     }
     #endif
 

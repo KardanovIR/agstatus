@@ -328,15 +328,28 @@ enum AgStatusAPI {
         return components.url
     }
 
-    /// What a host may be spelled with: letters, digits, `.` and `-`, plus
-    /// `:` for an IPv6 literal (`url.host` gives those without brackets).
-    /// The same class Android's Board.origin applies to a whole authority
-    /// (Models.kt), so the two clients refuse the same boards. `url.host` is
-    /// already percent-decoded and IDNA-encoded, so `a%3Bb` arrives as `a;b`
-    /// and is refused, and `bücher` arrives as punycode and is not.
-    /// Underscores are refused too: no public CA certifies such a name.
+    /// What a host may be spelled with: letters, digits, `.`, `-` and `_`,
+    /// plus `:` for an IPv6 literal (`url.host` gives those without brackets).
+    /// An allow-list of characters no shell gives a meaning to, quoted or
+    /// not — not a ruling on which host names are proper. `_` is in because
+    /// it is harmless and because `dev_pc.local` is a board this app reaches
+    /// over plain HTTP on a LAN (checkTransportSecurity), where no
+    /// certificate is involved and the name is whatever the machine is called.
+    ///
+    /// `url.host` is already percent-decoded and IDNA-encoded, so the check
+    /// sees Foundation's mapping, never the text as typed: `a%3Bb` arrives as
+    /// `a;b` and is refused, a fullwidth `a；b` arrives as `a;b` too and is
+    /// refused, and `bücher` arrives as punycode and is not.
+    ///
+    /// Android's Board.origin (Models.kt) holds its rebuilt origin to the
+    /// same class after OkHttp's IDNA mapping, so the two clients refuse the
+    /// same characters. Android reaches fewer of these boards, but that is
+    /// its network_security_config — cleartext to localhost and 10.0.2.2
+    /// only — not this class. The two IDNA implementations part at the edges
+    /// (`ß`, an emoji label), never in a way that lets anything outside the
+    /// class through.
     private static let hostCharacters = CharacterSet(
-        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-")
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:_-")
 
     /// Tokens match ^ags_[A-Za-z0-9_-]{32}$.
     private static func isValidToken(_ token: String) -> Bool {
