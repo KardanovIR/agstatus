@@ -124,8 +124,46 @@ never to a down dashboard. Rows are **soft-deleted**: deletions set a
 invisible to the app. If you need data actually gone (e.g. a deletion
 request), purge flagged rows yourself:
 `DELETE FROM sessions WHERE deleted_at IS NOT NULL;` (same for `workspaces`,
-`devices`, `usage_limits`, `session_events`, `usage_history`, and
-`usage_project_days` — miss one and a deleted board leaves data behind).
+`devices`, `usage_limits`, `session_events`, `usage_history`,
+`usage_project_days` and `usage_session_totals` — miss one and a deleted board
+leaves data behind).
+
+### Flagging rows written before 1.6.2's bounds
+
+Servers before 1.6.2 stored project days with any date, and capped some
+tables by flagging old rows rather than refusing new ones, so their database
+can hold rows 1.6.2 would never have kept. 1.6.2 does not load those rows,
+so they cost disk rather than memory. [`scripts/flag-flood-rows.sql`](../scripts/flag-flood-rows.sql)
+flags them. It removes nothing, and it touches only rows that a 1.6.2 restart
+does not load, so every board shows exactly what it showed. The script's
+header lists what it flags, what it leaves, and why.
+
+Upgrade to 1.6.2 or later first, then run it from the checkout, in three
+steps. With the bundled Compose Postgres:
+
+```bash
+docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=diagnose < scripts/flag-flood-rows.sql
+docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=dryrun < scripts/flag-flood-rows.sql
+docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=commit < scripts/flag-flood-rows.sql
+```
+
+Any other Postgres: `psql "$DATABASE_URL" -X -v mode=diagnose -f scripts/flag-flood-rows.sql`,
+and the same with `dryrun` and `commit`. On agstatus.online it is the Compose
+form, run on the host from the checkout the deploy workflow keeps at
+`/apps/agstatus`.
+
+- **diagnose** only reads: rows per table and per board, project days outside
+  the window or not real dates, the boards over each 1.6.2 bound, and the plan.
+- **dryrun** (the default) flags in one transaction, checks the result, and
+  rolls back. The transaction takes a few seconds, and meanwhile the server's
+  writes queue in memory while the board stays live. If a write already holds
+  a table, the run gives up after 10 s with `lock timeout`. Nothing has
+  changed then, so run it again.
+- **commit** does the same and commits. A second run flags nothing.
+
+Every row one run flags carries the same `deleted_at`, which the commit run
+prints. Rows that are only past their retention are reported and left alone
+unless you add `-v aged=flag`.
 
 ### Migrating from SQLite (pre-PostgreSQL versions)
 

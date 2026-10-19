@@ -1888,8 +1888,40 @@ never to a down dashboard. Rows are <strong>soft-deleted</strong>: deletions set
 invisible to the app. If you need data actually gone (e.g. a deletion
 request), purge flagged rows yourself:
 <code>DELETE FROM sessions WHERE deleted_at IS NOT NULL;</code> (same for <code>workspaces</code>,
-<code>devices</code>, <code>usage_limits</code>, <code>session_events</code>, <code>usage_history</code>, and
-<code>usage_project_days</code> — miss one and a deleted board leaves data behind).</p>
+<code>devices</code>, <code>usage_limits</code>, <code>session_events</code>, <code>usage_history</code>,
+<code>usage_project_days</code> and <code>usage_session_totals</code> — miss one and a deleted board
+leaves data behind).</p>
+<h4 id="self-hosting-flagging-rows-written-before-162s-bounds"><a class="anchor" href="#self-hosting-flagging-rows-written-before-162s-bounds">Flagging rows written before 1.6.2&#39;s bounds</a></h4>
+<p>Servers before 1.6.2 stored project days with any date, and capped some
+tables by flagging old rows rather than refusing new ones, so their database
+can hold rows 1.6.2 would never have kept. 1.6.2 does not load those rows,
+so they cost disk rather than memory. <a href="https://github.com/KardanovIR/agstatus/blob/master/scripts/flag-flood-rows.sql"><code>scripts/flag-flood-rows.sql</code></a>
+flags them. It removes nothing, and it touches only rows that a 1.6.2 restart
+does not load, so every board shows exactly what it showed. The script&#39;s
+header lists what it flags, what it leaves, and why.</p>
+<p>Upgrade to 1.6.2 or later first, then run it from the checkout, in three
+steps. With the bundled Compose Postgres:</p>
+<pre><code class="language-bash">docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=diagnose &lt; scripts/flag-flood-rows.sql
+docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=dryrun &lt; scripts/flag-flood-rows.sql
+docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=commit &lt; scripts/flag-flood-rows.sql
+</code></pre>
+<p>Any other Postgres: <code>psql &quot;$DATABASE_URL&quot; -X -v mode=diagnose -f scripts/flag-flood-rows.sql</code>,
+and the same with <code>dryrun</code> and <code>commit</code>. On agstatus.online it is the Compose
+form, run on the host from the checkout the deploy workflow keeps at
+<code>/apps/agstatus</code>.</p>
+<ul>
+<li><strong>diagnose</strong> only reads: rows per table and per board, project days outside
+the window or not real dates, the boards over each 1.6.2 bound, and the plan.</li>
+<li><strong>dryrun</strong> (the default) flags in one transaction, checks the result, and
+rolls back. The transaction takes a few seconds, and meanwhile the server&#39;s
+writes queue in memory while the board stays live. If a write already holds
+a table, the run gives up after 10 s with <code>lock timeout</code>. Nothing has
+changed then, so run it again.</li>
+<li><strong>commit</strong> does the same and commits. A second run flags nothing.</li>
+</ul>
+<p>Every row one run flags carries the same <code>deleted_at</code>, which the commit run
+prints. Rows that are only past their retention are reported and left alone
+unless you add <code>-v aged=flag</code>.</p>
 <h4 id="self-hosting-migrating-from-sqlite-pre-postgresql-versions"><a class="anchor" href="#self-hosting-migrating-from-sqlite-pre-postgresql-versions">Migrating from SQLite (pre-PostgreSQL versions)</a></h4>
 <p>Earlier versions persisted to SQLite via <code>DB_PATH</code>. Copy that data over once,
 then drop <code>DB_PATH</code> from your <code>.env</code>:</p>
