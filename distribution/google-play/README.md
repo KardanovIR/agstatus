@@ -34,14 +34,14 @@ anything.
 | Listing copy within every character limit | **done** — re-counted for 1.6.2 |
 | Data safety answers derived from the code | **done** — transcribe into Console |
 | Content rating + app content declarations | **done** — transcribe into Console |
-| Privacy policy URL — https://agstatus.online/privacy | **done**, already live |
+| **Privacy policy text for the Android app** — https://agstatus.online/privacy | **TODO before the first closed-test or production release** — the policy still says the Android client "is not published to any store" ([content-rating.md](content-rating.md), R1), and a reviewer who opens it reads a policy that disclaims the app under review. Change that sentence in `docs/privacy.md` and `public/privacy.html` with the same date in both, merge to `master` (which redeploys agstatus.online), and check that the live page serves the new text before that release. During the closed test below the app is on Play but not public, so word the sentence to be true then too |
 | **Screenshots regenerated against 1.6.0** | **done** — and still current for 1.6.2, which changes only the Pair sheet's command (now quoted) and the errors for a refused code or board; no screenshot shows either |
 | **Icon and feature graphic regenerated** | **TODO** — both still use the retired palette |
 | **Signed App Bundle rebuilt at versionCode 6** | **TODO** — `scripts/build-play-bundle.sh`, on your Mac; CI builds no bundle |
 | Create the app in Play Console and pay the one-time $25 registration | you |
-| Upload the bundle to a track (internal testing first) | you |
 | Fill Data safety, content rating, and app content from the docs here | you |
-| Countries, pricing (free), and rollout | you |
+| **Closed test: 12 or more testers opted in for 14 days in a row** | **you** — required before production on a personal account; see the note below. Line the testers up before the upload. Internal testing is optional and does not count |
+| Apply for production access, then countries, pricing (free), and rollout | you |
 
 ### The two graphics still to redo
 
@@ -125,6 +125,16 @@ adb shell wm size reset && adb shell wm density reset
 
 ## Notes that affect review
 
+- **A personal developer account needs a closed test before production.**
+  For personal accounts created after 13 November 2023, Play Console allows an
+  application for production access only after a closed-testing track has had
+  at least 12 testers opted in continuously for at least 14 days; a tester who
+  opts out and back in restarts the count. Internal testing does not count.
+  An organization account, which needs a D-U-N-S number, is exempt. The Play
+  account for this app is still to be created, so plan on the closed test:
+  recruit the testers before the first upload, or register as an
+  organization. Google's rule:
+  https://support.google.com/googleplay/android-developer/answer/14151465
 - **No push notifications.** The Android app deliberately ships without them,
   so nothing in the listing or the Data safety form mentions notifications.
   The iOS app has them; do not copy iOS listing text over.
