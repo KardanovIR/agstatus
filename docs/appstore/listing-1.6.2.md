@@ -11,7 +11,19 @@ build 6.
 > as it is. If it is still waiting for review, or was rejected, the store still
 > serves 1.3, so the people updating have seen neither 1.4 nor 1.5: put the
 > paragraph below first and follow it with the What's New from
-> [listing-1.5.0.md](listing-1.5.0.md).
+> [listing-1.5.0.md](listing-1.5.0.md), with one sentence in it replaced.
+>
+> That text says *"Focus is opt-in and set up by the installer on macOS; a
+> machine that has not enabled it simply shows no Focus control."* The
+> installer has set Focus up by default on macOS since 1.4, and `--no-focus`
+> is the opt-out, as `docs/privacy.md` says. Paste this sentence in its place:
+>
+> ```
+> On macOS the installer sets Focus up by default (--no-focus skips it); a machine without it simply shows no Focus control.
+> ```
+>
+> listing-1.5.0.md is left as it was, because that is the text App Store
+> Connect holds for build 6.
 
 ---
 
