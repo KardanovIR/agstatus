@@ -67,6 +67,66 @@ param(
     [switch] $Minimal
 )
 
+function Get-AgStatusRedirectTarget {
+    <#
+      One GET that does not follow its redirect, returning the absolute Location
+      it answered with. Anything but a 3xx carrying a Location throws. Why this
+      is HttpWebRequest and not Invoke-WebRequest: Get-AgStatusLatestVersion.
+    #>
+    param([Parameter(Mandatory = $true)][string] $Url)
+
+    $req = [Net.HttpWebRequest] ([Net.WebRequest]::Create($Url))
+    $req.Method = 'GET'
+    $req.AllowAutoRedirect = $false
+    $req.Timeout = 30000
+    # GitHub is content without one, but a named agent makes this install
+    # identifiable in any proxy log that a user is asked to hand over.
+    $req.UserAgent = 'agstatus-installer (PowerShell)'
+
+    $location = $null
+    $resp = $null
+    try {
+        $resp = $req.GetResponse()
+        $status = [int] $resp.StatusCode
+        if (($status -lt 300) -or ($status -gt 399)) {
+            throw "expected a redirect from $Url but got HTTP $status. Is there a published release yet?"
+        }
+        $location = $resp.Headers['Location']
+    } finally {
+        if ($resp -ne $null) { $resp.Close() }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($location)) {
+        throw "the redirect from $Url carried no Location header."
+    }
+    # RFC 7231 allows a relative Location. GitHub sends an absolute one, but
+    # resolving against the request URI costs a line and removes the assumption.
+    if ($location -notmatch '^https?://') {
+        $location = (New-Object Uri(([Uri] $Url), $location)).AbsoluteUri
+    }
+    return $location
+}
+
+function Test-AgStatusLatestUrl {
+    <#
+      Is this the /releases/latest page of a repository on github.com? That is
+      the one redirect Get-AgStatusLatestVersion follows instead of reading as
+      its answer. Owner and name are one path segment each, of the characters
+      GitHub allows in them, and neither may be . or .. - the same test as
+      install.sh's is_latest_url. [regex]::Match rather than -match, because
+      -match ignores case and this compares the scheme and host exactly.
+    #>
+    param([string] $Url)
+
+    if ([string]::IsNullOrEmpty($Url)) { return $false }
+    $m = [regex]::Match($Url, '^https://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/releases/latest\z')
+    if (-not $m.Success) { return $false }
+    foreach ($segment in @($m.Groups[1].Value, $m.Groups[2].Value)) {
+        if (($segment -eq '.') -or ($segment -eq '..')) { return $false }
+    }
+    return $true
+}
+
 function Get-AgStatusLatestVersion {
     <#
       Resolve the newest release from the 302 that
@@ -85,37 +145,28 @@ function Get-AgStatusLatestVersion {
       subtly wrong, and impossible to test here. HttpWebRequest with
       AllowAutoRedirect = $false behaves the same on both: only >= 400 raises a
       WebException, a 3xx just comes back, and we always read .Headers['Location'].
+
+      The redirect is read rather than followed - AllowAutoRedirect = $true would
+      chase whatever chain it was handed and download the release page at the
+      end just to report where it stopped - with one exception: a renamed or
+      transferred repository. Its old /releases/latest answers with a 301 to the
+      new one's /releases/latest, and only that one names the tag. So a Location
+      that is itself https://github.com/<owner>/<name>/releases/latest
+      (Test-AgStatusLatestUrl) is asked again, at most three times; anything else
+      is the answer. When this repo was renamed from claude-status-dashboard to
+      agstatus, this function read that 301 as the answer and refused every
+      install until $repo caught up. install.sh's resolve_version follows the
+      same rule. The downloads need no such care: Invoke-WebRequest follows a
+      rename's redirect on its own.
     #>
     param([Parameter(Mandatory = $true)][string] $LatestUrl)
 
-    $req = [Net.HttpWebRequest] ([Net.WebRequest]::Create($LatestUrl))
-    $req.Method = 'GET'
-    $req.AllowAutoRedirect = $false
-    $req.Timeout = 30000
-    # GitHub is content without one, but a named agent makes this install
-    # identifiable in any proxy log that a user is asked to hand over.
-    $req.UserAgent = 'agstatus-installer (PowerShell)'
-
+    $askUrl = $LatestUrl
     $location = $null
-    $resp = $null
-    try {
-        $resp = $req.GetResponse()
-        $status = [int] $resp.StatusCode
-        if (($status -lt 300) -or ($status -gt 399)) {
-            throw "expected a redirect from $LatestUrl but got HTTP $status. Is there a published release yet?"
-        }
-        $location = $resp.Headers['Location']
-    } finally {
-        if ($resp -ne $null) { $resp.Close() }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($location)) {
-        throw "the redirect from $LatestUrl carried no Location header."
-    }
-    # RFC 7231 allows a relative Location. GitHub sends an absolute one, but
-    # resolving against the request URI costs a line and removes the assumption.
-    if ($location -notmatch '^https?://') {
-        $location = (New-Object Uri(([Uri] $LatestUrl), $location)).AbsoluteUri
+    for ($hop = 0; $hop -le 3; $hop++) {
+        $location = Get-AgStatusRedirectTarget -Url $askUrl
+        if (-not (Test-AgStatusLatestUrl -Url $location)) { break }
+        $askUrl = $location
     }
 
     # Strict on purpose: the tag is about to be pasted into a download URL, so
@@ -399,7 +450,7 @@ function Invoke-AgStatusInstall {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
 
-    $repo = 'https://github.com/KardanovIR/claude-status-dashboard'
+    $repo = 'https://github.com/KardanovIR/agstatus'
 
     # --- 0a. Arguments ----------------------------------------------------
 

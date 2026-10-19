@@ -144,8 +144,56 @@ jobs:
             exit 1
           }
           Write-Host "public/install.ps1 parses under Windows PowerShell $($PSVersionTable.PSVersion)"
+      # The version lookup, run for real under 5.1, the floor. Every install
+      # broke when the repo was renamed: the old name's /releases/latest
+      # answered with a 301 to the new one's, and the lookup read that as its
+      # answer. Only the file's top-level function definitions are loaded;
+      # Invoke-AgStatusInstall is defined and never called, so nothing is
+      # downloaded or installed. The old name keeps proving the rename hop for
+      # as long as GitHub keeps redirecting it, i.e. until a new repo takes it.
+      - name: install.ps1 resolves the latest release, through a rename too
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Invoke-AgStatusInstall raises this before its lookup; so must we.
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'public/install.ps1').Path, [ref]$tokens, [ref]$errors)
+          $defs = @($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] })
+          foreach ($def in $defs) { . ([scriptblock]::Create($def.Extent.Text)) }
+          foreach ($name in @('KardanovIR/agstatus', 'KardanovIR/claude-status-dashboard')) {
+            $v = Get-AgStatusLatestVersion -LatestUrl "https://github.com/$name/releases/latest"
+            if ($v -notmatch '^\d+\.\d+\.\d+$') {
+              Write-Host "::error::$name/releases/latest resolved to '$v'"
+              exit 1
+            }
+            Write-Host "$name/releases/latest -> $v"
+          }
+          # Which redirects count as a rename: github.com, https, owner/name.
+          if (-not (Test-AgStatusLatestUrl -Url 'https://github.com/KardanovIR/agstatus/releases/latest')) {
+            Write-Host '::error::a renamed repo''s /releases/latest is not followed'
+            exit 1
+          }
+          foreach ($url in @(
+            'http://github.com/a/b/releases/latest',
+            'https://github.com.evil.example/a/b/releases/latest',
+            'https://evil.example/a/b/releases/latest',
+            'https://GITHUB.COM/a/b/releases/latest',
+            'https://github.com/a/b/c/releases/latest',
+            'https://github.com/../b/releases/latest',
+            'https://github.com/a/b/releases/latest?x=1',
+            'https://github.com/a/b/releases/tag/v1.6.1'
+          )) {
+            if (Test-AgStatusLatestUrl -Url $url) {
+              Write-Host "::error::the version lookup would follow $url"
+              exit 1
+            }
+          }
+          Write-Host 'the version lookup follows a rename and nothing else'
 
-  # The two jobs above prove install.ps1 PARSES. Nothing had ever RUN it — the
+  # The two jobs above prove install.ps1 PARSES, and the second that its version
+  # lookup answers. Nothing had ever RUN the installer itself — the
   # only documented Windows install path had never been executed end to end, so
   # it could have been broken for a whole release and nothing would have said
   # so. These two execute it.

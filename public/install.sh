@@ -282,7 +282,7 @@ detect_platform() {
       die "Unsupported platform: $OS" \
         'AgStatus installs on macOS, Linux and Windows.' \
         'On a system we do not package for, the CLI still runs anywhere Node 18+ does —' \
-        '  open an issue at https://github.com/KardanovIR/claude-status-dashboard/issues' ;;
+        '  open an issue at https://github.com/KardanovIR/agstatus/issues' ;;
   esac
 }
 
@@ -411,17 +411,50 @@ download_failed() {
       "  $2" \
       "There is no such asset on the v$VERSION release." \
       'Pin a version you know exists with AGSTATUS_VERSION=X.Y.Z, or check' \
-      '  https://github.com/KardanovIR/claude-status-dashboard/releases' ;;
+      '  https://github.com/KardanovIR/agstatus/releases' ;;
     *) die "Could not download $1 (HTTP $FETCH_CODE after 3 attempts)." \
       "  $2" \
       'GitHub answered, but not with the file. Nothing was installed — try again shortly.' ;;
   esac
 }
 
+# Is $1 the /releases/latest page of a repository on github.com? That is the
+# one redirect resolve_version() follows instead of reading as its answer.
+# Owner and name are one path segment each, of the characters GitHub allows in
+# them, and the prefix is matched literally: nothing off github.com and nothing
+# that is not https qualifies.
+is_latest_url() {
+  case ${1:-} in
+    https://github.com/*/releases/latest) ;;
+    *) return 1 ;;
+  esac
+  il_repo=${1#https://github.com/}
+  il_repo=${il_repo%/releases/latest}
+  case $il_repo in
+    */*/*|*[!A-Za-z0-9._/-]*) return 1 ;;
+    .|..|./*|../*|*/.|*/..) return 1 ;;
+    ?*/?*) return 0 ;;
+  esac
+  return 1
+}
+
 # The version, without asking the GitHub API: /releases/latest answers with a
 # 302 to /releases/tag/vX.Y.Z, and a redirect costs nothing against the API's
 # 60-requests-an-hour unauthenticated budget — which a shared office IP can
 # exhaust between two coffees.
+#
+# curl reads that one redirect rather than following it with -L, which would
+# chase whatever chain it was handed and download the release page at the end
+# just to report where it stopped. The single exception is a renamed or
+# transferred repository: its old /releases/latest answers with a 301 to the
+# new one's /releases/latest, and only that one names the tag. So a Location
+# that is itself a github.com /releases/latest URL (is_latest_url) is asked
+# again, at most three times; anything else is the answer, and has to carry
+# /tag/vX.Y.Z to be accepted. When this repo was renamed from
+# claude-status-dashboard to agstatus, this script read that 301 as the answer
+# and refused every install and upgrade until REPO below caught up. The
+# downloads need no such care: they go through fetch(), which follows a
+# rename's redirect like any other and keeps it on https.
 resolve_version() {
   if [ -n "${AGSTATUS_VERSION:-}" ]; then
     VERSION=${AGSTATUS_VERSION#v}
@@ -433,14 +466,24 @@ resolve_version() {
 
   rv_url="https://github.com/$REPO/releases/latest"
   require_https "$rv_url"
+  # The URL that was asked last, which is what the messages below name.
+  rv_next=$rv_url
   if [ "$DOWNLOADER" = curl ]; then
-    rv_raw=$(curl -fsS --proto '=https' --connect-timeout 15 --max-time 60 \
-      -o /dev/null -w '%{redirect_url}' "$rv_url" 2>"$TMP/fetch.err") || rv_raw=''
+    rv_hops=0
+    while :; do
+      require_https "$rv_next"
+      rv_raw=$(curl -fsS --proto '=https' --connect-timeout 15 --max-time 60 \
+        -o /dev/null -w '%{redirect_url}' "$rv_next" 2>"$TMP/fetch.err") || rv_raw=''
+      if [ "$rv_hops" -ge 3 ] || ! is_latest_url "$rv_raw"; then break; fi
+      rv_next=$rv_raw
+      rv_hops=$((rv_hops + 1))
+    done
   else
     # wget cannot be asked for a Location header portably (--server-response is
     # GNU-only), so it follows the redirect and the tag is read back out of the
     # page it lands on — the canonical /releases/tag/vX.Y.Z link is the first
-    # one there. AGSTATUS_VERSION skips all of this.
+    # one there. A rename's extra 301 is simply one more redirect it follows.
+    # AGSTATUS_VERSION skips all of this.
     rv_raw=''
     if wget -q -O "$TMP/latest.html" "$rv_url" 2>"$TMP/fetch.err"; then
       rv_tag=$(sed -n 's|.*/releases/tag/\(v[0-9][0-9.]*\).*|\1|p' "$TMP/latest.html" | head -n 1)
@@ -451,7 +494,7 @@ resolve_version() {
   fi
   [ -n "$rv_raw" ] || die \
     'Could not work out the latest AgStatus version.' \
-    "  $rv_url did not answer with a release." \
+    "  $rv_next did not answer with a release." \
     'Offline, or behind a proxy that eats redirects? Nothing was installed.' \
     'You can pin one instead:  AGSTATUS_VERSION=1.3.0 sh install.sh'
 
@@ -460,7 +503,7 @@ resolve_version() {
   VERSION=${rv_raw##*/tag/v}
   valid_version "$VERSION" || die \
     'The latest release does not look like a version we can install.' \
-    "  $rv_url -> $rv_raw" \
+    "  $rv_next -> $rv_raw" \
     'Pin a known one:  AGSTATUS_VERSION=1.3.0'
 }
 
@@ -519,7 +562,7 @@ verify_tarball() {
     'Usually a truncated or proxy-mangled transfer; occasionally worse.' \
     'Nothing was unpacked and nothing was installed. Re-run to try again; if it' \
     'happens twice, report it at' \
-    '  https://github.com/KardanovIR/claude-status-dashboard/issues'
+    '  https://github.com/KardanovIR/agstatus/issues'
   note "sha256 ok  $vt_have"
 }
 
@@ -542,7 +585,7 @@ extract_tarball() {
         'The archive contains a path that escapes the install directory:' \
         "  $et_entry" \
         'Refusing to unpack it. Nothing was installed — please report this at' \
-        '  https://github.com/KardanovIR/claude-status-dashboard/issues' ;;
+        '  https://github.com/KardanovIR/agstatus/issues' ;;
     esac
   done < "$TMP/listing"
 
@@ -563,7 +606,7 @@ extract_tarball() {
   [ -n "$ROOT" ] || die \
     "The archive is not an AgStatus release (no lib/agstatus/dist/cli.js in $TGZ_NAME)." \
     'Nothing was installed. Please report this at' \
-    '  https://github.com/KardanovIR/claude-status-dashboard/issues'
+    '  https://github.com/KardanovIR/agstatus/issues'
   [ -d "$ROOT/lib/node_modules/qrcode-terminal" ] || warn \
     'the artifact has no bundled qrcode-terminal; `agstatus init` will not print a QR code.'
 }
@@ -911,7 +954,7 @@ setup_focus() {
 # ---------------------------------------------------------------------------
 
 main() {
-  REPO='KardanovIR/claude-status-dashboard'
+  REPO='KardanovIR/agstatus'
   PREFIX=${AGSTATUS_HOME:-$HOME/.agstatus}
   # The line setup_path() looks for to know it has already been here.
   PATH_MARKER='# >>> agstatus >>>'
