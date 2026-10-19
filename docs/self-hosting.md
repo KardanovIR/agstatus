@@ -139,26 +139,36 @@ node scripts/migrate-sqlite-to-postgres.js ./data/agstatus.db "$DATABASE_URL"
 
 Re-running is safe — rows that already exist in Postgres are left untouched.
 
-## Production deploy (GitHub Actions → droplet)
+## Production deploy (GitHub Actions → self-hosted runner)
 
 The hosted instance at `https://agstatus.online` deploys itself from this
 repo: every push to `master` runs
-[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml), which
-SSHes into the droplet, fast-forwards the checkout at `/opt/agstatus`, and
-rebuilds the stack (`docker compose --profile tls up -d --build`), then waits
-for `/healthz`.
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) on a
+self-hosted GitHub Actions runner (labels `self-hosted` and `agstatus`) on
+the machine that serves it, a mini PC behind a Cloudflare Tunnel with no
+inbound SSH. The runner resets its checkout at `/apps/agstatus` (the
+workflow's `DEPLOY_PATH`) to `origin/master`, rebuilds the stack with
+`docker compose --profile tunnel up -d --build --remove-orphans`, then waits
+for `/healthz` on the machine and at the public URL. It does not wait for
+CI, so a push whose build is red still deploys.
 
-Server-side setup is one command as root (idempotent):
+The production `.env` is therefore `/apps/agstatus/.env`. Compose reads
+`.env` only from the directory it runs in, so a setting such as
+`MAX_NEW_WORKSPACES_PER_HOUR` goes in that file; written into any other
+`.env` it never reaches the server. The file is untracked, so the reset
+leaves it alone. A change there takes effect at the next deploy (or re-run
+the latest Deploy run from the Actions tab), and the startup log,
+`docker logs claude-status`, shows the limit in force (`Limit:`).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/KardanovIR/agstatus/master/deploy/bootstrap-droplet.sh | bash
-```
+The runner is set up once, on the machine: repo Settings → Actions →
+Runners → New self-hosted runner, add the label `agstatus`, and install it as
+a service with the runner's `svc.sh` so it survives reboots. The tunnel is
+the one described under Cloudflare Tunnel below.
 
-It installs Docker, authorizes the workflow's deploy key, clones the repo,
-writes a production `.env` (random Postgres password), and starts
-app + PostgreSQL + Caddy. The private deploy key lives in the repo's
-`DEPLOY_SSH_KEY` secret; rotating it means generating a new keypair, updating
-the secret, and re-running the bootstrap.
+`deploy/bootstrap-droplet.sh` sets up the earlier droplet, which this
+workflow used to reach over SSH: it clones to `/opt/agstatus` and starts the
+stack with the Caddy `tls` profile. The workflow no longer connects over
+SSH, so a server set up with it is not redeployed by a push.
 
 ## TLS with the bundled Caddy profile
 

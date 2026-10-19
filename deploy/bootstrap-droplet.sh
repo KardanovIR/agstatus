@@ -12,8 +12,10 @@
 #      Postgres password.
 #   5. Starts the full stack: app + PostgreSQL + Caddy TLS.
 #
-# Afterwards every push to master redeploys automatically via
-# .github/workflows/deploy.yml. Idempotent — safe to re-run.
+# Idempotent — safe to re-run. This is the setup for the earlier droplet:
+# .github/workflows/deploy.yml no longer deploys over SSH (it runs on a
+# self-hosted runner whose checkout is /apps/agstatus, see
+# docs/self-hosting.md), so a push does not redeploy a server set up here.
 set -euo pipefail
 
 REPO="https://github.com/KardanovIR/agstatus.git"

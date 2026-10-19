@@ -172,7 +172,7 @@
           <li><a href="#self-hosting-single-tenant-vs-multi-tenant">Single-tenant vs multi-tenant</a></li>
           <li><a href="#self-hosting-configuration">Configuration</a></li>
           <li><a href="#self-hosting-persistence-postgresql">Persistence (PostgreSQL)</a></li>
-          <li><a href="#self-hosting-production-deploy-github-actions-droplet">Production deploy (GitHub Actions → droplet)</a></li>
+          <li><a href="#self-hosting-production-deploy-github-actions-self-hosted-runner">Production deploy (GitHub Actions → self-hosted runner)</a></li>
           <li><a href="#self-hosting-tls-with-the-bundled-caddy-profile">TLS with the bundled Caddy profile</a></li>
           <li><a href="#self-hosting-cloudflare-tunnel-home-servers-no-open-ports">Cloudflare Tunnel (home servers, no open ports)</a></li>
           <li><a href="#self-hosting-push-notifications-apns">Push notifications (APNs)</a></li>
@@ -1897,21 +1897,32 @@ then drop <code>DB_PATH</code> from your <code>.env</code>:</p>
 node scripts/migrate-sqlite-to-postgres.js ./data/agstatus.db &quot;$DATABASE_URL&quot;
 </code></pre>
 <p>Re-running is safe — rows that already exist in Postgres are left untouched.</p>
-<h3 id="self-hosting-production-deploy-github-actions-droplet"><a class="anchor" href="#self-hosting-production-deploy-github-actions-droplet">Production deploy (GitHub Actions → droplet)</a></h3>
+<h3 id="self-hosting-production-deploy-github-actions-self-hosted-runner"><a class="anchor" href="#self-hosting-production-deploy-github-actions-self-hosted-runner">Production deploy (GitHub Actions → self-hosted runner)</a></h3>
 <p>The hosted instance at <code>https://agstatus.online</code> deploys itself from this
 repo: every push to <code>master</code> runs
-<a href="https://github.com/KardanovIR/agstatus/blob/master/.github/workflows/deploy.yml"><code>.github/workflows/deploy.yml</code></a>, which
-SSHes into the droplet, fast-forwards the checkout at <code>/opt/agstatus</code>, and
-rebuilds the stack (<code>docker compose --profile tls up -d --build</code>), then waits
-for <code>/healthz</code>.</p>
-<p>Server-side setup is one command as root (idempotent):</p>
-<pre><code class="language-bash">curl -fsSL https://raw.githubusercontent.com/KardanovIR/agstatus/master/deploy/bootstrap-droplet.sh | bash
-</code></pre>
-<p>It installs Docker, authorizes the workflow&#39;s deploy key, clones the repo,
-writes a production <code>.env</code> (random Postgres password), and starts
-app + PostgreSQL + Caddy. The private deploy key lives in the repo&#39;s
-<code>DEPLOY_SSH_KEY</code> secret; rotating it means generating a new keypair, updating
-the secret, and re-running the bootstrap.</p>
+<a href="https://github.com/KardanovIR/agstatus/blob/master/.github/workflows/deploy.yml"><code>.github/workflows/deploy.yml</code></a> on a
+self-hosted GitHub Actions runner (labels <code>self-hosted</code> and <code>agstatus</code>) on
+the machine that serves it, a mini PC behind a Cloudflare Tunnel with no
+inbound SSH. The runner resets its checkout at <code>/apps/agstatus</code> (the
+workflow&#39;s <code>DEPLOY_PATH</code>) to <code>origin/master</code>, rebuilds the stack with
+<code>docker compose --profile tunnel up -d --build --remove-orphans</code>, then waits
+for <code>/healthz</code> on the machine and at the public URL. It does not wait for
+CI, so a push whose build is red still deploys.</p>
+<p>The production <code>.env</code> is therefore <code>/apps/agstatus/.env</code>. Compose reads
+<code>.env</code> only from the directory it runs in, so a setting such as
+<code>MAX_NEW_WORKSPACES_PER_HOUR</code> goes in that file; written into any other
+<code>.env</code> it never reaches the server. The file is untracked, so the reset
+leaves it alone. A change there takes effect at the next deploy (or re-run
+the latest Deploy run from the Actions tab), and the startup log,
+<code>docker logs claude-status</code>, shows the limit in force (<code>Limit:</code>).</p>
+<p>The runner is set up once, on the machine: repo Settings → Actions →
+Runners → New self-hosted runner, add the label <code>agstatus</code>, and install it as
+a service with the runner&#39;s <code>svc.sh</code> so it survives reboots. The tunnel is
+the one described under Cloudflare Tunnel below.</p>
+<p><code>deploy/bootstrap-droplet.sh</code> sets up the earlier droplet, which this
+workflow used to reach over SSH: it clones to <code>/opt/agstatus</code> and starts the
+stack with the Caddy <code>tls</code> profile. The workflow no longer connects over
+SSH, so a server set up with it is not redeployed by a push.</p>
 <h3 id="self-hosting-tls-with-the-bundled-caddy-profile"><a class="anchor" href="#self-hosting-tls-with-the-bundled-caddy-profile">TLS with the bundled Caddy profile</a></h3>
 <p>The repo ships a ready-made Caddy setup (<a href="https://github.com/KardanovIR/agstatus/blob/master/deploy/Caddyfile"><code>deploy/Caddyfile</code></a>)
 wired into <code>docker-compose.yml</code> under the <code>tls</code> profile. Point your domain&#39;s
