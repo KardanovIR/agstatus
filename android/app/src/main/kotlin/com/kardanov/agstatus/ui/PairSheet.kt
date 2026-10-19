@@ -217,7 +217,9 @@ private fun ActiveCode(
     onCopy: (String) -> Unit,
 ) {
     Text(
-        text = groupedCode(code.code),
+        // Already XXXX-XXXX: PairCode.fromServer groups an undashed code from
+        // an older server on the way in, along with refusing a hostile one.
+        text = code.code,
         fontFamily = FontFamily.Monospace,
         fontSize = 44.sp,
         fontWeight = FontWeight.Bold,
@@ -417,14 +419,6 @@ private suspend fun fetchPairPhase(store: SessionStore, forceNew: Boolean): Pair
         )
     } catch (error: Exception) {
         PairPhase.Failed(friendlyMessage(error))
-    }
-
-/** Server codes arrive dash-grouped; older ones didn't, so group those too. */
-private fun groupedCode(code: String): String =
-    if (code.contains('-') || code.length < 6 || code.length % 2 != 0) {
-        code
-    } else {
-        code.chunked(code.length / 2).joinToString("-")
     }
 
 private fun timeString(seconds: Int): String =

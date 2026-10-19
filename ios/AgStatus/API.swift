@@ -65,7 +65,11 @@ enum AgStatusAPI {
     /// Creates a fresh workspace on a multi-tenant server. The board URL is
     /// built from the base actually used, not the server-reported dashboardUrl.
     static func createBoard(on base: URL) async throws -> Board {
-        let origin = normalizedOrigin(base) ?? base
+        // No `?? base` fallback here, unlike the probes: this origin becomes
+        // the Board, and a Board's baseURL is only ever what normalizedOrigin
+        // rebuilt — falling back would hand the raw URL to the pair command.
+        // Unreachable is what Android's AgStatusApi.origin throws for the same.
+        guard let origin = normalizedOrigin(base) else { throw APIError.unreachable }
         let url = origin.appendingPathComponent("api").appendingPathComponent("workspaces")
         let data = try await send("POST", url)
         let created = try decode(WorkspaceResponse.self, from: data)
@@ -296,11 +300,25 @@ enum AgStatusAPI {
     }
 
     /// Strips path/query/fragment, keeping scheme://host[:port]. Nil for
-    /// anything that isn't http(s) with a host.
-    private static func normalizedOrigin(_ url: URL) -> URL? {
+    /// anything that isn't http(s) with a host made of `hostCharacters`.
+    ///
+    /// Every Board's baseURL comes out of here, and baseURL is not only an
+    /// address: PairCode.command(for:) hands it to a shell as `--url`. The
+    /// rebuild is why iOS never had the Android client's bug — a scanned
+    /// `https://x;$(cmd);@agstatus.online/w/<token>` loses its userinfo here
+    /// and is adopted as plain https://agstatus.online, where the Android
+    /// parser saved the text as typed. It is not the whole answer, though:
+    /// Foundation, like RFC 3986, accepts `$`, `(`, `)`, `;`, `'` and friends
+    /// inside a host name, and a rebuild keeps the host. So
+    /// `http://a$(cmd).local:3000` came through intact, and on the LAN, where
+    /// this app allows plain HTTP and any machine can answer for a .local
+    /// name, nothing stopped such a board passing the validate() probe.
+    /// Hence the guard.
+    static func normalizedOrigin(_ url: URL) -> URL? {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              let host = url.host, !host.isEmpty else {
+              let host = url.host, !host.isEmpty,
+              host.unicodeScalars.allSatisfy(hostCharacters.contains) else {
             return nil
         }
         var components = URLComponents()
@@ -309,6 +327,16 @@ enum AgStatusAPI {
         components.port = url.port
         return components.url
     }
+
+    /// What a host may be spelled with: letters, digits, `.` and `-`, plus
+    /// `:` for an IPv6 literal (`url.host` gives those without brackets).
+    /// The same class Android's Board.origin applies to a whole authority
+    /// (Models.kt), so the two clients refuse the same boards. `url.host` is
+    /// already percent-decoded and IDNA-encoded, so `a%3Bb` arrives as `a;b`
+    /// and is refused, and `bücher` arrives as punycode and is not.
+    /// Underscores are refused too: no public CA certifies such a name.
+    private static let hostCharacters = CharacterSet(
+        charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-")
 
     /// Tokens match ^ags_[A-Za-z0-9_-]{32}$.
     private static func isValidToken(_ token: String) -> Bool {

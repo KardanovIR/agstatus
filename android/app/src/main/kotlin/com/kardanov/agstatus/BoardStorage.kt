@@ -20,10 +20,28 @@ object BoardStorage {
     @Volatile
     private var cached: SharedPreferences? = null
 
+    /**
+     * The saved board, re-run through Board.restore on the way out rather
+     * than trusted because this app wrote it. Earlier builds saved the raw
+     * authority of whatever URL was scanned, so a board adopted from a
+     * crafted QR still carries `https://x;$(cmd);@agstatus.online` here, and
+     * fixing the parser does nothing for a value that is already on disk.
+     *
+     * A repaired board is written back, so this happens once rather than on
+     * every launch. One restore cannot rescue is forgotten on this device
+     * only, exactly as Settings' "Disconnect this device" forgets one: the
+     * board on the server is untouched.
+     */
     fun load(context: Context): Board? {
         val prefs = prefs(context)
         val baseUrl = prefs.getString(KEY_BASE_URL, null)?.takeIf { it.isNotBlank() } ?: return null
-        return Board(baseUrl, prefs.getString(KEY_TOKEN, null)?.takeIf { it.isNotBlank() })
+        val token = prefs.getString(KEY_TOKEN, null)?.takeIf { it.isNotBlank() }
+        val board = Board.restore(baseUrl, token)
+        when {
+            board == null -> clear(context)
+            board.baseUrl != baseUrl -> save(context, board)
+        }
+        return board
     }
 
     fun save(context: Context, board: Board) {

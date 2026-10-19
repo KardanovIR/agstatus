@@ -192,12 +192,12 @@ struct WelcomeView: View {
         if !lowered.hasPrefix("http://") && !lowered.hasPrefix("https://") {
             candidate = "https://" + candidate
         }
-        guard let url = URL(string: candidate),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              url.host() != nil
-        else { return nil }
-        return url
+        // The rebuilt origin, not the URL as typed: on a legacy server this
+        // value becomes the Board's baseURL as it stands, and normalizedOrigin
+        // is the one place a baseURL may come from (API.swift says why).
+        // Android's server field has always kept only the origin, too.
+        guard let url = URL(string: candidate) else { return nil }
+        return AgStatusAPI.normalizedOrigin(url)
     }
 }
 

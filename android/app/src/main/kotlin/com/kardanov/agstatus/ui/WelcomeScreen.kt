@@ -86,7 +86,6 @@ import com.kardanov.agstatus.rememberReduceMotion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.net.URI
 
 /** First-run screen: create a board, scan a setup QR, or paste a board URL. */
 @Composable
@@ -537,8 +536,10 @@ internal fun UrlInputField(
 /**
  * Parses, probes and adopts a board. Returns null on success, or the message
  * to show inline when the input is unusable or the server can't confirm it.
+ * Every scanned or pasted board comes in through here, MainActivity's scanner
+ * route included, so none is adopted that its server has not just answered for.
  */
-private suspend fun adoptBoard(raw: String, store: SessionStore, parseError: String): String? {
+internal suspend fun adoptBoard(raw: String, store: SessionStore, parseError: String): String? {
     val board = parseBoardInput(raw) ?: return parseError
     return try {
         AgStatusApi.sessions(board)
@@ -558,16 +559,17 @@ private fun parseBoardInput(raw: String): Board? {
     return Board.parse(if (hasScheme(trimmed)) trimmed else "https://$trimmed")
 }
 
-/** The custom server field (when filled) wins; otherwise the default server. */
+/**
+ * The custom server field (when filled) wins; otherwise the default server.
+ * Board.origin, the parser a scanned board goes through, rather than a second
+ * one on java.net.URI: this origin becomes a legacy board's baseUrl as it
+ * stands, so it must obey the same rules — and two parsers are two chances
+ * to disagree about where a host ends.
+ */
 private fun normalizedServer(raw: String): String? {
     val trimmed = raw.trim()
     if (trimmed.isEmpty()) return Board.DEFAULT_SERVER
-    val candidate = if (hasScheme(trimmed)) trimmed else "https://$trimmed"
-    val uri = runCatching { URI(candidate) }.getOrNull() ?: return null
-    val scheme = uri.scheme?.lowercase() ?: return null
-    if (scheme != "http" && scheme != "https") return null
-    val host = uri.host?.takeIf { it.isNotEmpty() } ?: return null
-    return if (uri.port > 0) "$scheme://$host:${uri.port}" else "$scheme://$host"
+    return Board.origin(if (hasScheme(trimmed)) trimmed else "https://$trimmed")
 }
 
 private fun hasScheme(value: String): Boolean =

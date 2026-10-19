@@ -18,6 +18,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -34,8 +35,10 @@ import com.kardanov.agstatus.ui.ScannerScreen
 import com.kardanov.agstatus.ui.SettingsScreen
 import com.kardanov.agstatus.ui.UsageDetailScreen
 import com.kardanov.agstatus.ui.WelcomeScreen
+import com.kardanov.agstatus.ui.adoptBoard
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -216,10 +219,24 @@ private fun AgStatusApp(
                 SettingsScreen(store = store, onBack = { navController.popBackStack() })
             }
             composable(Route.SCANNER) {
+                // Nothing navigates here today — the welcome screen hosts its
+                // own scanner — but this route used to adopt whatever parsed,
+                // with no word from the server. A route waiting to be wired up
+                // is exactly how an unchecked path comes back, so it goes
+                // through adoptBoard like every other: parse, ask the server,
+                // only then adopt. The scope is this destination's, so backing
+                // out mid-check cancels the adoption instead of finishing it.
+                val scope = rememberCoroutineScope()
+                var checking by remember { mutableStateOf(false) }
                 ScannerScreen(
                     onResult = { scanned ->
-                        Board.parse(scanned)?.let(store::adopt)
-                        navController.popBackStack()
+                        if (!checking) {
+                            checking = true
+                            scope.launch {
+                                adoptBoard(scanned, store, "That's not an AgStatus board QR.")
+                                navController.popBackStack()
+                            }
+                        }
                     },
                     onCancel = { navController.popBackStack() },
                 )

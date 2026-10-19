@@ -147,9 +147,18 @@ object AgStatusApi {
         send("DELETE", boardUrl(board))
     }
 
+    /**
+     * A fresh pairing code. Checked here, where it is decoded, so a board
+     * that answers with anything its server could not have minted gets the
+     * same "Unexpected server response" the Pair sheet shows for any other
+     * bad answer — never a command on screen, never one on the clipboard.
+     * Why a board would: PairCode.normalize.
+     */
     suspend fun createPairCode(board: Board): PairCode {
         if (board.token == null) throw ApiException.legacyServer()
-        return decode(send("POST", boardUrl(board).append("pair")))
+        val answer = decode<PairCodeResponse>(send("POST", boardUrl(board).append("pair")))
+        return PairCode.fromServer(answer.code, answer.expiresInSeconds)
+            ?: throw ApiException.badResponse(200)
     }
 
     /** Trades a pairing code shown by another device for that device's board. */
@@ -254,11 +263,15 @@ object AgStatusApi {
 
     // MARK: URLs
 
-    /** Strips path, query and fragment, keeping scheme://host[:port]. */
-    private fun origin(baseUrl: String): HttpUrl {
-        val parsed = baseUrl.trim().toHttpUrlOrNull() ?: throw ApiException.unreachable()
-        return parsed.newBuilder().encodedPath("/").query(null).fragment(null).build()
-    }
+    /**
+     * scheme://host[:port] by Board.origin's rules, not a second, looser
+     * parse: createBoard and claimPairCode build a Board from this, and it
+     * used to keep userinfo and any host OkHttp would take (OkHttp 4 takes
+     * `$(id)` as a host name). Every Board's baseUrl comes out of
+     * Board.origin now, whichever way the board arrived.
+     */
+    private fun origin(baseUrl: String): HttpUrl =
+        Board.origin(baseUrl)?.toHttpUrlOrNull() ?: throw ApiException.unreachable()
 
     private fun boardUrl(board: Board): HttpUrl =
         board.boardUrl.toHttpUrlOrNull() ?: throw ApiException.unreachable()
@@ -274,3 +287,7 @@ object AgStatusApi {
 
 @Serializable
 private data class ClaimRequest(val code: String)
+
+/** `POST /w/<token>/pair` as it arrives; only PairCode.fromServer turns it into a PairCode. */
+@Serializable
+private data class PairCodeResponse(val code: String, val expiresInSeconds: Int = 0)
