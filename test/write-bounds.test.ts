@@ -13,9 +13,13 @@ import {
 } from './helpers';
 import {
   dayKey,
+  DEVICE_RETIRED_WINDOW_DAYS,
+  LEGACY_WS,
   MAX_PROJECT_DAYS_PER_WORKSPACE,
+  MAX_SESSIONS_PER_WORKSPACE,
   MAX_USAGE_SOURCES_PER_WORKSPACE,
   MAX_USAGE_WINDOWS,
+  type Store,
 } from '../src/store';
 
 /*
@@ -274,6 +278,54 @@ describe('limit history: bounded series, at most one point a minute', () => {
   });
 });
 
+describe('session totals: the live-card exception has a ceiling of its own', () => {
+  // The cap (500) plus one board's worth of cards. Not exported: the test
+  // states the number a reader of docs/api.md is promised.
+  const CEILING = 550;
+  // The store keeps no count, so ask for every id the test ever posted.
+  const held = (store: Store, wsId: string, ids: string[]): number =>
+    ids.filter((id) => store.getSessionTokens(wsId, 'claude', id) !== null).length;
+
+  it.each([
+    ['a hosted board, whose cards turn over at 50', MAX_SESSIONS_PER_WORKSPACE],
+    ['a legacy board, which has no card cap at all', Infinity],
+  ])('cards turning over cannot carry the map past 550: %s', async (_name, maxCards) => {
+    // What the review reproduced: fifty fresh webhooks, then one post naming
+    // them, over and over. The exception used to be checked against whatever
+    // cards were live at that moment, so every cycle admitted fifty more —
+    // 2,000 held after 40 cycles, with nothing refused.
+    const { app, store } = makeApp();
+    const wsId = store.resolveToken(await createWorkspace(app))!;
+    const ids: string[] = [];
+    for (let chunk = 0; chunk < 5; chunk++) {
+      const filler = Array.from({ length: 100 }, (_, i) => ({ sessionId: `filler-${chunk}-${i}`, tokens: 1 }));
+      ids.push(...filler.map((r) => r.sessionId));
+      expect(store.setSessionTotals(wsId, 'claude', filler).refused).toBe(0);
+    }
+
+    const refusedPerCycle: number[] = [];
+    for (let cycle = 0; cycle < 25; cycle++) {
+      const fresh = Array.from({ length: 50 }, (_, i) => `card-${cycle}-${i}`);
+      for (const id of fresh) store.upsertSession(wsId, { id, status: 'coding', source: 'claude' }, maxCards);
+      ids.push(...fresh);
+      const { refused } = store.setSessionTotals(wsId, 'claude', fresh.map((id) => ({ sessionId: id, tokens: 7 })));
+      refusedPerCycle.push(refused);
+      expect(held(store, wsId, ids), `cycle ${cycle}`).toBeLessThanOrEqual(CEILING);
+    }
+    // The first fifty live cards fit under the ceiling; after that it is full.
+    expect(refusedPerCycle[0]).toBe(0);
+    expect(refusedPerCycle.slice(1).every((n) => n === 50)).toBe(true);
+    expect(held(store, wsId, ids)).toBe(CEILING);
+
+    // At the ceiling a held total still updates, and nothing was evicted to
+    // make room: the first filler and the first live cards are all still there.
+    expect(store.setSessionTotals(wsId, 'claude', [{ sessionId: 'filler-0-0', tokens: 9 }]))
+      .toEqual({ changed: ['filler-0-0'], stored: 1, refused: 0 });
+    expect(store.getSessionTokens(wsId, 'claude', 'filler-0-0')).toBe(9);
+    expect(store.getSessionTokens(wsId, 'claude', 'card-0-49')).toBe(7);
+  });
+});
+
 describe('devices: a register/delete loop cannot add rows without end', () => {
   const register = (app: Express, token: string, device: string) =>
     request(app).post(`/w/${token}/devices`).send({ device_token: device, platform: 'ios' });
@@ -297,7 +349,10 @@ describe('devices: a register/delete loop cannot add rows without end', () => {
     await register(app, other, device(1)).expect(200);
   });
 
-  it('a lifetime cap counts flagged rows; a token coming back is not new', async () => {
+  const TURNOVER_ERROR =
+    `too many device tokens have been registered to this workspace in the last ${DEVICE_RETIRED_WINDOW_DAYS} days`;
+
+  it('a device-token cap counts flagged rows; a token coming back is not new', async () => {
     const { app, store } = makeApp(); // rateLimit off: this is the cap, not the window
     const token = await createWorkspace(app);
     const wsId = store.resolveToken(token)!;
@@ -308,7 +363,7 @@ describe('devices: a register/delete loop cannot add rows without end', () => {
     expect(store.deviceCount(wsId)).toBe(0); // the live cap of 10 never saw any of this
 
     const res = await register(app, token, device(100)).expect(429);
-    expect(res.body.error).toMatch(/too many device tokens/);
+    expect(res.body).toEqual({ error: TURNOVER_ERROR });
     // Re-registering a flagged token revives its row and adds none.
     await register(app, token, device(7)).expect(200, { ok: true });
     expect(store.devices(wsId).map((d) => d.deviceToken)).toEqual([device(7)]);
@@ -316,10 +371,70 @@ describe('devices: a register/delete loop cannot add rows without end', () => {
     await unregister(app, token, device(7)).expect(200, { ok: true });
     await register(app, token, device(101)).expect(429);
   });
+
+  it(`a flagged token stops counting ${DEVICE_RETIRED_WINDOW_DAYS} days after it was flagged`, async () => {
+    // It used to count forever. push.ts flags every token APNs disowns, so a
+    // board's reinstalls, restores and builds used the cap up for good, and
+    // the only way back was a new board.
+    const { app, store } = makeApp();
+    const token = await createWorkspace(app);
+    const wsId = store.resolveToken(token)!;
+    const cycle = async (from: number, to: number): Promise<void> => {
+      for (let i = from; i < to; i++) {
+        await register(app, token, device(i)).expect(200);
+        await unregister(app, token, device(i)).expect(200, { ok: true });
+      }
+    };
+    // Sixty tokens flagged a day more than the window ago, forty well inside it.
+    await at(NOON - (DEVICE_RETIRED_WINDOW_DAYS + 1) * DAY, () => cycle(0, 60));
+    await at(NOON - 10 * DAY, async () => {
+      await cycle(60, 100);
+      // Back then all hundred counted.
+      await register(app, token, device(100)).expect(429, { error: TURNOVER_ERROR });
+    });
+
+    await at(NOON, async () => {
+      // An aged-out token comes back like any other: its row is revived.
+      await register(app, token, device(0)).expect(200, { ok: true });
+      expect(store.devices(wsId).map((d) => d.deviceToken)).toEqual([device(0)]);
+      await unregister(app, token, device(0)).expect(200);
+      // The sixty old slots are free again — that one plus 59 more, and no more:
+      // the forty from ten days ago still count.
+      await cycle(100, 159);
+      await register(app, token, device(159)).expect(429, { error: TURNOVER_ERROR });
+    });
+  });
 });
 
-describe('event seq: one process-wide counter', () => {
-  it('is unique across sessions, and a returning session continues above its old rows', async () => {
+describe('event seq: one counter per workspace', () => {
+  it('counts only its own board: another tenant\'s transitions leave no gap', async () => {
+    // A process-wide counter handed every token holder a reading of every
+    // other tenant's activity: the gap between two of your own events was
+    // exactly the number of transitions the rest of the server recorded.
+    const { app } = makeApp();
+    const mine = await createWorkspace(app);
+    const theirs = await createWorkspace(app);
+    const post = (token: string, id: string, status: string) =>
+      request(app).post(`/w/${token}/webhook`).send(webhookBody(id, { status })).expect(200);
+    const busy = async (n: number): Promise<void> => {
+      for (let i = 0; i < n; i++) await post(theirs, 'theirs', i % 2 === 0 ? 'testing' : 'coding');
+    };
+
+    await post(mine, 'a1', 'planning');
+    await busy(12);
+    await post(mine, 'a1', 'coding');
+    await busy(26);
+    await post(mine, 'a1', 'testing');
+
+    const history = (await request(app).get(`/w/${mine}/api/sessions/a1/history`).expect(200)).body;
+    expect(history.map((e: { seq: number }) => e.seq)).toEqual([2, 1, 0]);
+    // Their own board numbers its own transitions, from zero as well.
+    const theirSeqs = (await request(app).get(`/w/${theirs}/api/sessions/theirs/history`).expect(200)).body
+      .map((e: { seq: number }) => e.seq);
+    expect(theirSeqs[theirSeqs.length - 1]).toBe(0);
+  });
+
+  it('is unique across a board\'s sessions, and a returning session continues above its old rows', async () => {
     const { app } = makeApp();
     const token = await createWorkspace(app);
     const post = (id: string, status: string) =>
@@ -537,7 +652,46 @@ describe.skipIf(!TEST_PG_URL)('write bounds (PostgreSQL)', () => {
     expect({ total: Number(row.total), flagged: Number(row.flagged) }).toEqual({ total: 500, flagged: 0 });
   });
 
-  it('the device lifetime count survives a restart', async () => {
+  it('a restart loads at most 550 session totals per board, the newest, and the board is full on arrival', async () => {
+    const first = await boot();
+    const token = await createWorkspace(first.app);
+    const small = await createWorkspace(first.app);
+    const wsId = first.store.resolveToken(token)!;
+    const smallId = first.store.resolveToken(small)!;
+    await stop(first);
+
+    // More unflagged rows inside the week than the write path lets a board
+    // hold — what the uncapped live-card exception left behind — and some past it.
+    const now = Date.now();
+    await sql(dbUrl,
+      `INSERT INTO usage_session_totals (workspace_id, source, session_id, tokens, updated_at)
+       SELECT $1, 'claude', 'id-' || i, i, $2::bigint - i * 1000 FROM generate_series(0, 699) AS i`,
+      [wsId, now]);
+    await sql(dbUrl,
+      `INSERT INTO usage_session_totals (workspace_id, source, session_id, tokens, updated_at)
+       SELECT $1, 'claude', 'stale-' || i, 1, $2 FROM generate_series(0, 9) AS i`,
+      [wsId, now - 8 * DAY]);
+    await sql(dbUrl,
+      `INSERT INTO usage_session_totals (workspace_id, source, session_id, tokens, updated_at)
+       SELECT $1, 'claude', 'small-' || i, 1, $2 FROM generate_series(0, 2) AS i`,
+      [smallId, now]);
+
+    const second = await boot();
+    const ids = Array.from({ length: 700 }, (_, i) => `id-${i}`);
+    const kept = ids.filter((id) => second.store.getSessionTokens(wsId, 'claude', id) !== null);
+    // The newest 550 (id-0 is the newest), none of the stale ones.
+    expect(kept).toEqual(ids.slice(0, 550));
+    expect(second.store.getSessionTokens(wsId, 'claude', 'stale-0')).toBeNull();
+    expect(second.store.getSessionTokens(smallId, 'claude', 'small-2')).toBe(1);
+
+    // At the ceiling, even a session with a card on the board is refused.
+    await request(second.app).post(`/w/${token}/webhook`).send(webhookBody('live')).expect(200);
+    await request(second.app).post(`/w/${token}/usage/sessions`)
+      .send({ source: 'claude', sessions: [{ session_id: 'live', tokens: 1 }] })
+      .expect(200, { ok: true, sessions: 0, refused: 1 });
+  });
+
+  it('the device-token count survives a restart', async () => {
     const first = await boot();
     const token = await createWorkspace(first.app);
     const device = (i: number) => i.toString(16).padStart(64, '0');
@@ -554,6 +708,38 @@ describe.skipIf(!TEST_PG_URL)('write bounds (PostgreSQL)', () => {
     const [row] = await sql<{ total: string; live: string }>(dbUrl,
       'SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE deleted_at IS NULL) AS live FROM devices');
     expect({ total: Number(row.total), live: Number(row.live) }).toEqual({ total: 100, live: 1 });
+  });
+
+  it(`a restart does not count device tokens flagged more than ${DEVICE_RETIRED_WINDOW_DAYS} days ago`, async () => {
+    const first = await boot();
+    const old = await createWorkspace(first.app);
+    const recent = await createWorkspace(first.app);
+    const oldId = first.store.resolveToken(old)!;
+    const recentId = first.store.resolveToken(recent)!;
+    await stop(first);
+
+    // A hundred flagged rows on each board: what every token APNs pruned
+    // since soft deletes began has left. On one they are all past the window.
+    const now = Date.now();
+    const flag = (wsId: string, deletedAt: number) => sql(dbUrl,
+      `INSERT INTO devices (workspace_id, device_token, platform, notify_done, created_at, updated_at, deleted_at)
+       SELECT $1, lpad(to_hex(i), 64, '0'), 'ios', 0, 0, 0, $2 FROM generate_series(0, 99) AS i`,
+      [wsId, deletedAt]);
+    await flag(oldId, now - (DEVICE_RETIRED_WINDOW_DAYS + 1) * DAY);
+    await flag(recentId, now - DAY);
+
+    const second = await boot();
+    const fresh = 'f'.repeat(64);
+    await request(second.app).post(`/w/${recent}/devices`).send({ device_token: fresh, platform: 'ios' }).expect(429);
+    await request(second.app).post(`/w/${old}/devices`).send({ device_token: fresh, platform: 'ios' }).expect(200);
+    // An aged-out token still revives its own row rather than adding one.
+    const back = (5).toString(16).padStart(64, '0');
+    await request(second.app).post(`/w/${old}/devices`).send({ device_token: back, platform: 'ios' }).expect(200);
+    await second.store.flush();
+    const [row] = await sql<{ total: string; live: string }>(dbUrl,
+      `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE deleted_at IS NULL) AS live
+       FROM devices WHERE workspace_id = $1`, [oldId]);
+    expect({ total: Number(row.total), live: Number(row.live) }).toEqual({ total: 101, live: 2 });
   });
 
   it('a restart seeds seq past every row, flagged ones included, and never revives one', async () => {
@@ -580,5 +766,60 @@ describe.skipIf(!TEST_PG_URL)('write bounds (PostgreSQL)', () => {
     expect(events).toHaveLength(4);
     expect(events.slice(0, 3).every((e) => e.deleted_at !== null)).toBe(true);
     expect(events[3].deleted_at).toBeNull();
+  });
+
+  it('a restart seeds each board from its own rows, and another board\'s count never shows', async () => {
+    const first = await boot();
+    const quiet = await createWorkspace(first.app);
+    const busy = await createWorkspace(first.app);
+    const post = (app: Express, token: string, id: string, status: string) =>
+      request(app).post(`/w/${token}/webhook`).send(webhookBody(id, { status })).expect(200);
+    for (const status of ['planning', 'coding', 'testing']) await post(first.app, quiet, 'q1', status);
+    for (let i = 0; i < 30; i++) await post(first.app, busy, 'b1', i % 2 === 0 ? 'coding' : 'testing');
+    await request(first.app).delete(`/w/${quiet}/sessions/q1`).expect(200); // flags 0, 1, 2
+    await stop(first);
+
+    const second = await boot();
+    await post(second.app, quiet, 'q1', 'done');
+    await post(second.app, busy, 'b1', 'done');
+    const seqOf = async (token: string, id: string): Promise<number> =>
+      (await request(second.app).get(`/w/${token}/api/sessions/${id}/history`).expect(200)).body[0].seq;
+    // Past its own flagged rows, and not past the other board's thirty.
+    expect(await seqOf(quiet, 'q1')).toBe(3);
+    expect(await seqOf(busy, 'b1')).toBe(30);
+  });
+
+  it('a legacy board is seeded even when its workspace row is flagged, and never revives a flagged event', async () => {
+    // LEGACY_WS is a constant, not a token hash: a multi-tenant idle sweep can
+    // flag its row and events, and legacy mode's next post writes to the same
+    // keys again. Seeding only live boards would restart it at 0 and the
+    // upsert would overwrite and un-delete seq 0.
+    const legacy = () => {
+      const created = makeApp({ multiTenant: false, databaseUrl: dbUrl });
+      live.push(created);
+      return created;
+    };
+    const first = legacy();
+    await first.ready;
+    for (const status of ['planning', 'coding', 'testing']) {
+      await request(first.app).post('/webhook').send(webhookBody('s1', { status })).expect(200);
+    }
+    await stop(first);
+    // What deleteWorkspace(LEGACY_WS) writes.
+    await sql(dbUrl, 'UPDATE workspaces SET deleted_at = 1 WHERE id = $1', [LEGACY_WS]);
+    await sql(dbUrl, 'UPDATE session_events SET deleted_at = 1 WHERE workspace_id = $1', [LEGACY_WS]);
+    await sql(dbUrl, 'UPDATE sessions SET deleted_at = 1 WHERE workspace_id = $1', [LEGACY_WS]);
+
+    const second = legacy();
+    await second.ready;
+    await request(second.app).post('/webhook').send(webhookBody('s1', { status: 'done' })).expect(200);
+    const history = (await request(second.app).get('/api/sessions/s1/history').expect(200)).body;
+    expect(history.map((e: { seq: number }) => e.seq)).toEqual([3]);
+    await second.store.flush();
+    const events = await sql<{ seq: string; deleted_at: string | null }>(dbUrl,
+      'SELECT seq, deleted_at FROM session_events WHERE workspace_id = $1 ORDER BY seq', [LEGACY_WS]);
+    expect(events.map((e) => [Number(e.seq), e.deleted_at === null])).toEqual(
+      [[0, false], [1, false], [2, false], [3, true]],
+    );
   });
 });

@@ -13,6 +13,7 @@ import {
   COMMAND_RESULTS,
   COMMAND_TYPES,
   dayKey,
+  DEVICE_RETIRED_WINDOW_DAYS,
   Host,
   LEGACY_WS,
   MACHINE_ID_RE,
@@ -20,6 +21,7 @@ import {
   machineKeyMatches,
   MAX_HISTORY_DAYS,
   MAX_PENDING_COMMANDS_PER_WORKSPACE,
+  MAX_SESSIONS_PER_WORKSPACE,
   MAX_USAGE_SOURCES_PER_WORKSPACE,
   MAX_USAGE_WINDOWS,
   normalizeHost,
@@ -38,7 +40,6 @@ export type { Command, Host, Session } from './store';
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const DEVICE_TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
-const MAX_SESSIONS_PER_WORKSPACE = 50;
 const MAX_SSE_PER_WORKSPACE = 10;
 const WORKSPACE_IDLE_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
 const NAME_MAX = 120;
@@ -1134,8 +1135,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
     // Push-notification device registration (upsert by workspace + token).
     // Register and delete share one small budget (allowDeviceChange): each
     // delete flags a row that stays on disk, so the pair used to be a free,
-    // unthrottled way to add a permanent row. The lifetime cap ('lifetime'
-    // below) is what finally ends that loop; the window only slows it.
+    // unthrottled way to add a permanent row. The device-token cap
+    // ('turnover' below) is what finally ends that loop; the window only
+    // slows it. The cap counts tokens flagged in the last
+    // DEVICE_RETIRED_WINDOW_DAYS, and the error says so: a board that reaches
+    // it honestly, with phones and builds coming and going, gets its slots
+    // back by waiting, not by being deleted and re-paired.
     app.post('/w/:token/devices', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
@@ -1158,8 +1163,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
         res.status(429).json({ error: 'too many devices for this workspace' });
         return;
       }
-      if (result === 'lifetime') {
-        res.status(429).json({ error: 'too many device tokens have been registered to this workspace' });
+      if (result === 'turnover') {
+        res.status(429).json({
+          error:
+            'too many device tokens have been registered to this workspace ' +
+            `in the last ${DEVICE_RETIRED_WINDOW_DAYS} days`,
+        });
         return;
       }
       res.json({ ok: true });

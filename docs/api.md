@@ -273,8 +273,9 @@ the webhook rate-limit budget. The response is
 `{"ok": true, "sessions": N, "refused": R}`: `N` rows stored after duplicates
 collapse, and `R` new session ids the board had no room for. A workspace holds
 at most 500 totals; past that a new `(source, session_id)` is refused unless
-that session has a card on the board right now, while a total it already holds
-is always updated. Totals past their 7-day retention free their slots.
+that session has a card on the board right now, and at 550 (500 plus one
+board's worth of cards) it is refused even then. A total it already holds is
+always updated. Totals past their 7-day retention free their slots.
 
 **Where it shows up.** There is no read endpoint: the number is served as the
 `tokens` field of [the session object](#the-session-object), which the
@@ -304,8 +305,8 @@ and only for sessions whose number moved, so a session resumed after a weekend
 gets its card back from the first webhook but its total only from the next
 usage run; the stored value carries the card in between. Older totals are
 dropped from reads and from memory, and a workspace holds at most 500 (past
-that, a new session id is refused unless its session has a card on the board;
-see above). Deleting a workspace removes its totals with everything else.
+that, a new session id is refused unless its session has a card on the board,
+up to 550; see above). Deleting a workspace removes its totals with everything else.
 
 ## Session history
 
@@ -324,8 +325,10 @@ keep-alive re-posts are not recorded):
 
 `seq` increases monotonically per session and is a stable identity for
 clients. It is not dense and does not start at 0 for each session — the server
-numbers every session's events from one counter, so the values a session sees
-have gaps — and nothing should be read into its size. The last 100 entries
+numbers every session of a workspace from one counter, so the values a session
+sees have gaps — and nothing should be read into its size. The counter is per
+workspace: a gap only ever counts that workspace's own transitions, never
+another tenant's. The last 100 entries
 are kept per session (older ones are
 soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return `[]`.
@@ -553,7 +556,7 @@ for the server-side setup and trigger rules.
 
 | Method & path                            | Purpose |
 | ---------------------------------------- | ------- |
-| `POST /w/<token>/devices`                | Register/update a device. Body: `{"device_token": "<hex>", "platform": "ios", "notify_done": false}`. `device_token` must match `^[0-9a-fA-F]{16,200}$` and `platform` must be `"ios"` (`400` otherwise). Upserts by (workspace, token) — re-POST updates `notify_done`. Max 10 devices per workspace: `429` for a new device past the cap; updates to existing devices always succeed. A workspace may also register at most 100 distinct device tokens over its lifetime, unregistered ones included (an unregistered device's row is kept, flagged): `429 {"error": "too many device tokens have been registered to this workspace"}` for a token past that, while a token it has had before can always come back. Returns `{ok: true}`. Registering and unregistering share a budget of 10 a minute per workspace (`429 {"error": "rate limit exceeded"}`). |
+| `POST /w/<token>/devices`                | Register/update a device. Body: `{"device_token": "<hex>", "platform": "ios", "notify_done": false}`. `device_token` must match `^[0-9a-fA-F]{16,200}$` and `platform` must be `"ios"` (`400` otherwise). Upserts by (workspace, token) — re-POST updates `notify_done`. Max 10 devices per workspace: `429` for a new device past the cap; updates to existing devices always succeed. A workspace may also hold at most 100 distinct device tokens counting the ones unregistered in the last 90 days (an unregistered device's row is kept, flagged, and counts until 90 days after it was unregistered — including tokens the server prunes itself when APNs reports them gone): `429 {"error": "too many device tokens have been registered to this workspace in the last 90 days"}` for a new token past that, while a token it already counts can always come back. Returns `{ok: true}`. Registering and unregistering share a budget of 10 a minute per workspace (`429 {"error": "rate limit exceeded"}`). |
 | `DELETE /w/<token>/devices/:deviceToken` | Unregister. Returns `{ok: boolean}`. Shares the device budget above. |
 
 Deleting the workspace purges its device registrations. Tokens Apple reports
@@ -633,7 +636,7 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Concurrent SSE connections per workspace | 10 | The 11th gets `429` before the stream starts. |
 | Webhook requests per workspace | 120/min | `429`. |
 | Devices per workspace | 10 | `429` for new devices. |
-| Device tokens per workspace, ever | 100 (unregistered ones included) | `429` for a token the workspace has never had; a returning one is fine. |
+| Device tokens per workspace | 100, live plus unregistered in the last 90 days | `429` for a token not already counted; a returning one is fine, and a slot frees 90 days after its token was unregistered. |
 | Device registrations + removals per workspace | 10/min | `429`. |
 | Usage-history reads per workspace | 30/min | `429` (its own budget, separate from the webhook's). |
 | Outstanding pairing codes per workspace | 3 | `429`. |
@@ -654,7 +657,7 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Limit-history series per workspace | 48 (source, window) pairs | A new window shows as a bar but keeps no history. |
 | Limit-history points | 1 per series per minute | The reading moves the bar; no history point is added. |
 | Rows per session-total report | 100 | `400`; the hook chunks at the same number. |
-| Per-session totals per workspace | 500 | New session ids are refused (counted in `refused`) unless the session has a card on the board; held ones still update. |
+| Per-session totals per workspace | 500, or 550 for sessions with a card on the board | New session ids are refused (counted in `refused`); past 500 a session with a card on the board still gets in, up to 550. Held ones always update. |
 | Per-session total retention | 7 days | Dropped from reads and from memory; see [Per-session token totals](#per-session-token-totals). |
 | Request body | 16 KB | `413`. |
 

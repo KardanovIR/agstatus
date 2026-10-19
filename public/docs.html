@@ -2381,8 +2381,9 @@ the webhook rate-limit budget. The response is
 <code>{&quot;ok&quot;: true, &quot;sessions&quot;: N, &quot;refused&quot;: R}</code>: <code>N</code> rows stored after duplicates
 collapse, and <code>R</code> new session ids the board had no room for. A workspace holds
 at most 500 totals; past that a new <code>(source, session_id)</code> is refused unless
-that session has a card on the board right now, while a total it already holds
-is always updated. Totals past their 7-day retention free their slots.</p>
+that session has a card on the board right now, and at 550 (500 plus one
+board&#39;s worth of cards) it is refused even then. A total it already holds is
+always updated. Totals past their 7-day retention free their slots.</p>
 <p><strong>Where it shows up.</strong> There is no read endpoint: the number is served as the
 <code>tokens</code> field of <a href="#api-the-session-object">the session object</a>, which the
 <code>snapshot</code> and <code>session</code> SSE events already carry, so a card gets its total the
@@ -2409,8 +2410,8 @@ and only for sessions whose number moved, so a session resumed after a weekend
 gets its card back from the first webhook but its total only from the next
 usage run; the stored value carries the card in between. Older totals are
 dropped from reads and from memory, and a workspace holds at most 500 (past
-that, a new session id is refused unless its session has a card on the board;
-see above). Deleting a workspace removes its totals with everything else.</p>
+that, a new session id is refused unless its session has a card on the board,
+up to 550; see above). Deleting a workspace removes its totals with everything else.</p>
 <h3 id="api-session-history"><a class="anchor" href="#api-session-history">Session history</a></h3>
 <p><code>GET /api/sessions/:id/history</code> (legacy) and
 <code>GET /w/&lt;token&gt;/api/sessions/:id/history</code> return a session&#39;s timeline —
@@ -2424,8 +2425,10 @@ keep-alive re-posts are not recorded):</p>
 </code></pre>
 <p><code>seq</code> increases monotonically per session and is a stable identity for
 clients. It is not dense and does not start at 0 for each session — the server
-numbers every session&#39;s events from one counter, so the values a session sees
-have gaps — and nothing should be read into its size. The last 100 entries
+numbers every session of a workspace from one counter, so the values a session
+sees have gaps — and nothing should be read into its size. The counter is per
+workspace: a gap only ever counts that workspace&#39;s own transitions, never
+another tenant&#39;s. The last 100 entries
 are kept per session (older ones are
 soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return <code>[]</code>.</p>
@@ -2792,7 +2795,7 @@ for the server-side setup and trigger rules.</p>
 </thead>
 <tbody><tr>
 <td><code>POST /w/&lt;token&gt;/devices</code></td>
-<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. A workspace may also register at most 100 distinct device tokens over its lifetime, unregistered ones included (an unregistered device&#39;s row is kept, flagged): <code>429 {&quot;error&quot;: &quot;too many device tokens have been registered to this workspace&quot;}</code> for a token past that, while a token it has had before can always come back. Returns <code>{ok: true}</code>. Registering and unregistering share a budget of 10 a minute per workspace (<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code>).</td>
+<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. A workspace may also hold at most 100 distinct device tokens counting the ones unregistered in the last 90 days (an unregistered device&#39;s row is kept, flagged, and counts until 90 days after it was unregistered — including tokens the server prunes itself when APNs reports them gone): <code>429 {&quot;error&quot;: &quot;too many device tokens have been registered to this workspace in the last 90 days&quot;}</code> for a new token past that, while a token it already counts can always come back. Returns <code>{ok: true}</code>. Registering and unregistering share a budget of 10 a minute per workspace (<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code>).</td>
 </tr>
 <tr>
 <td><code>DELETE /w/&lt;token&gt;/devices/:deviceToken</code></td>
@@ -2892,9 +2895,9 @@ are closed.</p>
 <td><code>429</code> for new devices.</td>
 </tr>
 <tr>
-<td>Device tokens per workspace, ever</td>
-<td>100 (unregistered ones included)</td>
-<td><code>429</code> for a token the workspace has never had; a returning one is fine.</td>
+<td>Device tokens per workspace</td>
+<td>100, live plus unregistered in the last 90 days</td>
+<td><code>429</code> for a token not already counted; a returning one is fine, and a slot frees 90 days after its token was unregistered.</td>
 </tr>
 <tr>
 <td>Device registrations + removals per workspace</td>
@@ -2998,8 +3001,8 @@ are closed.</p>
 </tr>
 <tr>
 <td>Per-session totals per workspace</td>
-<td>500</td>
-<td>New session ids are refused (counted in <code>refused</code>) unless the session has a card on the board; held ones still update.</td>
+<td>500, or 550 for sessions with a card on the board</td>
+<td>New session ids are refused (counted in <code>refused</code>); past 500 a session with a card on the board still gets in, up to 550. Held ones always update.</td>
 </tr>
 <tr>
 <td>Per-session total retention</td>

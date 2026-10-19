@@ -201,6 +201,14 @@ export interface SessionTotal {
 export const SESSION_TOTAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * Cards a hosted (multi-tenant) board holds at once; a fresh session id past
+ * it evicts the oldest-updated card. app.ts passes it to upsertSession, and
+ * legacy mode passes no cap at all. It lives here rather than in app.ts
+ * because the session-total ceiling below is sized against it.
+ */
+export const MAX_SESSIONS_PER_WORKSPACE = 50;
+
+/**
  * Totals held per workspace. A workspace holds at most 50 live sessions and a
  * week of turnover is nowhere near this — the cap is not about honest boards
  * but about what anyone holding the token could otherwise pin: the endpoint
@@ -208,13 +216,37 @@ export const SESSION_TOTAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  *
  * At the cap a NEW (source, session_id) is refused; an update to a key already
  * held always lands, and so does a total for a session that has a card on this
- * board right now (at most 50 more). This used to accept the new key and evict
- * the oldest instead, which kept memory at 500 and did nothing for Postgres:
- * every evicted row is only flagged, never removed, so a token posting fresh
- * ids wrote 12,000 permanent rows a minute while the heap looked healthy.
- * Refusing is the only bound that holds on disk as well as in memory.
+ * board right now, up to MAX_SESSION_TOTALS_WITH_LIVE_CARDS. This used to
+ * accept the new key and evict the oldest instead, which kept memory at 500
+ * and did nothing for Postgres: every evicted row is only flagged, never
+ * removed, so a token posting fresh ids wrote 12,000 permanent rows a minute
+ * while the heap looked healthy. Refusing is the only bound that holds on disk
+ * as well as in memory.
  */
 const MAX_SESSION_TOTALS_PER_WORKSPACE = 500;
+
+/**
+ * The most totals a workspace holds at all: the cap above, plus one board's
+ * worth of cards for the live-card exception to use.
+ *
+ * The exception needs a ceiling of its own because it is checked once, at
+ * admission, and never again. A total is not tied to its card afterwards, and
+ * cards turn over — every fresh id past MAX_SESSIONS_PER_WORKSPACE evicts the
+ * oldest card and leaves its total behind for the 7-day retention. So "a
+ * session with a card right now" was 50 sessions at any moment and any number
+ * over a week: fifty fresh webhooks and one /usage/sessions post naming them
+ * admitted fifty more totals, every cycle. On the shared 120-a-minute budget
+ * that is ~117 admitted a minute and ~1.2M held per workspace before the first
+ * one aged out, against the 500 the evicting cap used to hold. Legacy mode has
+ * no card cap at all, so there the exception had no bound of any kind.
+ *
+ * At the ceiling a live card's total is refused like any other new key.
+ * Nothing older is flagged to make room for it: evicting to admit is exactly
+ * the disk growth the cap above exists to stop. The only board this can cost
+ * is the one whose token is doing the churning, and its slots come back as
+ * totals age out.
+ */
+const MAX_SESSION_TOTALS_WITH_LIVE_CARDS = MAX_SESSION_TOTALS_PER_WORKSPACE + MAX_SESSIONS_PER_WORKSPACE;
 
 /**
  * Distinct (source, project, day) rows held per workspace.
@@ -409,15 +441,36 @@ const MAX_DEVICES_PER_WORKSPACE = 10;
  */
 const DEVICE_CHANGES_PER_MINUTE = 10;
 /**
- * Device tokens a workspace may ever have on disk, live AND flagged. The
- * window above slows a register/delete loop; only this ends it, because a
- * delete flags the row and the live cap of 10 never sees it again. A token
- * already on disk — live, or flagged and coming back — never counts twice.
- * APNs issues a new token on a reinstall, a restore or a new phone, and ten
- * full turnovers of the live cap is years of that for a small team; a board
- * that does reach it can be replaced with a fresh one in seconds.
+ * Device tokens a workspace may have on disk at once, live AND flagged within
+ * DEVICE_RETIRED_WINDOW_MS. The window above slows a register/delete loop;
+ * only this ends it, because a delete flags the row and the live cap of 10
+ * never sees it again. A token already counted — live, or flagged and coming
+ * back — never counts twice.
  */
 const MAX_DEVICE_TOKENS_PER_WORKSPACE = 100;
+
+/**
+ * How long a flagged device token keeps counting against the cap above.
+ *
+ * It used to count forever, and an honest board does not only retire tokens
+ * by choice: push.ts flags every token APNs disowns (410 Unregistered, and
+ * BadDeviceToken), so each reinstall, restore, new phone, erased simulator,
+ * and switch between a sandbox and a production build spends a slot. Nothing
+ * gave one back short of deleting the board, which means re-pairing every
+ * machine's hook and not only the phone, and the phone could not say why: iOS
+ * shows a 429 here as notifications quietly switching off. Ten turnovers of
+ * the live cap is years for a board that only uses the app, but not for one
+ * that is also used to build it, and every token pruned since soft deletes
+ * began is already on disk, flagged, counting from the first boot.
+ *
+ * Counting only the last 90 days (the history window) keeps the refusal and
+ * keeps its bound: a register/delete loop still stops at 100 rows, now per
+ * workspace per 90 days rather than once, so Postgres growth stays a small
+ * constant per token. Tokens APNs pruned are deliberately NOT exempt: a fake
+ * hex token gets BadDeviceToken too, so exempting them would reopen the loop.
+ */
+export const DEVICE_RETIRED_WINDOW_DAYS = MAX_HISTORY_DAYS;
+const DEVICE_RETIRED_WINDOW_MS = DEVICE_RETIRED_WINDOW_DAYS * DAY_MS;
 /**
  * GET /api/usage/history per workspace per minute. Each read sorts and
  * serialises the whole held series — bounded now by the caps above, but not
@@ -452,10 +505,12 @@ export class Store {
     string,
     Map<string, { notifyDone: boolean; createdAt: number; apnsServer: string | null }>
   >();
-  // Tokens whose device row is flagged on disk, per workspace. Never pushed to;
-  // kept so the lifetime cap can count them and so re-registering one revives
-  // its row instead of counting as a new token. Bounded by that cap.
-  private retiredDeviceTokens = new Map<string, Set<string>>();
+  // Tokens whose device row was flagged within DEVICE_RETIRED_WINDOW_MS, per
+  // workspace, each with when it was flagged. Never pushed to; kept so the
+  // device-token cap can count them and so re-registering one revives its row
+  // instead of counting as a new token. Bounded by that cap; entries older
+  // than the window are dropped as upsertDevice counts.
+  private retiredDeviceTokens = new Map<string, Map<string, number>>();
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
   private deviceWindows = new Map<string, { windowStart: number; count: number }>();
   private historyWindows = new Map<string, { windowStart: number; count: number }>();
@@ -475,17 +530,28 @@ export class Store {
   // apart from `sessions` on purpose: the rows arrive on their own endpoint,
   // outlive the cards they describe, and exist for ids that never had a card.
   private sessionTotals = new Map<string, Map<string, SessionTotal>>();
-  // The next session_events seq, for every session of every workspace. One
-  // number, not one per session: the counter it replaced was a Map entry per
+  // The next session_events seq, wsId → one counter for every session of that
+  // board. Not one per session: the counter this replaced was a Map entry per
   // session id ever seen, which nothing could ever remove — forgetting one
   // would restart that session at 0, collide with its soft-deleted rows on the
-  // primary key, and the upsert would overwrite and un-delete them. A single
-  // counter seeded past MAX(seq) over every row, flagged ones included, never
-  // reuses a key and costs eight bytes however many sessions come and go.
+  // primary key, and the upsert would overwrite and un-delete them. Seeded
+  // past MAX(seq) over each board's rows, flagged ones included, it never
+  // reuses a key, and it costs one entry per live board however many sessions
+  // come and go.
+  //
+  // Not one for the whole process either, which is what this briefly was:
+  // seq goes to every token holder in the history response, so a shared
+  // counter made the gap between two of your own events the number of
+  // transitions every other tenant recorded in between — aggregate traffic on
+  // agstatus.online, and on a self-hosted server shared by two teams, a
+  // timeline of the other team's agents. A board's own counter only ever
+  // counts that board.
+  //
   // It is still what every reader of seq relies on: unique within a session
-  // (it is unique everywhere) and increasing within one (it increases
-  // everywhere); it is no longer dense or zero-based, which nothing assumes.
-  private nextSeq = 0;
+  // and increasing within one (both hold across the whole board); it is no
+  // longer dense or zero-based per session, which nothing assumes. The
+  // primary key carries workspace_id, so two boards' numbers can never meet.
+  private nextSeq = new Map<string, number>();
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
   // Focus commands, wsId → id → command; in memory only, swept like pair codes.
@@ -668,28 +734,30 @@ export class Store {
       });
     }
 
-    // The flagged device rows of live boards, which the lifetime cap counts.
-    // Ranked in SQL rather than capped here: a register/delete loop from before
-    // that cap existed can have left any number of them, and pg hands back the
-    // whole result at once — a cap applied after the query would come too late
-    // to keep startup from holding all of it.
+    // The device rows of live boards flagged within DEVICE_RETIRED_WINDOW_MS,
+    // which the device-token cap counts; older ones count for nothing, so they
+    // stay on disk and out of memory. Ranked in SQL rather than capped here: a
+    // register/delete loop from before that cap existed can have left any
+    // number of them, and pg hands back the whole result at once — a cap
+    // applied after the query would come too late to keep startup from
+    // holding all of it.
     const retired = await pool.query(
-      `SELECT workspace_id, device_token FROM (
-         SELECT d.workspace_id, d.device_token,
+      `SELECT workspace_id, device_token, deleted_at FROM (
+         SELECT d.workspace_id, d.device_token, d.deleted_at,
                 ROW_NUMBER() OVER (PARTITION BY d.workspace_id ORDER BY d.deleted_at DESC) AS rank
          FROM devices d JOIN workspaces w ON w.id = d.workspace_id AND w.deleted_at IS NULL
-         WHERE d.deleted_at IS NOT NULL
+         WHERE d.deleted_at IS NOT NULL AND d.deleted_at >= $2
        ) ranked
        WHERE rank <= $1`,
-      [MAX_DEVICE_TOKENS_PER_WORKSPACE]
+      [MAX_DEVICE_TOKENS_PER_WORKSPACE, Date.now() - DEVICE_RETIRED_WINDOW_MS]
     );
-    for (const row of retired.rows as Array<{ workspace_id: string; device_token: string }>) {
-      let set = this.retiredDeviceTokens.get(row.workspace_id);
-      if (!set) {
-        set = new Set();
-        this.retiredDeviceTokens.set(row.workspace_id, set);
+    for (const row of retired.rows as Array<{ workspace_id: string; device_token: string; deleted_at: string }>) {
+      let map = this.retiredDeviceTokens.get(row.workspace_id);
+      if (!map) {
+        map = new Map();
+        this.retiredDeviceTokens.set(row.workspace_id, map);
       }
-      set.add(row.device_token);
+      map.set(row.device_token, Number(row.deleted_at));
     }
 
     // Only reports young enough for getUsage() to serve: an older one would
@@ -817,13 +885,24 @@ export class Store {
     // Session totals run on their own retention (SESSION_TOTAL_TTL_MS, by
     // received-at rather than by day), so they need their own filter here:
     // anything older is left on disk, per the soft-delete rule, and never
-    // reaches memory. Ordered oldest-first so the per-workspace cap below
-    // keeps the freshest rows when a database holds more than memory should.
+    // reaches memory. Within it, the newest MAX_SESSION_TOTALS_WITH_LIVE_CARDS
+    // of each board — the most the write path lets one hold — ranked in SQL
+    // for the reason given at the retired-device query above. This was the one
+    // load still capped only here, after the query: every row of the week came
+    // back in one result and the loop below threw the excess away. Ordered
+    // oldest-first so insertion order is freshness order, which the cap in the
+    // loop (the same number, kept as a backstop) relies on.
     const totalsSince = Date.now() - SESSION_TOTAL_TTL_MS;
     const sessionTotals = await pool.query(
-      `SELECT workspace_id, source, session_id, tokens, updated_at FROM usage_session_totals
-       WHERE deleted_at IS NULL AND updated_at >= $1 ORDER BY updated_at`,
-      [totalsSince]
+      `SELECT workspace_id, source, session_id, tokens, updated_at FROM (
+         SELECT workspace_id, source, session_id, tokens, updated_at,
+                ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY updated_at DESC) AS rank
+         FROM usage_session_totals
+         WHERE deleted_at IS NULL AND updated_at >= $1
+       ) ranked
+       WHERE rank <= $2
+       ORDER BY updated_at`,
+      [totalsSince, MAX_SESSION_TOTALS_WITH_LIVE_CARDS]
     );
     for (const row of sessionTotals.rows as Array<{
       workspace_id: string; source: string; session_id: string; tokens: string; updated_at: string;
@@ -841,8 +920,8 @@ export class Store {
         updatedAt: Number(row.updated_at),
       });
       // Insertion order is the load order, which is oldest-first: dropping
-      // from the front keeps the newest MAX_SESSION_TOTALS_PER_WORKSPACE.
-      if (ws.size > MAX_SESSION_TOTALS_PER_WORKSPACE) {
+      // from the front keeps the newest MAX_SESSION_TOTALS_WITH_LIVE_CARDS.
+      if (ws.size > MAX_SESSION_TOTALS_WITH_LIVE_CARDS) {
         const oldest = ws.keys().next();
         if (!oldest.done) ws.delete(oldest.value);
       }
@@ -872,15 +951,30 @@ export class Store {
         at: Number(row.at),
       });
     }
-    // The counter continues past soft-deleted rows, so MAX is over every row —
-    // which is what guarantees no new event can land on a flagged row's key.
-    // One scalar: this used to be a GROUP BY that loaded a counter for every
-    // session id the database had ever seen, deleted boards included.
+    // Each board's counter continues past its soft-deleted rows, so MAX is
+    // over every row of it, flagged ones included — which is what guarantees
+    // no new event can land on a flagged row's key. One row per board that
+    // can still record an event: this used to be a GROUP BY that loaded a
+    // counter for every session id the database had ever seen, deleted boards
+    // included. A deleted board's id is the hash of a token nobody can
+    // present any more, so it never writes again and needs no counter —
+    // except LEGACY_WS, which is a constant rather than a hash and so is
+    // seeded whatever its workspace row says: a multi-tenant idle sweep can
+    // flag that row and its events, and legacy mode's next post revives the
+    // row and records into the same keys.
     const seq = await pool.query(
-      'SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM session_events'
+      `SELECT e.workspace_id, MAX(e.seq) + 1 AS next_seq
+       FROM session_events e
+       WHERE e.workspace_id = $1
+          OR EXISTS (SELECT 1 FROM workspaces w WHERE w.id = e.workspace_id AND w.deleted_at IS NULL)
+       GROUP BY e.workspace_id`,
+      [LEGACY_WS]
     );
-    // max(): never backwards, even past an event recorded before load finished.
-    this.nextSeq = Math.max(this.nextSeq, Number((seq.rows[0] as { next_seq: string }).next_seq));
+    for (const row of seq.rows as Array<{ workspace_id: string; next_seq: string }>) {
+      // max(): never backwards, even past an event recorded before load finished.
+      const seeded = Number(row.next_seq);
+      this.nextSeq.set(row.workspace_id, Math.max(this.nextSeq.get(row.workspace_id) ?? 0, seeded));
+    }
   }
 
   /**
@@ -951,6 +1045,10 @@ export class Store {
     this.usageBySource.delete(wsId);
     this.usageSources.delete(wsId);
     this.events.delete(wsId);
+    // A deleted board never records again, so its counter can go — unlike a
+    // session's, whose id can come back. LEGACY_WS is the one board id that
+    // can (see the seed in init()), so it keeps its counter.
+    if (wsId !== LEGACY_WS) this.nextSeq.delete(wsId);
     this.usagePoints.delete(wsId);
     this.projectDays.delete(wsId);
     this.sessionTotals.delete(wsId);
@@ -1061,12 +1159,13 @@ export class Store {
   /**
    * Registers (or updates) a push-notification device token. Tokens are
    * normalized to lowercase. Returns 'cap' only when a NEW device would exceed
-   * the per-workspace limit of live devices, and 'lifetime' when a token the
-   * workspace has never had would take it past MAX_DEVICE_TOKENS_PER_WORKSPACE
-   * rows on disk; updates to existing devices always succeed, and a token
-   * whose row is flagged comes back without counting as new.
+   * the per-workspace limit of live devices, and 'turnover' when a token not
+   * already counted would take the workspace past MAX_DEVICE_TOKENS_PER_WORKSPACE
+   * live tokens plus tokens flagged within DEVICE_RETIRED_WINDOW_MS; updates to
+   * existing devices always succeed, and a token whose row is flagged comes
+   * back without counting as new.
    */
-  upsertDevice(wsId: string, deviceToken: string, notifyDone: boolean): 'ok' | 'cap' | 'lifetime' {
+  upsertDevice(wsId: string, deviceToken: string, notifyDone: boolean): 'ok' | 'cap' | 'turnover' {
     const token = deviceToken.toLowerCase();
     let map = this.deviceTokens.get(wsId);
     if (!map) {
@@ -1075,13 +1174,22 @@ export class Store {
     }
     const existing = map.get(token);
     const retired = this.retiredDeviceTokens.get(wsId);
+    const now = Date.now();
     if (!existing && map.size >= MAX_DEVICES_PER_WORKSPACE) return 'cap';
+    if (!existing && retired) {
+      // Out of the count before it is taken: a token flagged longer ago than
+      // the window no longer holds a slot. Its row is untouched, so if it
+      // registers again the upsert below still revives that row.
+      const cutoff = now - DEVICE_RETIRED_WINDOW_MS;
+      for (const [t, deletedAt] of retired) {
+        if (deletedAt < cutoff) retired.delete(t);
+      }
+    }
     if (!existing && !retired?.has(token)
         && map.size + (retired?.size ?? 0) >= MAX_DEVICE_TOKENS_PER_WORKSPACE) {
-      return 'lifetime';
+      return 'turnover';
     }
     retired?.delete(token); // the upsert below un-flags its row
-    const now = Date.now();
     const createdAt = existing?.createdAt ?? now;
     // Re-registering keeps the learned endpoint: the same token on the same
     // build still belongs to the same APNs environment.
@@ -1100,16 +1208,19 @@ export class Store {
     const token = deviceToken.toLowerCase();
     const removed = this.deviceTokens.get(wsId)?.delete(token) ?? false;
     if (removed) {
-      // The row stays on disk, flagged, so the lifetime cap keeps counting it.
+      // The row stays on disk, flagged, so the device-token cap keeps counting
+      // it until DEVICE_RETIRED_WINDOW_MS has passed — from the same instant
+      // the row is flagged with, so a restart counts it for exactly as long.
+      const now = Date.now();
       let retired = this.retiredDeviceTokens.get(wsId);
       if (!retired) {
-        retired = new Set();
+        retired = new Map();
         this.retiredDeviceTokens.set(wsId, retired);
       }
-      retired.add(token);
+      retired.set(token, now);
       this.exec(
         'UPDATE devices SET deleted_at = $3 WHERE workspace_id = $1 AND device_token = $2',
-        [wsId, token, Date.now()]
+        [wsId, token, now]
       );
     }
     return removed;
@@ -1399,8 +1510,9 @@ export class Store {
    *
    * With the workspace at MAX_SESSION_TOTALS_PER_WORKSPACE a new key is
    * refused (counted, not stored, not written) unless its session has a card
-   * on this board right now — the one number a viewer is looking for. Totals
-   * past their retention are retired first, so they free their slots.
+   * on this board right now — the one number a viewer is looking for — and
+   * at MAX_SESSION_TOTALS_WITH_LIVE_CARDS it is refused even then. Totals past
+   * their retention are retired first, so they free their slots.
    */
   setSessionTotals(
     wsId: string,
@@ -1427,10 +1539,11 @@ export class Store {
       const key = `${source}\n${row.sessionId}`;
       const prev = ws.get(key);
       if (!prev && ws.size >= MAX_SESSION_TOTALS_PER_WORKSPACE) {
-        // Cards are capped too (50 a workspace on a hosted board), so this
-        // exception lifts the map at most that far past its own cap.
+        // The ceiling is not implied by the card cap: cards turn over, and a
+        // total admitted here outlives its card (see
+        // MAX_SESSION_TOTALS_WITH_LIVE_CARDS), so it is checked on its own.
         const card = cards?.get(row.sessionId);
-        if (!card || card.source !== source) {
+        if (!card || card.source !== source || ws.size >= MAX_SESSION_TOTALS_WITH_LIVE_CARDS) {
           refused += 1;
           continue;
         }
@@ -1532,7 +1645,10 @@ export class Store {
       list = [];
       ws.set(sessionId, list);
     }
-    const seq = this.nextSeq++;
+    // No counter yet means a board with no rows at all: either created after
+    // load (a fresh token hash) or one load found nothing for. Zero is safe.
+    const seq = this.nextSeq.get(wsId) ?? 0;
+    this.nextSeq.set(wsId, seq + 1);
 
     list.push({ seq, status, message, at });
     this.exec(
