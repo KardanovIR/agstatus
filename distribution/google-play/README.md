@@ -57,9 +57,14 @@ so both need exporting by hand.
 ## Rebuilding the bundle
 
 ```bash
-scripts/make-upload-keystore.sh   # once — creates the upload key
 scripts/build-play-bundle.sh      # builds + signs, copies here
 ```
+
+The upload key already exists (its fingerprint is below), so making one is not
+part of a rebuild. `scripts/make-upload-keystore.sh` is for a machine where no
+upload key has ever been made: it refuses to run when it finds
+`agstatus-upload.jks` in any folder the key might be in, or when the checkout
+already has a `keystore.properties`.
 
 This is the only way to get the bundle Play takes. CI's `Android (build + tests)`
 job runs `assembleDebug` and keeps `agstatus-debug-apk`, signed with the
@@ -72,13 +77,23 @@ another); `/usr/libexec/java_home -V` does not list that one, so it is easy to
 conclude there is none. The first run downloads Gradle 8.14.3 through the
 wrapper, and AGP and Kotlin through Gradle.
 
-The keystore and its password live in `~/Desktop/claude-status-private/`, and
-`android/keystore.properties` (which points at them) is gitignored. Back both
-up. If iCloud's Desktop sync has moved that folder, as it has on the
-development Mac, point `storeFile` in `keystore.properties` at where the `.jks`
-is now, or the release build stops with the keystore not found. With Play App Signing — on by default for new
-apps — Google holds the real app signing key and this upload key only proves
-the upload is yours, so losing it is recoverable.
+The keystore and its password live in the private `claude-status-private/`
+folder. It was made at `~/Desktop/claude-status-private/`; on the development
+Mac iCloud's Desktop sync has since moved it to
+`~/Desktop/Desktop - MacBook Pro (2)/claude-status-private/`. Both scripts look
+in both places, and in any other `~/Desktop/Desktop - <Mac name>/` copy.
+
+`android/keystore.properties`, which points at the keystore, is gitignored, so
+a fresh checkout or worktree has none. Copy it from the main checkout rather
+than making a new key, and check that its `storeFile` names the `.jks` where it
+is now (at 1.6.2 the development Mac's main checkout still named the old
+folder).
+`build-play-bundle.sh` says which file to copy when it is missing, and stops
+before Gradle when `storeFile` names a keystore that is not there.
+
+Back up the keystore and its password. With Play App Signing — on by default
+for new apps — Google holds the real app signing key and this upload key only
+proves the upload is yours, so losing it is recoverable.
 
 Upload key SHA-256, which Play Console will show after the first upload:
 

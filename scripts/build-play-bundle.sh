@@ -4,20 +4,85 @@
 #
 #   scripts/build-play-bundle.sh
 #
-# Run scripts/make-upload-keystore.sh first; without it the bundle builds
-# unsigned and Play will reject the upload.
+# It signs with the upload key that android/keystore.properties points at.
+# That file is gitignored, so a fresh checkout or worktree has none and the
+# bundle builds unsigned, which Play rejects. The upload key already exists:
+# copy keystore.properties from the checkout that has it rather than making a
+# new key. scripts/make-upload-keystore.sh is only for a machine where no
+# upload key has ever been made.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANDROID="$ROOT/android"
+PROPS="$ANDROID/keystore.properties"
 DEST="$ROOT/distribution/google-play/release"
 
 export JAVA_HOME="${JAVA_HOME:-$HOME/.jdks/temurin-17/Contents/Home}"
 [ -x "$JAVA_HOME/bin/java" ] || { echo "JDK 17 not found at $JAVA_HOME — set JAVA_HOME" >&2; exit 1; }
 
-if [ ! -f "$ANDROID/keystore.properties" ]; then
+# Every upload key that exists, one path per line. These are the folders
+# make-upload-keystore.sh searches (see the comment there): keep the two in
+# step, including the copy iCloud's Desktop sync moved on the development Mac.
+find_upload_keys() {
+  local d
+  {
+    if [ -n "${AGSTATUS_SECRETS_DIR:-}" ]; then printf '%s\n' "$AGSTATUS_SECRETS_DIR"; fi
+    printf '%s\n' "$HOME/Desktop/claude-status-private"
+    for d in "$HOME/Desktop/Desktop - "*/claude-status-private; do
+      if [ -d "$d" ]; then printf '%s\n' "$d"; fi
+    done
+  } | awk '!seen[$0]++' | while IFS= read -r d; do
+    if [ -f "$d/agstatus-upload.jks" ]; then printf '%s\n' "$d/agstatus-upload.jks"; fi
+  done
+}
+
+# The main checkout, when this is a linked worktree; nothing otherwise.
+main_checkout() {
+  local common
+  common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  common="$(dirname "$common")"
+  if [ "$common" != "$ROOT" ]; then printf '%s\n' "$common"; fi
+}
+
+KEYS="$(find_upload_keys)"
+
+where_the_key_is() {
+  if [ -n "$KEYS" ]; then
+    echo "         The upload key is here; point storeFile at it:" >&2
+    printf '%s\n' "$KEYS" | sed 's/^/           /' >&2
+  else
+    echo "         No upload key was found in ~/Desktop/claude-status-private or a" >&2
+    echo "         moved copy of it. One was made for this app (its fingerprint is in" >&2
+    echo "         distribution/google-play/README.md), so find it, or set" >&2
+    echo "         AGSTATUS_SECRETS_DIR to its folder. Run make-upload-keystore.sh only" >&2
+    echo "         if that key is gone for good." >&2
+  fi
+}
+
+if [ ! -f "$PROPS" ]; then
   echo "warning: android/keystore.properties is missing, so the bundle will be UNSIGNED." >&2
-  echo "         Run scripts/make-upload-keystore.sh before uploading to Play." >&2
+  MAIN="$(main_checkout)"
+  if [ -n "$MAIN" ] && [ -f "$MAIN/android/keystore.properties" ]; then
+    echo "         Copy it from the main checkout rather than making a new key:" >&2
+    echo "           cp \"$MAIN/android/keystore.properties\" \"$PROPS\"" >&2
+  else
+    echo "         Copy it from the checkout that has it rather than making a new key." >&2
+  fi
+  where_the_key_is
+else
+  # Gradle resolves a relative storeFile against the app module (`file()` in
+  # app/build.gradle.kts), and stops deep in the build when it is missing.
+  STORE_FILE="$(grep -m1 '^storeFile=' "$PROPS" | cut -d= -f2- || true)"
+  case "$STORE_FILE" in
+    "" | /*) ;;
+    *) STORE_FILE="$ANDROID/app/$STORE_FILE" ;;
+  esac
+  if [ -n "$STORE_FILE" ] && [ ! -f "$STORE_FILE" ]; then
+    echo "error: android/keystore.properties points at a keystore that is not there:" >&2
+    echo "           $STORE_FILE" >&2
+    where_the_key_is
+    exit 1
+  fi
 fi
 
 echo "==> Building release bundle"
@@ -43,5 +108,5 @@ echo "    versionName $VERSION_NAME, versionCode $VERSION_CODE, $(du -h "$DEST/a
 if unzip -l "$DEST/agstatus-release.aab" 2>/dev/null | grep -q "META-INF/.*\.RSA\|META-INF/.*\.EC"; then
   echo "    signed: yes"
 else
-  echo "    signed: NO — run scripts/make-upload-keystore.sh and rebuild"
+  echo "    signed: NO — see the warning above about android/keystore.properties, then rebuild"
 fi

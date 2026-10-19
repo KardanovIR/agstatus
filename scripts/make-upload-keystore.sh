@@ -5,7 +5,12 @@
 #
 # The keystore and its password are written OUTSIDE the repo (they are
 # credentials), and android/keystore.properties — which points at them — is
-# gitignored. Re-running refuses to overwrite an existing keystore.
+# gitignored.
+#
+# This is for a machine where no upload key has ever been made. It refuses to
+# run when one already exists in any folder it might be in, or when this
+# checkout already has a keystore.properties: Play registers the first upload
+# key it sees, and a second key would mean asking Google to reset it.
 #
 # With Play App Signing (on by default for new apps) Google holds the real
 # app signing key; this upload key only proves that uploads come from you. If
@@ -14,20 +19,59 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SECRETS_DIR="${AGSTATUS_SECRETS_DIR:-$HOME/Desktop/claude-status-private}"
-KEYSTORE="$SECRETS_DIR/agstatus-upload.jks"
 PROPS="$ROOT/android/keystore.properties"
 ALIAS="upload"
+
+# Every folder the upload key could be in, one per line: AGSTATUS_SECRETS_DIR
+# when it is set, the folder this script has always defaulted to, and any copy
+# of it iCloud's Desktop sync has moved into a "Desktop - <Mac name>" folder,
+# as it did on the development Mac. build-play-bundle.sh searches the same
+# places; keep the two in step.
+upload_key_dirs() {
+  local d
+  if [ -n "${AGSTATUS_SECRETS_DIR:-}" ]; then printf '%s\n' "$AGSTATUS_SECRETS_DIR"; fi
+  printf '%s\n' "$HOME/Desktop/claude-status-private"
+  for d in "$HOME/Desktop/Desktop - "*/claude-status-private; do
+    if [ -d "$d" ]; then printf '%s\n' "$d"; fi
+  done
+}
+
+EXISTING=""
+while IFS= read -r dir; do
+  if [ -f "$dir/agstatus-upload.jks" ]; then EXISTING="$EXISTING  $dir/agstatus-upload.jks"$'\n'; fi
+done < <(upload_key_dirs | awk '!seen[$0]++')
+
+if [ -n "$EXISTING" ]; then
+  echo "An upload key already exists:" >&2
+  printf '%s' "$EXISTING" >&2
+  echo "Refusing to make another. To sign with it from this checkout, copy" >&2
+  echo "android/keystore.properties from the checkout that has one (the first line of" >&2
+  echo "'git worktree list' is the main one) and set its storeFile to that path." >&2
+  exit 1
+fi
+
+if [ -f "$PROPS" ]; then
+  echo "This checkout already has android/keystore.properties, which points at:" >&2
+  grep -m1 '^storeFile=' "$PROPS" | sed 's/^storeFile=/  /' >&2 || true
+  echo "Refusing to replace it. If that key is really gone, and no backup of it" >&2
+  echo "exists, move the file aside by hand and run this again." >&2
+  exit 1
+fi
+
+# No key anywhere: make it in the first of those folders that exists, or in
+# the default one.
+SECRETS_DIR="${AGSTATUS_SECRETS_DIR:-}"
+if [ -z "$SECRETS_DIR" ]; then
+  while IFS= read -r dir; do
+    if [ -d "$dir" ]; then SECRETS_DIR="$dir"; break; fi
+  done < <(upload_key_dirs)
+fi
+SECRETS_DIR="${SECRETS_DIR:-$HOME/Desktop/claude-status-private}"
+KEYSTORE="$SECRETS_DIR/agstatus-upload.jks"
 
 JAVA_HOME="${JAVA_HOME:-$HOME/.jdks/temurin-17/Contents/Home}"
 KEYTOOL="$JAVA_HOME/bin/keytool"
 [ -x "$KEYTOOL" ] || { echo "keytool not found at $KEYTOOL — set JAVA_HOME" >&2; exit 1; }
-
-if [ -f "$KEYSTORE" ]; then
-  echo "Keystore already exists: $KEYSTORE"
-  echo "Refusing to overwrite it. Delete it by hand if you really mean to."
-  exit 1
-fi
 
 mkdir -p "$SECRETS_DIR"
 chmod 700 "$SECRETS_DIR"
