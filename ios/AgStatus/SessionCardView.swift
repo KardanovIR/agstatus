@@ -144,8 +144,9 @@ struct SessionCardView: View {
                 // the card went past the edge of the screen.
                 //
                 // One cascade always has a fitting option, and its order is the
-                // priority, stated once: the directory is expendable (it only
-                // appears when a session moved, and the name still tells you
+                // priority, stated once: the directory is expendable (it is
+                // context — the repo a titled session is working in, or where
+                // an untitled one has moved to — and the name still tells you
                 // which card this is), the machine is not (two sessions of the
                 // same project on two machines are otherwise identical here).
                 ViewThatFits(in: .horizontal) {
@@ -225,12 +226,20 @@ struct SessionCardView: View {
     /// The optional middle of the meta line: the machine this session runs on,
     /// and the working directory when it has diverged from the card's name.
     ///
-    /// `includeProject` is the lever the caller's cascade pulls. The directory
-    /// only appears when a session has moved — the name is pinned at the
-    /// session's first event while `project` follows the live directory, so the
-    /// two are identical for a session that stayed put and differ precisely
-    /// when one moved. That is also where a moved session's tokens are being
-    /// attributed, which is the reason it is worth any width at all.
+    /// `includeProject` is the lever the caller's cascade pulls. The name is
+    /// the session's title when the agent has one (the Claude app titles every
+    /// session, `/rename` titles one in the CLI) and the folder it started in
+    /// otherwise, held for the session's life; `project` follows the live
+    /// directory, with a Claude worktree root reported as its repository
+    /// rather than the folder name the app made up. So a titled card shows
+    /// "in <repo>" — where that work is happening, which a title does not say
+    /// — and an untitled one shows the directory once the session has moved.
+    /// It also shows it from the first event at a worktree root, where the
+    /// name is the worktree's own folder and the project its repository
+    /// ("feature-x · in my-repo"); anywhere else the two are the same word
+    /// until the session moves. Either way it is
+    /// context, never identity, which is the reason it is the first thing to
+    /// give way.
     ///
     /// `.fixedSize()` here is what lets ViewThatFits measure a candidate at its
     /// full width; it binds this row only, not the line it sits in.

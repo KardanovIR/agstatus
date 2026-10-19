@@ -25,7 +25,8 @@
  *                          hook exits silently when none of the three is set)
  *   CLAUDE_STATUS_SECRET  (optional; sent as x-webhook-secret, legacy servers;
  *                          "secret" in either config file)
- *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text;
+ *   AGSTATUS_DETAIL=off   (optional; send tool names instead of command text,
+ *                          and folder names instead of session titles;
  *                          "detail": "off" in either config file)
  *   AGSTATUS_USAGE=off    (optional; never report plan-usage percentages, and
  *                          never scan local logs for per-project or
@@ -158,11 +159,32 @@ const MAX_PINNED_NAMES = 200;
 // 250-char basenames serialise to ~64.5 KB, inside a hair of the read cap, and
 // multibyte names blow straight past it. So the write is bounded by BYTES too,
 // with headroom under the read cap, and drops oldest-first until it fits.
+// A session title rides in the same entry (at most NAME_MAX characters, so
+// ~360 bytes of CJK on top of the folder name); the same bound absorbs it, and
+// at the very worst — 255-byte folder names AND full-length CJK titles on every
+// entry — the halving below keeps the newest few dozen.
 const SESSION_NAME_WRITE_MAX_BYTES = 48 * 1024;
 // A names file bigger than that bound is not one this hook wrote: read it as
 // empty and let the next write replace it, rather than parsing an unbounded
 // file on an event that must never block the agent.
 const SESSION_NAME_MAX_BYTES = 64 * 1024;
+// How much of a Claude Code transcript's END is read for the session's title
+// (readTranscriptTitle), on every event, PreToolUse included. Never the whole
+// file: transcripts run to tens of MB. Claude Code does not write the title
+// once — it re-appends a `custom-title` record beside `last-prompt` every few
+// tool results — so the window only has to reach back to the latest copy.
+// Measured over the 21 titled transcripts on one machine: the median gap
+// between two copies is ~40 KB, and 256 KiB spans ~91% of gaps. Quadrupling
+// the read only lifts that to ~97%, because the gaps it misses are the ones a
+// pasted image or a giant tool output opens (single lines there reach 3 MB,
+// one gap 20 MB) and no bounded read spans those — which is why a title once
+// seen is pinned (pinnedName) instead of being re-found on every event. A
+// quarter of the Codex usage read (CODEX_ROLLOUT_TAIL_BYTES), on a far hotter
+// path.
+const TITLE_TAIL_BYTES = 256 * 1024;
+// The longest name the server keeps (src/app.ts NAME_MAX). It cuts by UTF-16
+// code unit; the hook cuts first, so the cut can step back off half an emoji.
+const NAME_MAX = 120;
 
 // Only Bash command text is truncated client-side (matching the bash hook);
 // the server caps every message at 300.
@@ -249,7 +271,10 @@ const SOURCE = (() => {
   return /^[a-z][a-z0-9_-]{0,23}$/.test(raw) ? raw : 'claude';
 })();
 
-/** Privacy switch (`--minimal` at init): tool names only, never command text. */
+/**
+ * Privacy switch (`--minimal` at init): tool names only, never command text or
+ * prompts, and cards named after their folder, never a session title (TITLES).
+ */
 const MINIMAL = configValue('AGSTATUS_DETAIL', 'detail') === 'off';
 
 /** Bash commands may arrive as a string (Claude Code) or argv (Codex). */
@@ -296,6 +321,40 @@ function describeResearch(tool, input) {
   }
   // Task: the subagent's own description of the job it was handed.
   return str(input.description) || 'Delegating a subtask';
+}
+
+const REMINDER_OPEN = '<system-reminder>';
+const REMINDER_CLOSE = '</system-reminder>';
+
+/**
+ * A submitted prompt minus the notices the HOST wrapped into it. Claude Code
+ * and the desktop app inject <system-reminder>…</system-reminder> blocks into
+ * `prompt` for the model to read — context, task-status notices — and the
+ * desktop app can deliver a notice as the whole prompt. Shown as-is, a card
+ * read `<system-reminder> The user started your suggested background task…`:
+ * the host talking to the agent, presented as the user's own words.
+ *
+ * Every block goes, each ending at the FIRST close after its open (so a stray
+ * open inside a block is swallowed with it, and the text after that close is
+ * kept). An open that is never closed drops everything after it: a notice
+ * whose end was cut off is still a notice, not the user's words. Each block
+ * leaves a space behind so the words either side of it stay apart; the caller
+ * collapses whitespace. indexOf rather than a non-greedy regex: the regex
+ * rescans to the end of the prompt once per unclosed open — quadratic on a
+ * pasted log full of tags, on an event that must not keep the agent waiting —
+ * where this walks the prompt once.
+ */
+function stripHostNotices(text) {
+  let out = '';
+  let from = 0;
+  for (;;) {
+    const open = text.indexOf(REMINDER_OPEN, from);
+    if (open === -1) return out + text.slice(from);
+    out += `${text.slice(from, open)} `;
+    const close = text.indexOf(REMINDER_CLOSE, open + REMINDER_OPEN.length);
+    if (close === -1) return out;
+    from = close + REMINDER_CLOSE.length;
+  }
 }
 
 // A never-ending stdin (or anything else) must not hang Claude Code.
@@ -2184,16 +2243,47 @@ async function endHostRecord(base, session) {
   writeHostRecord(file, record);
 }
 
-// ---- Session names (pinned at SessionStart) ---------------------------------
+// ---- Session names (a title, else the folder pinned at SessionStart) --------
 //
 // A card's name is the one thing a person navigates the board by, so it has to
-// hold still. It used to be recomputed on every event as
-// path.basename(payload.cwd), which let a session rename its own card the
-// moment the agent changed directory — one live session read "backend" and
-// later "docs"; another read "claude-status" while its transcript sat under a
-// different project entirely. The name a session is given at SessionStart is
-// now the name it keeps for the rest of its life — through a `cd`, and through
-// the SessionStart that `/compact` fires halfway down a session.
+// be one they recognise, and it has to hold still. Two sources, in order, and
+// a placeholder for a session that has neither:
+//
+//   1. The session's TITLE, when the agent has one. The Claude desktop app
+//      titles every session it runs ("Session organization by agent"), and
+//      `/rename` titles one in the CLI; both record it in the transcript (see
+//      readTranscriptTitle). This is what retires the worst names the board
+//      showed: the desktop app runs sessions in worktrees it names itself, so a
+//      card named after its folder read "zealous-jennings-84637b".
+//   2. Otherwise the session's FOLDER, as it stood at SessionStart. The name
+//      used to be recomputed on every event as path.basename(payload.cwd),
+//      which let a session rename its own card the moment the agent changed
+//      directory — one live session read "backend" and later "docs"; another
+//      read "claude-status" while its transcript sat under a different project
+//      entirely. So the folder a session starts in is the one it keeps —
+//      through a `cd`, and through the SessionStart `/compact` fires halfway
+//      down a session.
+//   3. With neither — an agent the OS started at `/`, or one whose folder is a
+//      bare UUID — the agent's own name, "Claude" or "Codex" (agentLabel), and
+//      never pinned, so the first event that knows a real folder can still
+//      claim the card (see pinnedName).
+//
+// The two are allowed to move differently, on purpose. The folder never moves,
+// because what it defends against — a `cd` — is incidental to the work. A title
+// moves when someone renames the session, because a rename is deliberate: it is
+// a person telling the board what this card is called. What a title must not do
+// is flicker. The hook reads only the end of the transcript, and an event that
+// follows a pasted image or a large tool output can miss the title record
+// entirely (about one gap in ten between copies is wider than the window; see
+// TITLE_TAIL_BYTES); a title once seen is therefore pinned in the same entry
+// as the folder, and holds until the transcript shows a different one.
+//
+// Titles are only for Claude Code with detail on (TITLES): a Codex transcript
+// is a rollout of another schema, and minimal mode withholds titles because
+// they are generated from the prompts it already withholds. The folder is kept
+// BESIDE a pinned title, not overwritten by it, so turning minimal mode on
+// mid-session drops a card back to the folder it started in rather than to
+// whichever folder the session happens to be standing in.
 //
 // The pin has to survive between hook runs (every event is its own process)
 // and it has to work with Focus OFF, which rules out the session records under
@@ -2203,7 +2293,152 @@ async function endHostRecord(base, session) {
 // projectStateFile): one small JSON file in the system temp dir, keyed by
 // board and source, replaced whole through temp + rename, and read as empty
 // whenever it cannot be trusted. Losing the file costs a name carried over
-// from an earlier event — never an event, and never a throw.
+// from an earlier event — never an event, and never a throw. It is written
+// 0600: a title is the user's own words, and on Linux the temp dir is shared.
+
+/** Whether a session title may name a card at all; see the block above. */
+const TITLES = SOURCE === 'claude' && !MINIMAL;
+
+/**
+ * A title as a card name: control characters out (the server strips them too),
+ * every run of whitespace one space, trimmed, and cut to the server's NAME_MAX
+ * — stepping back off a lone high surrogate, which the server's own slice would
+ * leave dangling. '' for anything that leaves nothing, or is not a string.
+ */
+function cleanTitle(v) {
+  const s = str(v).replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length <= NAME_MAX) return s;
+  let cut = s.slice(0, NAME_MAX);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return cut.trim();
+}
+
+/**
+ * The title a single transcript line carries for this session, or ''. A line
+ * that does not parse — the one Claude Code is halfway through appending, or a
+ * fragment — is not a title; nor is a record of any other type that merely
+ * mentions one, nor a title stamped with a different session's id (a line
+ * with no id at all is taken to be this transcript's own).
+ */
+function titleFromLine(line, session) {
+  let obj;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return '';
+  }
+  if (!obj || typeof obj !== 'object' || obj.type !== 'custom-title') return '';
+  if (obj.sessionId !== undefined && obj.sessionId !== session) return '';
+  return cleanTitle(obj.customTitle);
+}
+
+// The record's type as JSON writes it at the top level of a line. Inside a
+// string — a tool result quoting a transcript, say — its quotes are escaped,
+// so this never matches there; where it does match some other record (an
+// object nested in a tool call), titleFromLine's type check turns it away.
+const TITLE_NEEDLE = Buffer.from('"custom-title"');
+
+/**
+ * The session's current title, from the last TITLE_TAIL_BYTES of its Claude
+ * Code transcript: the newest `custom-title` record for this session, or ''
+ * when the window holds none. The desktop app and `/rename` both append
+ *   {"type":"custom-title","customTitle":"…","sessionId":"<session_id>"}
+ * and Claude Code keeps re-appending it, so the LAST one is the current title
+ * and a rename simply appends a newer one.
+ *
+ * The window is searched from its end for the record's type, and only the
+ * lines that contain it are parsed — every one at most once, so a run costs a
+ * bounded read and a search, not a parse of 256 KiB of JSON. The byte before
+ * the window is read too, because it says whether the window's first line is
+ * whole (it follows a newline) or the tail of one that began earlier; a
+ * fragment is never parsed, and nothing before it is in range.
+ *
+ * Any failure — no file, no permission, a directory where the file should be —
+ * is '' and the card falls back to its pinned name. Never throws.
+ *
+ * Nor may it block. This runs on every Claude event, PreToolUse included, and
+ * before the status post, and an `openSync` that waits stalls the event loop —
+ * which is the one thing the 4 s safety exit cannot interrupt, since its timer
+ * never gets to fire. A plain read-only open of a FIFO does exactly that until
+ * some writer appears. So the open is O_NONBLOCK (undefined on Windows, where
+ * it falls back to 0; a no-op on a regular file), and an fd that then turns
+ * out not to be a regular file — a FIFO, a directory, a device — is '' before
+ * a byte is read. The Codex path puts the same check on the same payload field
+ * (codexRolloutFromPath's isFile()). A transcript on a mount that hangs
+ * the open itself is beyond any flag; Claude Code writing to that same mount
+ * would be stuck first.
+ */
+function readTranscriptTitle(file, session) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return '';
+    const size = st.size;
+    const from = size > TITLE_TAIL_BYTES ? size - TITLE_TAIL_BYTES - 1 : 0;
+    const buf = Buffer.alloc(size - from);
+    const win = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, from));
+    let at = win.lastIndexOf(TITLE_NEEDLE);
+    while (at !== -1) {
+      const start = win.lastIndexOf(0x0a, at) + 1;
+      if (start === 0 && from > 0) return ''; // a fragment: began before the window
+      const nl = win.indexOf(0x0a, at);
+      const title = titleFromLine(win.toString('utf8', start, nl === -1 ? win.length : nl), session);
+      if (title !== '') return title;
+      if (start === 0) return '';
+      // Resume before this line's newline: every match from here lies wholly
+      // inside an earlier line, so no line is parsed twice.
+      at = win.lastIndexOf(TITLE_NEEDLE, start - 1);
+    }
+    return '';
+  } catch (err) {
+    dbg(`transcript title read failed: ${err && err.message ? err.message : String(err)}`);
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+}
+
+/**
+ * The repository a Claude worktree ROOT belongs to — basename(<repo>) for a cwd
+ * of exactly <repo>/.claude/worktrees/<name> — or '' for every other path,
+ * including any directory inside a worktree. Claude Code and its desktop app
+ * cut worktrees in that layout and name them themselves, so the folder says
+ * nothing about the work while the repo above it does.
+ *
+ * Should a worktree ever be cut from inside another, the layout nests, and the
+ * name one level up is just the outer worktree's random one; so this unwraps
+ * until the path is no longer a worktree root. Purely lexical — nothing on disk
+ * is consulted, so it costs nothing on the hot path and cannot fail.
+ */
+function worktreeRepoName(cwd) {
+  if (!path.isAbsolute(cwd)) return '';
+  let dir = cwd;
+  let repo = '';
+  for (;;) {
+    const worktrees = path.dirname(dir);
+    const dotClaude = path.dirname(worktrees);
+    if (
+      path.basename(dir) === '' ||
+      path.basename(worktrees) !== 'worktrees' ||
+      path.basename(dotClaude) !== '.claude'
+    ) {
+      return repo;
+    }
+    dir = path.dirname(dotClaude);
+    // basename('/') is '': a worktree hung off the filesystem root has no repo
+    // name to give, so it keeps its own folder.
+    repo = path.basename(dir);
+    if (repo === '') return '';
+  }
+}
 
 function sessionNameFile(base) {
   const key = crypto.createHash('sha256').update(`${base}\n${SOURCE}`).digest('hex').slice(0, 12);
@@ -2211,11 +2446,13 @@ function sessionNameFile(base) {
 }
 
 /**
- * The map as { id: { name, at } }, already pruned of entries the server would
- * have expired. Missing, oversized, unparseable or malformed all read as an
- * empty map: a lost pin degrades to the live cwd, which is exactly what the
- * hook sent before pinning existed. Null-prototype so a session id of
- * "__proto__" is an ordinary key and not a prototype write.
+ * The map as { id: { name, title?, at } } — `name` the pinned folder, `title`
+ * the pinned title when one has been seen — already pruned of entries the
+ * server would have expired. Missing, oversized, unparseable or malformed all
+ * read as an empty map: a lost pin degrades to the live cwd (or the agent's
+ * name where there is none, or a title the transcript tail still shows), which
+ * is no worse than what the hook sent before pinning existed. Null-prototype so a session id of "__proto__" is an
+ * ordinary key and not a prototype write.
  */
 function loadSessionNames(file) {
   const out = Object.create(null);
@@ -2229,9 +2466,16 @@ function loadSessionNames(file) {
       const entry = names[id];
       if (!entry || typeof entry !== 'object') continue;
       const name = str(entry.name);
+      // Cleaned again on the way in: the file sits in a temp dir anything may
+      // have written to, and whatever is in it goes on the wire as a name.
+      const title = cleanTitle(entry.title);
       const at = typeof entry.at === 'number' && isFinite(entry.at) ? entry.at : 0;
       // Aged out on the way in, so every write prunes without a second pass.
-      if (name !== '' && now - at < SESSION_NAME_MAX_AGE_MS) out[id] = { name, at };
+      // A title with no folder is still a name (a session started at '/'; see
+      // pinnedName, which pins one only alongside a title).
+      if ((name !== '' || title !== '') && now - at < SESSION_NAME_MAX_AGE_MS) {
+        out[id] = title !== '' ? { name, title, at } : { name, at };
+      }
     }
   } catch {
     // Unreadable is indistinguishable from absent here, and both are fine.
@@ -2272,7 +2516,10 @@ function writeSessionNames(file, names) {
 
   const tmp = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(tmp, payload);
+    // 0600 (see the block comment): the rename carries the temp file's mode
+    // over, so a map written by an older hook at the umask default is
+    // tightened by the first write after it.
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
     fs.renameSync(tmp, file);
   } catch (err) {
     // A rename that cannot land leaves the temp file behind; take it with us
@@ -2296,33 +2543,42 @@ function agentLabel() {
 }
 
 /**
- * The name this session's card carries: the first name it was ever given, held
- * for the life of the session. Normally that is SessionStart's working
- * directory; when nothing is on file — the hook was installed mid-session, or
- * a temp sweep took the map — the first event to notice pins `live` instead
- * and the session holds still from there on. `live` is path.basename(cwd), so
- * the fallback posts exactly what the hook posted before pinning existed.
+ * The name this session's card carries: its title when titles are in play
+ * (TITLES) and one is known, otherwise the folder it was first seen in, held
+ * for the life of the session, and with neither the agent's own name,
+ * unpinned (see below).
  *
- * An entry that exists always wins, including against a later SessionStart.
+ * `title` is what this event's transcript tail shows, '' when the window held
+ * none. A non-empty one that differs from the pinned title replaces it — that
+ * is a rename, or the first sighting — and is written straight away, so an
+ * event after it whose window misses the record (one that follows a pasted
+ * image or a giant tool output, see TITLE_TAIL_BYTES) still keeps it. An
+ * empty one never clears a pinned title: it means only that this read missed
+ * the line, not that the session lost its name.
+ *
+ * The folder is normally SessionStart's working directory; when nothing is on
+ * file — the hook was installed mid-session, or a temp sweep took the map —
+ * the first event to notice pins `live` instead and the session holds still
+ * from there on. `live` is path.basename(cwd) — for a Claude worktree, the
+ * worktree's own folder and never the repo `project` reports, so that several
+ * worktrees of one repo stay apart before they have titles, and for good in
+ * minimal mode. With no title, then, the fallback posts exactly what the hook
+ * posted before titles existed — the folder, or the unpinned placeholder.
+ *
+ * An entry's folder always wins, including against a later SessionStart.
  * Claude Code fires SessionStart again mid-session for `/compact`, `/clear`
  * and `--resume` (its `source` field says which), and a session that had
  * changed directory by then would be renamed by the re-pin — which is the
  * exact bug this function exists to prevent. A genuinely new session brings a
  * new id, so it finds no entry and pins normally.
+ *
+ * Writes only when something changed or the stamp is due, never on every
+ * event: the title, like the folder, is compared before it is written.
  */
-function pinnedName(base, session, live) {
+function pinnedName(base, session, live, title) {
   const file = sessionNameFile(base);
   const names = loadSessionNames(file);
-  const entry = names[session];
-  if (entry) {
-    // Re-stamp a long-running session so the age prune cannot drop a name out
-    // from under a session that is still using it.
-    if (Date.now() - entry.at > SESSION_NAME_REFRESH_MS) {
-      entry.at = Date.now();
-      writeSessionNames(file, names);
-    }
-    return entry.name;
-  }
+  const now = Date.now();
   // No project folder to name the card after. A GUI-launched agent has no
   // working directory — macOS LaunchServices starts it in `/`, and
   // basename('/') is '' — which is how Codex Desktop sessions ended up on the
@@ -2335,14 +2591,46 @@ function pinnedName(base, session, live) {
   // writes scratch workspaces under `.codex/visualizations/<date>/<uuid>`, and
   // basename of one of those is a UUID a human never chose.
   //
-  // Deliberately NOT pinned. The agent's name is a placeholder, and a later
-  // event that does know its folder should still get to claim the card — the
-  // rename this function exists to prevent is between two real directories,
-  // not from a stand-in to the real thing.
-  if (live === '' || UUID_NAME_RE.test(live)) return agentLabel();
-  names[session] = { name: live, at: Date.now() };
-  writeSessionNames(file, names);
-  return live;
+  // Such a session is called after its agent (agentLabel) and that name is
+  // deliberately NOT pinned. It is a placeholder, and a later event that does
+  // know its folder should still get to claim the card — the rename this
+  // function exists to prevent is between two real directories, not from a
+  // stand-in to the real thing. So neither '' nor a UUID is ever written as
+  // the folder; `folder` is '' for both from here on.
+  const folder = live === '' || UUID_NAME_RE.test(live) ? '' : live;
+  let entry = names[session];
+  let changed = false;
+  if (!entry) {
+    // Nothing to pin and nothing to show but the placeholder: no write at all,
+    // exactly as before titles.
+    if (folder === '' && title === '') return agentLabel();
+    // A folderless session that HAS a title is pinned all the same, with an
+    // empty folder beside the title: the title is what has to hold, and the
+    // next event's tail read will most likely miss it.
+    entry = { name: folder, at: now };
+    names[session] = entry;
+    changed = true;
+  } else if (entry.name === '' && folder !== '') {
+    // Pinned for its title while it had no folder: the first real folder is
+    // the one the placeholder would have handed the card to, and the one
+    // minimal mode would have pinned, so adopt it.
+    entry.name = folder;
+    changed = true;
+  }
+  if (title !== '' && entry.title !== title) {
+    entry.title = title;
+    changed = true;
+  }
+  // Re-stamp a long-running session so the age prune cannot drop a name out
+  // from under a session that is still using it.
+  if (changed || now - entry.at > SESSION_NAME_REFRESH_MS) {
+    entry.at = now;
+    writeSessionNames(file, names);
+  }
+  // A title wins over everything; then the pinned folder; and an entry that
+  // holds only a title, read with titles off (minimal mode switched on
+  // mid-session), still has no folder of its own, so the placeholder again.
+  return (TITLES && entry.title) || entry.name || agentLabel();
 }
 
 /** SessionEnd deletes the card, so its pin has nothing left to name. */
@@ -2386,6 +2674,8 @@ async function main() {
 
   // Hoisted above the status decision: on Codex this names the rollout log the
   // approval check reads, and that decision happens before anything is posted.
+  // On Claude it is also the transcript the session's title is read from
+  // (readTranscriptTitle), further down.
   const transcript =
     typeof payload.transcript_path === 'string' && path.isAbsolute(payload.transcript_path)
       ? payload.transcript_path
@@ -2446,9 +2736,12 @@ async function main() {
     // The user just answered — flip the card away from blocked/idle right now,
     // not at the first tool call (which may come much later, or never for a
     // tool-free reply). Prompts are the user's own words, so honor the
-    // privacy switch exactly like command text.
+    // privacy switch exactly like command text — and show only the user's
+    // words: the host's own notices are cut out first (stripHostNotices), and
+    // a prompt that was nothing BUT a notice reads like an empty one. It is
+    // still a turn starting, so the status is `planning` either way.
     status = 'planning';
-    const prompt = str(typeof payload.prompt === 'string' ? payload.prompt : '')
+    const prompt = str(stripHostNotices(typeof payload.prompt === 'string' ? payload.prompt : ''))
       .replace(/\s+/g, ' ');
     message =
       MINIMAL || prompt === '' ? 'Processing prompt' : prompt.slice(0, COMMAND_MAX);
@@ -2492,9 +2785,10 @@ async function main() {
   const cwd = typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : process.cwd();
   // `name` and `project` used to be one value sent under two keys, recomputed
   // here on every event. They part company now, because they answer different
-  // questions. `name` is the session's IDENTITY — pinned at SessionStart, so a
-  // `cd` mid-turn can no longer rename a live card. `project` is the session's
-  // LOCATION, and stays live on purpose:
+  // questions. `name` is the session's IDENTITY — its title when it has one,
+  // else the folder pinned at SessionStart (pinnedName) — so neither a `cd`
+  // mid-turn nor an event whose transcript read missed the title can rename a
+  // live card. `project` is the session's LOCATION, and stays live on purpose:
   //   - it is the only thing left on the wire that says where the agent is
   //     working right now, and a status post is otherwise all "now" (status,
   //     message and host all describe this instant);
@@ -2502,13 +2796,33 @@ async function main() {
   //     folder each log record was written in — /usage/projects aggregates
   //     spend per folder per day across sessions, and a session that moves
   //     really does spend tokens in both, so that scan keeps reading the cwd
-  //     out of each record (scanClaudeLogs / scanCodexLogs), untouched here;
-  //   - the iOS card already draws `project` only when it differs from `name`
-  //     (SessionCardView.swift), so a moved session grows a subtitle naming
-  //     the folder it moved into, exactly when that is worth saying, and shows
-  //     nothing at all for the sessions that never left home.
-  const project = path.basename(cwd);
-  const name = pinnedName(base, session, project);
+  //     out of each record (scanClaudeLogs / scanCodexLogs), untouched here —
+  //     with the one exception below;
+  //   - all three boards print `project` beside the name whenever the two
+  //     differ (SessionCardView.swift, public/app.js cardMeta, SessionCard.kt).
+  //     With folder names that meant "this session moved"; with titles the two
+  //     differ on almost every card, so it reads as where a titled session is
+  //     working (a card titled "Fix the login bug" adds "in backend"). A
+  //     folder-named session shows it once it has moved — and also from its
+  //     very first event when it stands at a worktree root, where (below) the
+  //     name is the worktree folder and the project the repo, so the card reads
+  //     "feature-x · in claude-status" without the session ever having moved.
+  //     Any other folder-named session that never left home shows nothing extra.
+  //
+  // The exception: a cwd that IS a Claude worktree root,
+  // <repo>/.claude/worktrees/<name>, reports <repo> (worktreeRepoName). That
+  // folder's name is one the desktop app made up, and printed under a title it
+  // would put "in zealous-jennings-84637b" straight back on the card the title
+  // just took it off. A directory INSIDE a worktree keeps its own basename,
+  // exactly as a session that cd'd into a subdirectory of a normal checkout
+  // does. `name` does not follow: its folder fallback stays the worktree's own
+  // (see pinnedName). Nor do the usage scans, which still file a worktree's
+  // tokens under the worktree folder — that join is a change to those scans,
+  // not to this line.
+  const folder = path.basename(cwd);
+  const project = worktreeRepoName(cwd) || folder;
+  const title = TITLES && transcript ? readTranscriptTitle(transcript, session) : '';
+  const name = pinnedName(base, session, folder, title);
 
   const body = {
     session_id: session,

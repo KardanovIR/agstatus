@@ -246,12 +246,19 @@
   // The facts under the title, in the order you would ask for them: which
   // agent, which machine, how long ago, how much.
   //
-  // `project` is shown only when it differs from the name. The hook builds one
-  // value and sends it under both keys, so the old meta line repeated the
-  // card's own title on every card, forever. They diverge exactly when a
-  // session changes directory — `name` is pinned at the session's first event
-  // and `project` follows the live one — which is the only time the difference
-  // is worth the width.
+  // `project` is shown only when it differs from the name. The hook once built
+  // one value and sent it under both keys, so the old meta line repeated the
+  // card's own title on every card, forever. They answer different questions
+  // now: `name` is the session's title when the agent has one (the Claude app
+  // titles every session, `/rename` titles one in the CLI) and the folder it
+  // started in otherwise, while `project` follows the live directory — with a
+  // Claude worktree root reported as its repository, never as the folder name
+  // the app made up. So a titled card reads "in <repo>", which is where that
+  // work is happening. An untitled one grows the directory once the session
+  // has moved, and also from its first event at a worktree root, where the
+  // name is the worktree's own folder and the project its repository
+  // ("feature-x · in my-repo"); any other untitled session that never left
+  // home shows nothing extra.
   function cardMeta(s) {
     const facts = [];
     if (s.host && s.host.machine) {

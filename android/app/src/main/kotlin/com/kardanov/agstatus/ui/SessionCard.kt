@@ -237,10 +237,16 @@ private fun MetaLine(
             MetaSeparator()
             MetaFact(machine)
         }
-        // Only when the session has MOVED. The name is pinned at the session's
-        // first event while `project` follows the live directory, so the two
-        // are identical for a session that stayed put and differ precisely when
-        // one moved — which is also where its tokens are being attributed.
+        // Only when it says something the name does not. The name is the
+        // session's title when the agent has one (the Claude app titles every
+        // session) and the folder it started in otherwise, while `project`
+        // follows the live directory — with a Claude worktree root reported as
+        // its repository, not the folder name the app made up. So a titled card
+        // shows "in <repo>", where that work is happening, and an untitled one
+        // shows the directory once the session has MOVED. At a worktree root it
+        // shows from the first event, because the name is the worktree's own
+        // folder and the project its repository ("feature-x · in my-repo");
+        // anywhere else the two are the same word until the session moves.
         if (project != null) {
             MetaSeparator()
             MetaFact("in $project")

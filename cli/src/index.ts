@@ -265,9 +265,13 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     renderQr(dashboardUrl, log);
     log('');
   }
+  // What is sent by default, said at the moment it is decided. A Claude
+  // session's title is generated from its prompts, so it is named here beside
+  // them rather than left for the privacy page to disclose.
   if (!opts.minimal) {
-    log('ℹ Status messages include truncated command text.');
-    log('  Re-run with --minimal to send tool names only.');
+    log('ℹ Status messages include truncated command text and prompts, and Claude');
+    log('  cards are named after their session titles.');
+    log('  Re-run with --minimal to send tool and folder names instead.');
   }
   log('Start a Claude Code session and watch it appear.');
 }
@@ -501,7 +505,8 @@ init options:
   --url <base>      Server to use (default: ${resolveBaseUrl()})
   --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
-  --minimal         Send tool names only, never command text
+  --minimal         Send tool and folder names, never command text, prompts
+                    or session titles
   --new-board       Create a second board instead of reusing this machine's
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)

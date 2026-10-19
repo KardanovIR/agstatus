@@ -662,7 +662,7 @@
           <code data-pane="posix">curl -fsSL https://agstatus.online/install.sh | sh</code>
           <code data-pane="windows" hidden>irm https://agstatus.online/install.ps1 | iex</code>
           <code data-pane="plugin" class="multi" hidden>/plugin marketplace add KardanovIR/claude-status-dashboard<br />/plugin install agstatus@agstatus<br />/agstatus:setup</code>
-          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it, and <code>--minimal</code> sends tool names instead of command text.</p>
+          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it, and <code>--minimal</code> sends tool and folder names instead of command text, prompts and session titles.</p>
           <p class="install-note" data-pane="windows-note" hidden>Windows PowerShell 5.1 and up. Claude Code and Codex hooks, same as everywhere else; Focus is macOS-only.</p>
           <p class="install-note" data-pane="plugin-note" hidden>Runs inside Claude Code — no terminal needed. Claude Code only; for Codex use the installer.</p>
         </div>
@@ -692,8 +692,9 @@
   <div class="strip">
     <div>
       <h3>What it sends</h3>
-      <p>A session id, project folder name, status word, and a short activity line. Install with
-        <code>--minimal</code> to send tool names only. Opt into Focus on a machine and it also
+      <p>A session id, project folder name, a name for the card (that folder, or a Claude
+        session's own title), status word, and a short activity line. Install with
+        <code>--minimal</code> to send tool names and folder names only. Opt into Focus on a machine and it also
         sends a label for that machine and the name of the app your agent runs in — never a path.</p>
     </div>
     <div>

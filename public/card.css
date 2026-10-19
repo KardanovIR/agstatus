@@ -282,9 +282,13 @@
 .meta-sep { color: var(--text-3); }
 .ts { flex: none; }
 
-/* Shown only when it differs from the card's title — which is exactly when the
- * session changed directory, since `name` is pinned at its first event and
- * `project` follows the live one. */
+/* Shown only when it differs from the card's name (cardMeta in app.js). The
+ * name is the session's title when it has one, else the folder it started in;
+ * `project` follows the live directory, a Claude worktree root reported as its
+ * repo. So a titled card nearly always shows it ("in <repo>"); an untitled one
+ * shows it once the session has changed directory, and from the start at a
+ * worktree root, where the name is the worktree folder and the project the
+ * repo. */
 .proj {
   /* A floor, so a long project name truncates with an ellipsis instead of
    * collapsing — wrapping handles the common case, this handles the long one. */

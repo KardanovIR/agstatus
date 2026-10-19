@@ -879,3 +879,370 @@ describe('finished turns and pinned names', () => {
     expect(fs.statSync(full).isDirectory()).toBe(true);
   });
 });
+
+/**
+ * A card named after the session's TITLE when Claude Code has one, and a
+ * worktree root's `project` named after its repo — the two changes that take
+ * the desktop app's made-up worktree names ("zealous-jennings-84637b") off
+ * the board.
+ *
+ * The transcripts are the shape Claude Code writes: JSONL, with the desktop
+ * app's (and `/rename`'s) `custom-title` record re-appended among the
+ * conversation records and stamped with the session id the hook payload
+ * carries. The hook reads only the last 256 KiB of a transcript
+ * (TITLE_TAIL_BYTES), so "scrolled out of the window" below means tool-result
+ * records of a realistic size appended until the title sits further back than
+ * that. Like the pinned-name tests above, every test has a TMPDIR of its own.
+ */
+describe('session titles and worktree projects', () => {
+  const SESSION = '5b3e8f2a-1c4d-4e6f-8a9b-0c1d2e3f4a5b';
+  const OTHER = '9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a';
+  const TAIL = 256 * 1024;
+  const WORKTREE = '/Users/x/claude-status/.claude/worktrees/zealous-jennings-84637b';
+
+  function isolated(): Record<string, string> {
+    return { TMPDIR: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-titles-')) };
+  }
+
+  function env(): Record<string, string> {
+    return { ...workspace(null, null).env, ...isolated() };
+  }
+
+  const title = (customTitle: unknown, sessionId: unknown = SESSION) =>
+    JSON.stringify({ type: 'custom-title', customTitle, sessionId });
+
+  const prompt = (text: string) =>
+    JSON.stringify({ type: 'user', sessionId: SESSION, message: { role: 'user', content: text } });
+
+  /** Tool-result records adding up to at least `bytes`: what a transcript is mostly made of. */
+  function filler(bytes: number): string[] {
+    const line = JSON.stringify({
+      type: 'user', sessionId: SESSION,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'x'.repeat(8 * 1024) }] },
+    });
+    return Array.from({ length: Math.ceil(bytes / (line.length + 1)) }, () => line);
+  }
+
+  function transcript(lines: string[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-transcript-'));
+    const file = path.join(dir, `${SESSION}.jsonl`);
+    fs.writeFileSync(file, lines.map((l) => `${l}\n`).join(''));
+    return file;
+  }
+
+  const append = (file: string, lines: string[]) =>
+    fs.appendFileSync(file, lines.map((l) => `${l}\n`).join(''));
+
+  /** One event of the session, standing in `cwd`, with `file` as its transcript. */
+  function fire(
+    event: string,
+    cwd: string,
+    file: string,
+    e: Record<string, string>,
+    session = SESSION,
+  ): Posted | undefined {
+    const tool = event === 'PreToolUse'
+      ? { tool_name: 'Edit', tool_input: { file_path: path.join(cwd, 'store.ts') } }
+      : {};
+    return fireEvent(
+      { hook_event_name: event, session_id: session, cwd, transcript_path: file, ...tool },
+      e,
+    );
+  }
+
+  /** The hook's name map, read back by shape rather than by its hashed path. */
+  function nameMap(tmp: string): { path: string; raw: string } {
+    const [file] = fs.readdirSync(tmp).filter((n) => n.startsWith('agstatus-names-'));
+    const full = path.join(tmp, file);
+    return { path: full, raw: fs.readFileSync(full, 'utf8') };
+  }
+
+  it('names the card after the title in the transcript tail', () => {
+    const file = transcript([
+      prompt('Organize the board by agent'),
+      title('Session organization by agent'),
+      ...filler(24 * 1024),
+    ]);
+    const posted = fire('SessionStart', WORKTREE, file, env());
+    expect(posted?.name).toBe('Session organization by agent');
+    // And the worktree's made-up folder is not put straight back as the project.
+    expect(posted?.project).toBe('claude-status');
+  });
+
+  it('cleans and caps a title the way the server would, and never clears one', () => {
+    const e = env();
+    const messy = transcript([title('\n\t  Fix   the\u0007 login\r\nbug  ')]);
+    expect(fire('Stop', '/tmp/repo', messy, e)?.name).toBe('Fix the login bug');
+
+    // NAME_MAX is 120 UTF-16 units, the server's own cut.
+    const long = transcript([title('y'.repeat(300))]);
+    expect(fire('Stop', '/tmp/repo', long, e)?.name).toBe('y'.repeat(120));
+
+    // An emoji straddling the cut is dropped whole, not halved into a lone
+    // surrogate the server would then store.
+    const emoji = transcript([title(`${'a'.repeat(119)}\u{1F600}tail`)]);
+    expect(fire('Stop', '/tmp/repo', emoji, e)?.name).toBe('a'.repeat(119));
+
+    // A title that cleans to nothing is no title — and does not wipe the one
+    // already pinned.
+    const blank = transcript([title(' \n\t ')]);
+    expect(fire('Stop', '/tmp/repo', blank, e)?.name).toBe('a'.repeat(119));
+  });
+
+  // The title read runs on every event, before the status post, and a plain
+  // blocking open of a FIFO waits for a writer with the event loop stalled —
+  // so the 4 s safety exit never fires, and every PreToolUse would hold the
+  // agent until Claude Code's own hook timeout killed the run. Claude Code
+  // never hands the hook a FIFO; this pins that a path which is not a regular
+  // file costs the title and nothing else.
+  it.skipIf(process.platform === 'win32')(
+    'never blocks on a transcript path that is a FIFO or a directory, and still posts',
+    () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-fifo-'));
+      const fifo = path.join(dir, `${SESSION}.jsonl`);
+      execFileSync('mkfifo', [fifo]);
+      try {
+        const started = Date.now();
+        const posted = fire('PreToolUse', '/tmp/fifo-repo', fifo, env());
+        expect(posted?.name).toBe('fifo-repo');
+        expect(posted?.status).toBe('coding');
+        // Well inside the safety exit: a hook that waited on the FIFO would have
+        // been killed by fireEvent's own 8 s timeout instead of posting at all.
+        expect(Date.now() - started).toBeLessThan(4000);
+
+        const posted2 = fire('PreToolUse', '/tmp/dir-repo', dir, env());
+        expect(posted2?.name).toBe('dir-repo');
+      } finally {
+        // Should a regression leave a hook blocked in that open, a writer
+        // releases it rather than leaving it orphaned for the rest of the run.
+        try {
+          fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+        } catch {
+          /* ENXIO: no reader is waiting, which is the point */
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('takes the last title in the transcript, so a rename renames the card once more', () => {
+    const e = env();
+    const file = transcript([
+      title('First name'), ...filler(16 * 1024),
+      title('First name'), ...filler(16 * 1024),
+      title('Renamed'), ...filler(16 * 1024),
+    ]);
+    expect(fire('Stop', '/tmp/repo', file, e)?.name).toBe('Renamed');
+
+    append(file, [prompt('rename it again'), title('Renamed again')]);
+    expect(fire('PreToolUse', '/tmp/repo', file, e)?.name).toBe('Renamed again');
+  });
+
+  it('keeps a title that has scrolled out of the window since an earlier event saw it', () => {
+    const e = env();
+    const file = transcript([title('Session organization by agent'), ...filler(4 * 1024)]);
+    expect(fire('Stop', '/tmp/repo', file, e)?.name).toBe('Session organization by agent');
+
+    // A screenshot's worth of tool output later, the record is out of reach —
+    // and the session has wandered off, too. The card holds still.
+    append(file, filler(TAIL + 64 * 1024));
+    const later = fire('PreToolUse', '/tmp/elsewhere', file, e);
+    expect(later?.name).toBe('Session organization by agent');
+    expect(later?.project).toBe('elsewhere');
+  });
+
+  it('reads only the tail: a title further back than the window is never found', () => {
+    // The same title, once just inside the window and once just outside it.
+    const inside = transcript([title('Within reach'), ...filler(TAIL - 16 * 1024)]);
+    expect(fs.statSync(inside).size).toBeLessThan(TAIL);
+    expect(fire('Stop', '/tmp/repo', inside, env())?.name).toBe('Within reach');
+
+    const outside = transcript([title('Out of reach'), ...filler(TAIL + 1024)]);
+    const posted = fire('Stop', '/tmp/repo', outside, env());
+    // Never seen, so the card keeps exactly what it had before titles: its folder.
+    expect(posted?.name).toBe('repo');
+    expect(posted?.status).toBe('done');
+  });
+
+  it('reads a record that starts exactly at the window edge, and never a fragment of one', () => {
+    // Filler records adding up to EXACTLY `bytes`, newlines included, so a
+    // record can be placed on a known byte of the window. All ASCII: one
+    // character is one byte.
+    function exactly(bytes: number): string[] {
+      const record = (n: number) => JSON.stringify({ type: 'user', sessionId: SESSION, content: 'x'.repeat(n) });
+      const overhead = record(0).length + 1;
+      const out: string[] = [];
+      let left = bytes;
+      while (left > 2 * (8 * 1024 + overhead)) {
+        out.push(record(8 * 1024));
+        left -= 8 * 1024 + overhead;
+      }
+      out.push(record(left - overhead));
+      return out;
+    }
+    const edge = title('At the edge');
+    // From the record's first byte to the end of the file is exactly the window.
+    const after = TAIL - edge.length - 1;
+
+    const whole = transcript([prompt('before'), edge, ...exactly(after)]);
+    expect(fs.statSync(whole).size - fs.readFileSync(whole, 'latin1').lastIndexOf(edge)).toBe(TAIL);
+    // The byte before the window is the newline that ends `before`: whole.
+    expect(fire('Stop', '/tmp/repo', whole, env())?.name).toBe('At the edge');
+
+    // One byte further back and the record began before the window.
+    const early = transcript([prompt('before'), edge, ...exactly(after + 1)]);
+    expect(fire('Stop', '/tmp/repo', early, env())?.name).toBe('repo');
+
+    // A mangled line whose tail, from the window's first byte on, happens to
+    // be a complete title record: a fragment all the same, so never parsed.
+    const fragment = transcript([`garbage-${title('Fragment')}`, ...exactly(TAIL - title('Fragment').length - 1)]);
+    expect(fire('Stop', '/tmp/repo', fragment, env())?.name).toBe('repo');
+  });
+
+  it('ignores a title recorded for another session', () => {
+    const mine = transcript([title('Mine'), ...filler(8 * 1024), title('Someone else', OTHER)]);
+    expect(fire('Stop', '/tmp/repo', mine, env())?.name).toBe('Mine');
+
+    const theirs = transcript([title('Someone else', OTHER)]);
+    expect(fire('Stop', '/tmp/repo', theirs, env())?.name).toBe('repo');
+
+    // A record with no id at all is taken to be this transcript's own.
+    const unstamped = transcript([JSON.stringify({ type: 'custom-title', customTitle: 'Unstamped' })]);
+    expect(fire('Stop', '/tmp/repo', unstamped, env())?.name).toBe('Unstamped');
+  });
+
+  it('skips title lines that do not parse, and records that only mention a title', () => {
+    const file = transcript([
+      title('Good title'),
+      title(42),
+      // A tool call whose input happens to be shaped like a title record: the
+      // line is an assistant record, whatever it carries.
+      JSON.stringify({
+        type: 'assistant', sessionId: SESSION,
+        message: { content: [{ type: 'tool_use', name: 'Write',
+          input: { type: 'custom-title', customTitle: 'Impostor', sessionId: SESSION } }] },
+      }),
+      // A tool result quoting a title record as text.
+      JSON.stringify({ type: 'user', sessionId: SESSION, message: { content: [{ type: 'tool_result', content: title('Quoted') }] } }),
+      '{"type":"custom-title","customTitle":"Mangled", "sessionId": ',
+    ]);
+    // And a record Claude Code is halfway through appending: no newline yet.
+    fs.appendFileSync(file, `{"type":"custom-title","customTitle":"Half writ`);
+    expect(fire('Stop', '/tmp/repo', file, env())?.name).toBe('Good title');
+  });
+
+  it('keeps folder names in minimal mode, even for a session it has already titled', () => {
+    const e = env();
+    const minimal = { ...e, AGSTATUS_DETAIL: 'off' };
+    const file = transcript([title('Payroll export for the board meeting'), ...filler(4 * 1024)]);
+
+    const first = fire('SessionStart', WORKTREE, file, minimal);
+    // The worktree folder, not the repo: several worktrees of one repo must
+    // stay apart, and in minimal mode there is nothing else to tell them by.
+    expect(first?.name).toBe('zealous-jennings-84637b');
+    expect(first?.project).toBe('claude-status');
+    // Withheld, not merely unsent: minimal mode never reads it into the map.
+    expect(nameMap(e.TMPDIR).raw).not.toContain('Payroll');
+
+    expect(fire('Stop', WORKTREE, file, e)?.name).toBe('Payroll export for the board meeting');
+
+    // Minimal switched on mid-session, after the session moved: back to the
+    // folder it started in — not the title, and not where it stands now.
+    expect(fire('Stop', '/tmp/elsewhere', file, minimal)?.name).toBe('zealous-jennings-84637b');
+  });
+
+  it('holds a title for a session with no folder, and leaves the placeholder unpinned without one', () => {
+    // A GUI-launched agent stands at `/`, and basename('/') is ''. Without a
+    // title that is master's placeholder exactly — the agent's name, never
+    // pinned, so the first real folder still claims the card. WITH a title the
+    // title has to be pinned all the same, or the next event's tail read (which
+    // will most likely miss the record) would drop the card back to "Claude".
+    const e = env();
+    const names = () => fs.readdirSync(e.TMPDIR).filter((n) => n.startsWith('agstatus-names-'));
+    const file = transcript([prompt('hello'), ...filler(4 * 1024)]);
+
+    expect(fire('SessionStart', '/', file, e)?.name).toBe('Claude');
+    expect(names()).toEqual([]); // the placeholder is not written down
+
+    append(file, [title('Desktop session with no folder')]);
+    expect(fire('Stop', '/', file, e)?.name).toBe('Desktop session with no folder');
+    // Stored with an empty folder beside it: the title is what has to hold.
+    expect(JSON.parse(nameMap(e.TMPDIR).raw).names[SESSION]).toMatchObject({
+      name: '', title: 'Desktop session with no folder',
+    });
+
+    // Out of reach of the tail read, and still standing at `/`: the pin holds.
+    append(file, filler(TAIL + 64 * 1024));
+    expect(fire('PreToolUse', '/', file, e)?.name).toBe('Desktop session with no folder');
+
+    // A bare-UUID folder is no folder either, so it is not adopted…
+    const scratch = '/Users/x/.codex/visualizations/2026/10/02/01a0fd9d-47fd-7602-82b0-31491467be57';
+    expect(fire('Stop', scratch, file, e)?.name).toBe('Desktop session with no folder');
+    expect(JSON.parse(nameMap(e.TMPDIR).raw).names[SESSION].name).toBe('');
+
+    // …and the first real one is: the title still wins, and the folder is
+    // what minimal mode falls back to — the one the placeholder would have
+    // handed the card to.
+    expect(fire('Stop', '/tmp/my-repo', file, e)?.name).toBe('Desktop session with no folder');
+    expect(fire('Stop', '/tmp/elsewhere', file, { ...e, AGSTATUS_DETAIL: 'off' })?.name).toBe('my-repo');
+
+    // A titled session that never found a folder, read with titles off, has
+    // nothing but the placeholder to show.
+    const other = transcript([title('Another folderless one', OTHER)]);
+    expect(fire('Stop', '/', other, e, OTHER)?.name).toBe('Another folderless one');
+    expect(fire('Stop', '/', other, { ...e, AGSTATUS_DETAIL: 'off' }, OTHER)?.name).toBe('Claude');
+  });
+
+  it('never takes a title for a Codex session', () => {
+    const file = transcript([title('A record Codex never writes')]);
+    const posted = fire('Stop', '/tmp/codex-repo', file, { ...env(), AGSTATUS_SOURCE: 'codex' });
+    expect(posted?.source).toBe('codex');
+    expect(posted?.name).toBe('codex-repo');
+  });
+
+  it('falls back to the folder when the transcript cannot be read', () => {
+    const e = env();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-transcript-'));
+    for (const file of [path.join(dir, 'missing.jsonl'), dir, 'relative/session.jsonl']) {
+      const posted = fire('Stop', '/tmp/repo', file, e);
+      expect(posted?.status).toBe('done');
+      expect(posted?.name).toBe('repo');
+    }
+  });
+
+  it('keeps the name map private once it holds a title', () => {
+    if (process.platform === 'win32') return;
+    const e = env();
+    fire('Stop', '/tmp/repo', transcript([title('Private words')]), e);
+    const map = nameMap(e.TMPDIR);
+    expect(JSON.parse(map.raw).names[SESSION]).toMatchObject({ name: 'repo', title: 'Private words' });
+    expect(fs.statSync(map.path).mode & 0o777).toBe(0o600);
+  });
+
+  it('names a worktree root after its repo, and nothing else', () => {
+    const e = env();
+    // [cwd, name, project]. With no title, the name is always the folder.
+    const cases: Array<[string, string, string]> = [
+      [WORKTREE, 'zealous-jennings-84637b', 'claude-status'],
+      [`${WORKTREE}/`, 'zealous-jennings-84637b', 'claude-status'],
+      ['/Users/x/claude-status/.claude/worktrees/brave-curie-1a2b3c', 'brave-curie-1a2b3c', 'claude-status'],
+      // Inside a worktree: a subdirectory, like a cd'd session in any checkout.
+      [`${WORKTREE}/cli`, 'cli', 'cli'],
+      [`${WORKTREE}/.claude/settings`, 'settings', 'settings'],
+      // A normal checkout, and the paths around a worktree that are not one.
+      ['/Users/x/claude-status', 'claude-status', 'claude-status'],
+      ['/Users/x/claude-status/.claude/worktrees', 'worktrees', 'worktrees'],
+      ['/Users/x/claude-status/.claude', '.claude', '.claude'],
+      ['/Users/x/claude-status/build/worktrees/nightly', 'nightly', 'nightly'],
+      ['/Users/x/claude-status/claude/worktrees/nightly', 'nightly', 'nightly'],
+      // A worktree cut from inside another names the repo at the bottom.
+      [`${WORKTREE}/.claude/worktrees/inner-name`, 'inner-name', 'claude-status'],
+      // Hung off the filesystem root, there is no repo name to give.
+      ['/.claude/worktrees/rootless', 'rootless', 'rootless'],
+    ];
+    cases.forEach(([cwd, name, project], i) => {
+      const posted = fireEvent({ hook_event_name: 'SessionStart', session_id: `wt-${i}`, cwd }, e);
+      expect({ cwd, name: posted?.name, project: posted?.project }).toEqual({ cwd, name, project });
+    });
+  });
+});

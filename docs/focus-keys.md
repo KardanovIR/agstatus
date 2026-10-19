@@ -13,12 +13,18 @@ install`), and nothing else.
 ```
 $ agstatus focus --list
 Slot  Session
-   1  blocked   claude-status            MacBook/agterm
-   2  coding    infra-terraform          MacBook/Ghostty
-   3  done      website                  mini/iTerm2  (another machine)
+   1  blocked   Fix login in claude-status MacBook/Claude
+   2  coding    Port focus link in claude-status MacBook/Claude
+   3  coding    infra-terraform          MacBook/Ghostty
+   4  done      website                  mini/iTerm2  (another machine)
 ```
 
 `agstatus focus 2` brings session 2's window forward.
+
+Each row names the session as its card does: the card's name — a Claude
+session's title, or the folder it started in — then "in <project>" when the
+two differ. Two desktop-app sessions in one repo share a project, so it is the
+name that tells their keys apart.
 
 **A slot is an assignment this machine holds, not a position in the board's
 list.** Once a session is given a number it keeps that number until it leaves

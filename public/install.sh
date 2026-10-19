@@ -60,7 +60,8 @@ Options (everything but --focus/--no-focus is passed to `agstatus init`):
   --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app)
   --url <base>      Server to use (for a self-hosted board)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
-  --minimal         Send tool names only, never command text
+  --minimal         Send tool and folder names, never command text, prompts
+                    or session titles
   --no-qr           Skip the QR code
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)

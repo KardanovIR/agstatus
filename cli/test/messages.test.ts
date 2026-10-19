@@ -213,6 +213,50 @@ describe('hook status messages', () => {
     const empty = fireEvent({ hook_event_name: 'UserPromptSubmit' });
     expect(empty?.message).toBe('Processing prompt');
   });
+
+  it('shows the user\'s words without the notices the host wraps around them', () => {
+    // Claude Code and the desktop app inject <system-reminder> blocks into the
+    // prompt for the model. They are the host talking to the agent, not the
+    // user talking to it, and the card says what the user asked.
+    const mixed = fireEvent({
+      hook_event_name: 'UserPromptSubmit',
+      prompt:
+        '<system-reminder>\nToday\'s date is 2026-10-16.\n</system-reminder>\n' +
+        'Fix the login bug<system-reminder>Plan mode is off.</system-reminder>in the store\n' +
+        '<system-reminder>\nThe user opened store.ts in the IDE.\n</system-reminder>',
+    });
+    expect(mixed?.status).toBe('planning');
+    expect(mixed?.message).toBe('Fix the login bug in the store');
+  });
+
+  it('reads a prompt that is only a host notice as an empty prompt', () => {
+    // What the desktop app actually delivered: a notice as the whole prompt.
+    // It is still a turn starting, so the card still flips to planning.
+    const notice = fireEvent({
+      hook_event_name: 'UserPromptSubmit',
+      prompt:
+        '<system-reminder>\nThe user started your suggested background task task_788c7267 ' +
+        '("Fix listener reinstall leaving…").\n</system-reminder>\n',
+    });
+    expect(notice?.status).toBe('planning');
+    expect(notice?.message).toBe('Processing prompt');
+  });
+
+  it('drops everything after a notice that is never closed', () => {
+    // A notice whose end was cut off is still a notice, not the user's words.
+    const cut = fireEvent({
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Ship the fix\n<system-reminder>\nThe user started your suggested background task',
+    });
+    expect(cut?.message).toBe('Ship the fix');
+
+    const onlyCut = fireEvent({
+      hook_event_name: 'UserPromptSubmit',
+      prompt: '<system-reminder> The user started your suggested background task task_788c7267',
+    });
+    expect(onlyCut?.status).toBe('planning');
+    expect(onlyCut?.message).toBe('Processing prompt');
+  });
 });
 
 /**

@@ -302,7 +302,7 @@ wins) and are consumed before the rest is handed on. They are macOS-only, so
 </tr>
 <tr>
 <td><code>--minimal</code></td>
-<td>Privacy mode: send tool names only, never command text (sets <code>AGSTATUS_DETAIL=off</code>; re-running without the flag removes it).</td>
+<td>Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets <code>AGSTATUS_DETAIL=off</code>; re-running without the flag removes it).</td>
 </tr>
 <tr>
 <td><code>--codex</code></td>
@@ -379,9 +379,9 @@ alone). The plugin covers Claude Code only; for Codex, use
 <p>The Node hook applies this mapping; the <code>PermissionRequest</code> and <code>PreToolUse</code> —
 <code>apply_patch</code> rows are Codex-only. The bash hook covers the same Claude Code
 events but predates Codex support, so it handles neither of those, and being
-frozen it still reports <code>Stop</code> as <code>idle</code> rather than <code>done</code> and renames a card
+frozen it still reports <code>Stop</code> as <code>idle</code> rather than <code>done</code>, renames a card
 from the working directory of every event instead of pinning the name at
-<code>SessionStart</code>:</p>
+<code>SessionStart</code>, and never names a card after its session title:</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -398,7 +398,7 @@ from the working directory of every event instead of pinning the name at
 <tr>
 <td><code>UserPromptSubmit</code></td>
 <td><code>planning</code></td>
-<td>Fires the moment you submit a prompt, so the card leaves <code>blocked</code>/<code>idle</code> immediately instead of waiting for the first tool call. Shows the prompt text (truncated); minimal mode shows &quot;Processing prompt&quot;.</td>
+<td>Fires the moment you submit a prompt, so the card leaves <code>blocked</code>/<code>idle</code> immediately instead of waiting for the first tool call. Shows the prompt text (truncated), minus the <code>&lt;system-reminder&gt;</code> notices Claude Code and the desktop app wrap into it — those are the host talking to the agent, not you; a prompt that is nothing but a notice, and every prompt in minimal mode, shows &quot;Processing prompt&quot;.</td>
 </tr>
 <tr>
 <td><code>PreToolUse</code> — <code>Edit</code> / <code>Write</code> / <code>MultiEdit</code> / <code>NotebookEdit</code></td>
@@ -448,7 +448,9 @@ from the working directory of every event instead of pinning the name at
 </tbody></table></div>
 <p>Other tools and events are ignored. Messages are capped at 120 characters.
 With <code>--minimal</code> (<code>AGSTATUS_DETAIL=off</code>) every card shows only the tool name —
-no descriptions, file names, queries, or command text.</p>
+no descriptions, file names, queries, or command text — and is named after its
+folder, never its session title (a title is generated from your prompts; see
+<a href="#hooks-card-names-and-projects">Card names and projects</a>).</p>
 <blockquote>
 <p><strong>Why descriptions instead of commands?</strong> Agents write a short description of
 each command they run, which reads better on a phone than a shell one-liner —
@@ -577,47 +579,88 @@ green, and a device that opted in with <code>notify_done</code> is pushed each t
 finishes — see <a href="#api-device-push-endpoints">docs/api.md</a>), and <code>idle</code> is left
 to mean only what it says: a session that has not been given any work.</p>
 <h4 id="hooks-card-names-and-projects"><a class="anchor" href="#hooks-card-names-and-projects">Card names and projects</a></h4>
-<p>A card&#39;s <code>name</code> is <strong>pinned when the session starts</strong>. The hook takes the
-basename of the working directory at <code>SessionStart</code>, and that stays the card&#39;s
-title for the life of the session. A session that starts in <code>~/work/backend</code>
-and later <code>cd</code>s into <code>~/work/docs</code> is still the card called &quot;backend&quot;: the card
-you glanced at a minute ago is the same card now, and the name you learned to
-recognise stays a handle on that piece of work.</p>
-<p>That is new. The name used to be recomputed from the working directory on
-every event, so a session that moved renamed its own card mid-turn — one live
-session showed &quot;backend&quot; and later &quot;docs&quot;, and two cards on the same board
-could swap identities while you watched. Directory changes are ordinary (a
-<code>cd</code> into a subproject, a build in a sibling checkout), and none of them mean
-the session became a different session.</p>
+<p>A card&#39;s <code>name</code> comes from one of three places, in this order:</p>
+<ol>
+<li><strong>The session&#39;s title</strong>, when it has one — Claude Code only. The Claude
+desktop app titles every session it runs (&quot;Session organization by agent&quot;),
+and <code>/rename</code> titles one in the CLI; both write it into the session&#39;s
+transcript, and the hook reads it from there. This is what keeps the
+desktop app&#39;s own worktree names off the cards: it runs each session in a
+worktree it names itself, so a card named after its folder read
+&quot;zealous-jennings-84637b&quot;. (The usage screen still lists spend under those
+folder names; see <a href="#hooks-where-the-tokens-went">Where the tokens went</a>.)</li>
+<li><strong>The folder the session started in</strong> — the basename of the working
+directory at <code>SessionStart</code>, <strong>pinned</strong> for the life of the session.</li>
+<li><strong>The agent&#39;s name</strong>, &quot;Claude&quot; or &quot;Codex&quot;, for a session that has neither —
+an agent macOS started at <code>/</code>, as it starts a GUI app (Codex Desktop&#39;s
+sessions), or one whose folder is a bare UUID. This one is a placeholder and is <em>not</em>
+pinned, so the first event that knows a real folder still names the card.</li>
+</ol>
+<p>A title is never sent in minimal mode (<code>--minimal</code>, <code>AGSTATUS_DETAIL=off</code>): it
+is generated from your prompts, which minimal mode already withholds, so those
+cards keep their folder names. Codex sessions have no title the hook reads.</p>
+<p>The folder pin is what makes a card hold still. A session that starts in
+<code>~/work/backend</code> and later <code>cd</code>s into <code>~/work/docs</code> is still the card called
+&quot;backend&quot;: the card you glanced at a minute ago is the same card now, and the
+name you learned to recognise stays a handle on that piece of work. The name
+used to be recomputed from the working directory on every event, so a session
+that moved renamed its own card mid-turn — one live session showed &quot;backend&quot;
+and later &quot;docs&quot;, and two cards on the same board could swap identities while
+you watched. Directory changes are ordinary (a <code>cd</code> into a subproject, a build
+in a sibling checkout), and none of them mean the session became a different
+session.</p>
+<p>A title is allowed to change, because a rename is deliberate: renaming the
+session renames its card. What it must not do is flicker. The hook reads only
+the last 256 KiB of the transcript on each event — transcripts run to tens of
+megabytes. Claude Code re-appends the title record every few tool results, so
+that window usually reaches the latest copy, but an event that follows a
+pasted image or a large tool output can miss it (about one gap in ten between
+copies is wider than the window). A title once seen is therefore pinned
+alongside the folder and holds until the transcript shows a different one; a
+read that finds nothing never clears it.</p>
 <p>The pin is the hook&#39;s own, not the server&#39;s: it keeps a small map of session
-id to name in the system temp directory (<code>agstatus-names-&lt;hash&gt;.json</code>, one file
-per board and agent, capped at 200 sessions, entries dropped 24 hours after
-their last event — the server&#39;s session TTL — and dropped outright at
-<code>SessionEnd</code>). Every post carries the pinned name, so nothing depends on the
-server remembering one. Two consequences worth knowing:</p>
+id to folder and title in the system temp directory
+(<code>agstatus-names-&lt;hash&gt;.json</code>, one file per board and agent, readable by you
+alone, capped at 200 sessions, entries dropped 24 hours after their last
+event — the server&#39;s session TTL — and dropped outright at <code>SessionEnd</code>).
+Every post carries the name, so nothing depends on the server remembering one.
+Three consequences worth knowing:</p>
 <ul>
-<li><strong>A pin on file always wins, including against a later <code>SessionStart</code>.</strong>
-Claude Code fires that event again mid-session for <code>/compact</code>, <code>/clear</code> and
-<code>--resume</code>, and a session that had changed directory by then would be renamed
-by the re-pin — the exact bug the pinning exists to prevent. A genuinely new
-session brings a new id, finds no entry, and pins normally, so the title
-changes when the session does and not before.</li>
+<li><strong>A folder pin on file always wins, including against a later
+<code>SessionStart</code>.</strong> Claude Code fires that event again mid-session for
+<code>/compact</code>, <code>/clear</code> and <code>--resume</code>, and a session that had changed directory
+by then would be renamed by the re-pin — the exact bug the pinning exists to
+prevent. A genuinely new session brings a new id, finds no entry, and pins
+normally, so the name changes when the session does and not before.</li>
+<li><strong>Turning minimal mode on mid-session</strong> drops a titled card back to the
+folder it <em>started</em> in, not the one it happens to be standing in.</li>
 <li><strong>A lost pin costs one name, not correctness.</strong> If the map is missing or
 unreadable — the hook was installed mid-session, the temp directory was
-swept, this is the first run — the next event pins the live directory name,
-which is exactly what the hook posted before pinning existed.</li>
+swept, this is the first run — the next event pins the live directory name
+(and any title still in reach of the transcript read), which is no worse
+than what the hook posted before pinning existed.</li>
 </ul>
 <p><code>project</code> is deliberately <strong>not</strong> pinned: it is still read from the live
 working directory on every event, so it says where the session is right now.
 After a <code>cd</code> the two disagree, and that is correct — the card keeps the name it
-was born with while the project underneath it follows the session. The
-per-project token totals depend on it; see
+was born with while the project underneath it follows the session. The one
+exception is a working directory that <strong>is</strong> a Claude worktree root,
+<code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>: its <code>project</code> is <code>&lt;repo&gt;</code>, because the
+worktree folder&#39;s name is one the app made up. A directory <em>inside</em> a worktree
+keeps its own name, as a subdirectory of any checkout does, and the folder
+fallback for <code>name</code> stays the worktree&#39;s own, so several worktrees of one repo
+stay apart before they have titles. The per-project token totals still file a
+worktree&#39;s spend under the worktree folder; see
 <a href="#hooks-where-the-tokens-went">Where the tokens went</a>.</p>
-<p>The split is visible on the cards. The web board always prints the project
-beside the title, so it simply changes when the session moves. The iOS card
-prints the project only when it differs from the name, so a session that moved
-grows a second line naming the folder it moved into — exactly when that is
-worth saying — and a session that never left home shows nothing extra.</p>
+<p>The split is visible on the cards. Every board — web, iOS and Android —
+prints the project beside the name only when the two differ. A titled card
+nearly always differs, so it reads as where that work is happening (&quot;Fix the
+login bug · in backend&quot;); an untitled card grows the directory once the
+session has moved — exactly when that is worth saying. It also shows it from
+the first event at a Claude worktree root, where the name is the worktree&#39;s own
+folder and the project its repository, so <code>claude --worktree feature-x</code> with no
+<code>/rename</code> reads &quot;feature-x · in my-repo&quot; without having moved. Any other
+session that never left home shows nothing extra.</p>
 <h3 id="hooks-plan-usage-bars"><a class="anchor" href="#hooks-plan-usage-bars">Plan-usage bars</a></h3>
 <p>The Node hook also feeds the dashboard&#39;s plan-limit bars. It runs on quiet
 events (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Stop</code>, <code>Notification</code>,
@@ -1005,7 +1048,7 @@ a 10 s timeout (the script itself exits within ~4 s).</p>
 </tr>
 <tr>
 <td><code>AGSTATUS_DETAIL=off</code></td>
-<td>Node hook only. Send tool names instead of command text (what <code>--minimal</code> sets).</td>
+<td>Node hook only. Send tool names instead of command text and prompts, and folder names instead of session titles (what <code>--minimal</code> sets).</td>
 </tr>
 <tr>
 <td><code>AGSTATUS_USAGE=off</code></td>
@@ -1376,11 +1419,16 @@ the key for the agent that needs you, and its terminal is in front of you.</p>
 <h3 id="focus-keys-slots"><a class="anchor" href="#focus-keys-slots">Slots</a></h3>
 <pre><code>$ agstatus focus --list
 Slot  Session
-   1  blocked   claude-status            MacBook/agterm
-   2  coding    infra-terraform          MacBook/Ghostty
-   3  done      website                  mini/iTerm2  (another machine)
+   1  blocked   Fix login in claude-status MacBook/Claude
+   2  coding    Port focus link in claude-status MacBook/Claude
+   3  coding    infra-terraform          MacBook/Ghostty
+   4  done      website                  mini/iTerm2  (another machine)
 </code></pre>
 <p><code>agstatus focus 2</code> brings session 2&#39;s window forward.</p>
+<p>Each row names the session as its card does: the card&#39;s name — a Claude
+session&#39;s title, or the folder it started in — then &quot;in <project>&quot; when the
+two differ. Two desktop-app sessions in one repo share a project, so it is the
+name that tells their keys apart.</p>
 <p><strong>A slot is an assignment this machine holds, not a position in the board&#39;s
 list.</strong> Once a session is given a number it keeps that number until it leaves
 the board; the number it frees is reused by the next session that needs one.
@@ -1986,7 +2034,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>name</code></td>
 <td>string</td>
 <td>no</td>
-<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Truncated to 120 chars. The bundled hooks pin it at <code>SessionStart</code>: the name a session is given there is the name it keeps, even if the session later changes directory. They hold the pin in a small local map and re-send it on every post rather than leaning on carry-forward, and a pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave the title alone.</td>
+<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Truncated to 120 chars. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
 </tr>
 <tr>
 <td><code>message</code></td>
@@ -1998,7 +2046,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>project</code></td>
 <td>string</td>
 <td>no</td>
-<td>Project or repo the session is working on. Truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original title while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>.</td>
+<td>Project or repo the session is working on. Truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder.</td>
 </tr>
 <tr>
 <td><code>source</code></td>
@@ -2162,7 +2210,7 @@ but a small share of what a plan limit charges.</p>
 card name in this series: every session that spent tokens in a folder on a day
 is summed into the same row. So one row can be several sessions&#39; work, and a
 session that moves between projects contributes to two rows, split at the point
-it moved — even though its card keeps the name it was pinned at <code>SessionStart</code>
+it moved — even though its card keeps its name through the move
 (see <a href="#api-webhook-body-and-validation">the webhook <code>name</code> field</a>). The two series
 answer different questions: a card says which session this is, these rows say
 where the quota went. How fine the split can be depends on the agent&#39;s own

@@ -87,7 +87,9 @@ Details in [docs/hooks.md](docs/hooks.md).
 - **Streaks** — a day counter with a wood → platinum ladder, so a long run of
   active days is visible. iOS only for now.
 - **Demo mode** — try the iOS app with fake sessions, no server, no data sent.
-- **Privacy switch** — `--minimal` sends tool names only, never command text.
+- **Privacy switch** — `--minimal` sends tool names only, never command text,
+  and names cards after their folder, never a Claude session's title (which
+  is generated from your prompts).
 - **Focus (opt-in)** — tap a session on the board to bring its terminal to
   the front on the machine running it; see
   [docs/design/focus-protocol.md](docs/design/focus-protocol.md).

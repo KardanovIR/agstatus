@@ -208,6 +208,36 @@ describe('agstatus focus <n>', () => {
     expect(out).toMatch(/3.*no-host-repo.*no host — cannot focus/);
   });
 
+  // The hook reports every desktop-app session at a worktree root under its
+  // repo, so `project` is the same word for all of them and only the name —
+  // the title — tells them apart. Labelling by project made `--list`, the only
+  // place the slot-to-session mapping is shown, print one repo name N times.
+  it('--list and a key press name sessions as the cards do, so one repo\'s sessions stay apart', async () => {
+    const sessions = [
+      session({ id: 'a', createdAt: 1, name: 'Fix login', project: 'claude-status' }),
+      session({ id: 'b', createdAt: 2, name: 'Port focus link', project: 'claude-status' }),
+      session({ id: 'c', createdAt: 3, name: 'website', project: 'website' }),
+      session({ id: 'd', createdAt: 4, project: 'no-name-repo' }),
+    ];
+    const { out } = await run(undefined, sessions, { list: true });
+    expect(out).toMatch(/1 +\S+ +Fix login in claude-status /);
+    expect(out).toMatch(/2 +\S+ +Port focus link in claude-status /);
+    // Same word twice is said once, and a card with no name falls back to its project.
+    expect(out).toMatch(/3 +\S+ +website +MacBook/);
+    expect(out).not.toMatch(/website in website/);
+    expect(out).toMatch(/4 +\S+ +no-name-repo +MacBook/);
+
+    const pressed = await run('2', sessions, {}, { focusLocally: async () => 0 });
+    expect(pressed.out).toMatch(/Slot 2: Port focus link/);
+  });
+
+  it('--list cuts a long title without breaking a character or the columns', async () => {
+    const title = `${'x'.repeat(38)}😀tail of a very long session title`;
+    const { out } = await run(undefined, [session({ id: 'a', createdAt: 1, name: title, project: 'repo' })], { list: true });
+    expect(out).toContain(`${'x'.repeat(38)}😀… in repo`);
+    expect(out).not.toContain('tail of a very long');
+  });
+
   it('reports an unreachable board rather than focusing a stale guess', async () => {
     const { code, out } = await run('1', [], {}, {
       fetchSessions: async () => { throw new Error('Could not reach the board at https://board.example.'); },

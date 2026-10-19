@@ -215,11 +215,37 @@ export function assignSlots(sessions: BoardSession[], cfg: ListenerConfig): Assi
   return { bySlot };
 }
 
-/** A one-line label for `--list`, in the terms the board shows. */
+/**
+ * How a slot names its session: the card's own name, which is what the board
+ * shows and what a person learned the session by. It used to be `project`
+ * first, from when the hook sent one value under both keys; now the name is a
+ * Claude session's title and `project` is the directory — the REPO, for every
+ * session the desktop app runs at a worktree root — so project-first gave all
+ * of one repo's desktop sessions the same label, on the one screen that exists
+ * to tell their keys apart.
+ */
+export function sessionLabel(s: BoardSession): string {
+  return s.name || s.project || s.id.slice(0, 8);
+}
+
+// A title can run to the server's 120 characters; the list keeps its columns
+// by cutting the name (by code point, so never through an emoji) rather than
+// wrapping every row. 40 holds the titles the desktop app writes.
+const LIST_NAME_MAX = 40;
+
+/**
+ * A one-line label for `--list`, in the terms the board shows: the name, then
+ * "in <project>" when the two differ, exactly as the cards print it
+ * (cardMeta in public/app.js).
+ */
 export function describeSession(s: BoardSession): string {
   const where = s.host?.app?.name || s.host?.app?.slug || '-';
   const machine = s.host?.machine?.name || '-';
-  return `${(s.status ?? '?').padEnd(9)} ${(s.project || s.name || s.id.slice(0, 8)).padEnd(24)} ${machine}/${where}`;
+  const name = sessionLabel(s);
+  const chars = Array.from(name);
+  let label = chars.length > LIST_NAME_MAX ? `${chars.slice(0, LIST_NAME_MAX - 1).join('')}…` : name;
+  if (s.project && s.project !== name) label += ` in ${s.project}`;
+  return `${(s.status ?? '?').padEnd(9)} ${label.padEnd(24)} ${machine}/${where}`;
 }
 
 // ---- Talking to the board -------------------------------------------------
@@ -376,7 +402,7 @@ export async function runFocus(
     return 1;
   }
 
-  const label = session.project || session.name || session.id.slice(0, 8);
+  const label = sessionLabel(session);
   // A session hosted here never round-trips the board to be focused: the plan
   // the listener would run is built and run in this process instead.
   if (isLocal(session, cfg) && deps.focusLocally) {

@@ -63,7 +63,7 @@ param(
     [string] $Url,
     # Webhook secret, for self-hosted single-tenant servers.
     [string] $Secret,
-    # Send tool names only, never command text.
+    # Send tool and folder names, never command text, prompts or session titles.
     [switch] $Minimal
 )
 
@@ -488,7 +488,8 @@ Unrecognised argument(s): $($unknownArgs -join ' ')
     -Code XXXX-XXXX   Pair with a board created elsewhere, e.g. in the mobile app
     -Url <base>       Server to use, for a self-hosted board
     -Secret <s>       Webhook secret, for self-hosted single-tenant servers
-    -Minimal          Send tool names only, never command text
+    -Minimal          Send tool and folder names, never command text, prompts
+                      or session titles
 
   Options need the script-block form; a bare 'irm ... | iex' cannot carry any:
     & ([scriptblock]::Create((irm https://agstatus.online/install.ps1))) -Code XXXX-XXXX

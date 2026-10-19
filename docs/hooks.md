@@ -110,7 +110,7 @@ wins) and are consumed before the rest is handed on. They are macOS-only, so
 | `--url <base>`     | Server to use (default: `https://agstatus.online`; the `AGSTATUS_URL` env var also overrides it, with `--url` winning). |
 | `--code XXXX-XXXX` | Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don't matter. |
 | `--secret <s>`     | Webhook secret for self-hosted single-tenant servers that set `WEBHOOK_SECRET` (stored as `CLAUDE_STATUS_SECRET`). |
-| `--minimal`        | Privacy mode: send tool names only, never command text (sets `AGSTATUS_DETAIL=off`; re-running without the flag removes it). |
+| `--minimal`        | Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets `AGSTATUS_DETAIL=off`; re-running without the flag removes it). |
 | `--codex`          | Also set up OpenAI Codex even when `~/.codex` isn't detected (creates it). |
 | `--no-codex`       | Skip Codex setup. Default: auto-configure when `~/.codex` exists. |
 | `--no-qr`          | Skip the QR code (narrow terminals, scripts). |
@@ -194,14 +194,14 @@ alone). The plugin covers Claude Code only; for Codex, use
 The Node hook applies this mapping; the `PermissionRequest` and `PreToolUse` —
 `apply_patch` rows are Codex-only. The bash hook covers the same Claude Code
 events but predates Codex support, so it handles neither of those, and being
-frozen it still reports `Stop` as `idle` rather than `done` and renames a card
+frozen it still reports `Stop` as `idle` rather than `done`, renames a card
 from the working directory of every event instead of pinning the name at
-`SessionStart`:
+`SessionStart`, and never names a card after its session title:
 
 | Hook event                                                     | Board status   | Notes |
 | -------------------------------------------------------------- | -------------- | ----- |
 | `SessionStart`                                                  | `idle`         | New session appears as soon as Claude starts. The only event that sends `idle`, so a card wears it just for the seconds between starting an agent and submitting the first prompt. |
-| `UserPromptSubmit`                                              | `planning`     | Fires the moment you submit a prompt, so the card leaves `blocked`/`idle` immediately instead of waiting for the first tool call. Shows the prompt text (truncated); minimal mode shows "Processing prompt". |
+| `UserPromptSubmit`                                              | `planning`     | Fires the moment you submit a prompt, so the card leaves `blocked`/`idle` immediately instead of waiting for the first tool call. Shows the prompt text (truncated), minus the `<system-reminder>` notices Claude Code and the desktop app wrap into it — those are the host talking to the agent, not you; a prompt that is nothing but a notice, and every prompt in minimal mode, shows "Processing prompt". |
 | `PreToolUse` — `Edit` / `Write` / `MultiEdit` / `NotebookEdit`  | `coding`       | Card shows the file being touched — "Editing store.ts", "Writing landing.html". |
 | `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. Classification always reads the command, never the description. |
 | `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the agent's own one-line description of the command ("Show working tree status"), falling back to the command text when none was supplied. |
@@ -214,7 +214,9 @@ from the working directory of every event instead of pinning the name at
 
 Other tools and events are ignored. Messages are capped at 120 characters.
 With `--minimal` (`AGSTATUS_DETAIL=off`) every card shows only the tool name —
-no descriptions, file names, queries, or command text.
+no descriptions, file names, queries, or command text — and is named after its
+folder, never its session title (a title is generated from your prompts; see
+[Card names and projects](#card-names-and-projects)).
 
 > **Why descriptions instead of commands?** Agents write a short description of
 > each command they run, which reads better on a phone than a shell one-liner —
@@ -300,50 +302,92 @@ to mean only what it says: a session that has not been given any work.
 
 ### Card names and projects
 
-A card's `name` is **pinned when the session starts**. The hook takes the
-basename of the working directory at `SessionStart`, and that stays the card's
-title for the life of the session. A session that starts in `~/work/backend`
-and later `cd`s into `~/work/docs` is still the card called "backend": the card
-you glanced at a minute ago is the same card now, and the name you learned to
-recognise stays a handle on that piece of work.
+A card's `name` comes from one of three places, in this order:
 
-That is new. The name used to be recomputed from the working directory on
-every event, so a session that moved renamed its own card mid-turn — one live
-session showed "backend" and later "docs", and two cards on the same board
-could swap identities while you watched. Directory changes are ordinary (a
-`cd` into a subproject, a build in a sibling checkout), and none of them mean
-the session became a different session.
+1. **The session's title**, when it has one — Claude Code only. The Claude
+   desktop app titles every session it runs ("Session organization by agent"),
+   and `/rename` titles one in the CLI; both write it into the session's
+   transcript, and the hook reads it from there. This is what keeps the
+   desktop app's own worktree names off the cards: it runs each session in a
+   worktree it names itself, so a card named after its folder read
+   "zealous-jennings-84637b". (The usage screen still lists spend under those
+   folder names; see [Where the tokens went](#where-the-tokens-went).)
+2. **The folder the session started in** — the basename of the working
+   directory at `SessionStart`, **pinned** for the life of the session.
+3. **The agent's name**, "Claude" or "Codex", for a session that has neither —
+   an agent macOS started at `/`, as it starts a GUI app (Codex Desktop's
+   sessions), or one whose folder is a bare UUID. This one is a placeholder and is *not*
+   pinned, so the first event that knows a real folder still names the card.
+
+A title is never sent in minimal mode (`--minimal`, `AGSTATUS_DETAIL=off`): it
+is generated from your prompts, which minimal mode already withholds, so those
+cards keep their folder names. Codex sessions have no title the hook reads.
+
+The folder pin is what makes a card hold still. A session that starts in
+`~/work/backend` and later `cd`s into `~/work/docs` is still the card called
+"backend": the card you glanced at a minute ago is the same card now, and the
+name you learned to recognise stays a handle on that piece of work. The name
+used to be recomputed from the working directory on every event, so a session
+that moved renamed its own card mid-turn — one live session showed "backend"
+and later "docs", and two cards on the same board could swap identities while
+you watched. Directory changes are ordinary (a `cd` into a subproject, a build
+in a sibling checkout), and none of them mean the session became a different
+session.
+
+A title is allowed to change, because a rename is deliberate: renaming the
+session renames its card. What it must not do is flicker. The hook reads only
+the last 256 KiB of the transcript on each event — transcripts run to tens of
+megabytes. Claude Code re-appends the title record every few tool results, so
+that window usually reaches the latest copy, but an event that follows a
+pasted image or a large tool output can miss it (about one gap in ten between
+copies is wider than the window). A title once seen is therefore pinned
+alongside the folder and holds until the transcript shows a different one; a
+read that finds nothing never clears it.
 
 The pin is the hook's own, not the server's: it keeps a small map of session
-id to name in the system temp directory (`agstatus-names-<hash>.json`, one file
-per board and agent, capped at 200 sessions, entries dropped 24 hours after
-their last event — the server's session TTL — and dropped outright at
-`SessionEnd`). Every post carries the pinned name, so nothing depends on the
-server remembering one. Two consequences worth knowing:
+id to folder and title in the system temp directory
+(`agstatus-names-<hash>.json`, one file per board and agent, readable by you
+alone, capped at 200 sessions, entries dropped 24 hours after their last
+event — the server's session TTL — and dropped outright at `SessionEnd`).
+Every post carries the name, so nothing depends on the server remembering one.
+Three consequences worth knowing:
 
-- **A pin on file always wins, including against a later `SessionStart`.**
-  Claude Code fires that event again mid-session for `/compact`, `/clear` and
-  `--resume`, and a session that had changed directory by then would be renamed
-  by the re-pin — the exact bug the pinning exists to prevent. A genuinely new
-  session brings a new id, finds no entry, and pins normally, so the title
-  changes when the session does and not before.
+- **A folder pin on file always wins, including against a later
+  `SessionStart`.** Claude Code fires that event again mid-session for
+  `/compact`, `/clear` and `--resume`, and a session that had changed directory
+  by then would be renamed by the re-pin — the exact bug the pinning exists to
+  prevent. A genuinely new session brings a new id, finds no entry, and pins
+  normally, so the name changes when the session does and not before.
+- **Turning minimal mode on mid-session** drops a titled card back to the
+  folder it *started* in, not the one it happens to be standing in.
 - **A lost pin costs one name, not correctness.** If the map is missing or
   unreadable — the hook was installed mid-session, the temp directory was
-  swept, this is the first run — the next event pins the live directory name,
-  which is exactly what the hook posted before pinning existed.
+  swept, this is the first run — the next event pins the live directory name
+  (and any title still in reach of the transcript read), which is no worse
+  than what the hook posted before pinning existed.
 
 `project` is deliberately **not** pinned: it is still read from the live
 working directory on every event, so it says where the session is right now.
 After a `cd` the two disagree, and that is correct — the card keeps the name it
-was born with while the project underneath it follows the session. The
-per-project token totals depend on it; see
+was born with while the project underneath it follows the session. The one
+exception is a working directory that **is** a Claude worktree root,
+`<repo>/.claude/worktrees/<name>`: its `project` is `<repo>`, because the
+worktree folder's name is one the app made up. A directory *inside* a worktree
+keeps its own name, as a subdirectory of any checkout does, and the folder
+fallback for `name` stays the worktree's own, so several worktrees of one repo
+stay apart before they have titles. The per-project token totals still file a
+worktree's spend under the worktree folder; see
 [Where the tokens went](#where-the-tokens-went).
 
-The split is visible on the cards. The web board always prints the project
-beside the title, so it simply changes when the session moves. The iOS card
-prints the project only when it differs from the name, so a session that moved
-grows a second line naming the folder it moved into — exactly when that is
-worth saying — and a session that never left home shows nothing extra.
+The split is visible on the cards. Every board — web, iOS and Android —
+prints the project beside the name only when the two differ. A titled card
+nearly always differs, so it reads as where that work is happening ("Fix the
+login bug · in backend"); an untitled card grows the directory once the
+session has moved — exactly when that is worth saying. It also shows it from
+the first event at a Claude worktree root, where the name is the worktree's own
+folder and the project its repository, so `claude --worktree feature-x` with no
+`/rename` reads "feature-x · in my-repo" without having moved. Any other
+session that never left home shows nothing extra.
 
 ## Plan-usage bars
 
@@ -755,7 +799,7 @@ a 10 s timeout (the script itself exits within ~4 s).
 | ---------------------- | ------- |
 | `CLAUDE_STATUS_URL`    | Required. Base URL the hook posts to — a board URL (`https://<host>/w/<token>`) or a legacy server origin. The hook appends `/webhook` and `/sessions/<id>` itself, and tolerates a trailing `/` or `/webhook`. |
 | `CLAUDE_STATUS_SECRET` | Optional. Sent as `X-Webhook-Secret` (legacy servers with `WEBHOOK_SECRET` set). Workspace boards don't need it — the token in the URL is the auth. |
-| `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text (what `--minimal` sets). |
+| `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text and prompts, and folder names instead of session titles (what `--minimal` sets). |
 | `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage (see [Plan-usage bars](#plan-usage-bars)). |
 | `AGSTATUS_FOCUS=off`   | Node hook only. Never add the `host` object to the payload or write the local session record, even when `~/.agstatus.json` has `"focus": true` (see [Focus](#focus-optional-opt-in)). |
 | `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
