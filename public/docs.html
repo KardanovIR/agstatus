@@ -2202,7 +2202,13 @@ you: it keeps counting across restarts and does not reset when a session ends.</
 previous one), broadcasts the full usage list as an SSE <code>usage</code> event, and
 answers <code>{ok: true}</code>. Usage posts share the webhook rate-limit budget.
 Reports older than 24 hours are dropped from reads — stale percentages
-mislead. <code>GET /api/usage</code> (legacy) and <code>GET /w/&lt;token&gt;/api/usage</code> return the
+mislead.</p>
+<p><strong>At most 8 sources per workspace</strong>, counted across <code>/usage</code>,
+<code>/usage/projects</code> and <code>/usage/sessions</code> together. A report from a ninth source
+gets <code>429 {&quot;error&quot;: &quot;too many usage sources for this workspace (at most 8)&quot;}</code>;
+the sources already held keep reporting on every endpoint. The bundled hooks
+use two (<code>claude</code>, <code>codex</code>). A malformed report never takes a slot.</p>
+<p><code>GET /api/usage</code> (legacy) and <code>GET /w/&lt;token&gt;/api/usage</code> return the
 current list:</p>
 <pre><code class="language-json">[ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
 </code></pre>
@@ -2210,8 +2216,14 @@ current list:</p>
 <p>Two series back the usage detail screen, and they are <strong>different measures</strong>.</p>
 <p><strong>The limit over time.</strong> Every report is kept, not just the newest, but only
 when a window&#39;s <code>usedPct</code> actually moved — a plan limit is a step function and
-reports arrive far more often than it changes. Nothing is retroactive: a board
-has limit history from the moment it first receives a report.</p>
+reports arrive far more often than it changes — and at most one point per
+window per minute: a reading less than a minute after the last recorded one
+still moves the live bar but is not added to the history (the charts sample
+once a day, and each hook reports at most every five minutes). A workspace keeps
+history for at most 48 (source, window) series; past that a new window id
+still shows as a bar but keeps no history, and a series silent for 90 days
+gives its slot back. Nothing is retroactive: a board has limit history from
+the moment it first receives a report.</p>
 <p><strong>Where the tokens went.</strong> Neither agent&#39;s usage API says which project spent
 the quota, so the hook derives it from the logs each agent already writes
 locally and reports daily totals with <code>POST /usage/projects</code> (legacy, same
@@ -2255,19 +2267,30 @@ secret rules as the webhook) or <code>POST /w/&lt;token&gt;/usage/projects</code
 <td><code>day</code></td>
 <td>string</td>
 <td>yes</td>
-<td><code>YYYY-MM-DD</code>, UTC.</td>
+<td><code>YYYY-MM-DD</code>, UTC. A row whose day does not exist (<code>2026-02-30</code>, <code>9999-99-99</code>) or falls outside the last 90 days through tomorrow is dropped, not rejected — see below.</td>
 </tr>
 <tr>
 <td><code>tokens</code></td>
 <td>number</td>
 <td>yes</td>
-<td>Tokens spent that day. Clamped to ≥ 0 and floored.</td>
+<td>Tokens spent that day. Clamped to ≥ 0 and floored; above <code>Number.MAX_SAFE_INTEGER</code> the report is a <code>400</code>.</td>
 </tr>
 </tbody></table></div>
 <p>A day is <strong>replaced</strong>, not accumulated, so re-running a backfill converges
 instead of double-counting. Reported tokens are input + output + cache
 creation; cache reads are excluded because they are ~94% of raw token volume
 but a small share of what a plan limit charges.</p>
+<p><strong>Not every well-formed row is kept</strong>, and the response says what became of
+them: <code>{&quot;ok&quot;: true, &quot;days&quot;: N, &quot;dropped&quot;: D, &quot;refused&quot;: R}</code>. <code>days</code> rows were
+stored. <code>dropped</code> rows named a day that does not exist or lies outside the
+retained window — today minus 90 days through tomorrow (UTC) — and are
+skipped silently rather than failing the report, because a backfill
+legitimately sends everything the local logs still hold. <code>refused</code> rows were
+new (source, project, day) keys arriving when the workspace already holds
+5,000; a row for a key it already holds is always stored. Days that age out of
+the window leave the board (flagged on disk, never deleted) and free their
+slots. A malformed row — a bad shape, a missing field — still fails the whole
+report with <code>400</code>.</p>
 <p><strong>A row is a folder and a day, not a session.</strong> There is no session id and no
 card name in this series: every session that spent tokens in a folder on a day
 is summed into the same row. So one row can be several sessions&#39; work, and a
@@ -2281,7 +2304,8 @@ Claude session that moves is split at the moment it moved, while a Codex
 rollout names its directory once at the top of the file, so a Codex session
 that moves keeps all of its spend under the folder it started in.</p>
 <p><code>GET /api/usage/history</code> and <code>GET /w/&lt;token&gt;/api/usage/history</code> return both
-series. <code>?days=N</code> selects the range (default 30, capped at 90):</p>
+series. <code>?days=N</code> selects the range (default 30, capped at 90). Reads have a
+budget of their own, 30 a minute per workspace (<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code> beyond), separate from the webhook&#39;s:</p>
 <pre><code class="language-json">{
   &quot;days&quot;: 30,
   &quot;history&quot;: [
@@ -2353,8 +2377,12 @@ what it is sent — it does not take the larger of the two, and a decrease is no
 an error. A duplicated <code>session_id</code> inside one body is not rejected either: the
 last one wins. A total for a session that has no card is accepted and kept, so
 a session that comes back finds its number waiting. Session-total posts share
-the webhook rate-limit budget. The response is <code>{&quot;ok&quot;: true, &quot;sessions&quot;: N}</code>,
-<code>N</code> being the rows stored after duplicates collapse.</p>
+the webhook rate-limit budget. The response is
+<code>{&quot;ok&quot;: true, &quot;sessions&quot;: N, &quot;refused&quot;: R}</code>: <code>N</code> rows stored after duplicates
+collapse, and <code>R</code> new session ids the board had no room for. A workspace holds
+at most 500 totals; past that a new <code>(source, session_id)</code> is refused unless
+that session has a card on the board right now, while a total it already holds
+is always updated. Totals past their 7-day retention free their slots.</p>
 <p><strong>Where it shows up.</strong> There is no read endpoint: the number is served as the
 <code>tokens</code> field of <a href="#api-the-session-object">the session object</a>, which the
 <code>snapshot</code> and <code>session</code> SSE events already carry, so a card gets its total the
@@ -2380,9 +2408,9 @@ rows use, and not the card&#39;s 24 hours. The hook reports on a 15-minute throt
 and only for sessions whose number moved, so a session resumed after a weekend
 gets its card back from the first webhook but its total only from the next
 usage run; the stored value carries the card in between. Older totals are
-dropped from reads and from memory, and a workspace holds at most 500 (the
-oldest-updated is dropped first). Deleting a workspace removes its totals with
-everything else.</p>
+dropped from reads and from memory, and a workspace holds at most 500 (past
+that, a new session id is refused unless its session has a card on the board;
+see above). Deleting a workspace removes its totals with everything else.</p>
 <h3 id="api-session-history"><a class="anchor" href="#api-session-history">Session history</a></h3>
 <p><code>GET /api/sessions/:id/history</code> (legacy) and
 <code>GET /w/&lt;token&gt;/api/sessions/:id/history</code> return a session&#39;s timeline —
@@ -2395,7 +2423,10 @@ keep-alive re-posts are not recorded):</p>
 ]
 </code></pre>
 <p><code>seq</code> increases monotonically per session and is a stable identity for
-clients. The last 100 entries are kept per session (older ones are
+clients. It is not dense and does not start at 0 for each session — the server
+numbers every session&#39;s events from one counter, so the values a session sees
+have gaps — and nothing should be read into its size. The last 100 entries
+are kept per session (older ones are
 soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return <code>[]</code>.</p>
 <h3 id="api-focus-commands"><a class="anchor" href="#api-focus-commands">Focus commands</a></h3>
@@ -2761,11 +2792,11 @@ for the server-side setup and trigger rules.</p>
 </thead>
 <tbody><tr>
 <td><code>POST /w/&lt;token&gt;/devices</code></td>
-<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. Returns <code>{ok: true}</code>.</td>
+<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. A workspace may also register at most 100 distinct device tokens over its lifetime, unregistered ones included (an unregistered device&#39;s row is kept, flagged): <code>429 {&quot;error&quot;: &quot;too many device tokens have been registered to this workspace&quot;}</code> for a token past that, while a token it has had before can always come back. Returns <code>{ok: true}</code>. Registering and unregistering share a budget of 10 a minute per workspace (<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code>).</td>
 </tr>
 <tr>
 <td><code>DELETE /w/&lt;token&gt;/devices/:deviceToken</code></td>
-<td>Unregister. Returns <code>{ok: boolean}</code>.</td>
+<td>Unregister. Returns <code>{ok: boolean}</code>. Shares the device budget above.</td>
 </tr>
 </tbody></table></div>
 <p>Deleting the workspace purges its device registrations. Tokens Apple reports
@@ -2861,6 +2892,21 @@ are closed.</p>
 <td><code>429</code> for new devices.</td>
 </tr>
 <tr>
+<td>Device tokens per workspace, ever</td>
+<td>100 (unregistered ones included)</td>
+<td><code>429</code> for a token the workspace has never had; a returning one is fine.</td>
+</tr>
+<tr>
+<td>Device registrations + removals per workspace</td>
+<td>10/min</td>
+<td><code>429</code>.</td>
+</tr>
+<tr>
+<td>Usage-history reads per workspace</td>
+<td>30/min</td>
+<td><code>429</code> (its own budget, separate from the webhook&#39;s).</td>
+</tr>
+<tr>
 <td>Outstanding pairing codes per workspace</td>
 <td>3</td>
 <td><code>429</code>.</td>
@@ -2921,6 +2967,31 @@ are closed.</p>
 <td><code>400</code>; the hook sends several reports.</td>
 </tr>
 <tr>
+<td>Project days per workspace</td>
+<td>5,000 (source, project, day) keys</td>
+<td>New keys are refused and counted in the response&#39;s <code>refused</code>; held keys still update.</td>
+</tr>
+<tr>
+<td>Project-day window</td>
+<td>today − 90 days … tomorrow (UTC), real dates only</td>
+<td>Other rows are dropped and counted in <code>dropped</code>; aged-out days are flagged and free their slots.</td>
+</tr>
+<tr>
+<td>Usage sources per workspace</td>
+<td>8, across <code>/usage</code>, <code>/usage/projects</code> and <code>/usage/sessions</code></td>
+<td><code>429</code> for a new source.</td>
+</tr>
+<tr>
+<td>Limit-history series per workspace</td>
+<td>48 (source, window) pairs</td>
+<td>A new window shows as a bar but keeps no history.</td>
+</tr>
+<tr>
+<td>Limit-history points</td>
+<td>1 per series per minute</td>
+<td>The reading moves the bar; no history point is added.</td>
+</tr>
+<tr>
 <td>Rows per session-total report</td>
 <td>100</td>
 <td><code>400</code>; the hook chunks at the same number.</td>
@@ -2928,7 +2999,7 @@ are closed.</p>
 <tr>
 <td>Per-session totals per workspace</td>
 <td>500</td>
-<td>The oldest-updated is dropped (soft-deleted).</td>
+<td>New session ids are refused (counted in <code>refused</code>) unless the session has a card on the board; held ones still update.</td>
 </tr>
 <tr>
 <td>Per-session total retention</td>

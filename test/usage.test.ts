@@ -252,7 +252,7 @@ describe('per-session token totals', () => {
       .expect(200);
 
     await totals(app, token, { source: 'claude', sessions: [{ session_id: 's-1', tokens: 1_284_000 }] })
-      .expect(200, { ok: true, sessions: 1 });
+      .expect(200, { ok: true, sessions: 1, refused: 0 });
 
     const list = await request(app).get(`/w/${token}/api/sessions`).expect(200);
     const byId = new Map(list.body.map((s: { id: string; tokens?: number }) => [s.id, s.tokens]));
@@ -413,7 +413,7 @@ describe('per-session token totals', () => {
         { session_id: 'neg', tokens: -5 },
         { session_id: 'dupe', tokens: 2 },
       ],
-    }).expect(200, { ok: true, sessions: 2 });
+    }).expect(200, { ok: true, sessions: 2, refused: 0 });
 
     const list = await request(app).get(`/w/${token}/api/sessions`).expect(200);
     const byId = new Map(list.body.map((s: { id: string; tokens?: number }) => [s.id, s.tokens]));
@@ -431,7 +431,7 @@ describe('per-session token totals', () => {
       }));
     await totals(app, token, { source: 'claude', sessions: rows(101) }).expect(400);
     await totals(app, token, { source: 'claude', sessions: rows(100) })
-      .expect(200, { ok: true, sessions: 100 });
+      .expect(200, { ok: true, sessions: 100, refused: 0 });
   });
 
   it('drops a total the retention window has passed', async () => {
@@ -454,27 +454,73 @@ describe('per-session token totals', () => {
     expect(list.body[0]).not.toHaveProperty('tokens');
   });
 
-  it('drops the oldest totals past the per-workspace cap', async () => {
+  it('past the per-workspace cap refuses new totals, keeps the held ones, and still serves a live card', async () => {
+    // It used to accept the new id and evict the oldest — which bounded memory
+    // and nothing else, since an evicted row is only flagged on disk. Refusing
+    // is what bounds the table.
     const { app } = makeApp();
     const token = await createWorkspace(app);
-    await request(app).post(`/w/${token}/webhook`).send(webhookBody('first')).expect(200);
     await totals(app, token, { source: 'claude', sessions: [{ session_id: 'first', tokens: 5 }] })
-      .expect(200);
-
-    // 500 newer totals: the cap is 500, so the first one reported falls off.
+      .expect(200, { ok: true, sessions: 1, refused: 0 });
+    // 499 more: the cap is 500, so the workspace is now full.
     for (let chunk = 0; chunk < 5; chunk++) {
       await totals(app, token, {
         source: 'claude',
-        sessions: Array.from({ length: 100 }, (_, i) => ({
+        sessions: Array.from({ length: chunk === 4 ? 99 : 100 }, (_, i) => ({
           session_id: `filler-${chunk}-${i}`,
           tokens: 1,
         })),
       }).expect(200);
     }
 
+    // A new id with no card: refused, and said so.
+    await totals(app, token, { source: 'claude', sessions: [{ session_id: 'one-too-many', tokens: 9 }] })
+      .expect(200, { ok: true, sessions: 0, refused: 1 });
+    // A held id still updates; a mixed report stores what it can.
+    await totals(app, token, {
+      source: 'claude',
+      sessions: [{ session_id: 'first', tokens: 6 }, { session_id: 'also-new', tokens: 1 }],
+    }).expect(200, { ok: true, sessions: 1, refused: 1 });
+    // A session with a card on this board is the number someone is looking
+    // at, so it gets in at the cap — under its own source only.
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('live')).expect(200);
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('cx-live', { source: 'codex' })).expect(200);
+    await totals(app, token, { source: 'claude', sessions: [{ session_id: 'live', tokens: 42 }] })
+      .expect(200, { ok: true, sessions: 1, refused: 0 });
+    await totals(app, token, { source: 'claude', sessions: [{ session_id: 'cx-live', tokens: 1 }] })
+      .expect(200, { ok: true, sessions: 0, refused: 1 });
+
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('first')).expect(200);
+    await request(app).post(`/w/${token}/webhook`).send(webhookBody('one-too-many')).expect(200);
     const list = await request(app).get(`/w/${token}/api/sessions`).expect(200);
-    expect(list.body[0].id).toBe('first');
-    expect(list.body[0]).not.toHaveProperty('tokens');
+    const byId = new Map(list.body.map((s: { id: string; tokens?: number }) => [s.id, s.tokens]));
+    expect(byId.get('first')).toBe(6);
+    expect(byId.get('live')).toBe(42);
+    expect(byId.get('one-too-many')).toBeUndefined();
+  });
+
+  it('a total past its retention frees its slot at the cap', async () => {
+    const { app } = makeApp();
+    const token = await createWorkspace(app);
+    const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(eightDaysAgo);
+    try {
+      for (let chunk = 0; chunk < 5; chunk++) {
+        await totals(app, token, {
+          source: 'claude',
+          sessions: Array.from({ length: 100 }, (_, i) => ({ session_id: `old-${chunk}-${i}`, tokens: 1 })),
+        }).expect(200, { ok: true, sessions: 100, refused: 0 });
+      }
+      // Full, at the time.
+      await totals(app, token, { source: 'claude', sessions: [{ session_id: 'then', tokens: 1 }] })
+        .expect(200, { ok: true, sessions: 0, refused: 1 });
+    } finally {
+      clock.mockRestore();
+    }
+    // All 500 are past SESSION_TOTAL_TTL_MS now, so they are retired before
+    // the new ids are admitted.
+    await totals(app, token, { source: 'claude', sessions: [{ session_id: 'fresh', tokens: 3 }] })
+      .expect(200, { ok: true, sessions: 1, refused: 0 });
   });
 
   it('serves the legacy route behind the webhook secret', async () => {
@@ -487,7 +533,7 @@ describe('per-session token totals', () => {
       .post('/usage/sessions')
       .set('x-webhook-secret', 's3cret')
       .send(body)
-      .expect(200, { ok: true, sessions: 1 });
+      .expect(200, { ok: true, sessions: 1, refused: 0 });
 
     const list = await request(app).get('/api/sessions').expect(200);
     expect(list.body[0].tokens).toBe(64);

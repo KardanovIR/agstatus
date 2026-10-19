@@ -93,13 +93,36 @@ export async function suiteDatabaseUrl(suite: string): Promise<string> {
   return suiteUrl;
 }
 
-/** Drops all AgStatus tables so a Postgres test starts from nothing. */
+/**
+ * Drops all AgStatus tables so a Postgres test starts from nothing. All eight:
+ * this used to name only the first four, so session_events, usage_history,
+ * usage_project_days and usage_session_totals carried every earlier test's
+ * rows into the next — invisible while no test counted rows in them.
+ */
 export async function resetTables(databaseUrl: string): Promise<void> {
   if (!databaseUrl) return;
   const { Pool } = await import('pg');
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
-    await pool.query('DROP TABLE IF EXISTS workspaces, sessions, devices, usage_limits');
+    await pool.query(
+      `DROP TABLE IF EXISTS workspaces, sessions, devices, usage_limits, usage_history,
+         usage_project_days, usage_session_totals, session_events`
+    );
+  } finally {
+    await pool.end();
+  }
+}
+
+/** One query against a test database, on a pool of its own. */
+export async function sql<T = Record<string, unknown>>(
+  databaseUrl: string,
+  text: string,
+  values: unknown[] = [],
+): Promise<T[]> {
+  const { Pool } = await import('pg');
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  try {
+    return (await pool.query(text, values)).rows as T[];
   } finally {
     await pool.end();
   }

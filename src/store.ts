@@ -201,13 +201,94 @@ export interface SessionTotal {
 export const SESSION_TOTAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * Totals held per workspace, oldest-updated dropped first. A workspace holds
- * at most 50 live sessions and a week of turnover is nowhere near this — the
- * cap is not about honest boards but about the memory anyone holding the
- * token could otherwise pin: the endpoint shares the webhook budget
- * (120 posts a minute) and takes 100 rows a post.
+ * Totals held per workspace. A workspace holds at most 50 live sessions and a
+ * week of turnover is nowhere near this — the cap is not about honest boards
+ * but about what anyone holding the token could otherwise pin: the endpoint
+ * shares the webhook budget (120 posts a minute) and takes 100 rows a post.
+ *
+ * At the cap a NEW (source, session_id) is refused; an update to a key already
+ * held always lands, and so does a total for a session that has a card on this
+ * board right now (at most 50 more). This used to accept the new key and evict
+ * the oldest instead, which kept memory at 500 and did nothing for Postgres:
+ * every evicted row is only flagged, never removed, so a token posting fresh
+ * ids wrote 12,000 permanent rows a minute while the heap looked healthy.
+ * Refusing is the only bound that holds on disk as well as in memory.
  */
 const MAX_SESSION_TOTALS_PER_WORKSPACE = 500;
+
+/**
+ * Distinct (source, project, day) rows held per workspace.
+ *
+ * Sized against a real heavy board rather than a guess: one developer running
+ * Claude Code and Codex all day, with agent workflows spawning dozens of git
+ * worktrees — and a worktree is its own folder name, so its own project here.
+ * Counted from that machine's own hook scan state in October 2026, it held
+ * 278 rows across the full 90 days, and never more than 16 folders in a
+ * single day. Every day of the window as busy as its busiest
+ * day, for both agents, is 16 × 2 × 92 ≈ 2,950; this leaves room above that
+ * for a small team sharing one board.
+ *
+ * The bound is about what one free token could otherwise pin: 200 rows a
+ * report on the shared 120-a-minute budget is 24,000 new rows a minute, each
+ * one a Map entry and a permanent Postgres row. At the cap a NEW key is
+ * refused rather than an old one evicted, for the reason given at
+ * MAX_SESSION_TOTALS_PER_WORKSPACE: eviction only flags, so it bounds memory
+ * and leaves the disk to grow. Updates to a key already held always land, and
+ * days that age out of the window free their slots (pruneProjectDays). At
+ * roughly 260 bytes a row this is about 1.3 MB of heap per workspace.
+ */
+export const MAX_PROJECT_DAYS_PER_WORKSPACE = 5000;
+
+/**
+ * Distinct usage sources a workspace may report under, across /usage,
+ * /usage/projects and /usage/sessions together.
+ *
+ * Not an allow-list of 'claude' and 'codex', although those are the only two
+ * the bundled hook has ever sent to these endpoints (every version guards
+ * them with `SOURCE !== 'claude' && SOURCE !== 'codex'`, or earlier with
+ * Claude alone): docs/api.md documents `source` as an open agent kind, and a
+ * self-hosted board fed by someone's own reporter for a third agent must keep
+ * working. Four times what an honest board uses is still a small constant.
+ *
+ * Every source multiplies everything keyed by it — a usage entry, up to six
+ * history series, its own project-day and session-total keys — and the usage
+ * frame re-sorts and re-serialises every source on every post. Uncapped, one
+ * token minted a new source per post. A new source past the cap is refused
+ * (429); one already held always lands.
+ */
+export const MAX_USAGE_SOURCES_PER_WORKSPACE = 8;
+
+/** Windows one usage report may carry (the hook trims to the same number). */
+export const MAX_USAGE_WINDOWS = 6;
+
+/**
+ * Limit-history series — one per (source, window id) — held per workspace:
+ * every admitted source reporting a full set of windows at once.
+ *
+ * The source cap alone does not bound the series, because window ids are as
+ * open as sources were: six fresh ids a post under one source is 720 new
+ * series a minute, each its own history rows. An honest board has two sources
+ * with at most six windows each; the rest is room for the ids that follow
+ * model names (week_opus, week_sonnet, …) and so change as models come and go.
+ * At the cap a new series is not recorded — the limit bar itself still shows,
+ * only its history is not kept — after first forgetting any series that has
+ * been silent for the whole history window, which is what a restart forgets.
+ */
+const MAX_USAGE_SERIES_PER_WORKSPACE = MAX_USAGE_SOURCES_PER_WORKSPACE * MAX_USAGE_WINDOWS;
+
+/**
+ * The closest two recorded points of one series may be.
+ *
+ * Every chart that reads this series step-samples it once per UTC day —
+ * sampleSeries in public/app.js, UsageHistory.sampleSeries on iOS,
+ * UsageDetail.sampleSeries on Android — and the hook reports a source at most
+ * every five minutes per machine, so an honest board never comes near this. What it stops is a sender alternating usedPct: six series
+ * a post changed every time, 720 permanent usage_history rows a minute.
+ * A reading inside the minute still moves the live bar; only its history
+ * point is skipped, and the next report after the minute records whatever the
+ * value is by then.
+ */
+const USAGE_POINT_MIN_INTERVAL_MS = 60_000;
 
 export const COMMAND_TYPES = ['focus', 'resume'] as const;
 export type CommandType = (typeof COMMAND_TYPES)[number];
@@ -263,9 +344,34 @@ export const MAX_HISTORY_DAYS = 90;
 /** Points held in memory per (source, window) — a plan limit moves slowly. */
 const MAX_USAGE_POINTS = 2000;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /** The UTC day an instant falls in, as YYYY-MM-DD. */
 export function dayKey(at: number): string {
   return new Date(at).toISOString().slice(0, 10);
+}
+
+/**
+ * Whether a YYYY-MM-DD string names a day that exists. The shape check alone
+ * (`\d{4}-\d{2}-\d{2}`) let `9999-99-99` and `2026-13-45` through, and each
+ * such string is a key the store would hold — and one that sorts after every
+ * real day, so no age-based cutoff ever reached it. A round trip through Date
+ * is the whole check: an impossible date either fails to parse or comes back
+ * as a different day (V8 rolls `2026-02-30` over into March).
+ */
+export function isCalendarDay(day: string): boolean {
+  const at = Date.parse(`${day}T00:00:00Z`);
+  return Number.isFinite(at) && dayKey(at) === day;
+}
+
+/**
+ * The project days the store will hold at `now`: the history window back, and
+ * one day forward. The day is the reporter's UTC day, so a clock a little
+ * ahead of the server's lands on tomorrow just after midnight; anything past
+ * that is not a day anyone's logs can have yet.
+ */
+export function projectDayWindow(now: number): { oldest: string; newest: string } {
+  return { oldest: dayKey(now - MAX_HISTORY_DAYS * DAY_MS), newest: dayKey(now + DAY_MS) };
 }
 
 /** One entry in a session's timeline: what the agent switched to, and when. */
@@ -294,6 +400,33 @@ export const MAX_PENDING_COMMANDS_PER_WORKSPACE = 10;
 export const COMMAND_GRACE_MS = 10 * 60 * 1000;
 const LAST_SEEN_WRITE_THROTTLE_MS = 60_000;
 const MAX_DEVICES_PER_WORKSPACE = 10;
+/**
+ * Device registrations and removals per workspace per minute. The app posts
+ * when notifications are switched on, when a flag changes and once at launch,
+ * and deletes when they are switched off or the board is left — a handful in
+ * a busy minute. Unthrottled, a register-then-delete loop added one permanent
+ * flagged row per pair, limited only by how fast HTTP goes.
+ */
+const DEVICE_CHANGES_PER_MINUTE = 10;
+/**
+ * Device tokens a workspace may ever have on disk, live AND flagged. The
+ * window above slows a register/delete loop; only this ends it, because a
+ * delete flags the row and the live cap of 10 never sees it again. A token
+ * already on disk — live, or flagged and coming back — never counts twice.
+ * APNs issues a new token on a reinstall, a restore or a new phone, and ten
+ * full turnovers of the live cap is years of that for a small team; a board
+ * that does reach it can be replaced with a fresh one in seconds.
+ */
+const MAX_DEVICE_TOKENS_PER_WORKSPACE = 100;
+/**
+ * GET /api/usage/history per workspace per minute. Each read sorts and
+ * serialises the whole held series — bounded now by the caps above, but not
+ * free — on the one Node thread every tenant shares. The web board reads it
+ * when the usage screen opens and the iOS board once per connect (its streak),
+ * and a workspace has at most 10 viewer streams; three reads a viewer a minute
+ * is far past either.
+ */
+const HISTORY_READS_PER_MINUTE = 30;
 
 // Pairing codes: short-lived, single-use, in-memory only (never SQLite).
 // No I/L/O/0/1 to keep the codes unambiguous when read aloud or typed.
@@ -319,9 +452,19 @@ export class Store {
     string,
     Map<string, { notifyDone: boolean; createdAt: number; apnsServer: string | null }>
   >();
+  // Tokens whose device row is flagged on disk, per workspace. Never pushed to;
+  // kept so the lifetime cap can count them and so re-registering one revives
+  // its row instead of counting as a new token. Bounded by that cap.
+  private retiredDeviceTokens = new Map<string, Set<string>>();
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
+  private deviceWindows = new Map<string, { windowStart: number; count: number }>();
+  private historyWindows = new Map<string, { windowStart: number; count: number }>();
   // Plan-limit usage per workspace, keyed by source ("claude", "codex", …).
   private usageBySource = new Map<string, Map<string, Usage>>();
+  // Sources each workspace reports usage under, across all three usage
+  // endpoints; at most MAX_USAGE_SOURCES_PER_WORKSPACE. Rebuilt from what
+  // load() keeps, so a source with nothing left in memory is forgotten.
+  private usageSources = new Map<string, Set<string>>();
   // Per-session timelines (ascending seq), wsId → sessionId → events.
   private events = new Map<string, Map<string, SessionEvent[]>>();
   // Limit utilization over time, wsId → `${source}\n${windowId}` → ascending points.
@@ -332,9 +475,17 @@ export class Store {
   // apart from `sessions` on purpose: the rows arrive on their own endpoint,
   // outlive the cards they describe, and exist for ids that never had a card.
   private sessionTotals = new Map<string, Map<string, SessionTotal>>();
-  // Next seq per `${wsId}\n${sessionId}` — spans soft-deleted rows so a
-  // restarted server never reuses a primary key.
-  private eventSeq = new Map<string, number>();
+  // The next session_events seq, for every session of every workspace. One
+  // number, not one per session: the counter it replaced was a Map entry per
+  // session id ever seen, which nothing could ever remove — forgetting one
+  // would restart that session at 0, collide with its soft-deleted rows on the
+  // primary key, and the upsert would overwrite and un-delete them. A single
+  // counter seeded past MAX(seq) over every row, flagged ones included, never
+  // reuses a key and costs eight bytes however many sessions come and go.
+  // It is still what every reader of seq relies on: unique within a session
+  // (it is unique everywhere) and increasing within one (it increases
+  // everywhere); it is no longer dense or zero-based, which nothing assumes.
+  private nextSeq = 0;
   // Escrowed pairing codes, keyed by the normalized (dash-less) code.
   private pairCodes = new Map<string, { rawToken: string; expiresAt: number }>();
   // Focus commands, wsId → id → command; in memory only, swept like pair codes.
@@ -517,8 +668,44 @@ export class Store {
       });
     }
 
+    // The flagged device rows of live boards, which the lifetime cap counts.
+    // Ranked in SQL rather than capped here: a register/delete loop from before
+    // that cap existed can have left any number of them, and pg hands back the
+    // whole result at once — a cap applied after the query would come too late
+    // to keep startup from holding all of it.
+    const retired = await pool.query(
+      `SELECT workspace_id, device_token FROM (
+         SELECT d.workspace_id, d.device_token,
+                ROW_NUMBER() OVER (PARTITION BY d.workspace_id ORDER BY d.deleted_at DESC) AS rank
+         FROM devices d JOIN workspaces w ON w.id = d.workspace_id AND w.deleted_at IS NULL
+         WHERE d.deleted_at IS NOT NULL
+       ) ranked
+       WHERE rank <= $1`,
+      [MAX_DEVICE_TOKENS_PER_WORKSPACE]
+    );
+    for (const row of retired.rows as Array<{ workspace_id: string; device_token: string }>) {
+      let set = this.retiredDeviceTokens.get(row.workspace_id);
+      if (!set) {
+        set = new Set();
+        this.retiredDeviceTokens.set(row.workspace_id, set);
+      }
+      set.add(row.device_token);
+    }
+
+    // Only reports young enough for getUsage() to serve: an older one would
+    // be filtered out of every read anyway, so loading it only spent memory —
+    // and spent it on whatever a source flood left behind. Ranked per
+    // workspace for the reason given at the retired-device query above.
     const usage = await pool.query(
-      'SELECT workspace_id, source, windows, updated_at FROM usage_limits WHERE deleted_at IS NULL'
+      `SELECT workspace_id, source, windows, updated_at FROM (
+         SELECT workspace_id, source, windows, updated_at,
+                ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY updated_at DESC) AS rank
+         FROM usage_limits
+         WHERE deleted_at IS NULL AND updated_at >= $1
+       ) ranked
+       WHERE rank <= $2
+       ORDER BY updated_at DESC`,
+      [Date.now() - USAGE_TTL_MS, MAX_USAGE_SOURCES_PER_WORKSPACE]
     );
     for (const row of usage.rows as Array<{
       workspace_id: string; source: string; windows: string; updated_at: string;
@@ -529,6 +716,7 @@ export class Store {
       } catch {
         continue; // corrupt row — skip, it will be overwritten on the next report
       }
+      if (!this.admitUsageSource(row.workspace_id, row.source)) continue;
       let map = this.usageBySource.get(row.workspace_id);
       if (!map) {
         map = new Map();
@@ -538,16 +726,36 @@ export class Store {
     }
 
     // Only the retained window is loaded: older points are left on disk rather
-    // than deleted, per the soft-delete rule, but never reach memory.
-    const historySince = Date.now() - MAX_HISTORY_DAYS * 24 * 60 * 60 * 1000;
+    // than deleted, per the soft-delete rule, but never reach memory. Within
+    // it, only what memory would hold anyway — the newest MAX_USAGE_POINTS of
+    // each series, and the MAX_USAGE_SERIES_PER_WORKSPACE series heard from
+    // most recently — chosen in SQL, because these rows were never bounded on
+    // disk: a series flood from before the caps can sit inside the window in
+    // any quantity, and pg would hand all of it to startup in one result.
+    const historySince = Date.now() - MAX_HISTORY_DAYS * DAY_MS;
     const points = await pool.query(
-      `SELECT workspace_id, source, window_id, at, used_pct FROM usage_history
-       WHERE deleted_at IS NULL AND at >= $1 ORDER BY at`,
-      [historySince]
+      `SELECT workspace_id, source, window_id, at, used_pct FROM (
+         SELECT workspace_id, source, window_id, at, used_pct,
+                DENSE_RANK() OVER (
+                  PARTITION BY workspace_id ORDER BY newest DESC, source, window_id
+                ) AS series_rank
+         FROM (
+           SELECT workspace_id, source, window_id, at, used_pct,
+                  ROW_NUMBER() OVER (PARTITION BY workspace_id, source, window_id ORDER BY at DESC) AS point_rank,
+                  MAX(at) OVER (PARTITION BY workspace_id, source, window_id) AS newest
+           FROM usage_history
+           WHERE deleted_at IS NULL AND at >= $1
+         ) series_points
+         WHERE point_rank <= $2
+       ) ranked
+       WHERE series_rank <= $3
+       ORDER BY at`,
+      [historySince, MAX_USAGE_POINTS, MAX_USAGE_SERIES_PER_WORKSPACE]
     );
     for (const row of points.rows as Array<{
       workspace_id: string; source: string; window_id: string; at: string; used_pct: string;
     }>) {
+      if (!this.admitUsageSource(row.workspace_id, row.source)) continue;
       let ws = this.usagePoints.get(row.workspace_id);
       if (!ws) {
         ws = new Map();
@@ -567,14 +775,32 @@ export class Store {
       }
     }
 
+    // The same window the write path admits, at both ends. It used to be
+    // bounded below only, so a row dated 9999-… passed every restart's filter
+    // forever — and a flood big enough to exhaust memory at runtime would have
+    // been reloaded whole on the next boot, crash-looping the process until
+    // someone flagged the rows by hand. Within the window, the newest
+    // MAX_PROJECT_DAYS_PER_WORKSPACE days of each board, ranked in SQL for the
+    // reason given at the usage_history query above: rows written before the
+    // cap existed are not bounded on disk. A string inside the window that is
+    // not a real day (2026-09-45) is skipped here; it can only be left over
+    // from before the write path checked.
+    const projectWindow = projectDayWindow(Date.now());
     const projectDays = await pool.query(
-      `SELECT workspace_id, source, project, day, tokens FROM usage_project_days
-       WHERE deleted_at IS NULL AND day >= $1`,
-      [dayKey(historySince)]
+      `SELECT workspace_id, source, project, day, tokens FROM (
+         SELECT workspace_id, source, project, day, tokens,
+                ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY day DESC, updated_at DESC) AS rank
+         FROM usage_project_days
+         WHERE deleted_at IS NULL AND day >= $1 AND day <= $2
+       ) ranked
+       WHERE rank <= $3`,
+      [projectWindow.oldest, projectWindow.newest, MAX_PROJECT_DAYS_PER_WORKSPACE]
     );
     for (const row of projectDays.rows as Array<{
       workspace_id: string; source: string; project: string; day: string; tokens: string;
     }>) {
+      if (!isCalendarDay(row.day)) continue;
+      if (!this.admitUsageSource(row.workspace_id, row.source)) continue;
       let ws = this.projectDays.get(row.workspace_id);
       if (!ws) {
         ws = new Map();
@@ -602,6 +828,7 @@ export class Store {
     for (const row of sessionTotals.rows as Array<{
       workspace_id: string; source: string; session_id: string; tokens: string; updated_at: string;
     }>) {
+      if (!this.admitUsageSource(row.workspace_id, row.source)) continue;
       let ws = this.sessionTotals.get(row.workspace_id);
       if (!ws) {
         ws = new Map();
@@ -645,13 +872,15 @@ export class Store {
         at: Number(row.at),
       });
     }
-    // Seq counters continue past soft-deleted rows, so take MAX over all rows.
-    const seqs = await pool.query(
-      'SELECT workspace_id, session_id, MAX(seq) AS max_seq FROM session_events GROUP BY workspace_id, session_id'
+    // The counter continues past soft-deleted rows, so MAX is over every row —
+    // which is what guarantees no new event can land on a flagged row's key.
+    // One scalar: this used to be a GROUP BY that loaded a counter for every
+    // session id the database had ever seen, deleted boards included.
+    const seq = await pool.query(
+      'SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq FROM session_events'
     );
-    for (const row of seqs.rows as Array<{ workspace_id: string; session_id: string; max_seq: string }>) {
-      this.eventSeq.set(`${row.workspace_id}\n${row.session_id}`, Number(row.max_seq) + 1);
-    }
+    // max(): never backwards, even past an event recorded before load finished.
+    this.nextSeq = Math.max(this.nextSeq, Number((seq.rows[0] as { next_seq: string }).next_seq));
   }
 
   /**
@@ -715,8 +944,12 @@ export class Store {
     const existed = this.workspaces.delete(wsId);
     this.sessions.delete(wsId);
     this.webhookWindows.delete(wsId);
+    this.deviceWindows.delete(wsId);
+    this.historyWindows.delete(wsId);
     this.deviceTokens.delete(wsId);
+    this.retiredDeviceTokens.delete(wsId);
     this.usageBySource.delete(wsId);
+    this.usageSources.delete(wsId);
     this.events.delete(wsId);
     this.usagePoints.delete(wsId);
     this.projectDays.delete(wsId);
@@ -828,9 +1061,12 @@ export class Store {
   /**
    * Registers (or updates) a push-notification device token. Tokens are
    * normalized to lowercase. Returns 'cap' only when a NEW device would exceed
-   * the per-workspace limit; updates to existing devices always succeed.
+   * the per-workspace limit of live devices, and 'lifetime' when a token the
+   * workspace has never had would take it past MAX_DEVICE_TOKENS_PER_WORKSPACE
+   * rows on disk; updates to existing devices always succeed, and a token
+   * whose row is flagged comes back without counting as new.
    */
-  upsertDevice(wsId: string, deviceToken: string, notifyDone: boolean): 'ok' | 'cap' {
+  upsertDevice(wsId: string, deviceToken: string, notifyDone: boolean): 'ok' | 'cap' | 'lifetime' {
     const token = deviceToken.toLowerCase();
     let map = this.deviceTokens.get(wsId);
     if (!map) {
@@ -838,7 +1074,13 @@ export class Store {
       this.deviceTokens.set(wsId, map);
     }
     const existing = map.get(token);
+    const retired = this.retiredDeviceTokens.get(wsId);
     if (!existing && map.size >= MAX_DEVICES_PER_WORKSPACE) return 'cap';
+    if (!existing && !retired?.has(token)
+        && map.size + (retired?.size ?? 0) >= MAX_DEVICE_TOKENS_PER_WORKSPACE) {
+      return 'lifetime';
+    }
+    retired?.delete(token); // the upsert below un-flags its row
     const now = Date.now();
     const createdAt = existing?.createdAt ?? now;
     // Re-registering keeps the learned endpoint: the same token on the same
@@ -858,6 +1100,13 @@ export class Store {
     const token = deviceToken.toLowerCase();
     const removed = this.deviceTokens.get(wsId)?.delete(token) ?? false;
     if (removed) {
+      // The row stays on disk, flagged, so the lifetime cap keeps counting it.
+      let retired = this.retiredDeviceTokens.get(wsId);
+      if (!retired) {
+        retired = new Set();
+        this.retiredDeviceTokens.set(wsId, retired);
+      }
+      retired.add(token);
       this.exec(
         'UPDATE devices SET deleted_at = $3 WHERE workspace_id = $1 AND device_token = $2',
         [wsId, token, Date.now()]
@@ -895,6 +1144,26 @@ export class Store {
     return this.deviceTokens.get(wsId)?.size ?? 0;
   }
 
+  /**
+   * Whether `source` may report usage to this workspace — one it already
+   * reports under, or a new one while it holds fewer than
+   * MAX_USAGE_SOURCES_PER_WORKSPACE — and records it if so. app.ts asks once a
+   * report has passed validation, so a malformed post never takes a slot;
+   * load() asks for every row it keeps, so a database holding more sources
+   * than that (written before the cap) restarts with the cap.
+   */
+  admitUsageSource(wsId: string, source: string): boolean {
+    let sources = this.usageSources.get(wsId);
+    if (!sources) {
+      sources = new Set();
+      this.usageSources.set(wsId, sources);
+    }
+    if (sources.has(source)) return true;
+    if (sources.size >= MAX_USAGE_SOURCES_PER_WORKSPACE) return false;
+    sources.add(source);
+    return true;
+  }
+
   /** Stores the latest plan usage for one source and returns the stamped record. */
   setUsage(wsId: string, source: string, windows: UsageWindow[]): Usage {
     let map = this.usageBySource.get(wsId);
@@ -926,6 +1195,12 @@ export class Store {
    * limit is a step function and reports arrive every few minutes, mostly
    * repeating the last value, so recording only the changes keeps the series
    * small without losing its shape.
+   *
+   * Two bounds on top of that, both refusals rather than evictions so that
+   * what reaches usage_history is bounded too: no new series past
+   * MAX_USAGE_SERIES_PER_WORKSPACE, and no point closer than
+   * USAGE_POINT_MIN_INTERVAL_MS to the one before it in its series. The second
+   * also keeps a series in order if the clock ever steps back.
    */
   private recordUsagePoints(wsId: string, source: string, windows: UsageWindow[], at: number): void {
     let ws = this.usagePoints.get(wsId);
@@ -937,11 +1212,14 @@ export class Store {
       const key = `${source}\n${w.id}`;
       let list = ws.get(key);
       if (!list) {
+        if (ws.size >= MAX_USAGE_SERIES_PER_WORKSPACE) this.forgetSilentSeries(ws, at);
+        if (ws.size >= MAX_USAGE_SERIES_PER_WORKSPACE) continue;
         list = [];
         ws.set(key, list);
       }
       const prev = list[list.length - 1];
       if (prev && prev.usedPct === w.usedPct) continue;
+      if (prev && at - prev.at < USAGE_POINT_MIN_INTERVAL_MS) continue;
       list.push({ at, usedPct: w.usedPct });
       if (list.length > MAX_USAGE_POINTS) list.splice(0, list.length - MAX_USAGE_POINTS);
       this.exec(
@@ -950,6 +1228,21 @@ export class Store {
          ON CONFLICT (workspace_id, source, window_id, at) DO NOTHING`,
         [wsId, source, w.id, at, w.usedPct]
       );
+    }
+  }
+
+  /**
+   * Drops, from memory only, every series whose newest point is older than
+   * the history window — the series a restart would not load. Their rows stay
+   * on disk unflagged, exactly like every other point that has aged out of the
+   * window. Only run when the series cap is reached, so a board whose window
+   * ids followed a model that has since gone gets the slot back.
+   */
+  private forgetSilentSeries(ws: Map<string, UsagePoint[]>, now: number): void {
+    const cutoff = now - MAX_HISTORY_DAYS * DAY_MS;
+    for (const [key, list] of ws) {
+      const newest = list[list.length - 1];
+      if (!newest || newest.at < cutoff) ws.delete(key);
     }
   }
 
@@ -983,12 +1276,20 @@ export class Store {
    * Replaces the token totals for the given (source, project, day) rows. Whole
    * days are replaced rather than incremented so a re-run — a backfill, or a
    * hook re-reporting today — converges instead of double-counting.
+   *
+   * Not every row is held, and the counts say what became of each:
+   * - dropped: not a real day, or outside projectDayWindow. Silently, not a
+   *   400 — `--backfill` sends everything the logs still have, and the logs
+   *   can reach further back than the window does. Rows that are only too old
+   *   are the hook's business; rows dated 9999-99-99 are nobody's.
+   * - refused: a new key with the workspace at MAX_PROJECT_DAYS_PER_WORKSPACE.
+   * - stored: everything else, which is written through as before.
    */
   setProjectDays(
     wsId: string,
     source: string,
     days: Array<{ project: string; day: string; tokens: number }>
-  ): void {
+  ): { stored: number; dropped: number; refused: number } {
     let ws = this.projectDays.get(wsId);
     if (!ws) {
       ws = new Map();
@@ -1001,19 +1302,67 @@ export class Store {
       }
     }
     const now = Date.now();
+    const { oldest, newest } = projectDayWindow(now);
+    // Before admitting anything, so the days that just aged out free their
+    // slots for today's.
+    this.pruneProjectDays(wsId, ws, oldest, now);
+    let stored = 0;
+    let dropped = 0;
+    let refused = 0;
     for (const d of days) {
-      ws.set(`${source}\n${d.project}\n${d.day}`, {
+      if (!isCalendarDay(d.day) || d.day < oldest || d.day > newest) {
+        dropped += 1;
+        continue;
+      }
+      const key = `${source}\n${d.project}\n${d.day}`;
+      if (!ws.has(key) && ws.size >= MAX_PROJECT_DAYS_PER_WORKSPACE) {
+        refused += 1;
+        continue;
+      }
+      ws.set(key, {
         source,
         project: d.project,
         day: d.day,
         tokens: d.tokens,
       });
+      stored += 1;
       this.exec(
         `INSERT INTO usage_project_days (workspace_id, source, project, day, tokens, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (workspace_id, source, project, day) DO UPDATE SET
            tokens = EXCLUDED.tokens, updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
         [wsId, source, d.project, d.day, d.tokens, now]
+      );
+    }
+    return { stored, dropped, refused };
+  }
+
+  /**
+   * Forgets the days that have fallen out of the history window — out of
+   * memory now, flagged (never removed) on disk — the way pruneSessionTotals
+   * retires totals. Runs on the write path rather than on a timer, like that
+   * one: the map only grows when a report arrives. Until now nothing removed a
+   * project day while the process ran at all; only a restart's load filter
+   * did, so a long-lived process kept every day it had ever been sent.
+   *
+   * One UPDATE per workspace, and only when something in memory actually aged
+   * out — the cutoff moves once a day — rather than one per row. It flags
+   * every live row of the board older than the cutoff, which is the same set
+   * plus whatever a restart had already declined to load.
+   */
+  private pruneProjectDays(wsId: string, ws: Map<string, ProjectDay>, oldest: string, now: number): void {
+    let pruned = false;
+    for (const [key, row] of ws) {
+      if (row.day < oldest) {
+        ws.delete(key);
+        pruned = true;
+      }
+    }
+    if (pruned) {
+      this.exec(
+        `UPDATE usage_project_days SET deleted_at = $3
+         WHERE workspace_id = $1 AND day < $2 AND deleted_at IS NULL`,
+        [wsId, oldest, now]
       );
     }
   }
@@ -1047,12 +1396,17 @@ export class Store {
    *
    * Replacement also makes the post idempotent: a duplicate costs nothing and
    * one that never lands costs only freshness.
+   *
+   * With the workspace at MAX_SESSION_TOTALS_PER_WORKSPACE a new key is
+   * refused (counted, not stored, not written) unless its session has a card
+   * on this board right now — the one number a viewer is looking for. Totals
+   * past their retention are retired first, so they free their slots.
    */
   setSessionTotals(
     wsId: string,
     source: string,
     rows: Array<{ sessionId: string; tokens: number }>
-  ): string[] {
+  ): { changed: string[]; stored: number; refused: number } {
     let ws = this.sessionTotals.get(wsId);
     if (!ws) {
       ws = new Map();
@@ -1065,12 +1419,25 @@ export class Store {
       }
     }
     const now = Date.now();
+    this.pruneSessionTotals(wsId, ws, now);
+    const cards = this.sessions.get(wsId);
     const changed: string[] = [];
+    let refused = 0;
     for (const row of rows) {
       const key = `${source}\n${row.sessionId}`;
       const prev = ws.get(key);
+      if (!prev && ws.size >= MAX_SESSION_TOTALS_PER_WORKSPACE) {
+        // Cards are capped too (50 a workspace on a hosted board), so this
+        // exception lifts the map at most that far past its own cap.
+        const card = cards?.get(row.sessionId);
+        if (!card || card.source !== source) {
+          refused += 1;
+          continue;
+        }
+      }
       // Re-set rather than mutate so the entry moves to the end of the Map:
-      // insertion order is what the cap below evicts by.
+      // insertion order is freshness order, which is what load() keeps the
+      // newest of when a database holds more than the cap.
       ws.delete(key);
       ws.set(key, { source, sessionId: row.sessionId, tokens: row.tokens, updatedAt: now });
       if (!prev || prev.tokens !== row.tokens) changed.push(row.sessionId);
@@ -1082,27 +1449,20 @@ export class Store {
         [wsId, source, row.sessionId, row.tokens, now]
       );
     }
-    this.pruneSessionTotals(wsId, ws, now);
-    return changed;
+    return { changed, stored: rows.length - refused, refused };
   }
 
   /**
-   * Drops totals past the retention window and, past the per-workspace cap,
-   * the oldest ones. Runs on the write path rather than on a timer: the map
-   * only grows when a report arrives, and that report has already walked it.
+   * Retires totals past the retention window. Runs on the write path rather
+   * than on a timer: the map only grows when a report arrives, and that report
+   * walks it anyway. The cap is no longer enforced here by dropping the
+   * oldest — setSessionTotals refuses new keys instead — because a drop only
+   * flags the row, and a flag bounds memory while the table keeps growing.
    */
   private pruneSessionTotals(wsId: string, ws: Map<string, SessionTotal>, now: number): void {
     const cutoff = now - SESSION_TOTAL_TTL_MS;
     for (const [key, total] of ws) {
       if (total.updatedAt < cutoff) this.dropSessionTotal(wsId, ws, key, total, now);
-    }
-    // Insertion order is freshness order (setSessionTotals re-inserts on every
-    // write), so the front of the Map is the oldest.
-    while (ws.size > MAX_SESSION_TOTALS_PER_WORKSPACE) {
-      const oldest = ws.entries().next();
-      if (oldest.done) break;
-      const [key, total] = oldest.value;
-      this.dropSessionTotal(wsId, ws, key, total, now);
     }
   }
 
@@ -1172,9 +1532,7 @@ export class Store {
       list = [];
       ws.set(sessionId, list);
     }
-    const seqKey = `${wsId}\n${sessionId}`;
-    const seq = this.eventSeq.get(seqKey) ?? 0;
-    this.eventSeq.set(seqKey, seq + 1);
+    const seq = this.nextSeq++;
 
     list.push({ seq, status, message, at });
     this.exec(
@@ -1266,6 +1624,16 @@ export class Store {
   /** Fixed-window limit on listener connects per workspace (each one is broadcast to every viewer). */
   allowListenerConnect(wsId: string): boolean {
     return this.allowInWindow(this.listenerWindows, wsId, LISTENER_CONNECTS_PER_MINUTE);
+  }
+
+  /** Fixed-window limit on device registrations and removals per workspace, one budget for both. */
+  allowDeviceChange(wsId: string): boolean {
+    return this.allowInWindow(this.deviceWindows, wsId, DEVICE_CHANGES_PER_MINUTE);
+  }
+
+  /** Fixed-window limit on usage-history reads per workspace, apart from every write budget. */
+  allowHistoryRead(wsId: string): boolean {
+    return this.allowInWindow(this.historyWindows, wsId, HISTORY_READS_PER_MINUTE);
   }
 
   private allowInWindow(

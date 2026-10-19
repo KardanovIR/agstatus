@@ -20,6 +20,8 @@ import {
   machineKeyMatches,
   MAX_HISTORY_DAYS,
   MAX_PENDING_COMMANDS_PER_WORKSPACE,
+  MAX_USAGE_SOURCES_PER_WORKSPACE,
+  MAX_USAGE_WINDOWS,
   normalizeHost,
   PAIR_CODE_TTL_MS,
   STATUSES,
@@ -44,7 +46,6 @@ const MESSAGE_MAX = 300;
 const USAGE_SOURCE_RE = /^[a-z][a-z0-9_-]{0,23}$/;
 const USAGE_WINDOW_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 const USAGE_LABEL_MAX = 48;
-const MAX_USAGE_WINDOWS = 6;
 const PROJECT_NAME_MAX = 120;
 // Sized to fit inside the 16kb JSON body limit (~65 bytes a row); a backfill
 // spanning more than this sends several reports.
@@ -58,8 +59,12 @@ const MAX_SESSION_TOTALS_PER_REPORT = 100;
 // half its length: both agents name sessions with a uuid (36 chars), and the
 // bound is what turns the body estimate above into an actual limit.
 const SESSION_TOTAL_ID_MAX = 64;
+// The shape only. Whether the day exists, and whether it is one the store
+// holds, is Store.setProjectDays's call (isCalendarDay, projectDayWindow): a
+// row that fails those is dropped, while a row that fails this is a 400.
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_HISTORY_DAYS = 30;
+const TOO_MANY_SOURCES = `too many usage sources for this workspace (at most ${MAX_USAGE_SOURCES_PER_WORKSPACE})`;
 // Focus: a tap is {id, type, session_id}; the id is a client uuid so a retry
 // can be told apart from a second tap.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -411,6 +416,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
   /**
    * Token spend per project and day, reported by the hook from the agent's own
    * local logs. Whole days are replaced, so a backfill can be re-run safely.
+   *
+   * A well-formed row is not necessarily a stored one: the store drops days
+   * that do not exist or fall outside the history window, and refuses new
+   * keys once the board holds MAX_PROJECT_DAYS_PER_WORKSPACE. The response
+   * says how many of each, so a sender can see it is being capped — the
+   * bundled hook ignores response bodies by design and is unaffected.
    */
   function handleProjectUsage(wsId: string, req: Request, res: Response): void {
     if (cfg.multiTenant && cfg.rateLimit && !store.allowWebhook(wsId)) {
@@ -438,9 +449,13 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const d = item as Record<string, unknown>;
       const project = clean(d.project, PROJECT_NAME_MAX);
       const day = typeof d.day === 'string' ? d.day : '';
+      // Bounded above for the reason handleSessionUsage gives: past
+      // MAX_SAFE_INTEGER a double is no longer an exact integer, so it cannot
+      // mean what "tokens spent that day" means, and 1e300 is a bug or an
+      // attack at the sender, not a busy day. Rejected rather than clamped.
       const tokens =
         typeof d.tokens === 'number' && Number.isFinite(d.tokens) ? Math.max(0, Math.floor(d.tokens)) : -1;
-      if (!project || !DAY_RE.test(day) || tokens < 0) {
+      if (!project || !DAY_RE.test(day) || tokens < 0 || tokens > Number.MAX_SAFE_INTEGER) {
         res.status(400).json({ error: 'each day needs a project, a YYYY-MM-DD day and numeric tokens' });
         return;
       }
@@ -449,8 +464,12 @@ export function createApp(cfg: AppConfig): CreatedApp {
       seen.add(key);
       days.push({ project, day, tokens });
     }
-    store.setProjectDays(wsId, source, days);
-    res.json({ ok: true, days: days.length });
+    if (!store.admitUsageSource(wsId, source)) {
+      res.status(429).json({ error: TOO_MANY_SOURCES });
+      return;
+    }
+    const { stored, dropped, refused } = store.setProjectDays(wsId, source, days);
+    res.json({ ok: true, days: stored, dropped, refused });
   }
 
   /**
@@ -520,19 +539,38 @@ export function createApp(cfg: AppConfig): CreatedApp {
       byId.set(sessionId, tokens);
     }
     const rows = Array.from(byId, ([sessionId, tokens]) => ({ sessionId, tokens }));
+    if (!store.admitUsageSource(wsId, source)) {
+      res.status(429).json({ error: TOO_MANY_SOURCES });
+      return;
+    }
     // Only the cards on this board whose number actually moved: a report that
     // repeats itself broadcasts nothing, and a total for a session that has no
     // card (already expired, or never posted to this board) is stored for the
     // card's return without waking any viewer.
-    for (const id of store.setSessionTotals(wsId, source, rows)) {
+    const { changed, stored, refused } = store.setSessionTotals(wsId, source, rows);
+    for (const id of changed) {
       const session = store.getSession(wsId, id);
       if (session && session.source === source) broadcast(wsId, 'session', session);
     }
-    res.json({ ok: true, sessions: rows.length });
+    // `refused`: new ids the board had no room for (see setSessionTotals).
+    res.json({ ok: true, sessions: stored, refused });
   }
 
-  /** Both series behind the usage detail screen: limit over time, and by project. */
+  /**
+   * Both series behind the usage detail screen: limit over time, and by project.
+   *
+   * The one read here with a budget of its own. Every other read is a lookup;
+   * this one filters, sorts and serialises everything the board holds for its
+   * window, synchronously, on the thread every tenant shares. Before the write
+   * caps a flooded board took ~0.4 s and 36 MB a read, and nothing stopped a
+   * token holder asking for it in a loop. The caps bound one read; this
+   * bounds how many (HISTORY_READS_PER_MINUTE in store.ts).
+   */
   function handleUsageHistory(wsId: string, req: Request, res: Response): void {
+    if (cfg.rateLimit && !store.allowHistoryRead(wsId)) {
+      res.status(429).json({ error: 'rate limit exceeded' });
+      return;
+    }
     const asked = Number(req.query.days);
     const days =
       Number.isFinite(asked) && asked > 0
@@ -562,6 +600,10 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.status(400).json({
         error: `windows must be 1-${MAX_USAGE_WINDOWS} objects with unique id and numeric usedPct`,
       });
+      return;
+    }
+    if (!store.admitUsageSource(wsId, source)) {
+      res.status(429).json({ error: TOO_MANY_SOURCES });
       return;
     }
     store.setUsage(wsId, source, windows);
@@ -1090,9 +1132,17 @@ export function createApp(cfg: AppConfig): CreatedApp {
     });
 
     // Push-notification device registration (upsert by workspace + token).
+    // Register and delete share one small budget (allowDeviceChange): each
+    // delete flags a row that stays on disk, so the pair used to be a free,
+    // unthrottled way to add a permanent row. The lifetime cap ('lifetime'
+    // below) is what finally ends that loop; the window only slows it.
     app.post('/w/:token/devices', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
+      if (cfg.rateLimit && !store.allowDeviceChange(wsId)) {
+        res.status(429).json({ error: 'rate limit exceeded' });
+        return;
+      }
       const body = (req.body ?? {}) as Record<string, unknown>;
       const deviceToken = typeof body.device_token === 'string' ? body.device_token : '';
       if (!DEVICE_TOKEN_RE.test(deviceToken)) {
@@ -1108,12 +1158,20 @@ export function createApp(cfg: AppConfig): CreatedApp {
         res.status(429).json({ error: 'too many devices for this workspace' });
         return;
       }
+      if (result === 'lifetime') {
+        res.status(429).json({ error: 'too many device tokens have been registered to this workspace' });
+        return;
+      }
       res.json({ ok: true });
     });
 
     app.delete('/w/:token/devices/:deviceToken', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
+      if (cfg.rateLimit && !store.allowDeviceChange(wsId)) {
+        res.status(429).json({ error: 'rate limit exceeded' });
+        return;
+      }
       res.json({ ok: store.deleteDevice(wsId, req.params.deviceToken) });
     });
 
