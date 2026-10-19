@@ -644,11 +644,24 @@ window in **kitty** when `allow_remote_control` and a `listen_on unix:`
 socket are configured; the session in **iTerm2** (its `iterm2:reveal` URL)
 and **WezTerm** (its CLI) — both marked experimental until verified on real
 setups; the thread in **Codex Desktop** (its `codex://threads/` link); the
+session in **Claude Desktop** (its `claude://claude.ai/epitaxy/` link, from
+the session id the app hands its agent — experimental, because nothing public
+documents the link, and used only when the record shows the app itself
+spawned that agent. A `claude` started inside a desktop session inherits the
+id but never gets the link: one in the app's terminal panel, or one run from
+the session's Bash tool, gets plain activation of the app. The Bash-tool
+one's process walk records the parent agent's own bundled CLI,
+`com.anthropic.claude-code`, which is never handed to `open`. The app is
+raised for it only when the record also carries the `claude-desktop`
+entrypoint and, if it has one, Claude Desktop's own `__CFBundleIdentifier`,
+both inherited from the desktop session; that bundle id with anything else
+answers `unsupported-host`. See [Focus support](focus-support.md)); the
 project window in **JetBrains IDEs** and **Zed**; and plain app activation
-(`open -b`) for the other apps in the listener's table — Terminal.app,
-Ghostty, Alacritty, Warp, Hyper, Tabby, Rio, Xcode, VS Code, Cursor,
-Windsurf, Claude Desktop (inside a multiplexer whose outer terminal is not
-in the table, the pane is selected and the window stays where it is).
+(`open -b`) for the other apps
+in the listener's table — Terminal.app, Ghostty, Alacritty, Warp, Hyper,
+Tabby, Rio, Xcode, VS Code, Cursor, Windsurf (inside a multiplexer whose
+outer terminal is not in the table, the pane is selected and the window
+stays where it is).
 Tab-exact focus in Terminal.app and
 Ghostty needs Apple Events, which a plain Node process cannot send without
 prompting for every app; that arrives with the signed listener app in a
@@ -715,10 +728,18 @@ What can resume in v1: **agterm**; **kitty** (with `allow_remote_control`
 and a `listen_on unix:` socket, otherwise a new window); **WezTerm**;
 **Ghostty**, **Alacritty** and **Rio** (a new window through `open -n`);
 **tmux** and **Herdr** (a new pane in the same session, then the outer
-terminal is raised); and **Codex Desktop**, whose `codex://threads/` link
-reopens the thread without starting anything. Every row that starts a
-process ships as experimental until it has been checked on a real setup —
-the ack carries that and the board shows it.
+terminal is raised); **Codex Desktop**, whose `codex://threads/` link
+reopens the thread without starting anything; and **Claude Desktop**, whose
+session link (the one Focus opens, under the same conditions) reopens the
+conversation in the app, which carries it on from there — again nothing is
+started, and the row is experimental. Every row that starts a process ships
+as experimental until it has been checked on a real setup. Today that mark
+lives on the machine — the listener's log and `agstatus listener plan` show
+it — and not on the board: the ack carries the result and its reach, never
+the flag, so a Claude Desktop link the app ignores still reads "Resumed"
+there. The listener cannot catch that case
+itself, since nothing it waits for proves the conversation opened (with the
+app already in front, its frontmost check passes at once).
 
 What cannot, and why:
 
@@ -728,8 +749,13 @@ What cannot, and why:
 - **VS Code, Cursor, Windsurf, JetBrains IDEs, Zed** have no agent session
   to resume from outside, and **Warp, Hyper, Tabby, Xcode** take no command
   from `open`: a Resume tap on them answers `unsupported-host`.
-- **Claude Desktop** keeps its own conversation list and documents no
-  resume link, so the tap just brings the app to the front.
+- **Claude Desktop** without a session id the listener trusts — none in the
+  record, one of a shape it has never seen, or a `claude` started inside a
+  desktop session rather than by the app — gets no link: once the agent has
+  gone, the tap just brings the app to the front, for you to pick the
+  conversation up inside it. (While a `claude` run from a desktop session's
+  Bash tool is still running, a Resume tap is a Focus like any other on a live
+  session, and brings the app to the front as Focus does.)
 - Headless runs — `claude -p` and the Agent SDK, `codex exec` — are never
   respawned; there is no terminal they belonged to.
 - A session whose working directory is gone answers `respawn-failed`. The

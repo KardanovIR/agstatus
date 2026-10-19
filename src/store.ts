@@ -215,7 +215,10 @@ export type CommandType = (typeof COMMAND_TYPES)[number];
 export const COMMAND_RESULTS = ['focused', 'activated', 'selected', 'resumed', 'failed'] as const;
 export type CommandResult = (typeof COMMAND_RESULTS)[number];
 
-/** How far the listener got: the exact pane, a tab, a window, only the app, or a Codex thread. */
+/**
+ * How far the listener got: the exact pane, a tab, a window, only the app, or a
+ * desktop app's own conversation (a Codex thread, a Claude Desktop session).
+ */
 export const COMMAND_REACHES = ['pane', 'tab', 'window', 'app', 'thread'] as const;
 export type CommandReach = (typeof COMMAND_REACHES)[number];
 

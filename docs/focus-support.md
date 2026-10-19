@@ -37,12 +37,13 @@ focused inside it stays focused.
 | **Warp** | `open warp://session/<uuid>` | window, pane group and pane — **experimental**, see below |
 | **WezTerm** | `wezterm cli activate-pane` | pane |
 | **Codex Desktop** | `codex://threads/<id>` | the thread |
+| **Claude Desktop** | `claude://claude.ai/epitaxy/<session id>` | the session — **experimental**, see below; app only when the session cannot be proven to be the app's own, a `claude` run from a session's Bash tool included |
 | **JetBrains IDEs, Zed, Android Studio** | `open -b <bundle> <project root>` | the project window |
 
 ### App only
 
 Terminal.app · Ghostty · Alacritty · Hyper · Tabby · Rio · Xcode ·
-VS Code · VS Code Insiders · Cursor · Windsurf · Claude Desktop
+VS Code · VS Code Insiders · Cursor · Windsurf
 
 For these the app comes forward and that is all. The reason is the same for most
 of them and is worth stating plainly: **tab-exact focus in Terminal.app and
@@ -152,6 +153,37 @@ recorded here only so they are not lost:
   the row runs only when the session's resolved host really is Warp. Nobody
   here has a Warp install, so this is verified at the planner and **not**
   end to end.
+- **Claude Desktop's per-session link is implemented** too, with the same two
+  caveats in a sharper form. The link — `claude://claude.ai/epitaxy/` plus the
+  `local_<uuid>` id the app hands its agent as `CLAUDE_CODE_HOST_SESSION_ID` —
+  is the one the app's own session API returns as the way to open a session
+  from outside the app, on a scheme its Info.plist registers; nothing public
+  promises the path, so the row ships experimental and falls back to plain
+  activation whenever there is no id it trusts. And here the bundle dispatch is
+  *not* enough: a `claude` started inside a desktop session — from its Bash
+  tool, or in the app's terminal panel — inherits the id, the bundle id and the
+  `claude-desktop` entrypoint alike, and its link would open the parent's
+  conversation. So the link is used only when the process tree shows the app
+  spawned this agent itself (Claude.app found by the ppid walk, no tty, no
+  multiplexer). What the others get depends on where their walk lands. A
+  `claude` in the app's terminal panel walks to Claude.app itself and gets
+  plain activation. A `claude` run from a desktop session's Bash tool walks
+  into the parent agent's own bundled `claude.app` first and records *its*
+  bundle id, `com.anthropic.claude-code`. That id is not in the table and is
+  never handed to `open` — it would launch the agent binary as an app — but the
+  window that `claude` lives in is Claude Desktop's, so Focus on it, and a
+  Resume tap while it is still running, bring Claude Desktop to the front:
+  plain activation, not experimental, and never the link. It gets that only
+  when the record also carries the inherited `claude-desktop` entrypoint and,
+  if it has one, Claude Desktop's `__CFBundleIdentifier`; the same bundle id
+  with anything else answers `unsupported-host`, because nothing promises that
+  a future standalone Claude Code will not ship under it, and raising Claude
+  Desktop for a terminal session would be the wrong window. A Resume tap on a
+  session whose agent has gone opens the same link, and the app carries the
+  conversation on — nothing is started; one whose record the link cannot
+  trust, a nested CLI's included, brings the app to the front instead.
+  The link has been checked against the app's own API and **not** opened end
+  to end.
 - **Windsurf has been renamed to Devin Desktop.** The bundle id in our table
   (`com.exafunction.windsurf`) may no longer be the shipping one.
 

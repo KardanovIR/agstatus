@@ -900,11 +900,24 @@ window in <strong>kitty</strong> when <code>allow_remote_control</code> and a <c
 socket are configured; the session in <strong>iTerm2</strong> (its <code>iterm2:reveal</code> URL)
 and <strong>WezTerm</strong> (its CLI) — both marked experimental until verified on real
 setups; the thread in <strong>Codex Desktop</strong> (its <code>codex://threads/</code> link); the
+session in <strong>Claude Desktop</strong> (its <code>claude://claude.ai/epitaxy/</code> link, from
+the session id the app hands its agent — experimental, because nothing public
+documents the link, and used only when the record shows the app itself
+spawned that agent. A <code>claude</code> started inside a desktop session inherits the
+id but never gets the link: one in the app&#39;s terminal panel, or one run from
+the session&#39;s Bash tool, gets plain activation of the app. The Bash-tool
+one&#39;s process walk records the parent agent&#39;s own bundled CLI,
+<code>com.anthropic.claude-code</code>, which is never handed to <code>open</code>. The app is
+raised for it only when the record also carries the <code>claude-desktop</code>
+entrypoint and, if it has one, Claude Desktop&#39;s own <code>__CFBundleIdentifier</code>,
+both inherited from the desktop session; that bundle id with anything else
+answers <code>unsupported-host</code>. See <a href="#focus-support">Focus support</a>); the
 project window in <strong>JetBrains IDEs</strong> and <strong>Zed</strong>; and plain app activation
-(<code>open -b</code>) for the other apps in the listener&#39;s table — Terminal.app,
-Ghostty, Alacritty, Warp, Hyper, Tabby, Rio, Xcode, VS Code, Cursor,
-Windsurf, Claude Desktop (inside a multiplexer whose outer terminal is not
-in the table, the pane is selected and the window stays where it is).
+(<code>open -b</code>) for the other apps
+in the listener&#39;s table — Terminal.app, Ghostty, Alacritty, Warp, Hyper,
+Tabby, Rio, Xcode, VS Code, Cursor, Windsurf (inside a multiplexer whose
+outer terminal is not in the table, the pane is selected and the window
+stays where it is).
 Tab-exact focus in Terminal.app and
 Ghostty needs Apple Events, which a plain Node process cannot send without
 prompting for every app; that arrives with the signed listener app in a
@@ -961,10 +974,18 @@ answer with one line and exit.</p>
 and a <code>listen_on unix:</code> socket, otherwise a new window); <strong>WezTerm</strong>;
 <strong>Ghostty</strong>, <strong>Alacritty</strong> and <strong>Rio</strong> (a new window through <code>open -n</code>);
 <strong>tmux</strong> and <strong>Herdr</strong> (a new pane in the same session, then the outer
-terminal is raised); and <strong>Codex Desktop</strong>, whose <code>codex://threads/</code> link
-reopens the thread without starting anything. Every row that starts a
-process ships as experimental until it has been checked on a real setup —
-the ack carries that and the board shows it.</p>
+terminal is raised); <strong>Codex Desktop</strong>, whose <code>codex://threads/</code> link
+reopens the thread without starting anything; and <strong>Claude Desktop</strong>, whose
+session link (the one Focus opens, under the same conditions) reopens the
+conversation in the app, which carries it on from there — again nothing is
+started, and the row is experimental. Every row that starts a process ships
+as experimental until it has been checked on a real setup. Today that mark
+lives on the machine — the listener&#39;s log and <code>agstatus listener plan</code> show
+it — and not on the board: the ack carries the result and its reach, never
+the flag, so a Claude Desktop link the app ignores still reads &quot;Resumed&quot;
+there. The listener cannot catch that case
+itself, since nothing it waits for proves the conversation opened (with the
+app already in front, its frontmost check passes at once).</p>
 <p>What cannot, and why:</p>
 <ul>
 <li><strong>Terminal.app</strong> and <strong>iTerm2</strong> can only be handed a command through
@@ -973,8 +994,13 @@ the same release that brings tab-exact focus there.</li>
 <li><strong>VS Code, Cursor, Windsurf, JetBrains IDEs, Zed</strong> have no agent session
 to resume from outside, and <strong>Warp, Hyper, Tabby, Xcode</strong> take no command
 from <code>open</code>: a Resume tap on them answers <code>unsupported-host</code>.</li>
-<li><strong>Claude Desktop</strong> keeps its own conversation list and documents no
-resume link, so the tap just brings the app to the front.</li>
+<li><strong>Claude Desktop</strong> without a session id the listener trusts — none in the
+record, one of a shape it has never seen, or a <code>claude</code> started inside a
+desktop session rather than by the app — gets no link: once the agent has
+gone, the tap just brings the app to the front, for you to pick the
+conversation up inside it. (While a <code>claude</code> run from a desktop session&#39;s
+Bash tool is still running, a Resume tap is a Focus like any other on a live
+session, and brings the app to the front as Focus does.)</li>
 <li>Headless runs — <code>claude -p</code> and the Agent SDK, <code>codex exec</code> — are never
 respawned; there is no terminal they belonged to.</li>
 <li>A session whose working directory is gone answers <code>respawn-failed</code>. The
@@ -1257,6 +1283,11 @@ focused inside it stays focused.</p>
 <td>the thread</td>
 </tr>
 <tr>
+<td><strong>Claude Desktop</strong></td>
+<td><code>claude://claude.ai/epitaxy/&lt;session id&gt;</code></td>
+<td>the session — <strong>experimental</strong>, see below; app only when the session cannot be proven to be the app&#39;s own, a <code>claude</code> run from a session&#39;s Bash tool included</td>
+</tr>
+<tr>
 <td><strong>JetBrains IDEs, Zed, Android Studio</strong></td>
 <td><code>open -b &lt;bundle&gt; &lt;project root&gt;</code></td>
 <td>the project window</td>
@@ -1264,7 +1295,7 @@ focused inside it stays focused.</p>
 </tbody></table></div>
 <h4 id="focus-support-app-only"><a class="anchor" href="#focus-support-app-only">App only</a></h4>
 <p>Terminal.app · Ghostty · Alacritty · Hyper · Tabby · Rio · Xcode ·
-VS Code · VS Code Insiders · Cursor · Windsurf · Claude Desktop</p>
+VS Code · VS Code Insiders · Cursor · Windsurf</p>
 <p>For these the app comes forward and that is all. The reason is the same for most
 of them and is worth stating plainly: <strong>tab-exact focus in Terminal.app and
 Ghostty needs Apple Events, and the listener sends none.</strong> A plain Node process
@@ -1355,6 +1386,37 @@ prevents that raising the wrong window is the dispatch, not the URL check —
 the row runs only when the session&#39;s resolved host really is Warp. Nobody
 here has a Warp install, so this is verified at the planner and <strong>not</strong>
 end to end.</li>
+<li><strong>Claude Desktop&#39;s per-session link is implemented</strong> too, with the same two
+caveats in a sharper form. The link — <code>claude://claude.ai/epitaxy/</code> plus the
+<code>local_&lt;uuid&gt;</code> id the app hands its agent as <code>CLAUDE_CODE_HOST_SESSION_ID</code> —
+is the one the app&#39;s own session API returns as the way to open a session
+from outside the app, on a scheme its Info.plist registers; nothing public
+promises the path, so the row ships experimental and falls back to plain
+activation whenever there is no id it trusts. And here the bundle dispatch is
+<em>not</em> enough: a <code>claude</code> started inside a desktop session — from its Bash
+tool, or in the app&#39;s terminal panel — inherits the id, the bundle id and the
+<code>claude-desktop</code> entrypoint alike, and its link would open the parent&#39;s
+conversation. So the link is used only when the process tree shows the app
+spawned this agent itself (Claude.app found by the ppid walk, no tty, no
+multiplexer). What the others get depends on where their walk lands. A
+<code>claude</code> in the app&#39;s terminal panel walks to Claude.app itself and gets
+plain activation. A <code>claude</code> run from a desktop session&#39;s Bash tool walks
+into the parent agent&#39;s own bundled <code>claude.app</code> first and records <em>its</em>
+bundle id, <code>com.anthropic.claude-code</code>. That id is not in the table and is
+never handed to <code>open</code> — it would launch the agent binary as an app — but the
+window that <code>claude</code> lives in is Claude Desktop&#39;s, so Focus on it, and a
+Resume tap while it is still running, bring Claude Desktop to the front:
+plain activation, not experimental, and never the link. It gets that only
+when the record also carries the inherited <code>claude-desktop</code> entrypoint and,
+if it has one, Claude Desktop&#39;s <code>__CFBundleIdentifier</code>; the same bundle id
+with anything else answers <code>unsupported-host</code>, because nothing promises that
+a future standalone Claude Code will not ship under it, and raising Claude
+Desktop for a terminal session would be the wrong window. A Resume tap on a
+session whose agent has gone opens the same link, and the app carries the
+conversation on — nothing is started; one whose record the link cannot
+trust, a nested CLI&#39;s included, brings the app to the front instead.
+The link has been checked against the app&#39;s own API and <strong>not</strong> opened end
+to end.</li>
 <li><strong>Windsurf has been renamed to Devin Desktop.</strong> The bundle id in our table
 (<code>com.exafunction.windsurf</code>) may no longer be the shipping one.</li>
 </ul>

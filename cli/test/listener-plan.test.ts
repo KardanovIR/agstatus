@@ -61,6 +61,70 @@ const rec = (over: Partial<LocalRecord> = {}): LocalRecord =>
 const inApp = (bundle: string, over: Partial<LocalRecord> = {}): LocalRecord =>
   rec({ app: { bundle, pid: 662, via: 'ppid-walk' }, ...over });
 
+const CLAUDE_APP = 'com.anthropic.claudefordesktop';
+/** The id Claude Desktop hands the agent it spawns, and the link it answers to. */
+const HOST_ID = 'local_68c60fcb-34f1-4702-a2e0-4dafbd6e200a';
+const CLAUDE_LINK = `claude://claude.ai/epitaxy/${HOST_ID}`;
+const DESKTOP_ENV = { __CFBundleIdentifier: CLAUDE_APP, CLAUDE_CODE_HOST_SESSION_ID: HOST_ID };
+
+/**
+ * A session the desktop app spawned itself, shaped like every such record the
+ * hook has written: entrypoint `claude-desktop`, Claude.app found by the ppid
+ * walk (which starts above the agent's own nested claude.app), and no tty.
+ * `env` replaces DESKTOP_ENV rather than merging into it, so a case can leave
+ * the id out; a `tty` in `over` is kept, otherwise there is none.
+ */
+const desktop = (over: Partial<LocalRecord> = {}): LocalRecord => {
+  const record = rec({
+    entrypoint: 'claude-desktop',
+    app: { bundle: CLAUDE_APP, path: '/Applications/Claude.app', pid: 60937, via: 'ppid-walk' },
+    ...over,
+    env: over.env ?? DESKTOP_ENV,
+  });
+  if (!('tty' in over)) delete record.tty;
+  return record;
+};
+
+/**
+ * The bundle a `claude` started from a desktop session's Bash tool records: its
+ * walk starts at its parent shell and meets the parent agent's nested claude.app
+ * first. Never to be handed to `open -b` — that launches the agent binary as an app.
+ */
+const AGENT_BUNDLE = 'com.anthropic.claude-code';
+const NESTED_APP: NonNullable<LocalRecord['app']> = {
+  bundle: AGENT_BUNDLE,
+  path: '/Users/demo/Library/Application Support/Claude/claude-code/2.1.295/x/claude.app',
+  pid: 60938,
+  via: 'ppid-walk',
+};
+
+/**
+ * That nested CLI's record: everything it inherited from the desktop session —
+ * the `claude-desktop` entrypoint, the PARENT's host session id and
+ * `__CFBundleIdentifier` — and the walk's claude-code bundle. No tty, as the
+ * Bash tool gives it none.
+ */
+const nested = (over: Partial<LocalRecord> = {}): LocalRecord => desktop({ app: NESTED_APP, ...over });
+
+/** No step of any plan for a nested CLI names its own bundle, or opens a link. */
+function neverTheAgentApp(p: Plan): void {
+  for (const argv of argvs(p)) expect(argv.some((arg) => arg.includes(AGENT_BUNDLE)), argv.join(' ')).toBe(false);
+  expect(JSON.stringify(p)).not.toContain(AGENT_BUNDLE);
+  expect(JSON.stringify(p)).not.toContain('claude://');
+  expect(JSON.stringify(p)).not.toContain(HOST_ID);
+}
+
+/** Plain activation of Claude Desktop — what the row did before it knew the link. */
+function activatesClaude(result: PlanResult): Plan {
+  const p = ok(result);
+  expect(argvs(p)).toEqual([[OPEN, '-b', CLAUDE_APP]]);
+  expect(p.steps[0].expectFrontmost).toBe(CLAUDE_APP);
+  expect(p).toMatchObject({ reach: 'app', result: 'activated', experimental: false });
+  expect(p.respawns).toBeFalsy();
+  expect(JSON.stringify(p)).not.toContain('claude://');
+  return p;
+}
+
 const facts = (over: Partial<MachineFacts> = {}): MachineFacts =>
   ({ platform: 'darwin', bins: BINS, agentAlive: true, ...over });
 
@@ -247,10 +311,134 @@ describe('plan: desktop apps and IDEs', () => {
     failed(focus(inApp('com.openai.codex', { agent: 'codex', session_id: 'msg-test' })), 'bad-record');
   });
 
-  it('Claude Desktop: activates the app', () => {
-    const p = ok(focus(inApp('com.anthropic.claudefordesktop', { entrypoint: 'claude-desktop' })));
-    expect(argvs(p)).toEqual([[OPEN, '-b', 'com.anthropic.claudefordesktop']]);
-    expect(p).toMatchObject({ reach: 'app', result: 'activated', experimental: false });
+  it('Claude Desktop: opens the session the app is hosting by its own link, experimental', () => {
+    const p = ok(focus(desktop()));
+    expect(argvs(p)).toEqual([[OPEN, '-b', CLAUDE_APP, CLAUDE_LINK]]);
+    expect(p.steps[0].expectFrontmost).toBe(CLAUDE_APP);
+    expect(p).toMatchObject({ reach: 'thread', result: 'focused', experimental: true });
+    expect(p.respawns).toBeFalsy();
+    // app.path is reported by the hook and never used (§5.1).
+    expect(JSON.stringify(p)).not.toContain('/Applications');
+    const lines = describePlan(p).split('\n');
+    expect(lines[0]).toBe(`1. open: claude desktop session: ${OPEN} -b ${CLAUDE_APP} ${CLAUDE_LINK} `
+      + `(expect frontmost ${CLAUDE_APP})`);
+    expect(lines[1]).toBe('reach thread, result focused, experimental');
+  });
+
+  it('Claude Desktop: no host session id is plain activation, as it always was', () => {
+    // A record from before the hook kept the id, or an app that stops handing it out.
+    activatesClaude(focus(desktop({ env: { __CFBundleIdentifier: CLAUDE_APP } })));
+    activatesClaude(focus(desktop({ env: {} })));
+  });
+
+  it('Claude Desktop: an id outside the one observed shape never reaches the URL, and degrades to activation', () => {
+    const uuid = HOST_ID.slice('local_'.length);
+    for (const id of [
+      `local_${uuid.toUpperCase()}`, // the app hands out lowercase; nothing is folded
+      `LOCAL_${uuid}`,
+      uuid, // no prefix
+      `remote_${uuid}`, `cloud_${uuid}`, `session_${uuid}`, // prefixes nobody has seen
+      `${HOST_ID}0`, `${HOST_ID}x`, `${HOST_ID}-`, // trailing characters
+      `${HOST_ID}/../x`, `${HOST_ID}/../../settings`, `${HOST_ID}?x=1`, `${HOST_ID}#x`, `${HOST_ID}&x=1`,
+      ` ${HOST_ID}`, `${HOST_ID} `, `${HOST_ID}\n`, `local_ ${uuid}`, `local_${uuid.replace('-', ' ')}`,
+      `local_${uuid.slice(0, -1)}`, `local_${uuid.slice(0, -1)}g`, `local_${uuid.replace(/-/g, '')}`,
+      CLAUDE_LINK, // a whole link where an id belongs
+      '',
+    ]) {
+      const p = activatesClaude(focus(desktop({ env: { ...DESKTOP_ENV, CLAUDE_CODE_HOST_SESSION_ID: id } })));
+      if (id) expect(JSON.stringify(p)).not.toContain(id);
+    }
+  });
+
+  it('Claude Desktop: an id inherited by an agent the app did not spawn never opens the parent\'s session', () => {
+    // Everything below inherits CLAUDE_CODE_HOST_SESSION_ID and __CFBundleIdentifier
+    // from a desktop session, and Claude Code keeps an inherited CLAUDE_CODE_ENTRYPOINT.
+    //
+    // Not the app's own agent by its entrypoint (the shape the bundle table can reach
+    // with an id in the env), with and without a terminal.
+    activatesClaude(focus(desktop({ entrypoint: 'cli' })));
+    activatesClaude(focus(desktop({ entrypoint: 'cli', tty: '/dev/ttys004' })));
+    activatesClaude(focus(desktop({ entrypoint: 'sdk-cli' })));
+    activatesClaude(focus(desktop({ entrypoint: '' })));
+    // `claude` typed into the app's own terminal panel: the walk lands on Claude.app
+    // through Claude Helper, but the agent has a tty and the app's own never does.
+    activatesClaude(focus(desktop({ tty: '/dev/ttys004' })));
+    // The walk read no bundle id and the hook fell back to the inherited env.
+    activatesClaude(focus(desktop({ app: { bundle: CLAUDE_APP, via: 'env' } })));
+    activatesClaude(focus(desktop({ app: { bundle: CLAUDE_APP, path: '/Applications/Claude.app', pid: 60937, via: 'env' } })));
+    // A CLI started from a desktop session's Bash tool: the walk starts at its
+    // parent shell and meets the parent agent's nested claude.app first. Claude
+    // Desktop is raised — the app it lives in — and still no link.
+    neverTheAgentApp(activatesClaude(focus(nested())));
+  });
+
+  it('Claude Desktop: a `claude` started from a desktop session\'s Bash tool raises the app, never its own bundle or the link', () => {
+    const p = activatesClaude(focus(nested()));
+    // Exactly the app, by the table's constant: not the recorded bundle, not a URL.
+    expect(argvs(p)).toEqual([[OPEN, '-b', CLAUDE_APP]]);
+    neverTheAgentApp(p);
+    expect(describePlan(p).split('\n')).toEqual([
+      `1. open: activate app: ${OPEN} -b ${CLAUDE_APP} (expect frontmost ${CLAUDE_APP})`,
+      'reach app, result activated',
+    ]);
+    // A record without __CFBundleIdentifier is let through on the entrypoint: the
+    // hook omits absent keys, and an app that stops exporting it must not start
+    // refusing taps.
+    neverTheAgentApp(activatesClaude(focus(nested({ env: { CLAUDE_CODE_HOST_SESSION_ID: HOST_ID } }))));
+    neverTheAgentApp(activatesClaude(focus(nested({ env: {} }))));
+    // A tty is the link's test, not this row's: whichever way, the window is the app's.
+    neverTheAgentApp(activatesClaude(focus(nested({ tty: '/dev/ttys004' }))));
+  });
+
+  it('Claude Desktop: the claude-code bundle without a desktop session\'s environment stays unsupported-host', () => {
+    // Nothing promises that bundle id stays Claude Desktop's private copy. One that a
+    // terminal started — entrypoint `cli`, or none at all — has nothing to do with
+    // Claude Desktop, and raising it would be a plausible, wrong window.
+    failed(focus(nested({ entrypoint: 'cli' })), 'unsupported-host');
+    failed(focus(nested({ entrypoint: 'cli', tty: '/dev/ttys004' })), 'unsupported-host');
+    failed(focus(nested({ entrypoint: '' })), 'unsupported-host');
+    failed(focus(nested({ entrypoint: 'sdk-cli' })), 'unsupported-host');
+    failed(focus(inApp(AGENT_BUNDLE)), 'unsupported-host');
+    // Inherited from some OTHER app's environment: the entrypoint alone does not
+    // put it inside Claude Desktop.
+    for (const launchedBy of ['com.apple.Terminal', AGENT_BUNDLE, 'com.anthropic.claudefordesktop2']) {
+      failed(focus(nested({ env: { ...DESKTOP_ENV, __CFBundleIdentifier: launchedBy } })), 'unsupported-host');
+    }
+    // The bundle came from the env fallback, not the process tree.
+    failed(focus(nested({ app: { bundle: AGENT_BUNDLE, via: 'env' } })), 'unsupported-host');
+    failed(focus(nested({ app: { ...NESTED_APP, via: 'env' } })), 'unsupported-host');
+  });
+
+  it('Claude Desktop: a nested `claude` inside a multiplexer is the multiplexer\'s, like every other row', () => {
+    const TMUX = { kind: 'tmux' as const, target: 'main:@3.%7', socket: '/private/tmp/tmux-501/default' };
+    // No outer client resolved: the pane is selected and nothing is raised.
+    const alone = ok(focus(nested({ mux: TMUX })));
+    expect(argvs(alone).map((a) => a[0])).toEqual([BINS.tmux, BINS.tmux, BINS.tmux]);
+    expect(alone).toMatchObject({ reach: 'pane', result: 'selected' });
+    neverTheAgentApp(alone);
+    // An outer client walking to the same nested bundle is an app the table does
+    // not know: the pane is selected, and the bundle never reaches `open -b`.
+    const outerAgent = ok(focus(nested({ mux: TMUX }), facts({ outer: { bundle: AGENT_BUNDLE, env: DESKTOP_ENV } })));
+    expect(argvs(outerAgent).map((a) => a[0])).toEqual([BINS.tmux, BINS.tmux, BINS.tmux]);
+    expect(outerAgent).toMatchObject({ reach: 'pane', result: 'selected' });
+    neverTheAgentApp(outerAgent);
+    // An outer Claude Desktop is raised by its own row, which never links under a mux.
+    const outerApp = ok(focus(nested({ mux: TMUX }), facts({ outer: { bundle: CLAUDE_APP, env: DESKTOP_ENV } })));
+    expect(argvs(outerApp).at(-1)).toEqual([OPEN, '-b', CLAUDE_APP]);
+    expect(outerApp).toMatchObject({ reach: 'app', result: 'activated' });
+    neverTheAgentApp(outerApp);
+  });
+
+  it('Claude Desktop as the outer app of a multiplexer is raised, never linked', () => {
+    // tmux attached from the app's terminal panel: the outer client's env may well
+    // carry a desktop session's id, and so may the record's. Neither is this pane.
+    const TMUX = { kind: 'tmux' as const, target: 'main:@3.%7', socket: '/private/tmp/tmux-501/default' };
+    const p = ok(focus(desktop({ mux: TMUX }), facts({ outer: { bundle: CLAUDE_APP, env: DESKTOP_ENV } })));
+    expect(argvs(p).at(-1)).toEqual([OPEN, '-b', CLAUDE_APP]);
+    expect(argvs(p).slice(0, -1).every((argv) => argv[0] === BINS.tmux)).toBe(true);
+    expect(p).toMatchObject({ reach: 'app', result: 'activated' });
+    expect(JSON.stringify(p)).not.toContain('claude://');
+    expect(JSON.stringify(p)).not.toContain(HOST_ID);
   });
 
   it('JetBrains: opens the project root when known, else the app', () => {
@@ -468,7 +656,12 @@ describe('plan: resume, one row per host (§5.2 step 4)', () => {
     // a relative path is not a launcher
     failed(resume(AGTERM, facts({ agentAlive: false, launcher: 'agstatus-resume' })), 'unsupported-host');
     failed(resume(rec({ mux: TMUX }), facts({ agentAlive: false })), 'unsupported-host');
+    // The desktop rows start no process, and are refused all the same: an absent
+    // launcher is also how "resume is off" reaches the planner, and off empties
+    // the whole Resume column (§6, §11).
     failed(resume(inApp('com.openai.codex', { agent: 'codex' }), facts({ agentAlive: false })), 'unsupported-host');
+    failed(resume(desktop(), facts({ agentAlive: false })), 'unsupported-host');
+    failed(resume(desktop({ env: {} }), facts({ agentAlive: false })), 'unsupported-host');
   });
 
   it('with no working directory from the runtime, the respawn fails instead of guessing one', () => {
@@ -495,14 +688,64 @@ describe('plan: resume, one row per host (§5.2 step 4)', () => {
       .toBe('pane');
   });
 
-  it('Claude Desktop: the app comes to the front, and nothing is started', () => {
-    const p = ok(resume(inApp('com.anthropic.claudefordesktop', { entrypoint: 'claude-desktop' })));
-    expect(argvs(p)).toEqual([[OPEN, '-b', 'com.anthropic.claudefordesktop']]);
-    expect(p).toMatchObject({ reach: 'app', result: 'activated', experimental: false });
+  it('Claude Desktop: the session\'s own link reopens the conversation, like Codex\'s, and starts nothing', () => {
+    const p = ok(resume(desktop()));
+    expect(argvs(p)).toEqual([[OPEN, '-b', CLAUDE_APP, CLAUDE_LINK]]);
+    expect(p.steps[0].expectFrontmost).toBe(CLAUDE_APP);
+    expect(p.steps[0].optional).toBeFalsy();
+    expect(p).toMatchObject({ reach: 'thread', result: 'resumed', experimental: true });
     expect(p.respawns).toBeFalsy();
-    // the entrypoint decides it, whatever app the ppid walk landed on
-    const viaEntrypoint = ok(resume(inApp('com.apple.Terminal', { entrypoint: 'claude-desktop' })));
-    expect(argvs(viaEntrypoint)).toEqual([[OPEN, '-b', 'com.anthropic.claudefordesktop']]);
+    // Nothing is started, so neither the launcher nor a directory is part of it…
+    expect(JSON.stringify(p)).not.toContain('agstatus-resume');
+    expect(JSON.stringify(p)).not.toContain(CWD);
+    // …and the runtime finding no directory changes nothing.
+    expect(ok(plan(desktop(), 'resume', dead()))).toEqual(p);
+    expect(describePlan(p).split('\n').at(-1)).toBe('reach thread, result resumed, experimental');
+  });
+
+  it('Claude Desktop: a live session tapped with Resume is the focus link', () => {
+    const live = ok(plan(desktop(), 'resume', facts({ launcher: LAUNCHER }), CWD));
+    expect(argvs(live)).toEqual([[OPEN, '-b', CLAUDE_APP, CLAUDE_LINK]]);
+    expect(live).toMatchObject({ reach: 'thread', result: 'focused', experimental: true });
+    expect(live.respawns).toBeFalsy();
+  });
+
+  it('Claude Desktop: with no id it trusts, the app comes to the front, and nothing is started', () => {
+    activatesClaude(resume(desktop({ env: { __CFBundleIdentifier: CLAUDE_APP } })));
+    activatesClaude(resume(desktop({ env: { ...DESKTOP_ENV, CLAUDE_CODE_HOST_SESSION_ID: `${HOST_ID}/../x` } })));
+    activatesClaude(resume(desktop({ env: { ...DESKTOP_ENV, CLAUDE_CODE_HOST_SESSION_ID: HOST_ID.toUpperCase() } })));
+    // A CLI started from a desktop session's Bash tool: it inherited the entrypoint
+    // and the id, and the walk recorded the parent agent's nested claude.app.
+    neverTheAgentApp(activatesClaude(resume(nested())));
+    // A `claude` in the app's terminal panel (a tty), and one whose bundle is only the inherited env.
+    activatesClaude(resume(desktop({ tty: '/dev/ttys004' })));
+    activatesClaude(resume(desktop({ app: { bundle: CLAUDE_APP, via: 'env' } })));
+    // A terminal-panel `claude` that did NOT inherit the entrypoint reaches the bundle
+    // row instead of the entrypoint one, and lands in the same place.
+    activatesClaude(resume(desktop({ entrypoint: 'cli', tty: '/dev/ttys004' })));
+    // The entrypoint still decides the row, whatever app the ppid walk landed on —
+    // never a terminal's respawn row, and never the link, inherited id or not.
+    activatesClaude(resume(inApp('com.apple.Terminal', { entrypoint: 'claude-desktop' })));
+    activatesClaude(resume(inApp('com.mitchellh.ghostty', { entrypoint: 'claude-desktop', env: DESKTOP_ENV })));
+  });
+
+  it('Claude Desktop: a nested `claude` from a Bash tool resumes to the app in front, never the parent\'s link', () => {
+    // Dead: respawnPlan's entrypoint row, before any bundle is looked at. The
+    // inherited host session id is the PARENT's conversation, and
+    // desktopSessionId() refuses the record, so this is activation and nothing starts.
+    const p = activatesClaude(resume(nested()));
+    expect(argvs(p)).toEqual([[OPEN, '-b', CLAUDE_APP]]);
+    neverTheAgentApp(p);
+    expect(JSON.stringify(p)).not.toContain('agstatus-resume');
+    // …with or without a directory from the runtime, since nothing is spawned.
+    expect(ok(plan(nested(), 'resume', dead()))).toEqual(p);
+    // Live: a Resume tap is the Focus plan, which raises the app the same way.
+    const live = activatesClaude(plan(nested(), 'resume', facts({ launcher: LAUNCHER }), CWD));
+    neverTheAgentApp(live);
+    // Without the inherited entrypoint the claude-code bundle has no respawn row,
+    // dead or alive, and is never opened.
+    failed(resume(nested({ entrypoint: 'cli' })), 'unsupported-host');
+    failed(plan(nested({ entrypoint: 'cli' }), 'resume', facts({ launcher: LAUNCHER }), CWD), 'unsupported-host');
   });
 
   it('agterm: one `session new` carrying the launcher, then the app', () => {

@@ -16,7 +16,10 @@ export type CommandType = (typeof COMMAND_TYPES)[number];
 export const RESULTS = ['focused', 'activated', 'selected', 'resumed', 'failed'] as const;
 export type Result = (typeof RESULTS)[number];
 
-/** How far the plan got: the exact pane, a tab, a window, only the app, or a Codex thread. */
+/**
+ * How far the plan got: the exact pane, a tab, a window, only the app, or a
+ * desktop app's own conversation (a Codex thread, a Claude Desktop session).
+ */
 export const REACHES = ['pane', 'tab', 'window', 'app', 'thread'] as const;
 export type Reach = (typeof REACHES)[number];
 

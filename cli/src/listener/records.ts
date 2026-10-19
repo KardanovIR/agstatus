@@ -77,6 +77,26 @@ export const INT_RE = /^[0-9]{1,10}$/;
  * the resolved host bundle is already Warp.
  */
 export const WARP_FOCUS_RE = /^warp:\/\/session\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Claude Desktop's own name for one of its Code-tab sessions, as the app hands
+ * it to the agent it spawns (CLAUDE_CODE_HOST_SESSION_ID): `local_` and a
+ * lowercase uuid, and nothing else.
+ *
+ * The planner splices it into `claude://claude.ai/epitaxy/<id>`, so — as with
+ * WARP_FOCUS_RE above — the shape is the whole defence. The prefix is pinned,
+ * the uuid is fixed-length and lowercase (the app's own session API returns it
+ * that way, so there is nothing to fold), and nothing is left over for a `/`,
+ * `..`, `?` or `#` to turn one session's link into another path or a query.
+ * `local_` is the only prefix anyone has seen; a remote or cloud session may
+ * well name itself differently, and an id of any other shape is dropped here
+ * and degrades the tap to plain activation rather than being guessed at.
+ *
+ * It cannot defend against inheritance any more than WARP_FOCUS_RE can: a
+ * `claude` started inside a desktop session — from its Bash tool, say —
+ * carries the parent's perfectly well-formed id. The planner catches that
+ * (desktopSessionId() in plan.ts), from the process tree rather than the env.
+ */
+export const CLAUDE_HOST_SESSION_RE = /^local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const ITERM_SESSION_RE = /^w\d+t\d+p\d+:[0-9A-Fa-f-]{36}$/;
 /** Claude Code's own tmux target recipe: `session:@window.%pane`. */
 export const TMUX_TARGET_RE = /^[A-Za-z0-9_.-]{1,64}:@?\d{1,6}\.%?\d{1,6}$/;
@@ -136,7 +156,7 @@ const ENV_RULES = new Map<string, RegExp>([
   ['ALACRITTY_WINDOW_ID', INT_RE], ['ALACRITTY_SOCKET', SOCKET_RE], ['WARP_IS_LOCAL_SHELL_SESSION', TEXT_RE],
   ['WARP_FOCUS_URL', WARP_FOCUS_RE],
   ['VSCODE_PID', INT_RE], ['VSCODE_GIT_ASKPASS_MAIN', ABS_RE], ['CURSOR_TRACE_ID', TEXT_RE], ['ZED_TERM', TEXT_RE],
-  ['CLAUDE_CODE_SSE_PORT', INT_RE], ['CLAUDE_CODE_HOST_SESSION_ID', TEXT_RE],
+  ['CLAUDE_CODE_SSE_PORT', INT_RE], ['CLAUDE_CODE_HOST_SESSION_ID', CLAUDE_HOST_SESSION_RE],
   ['TMUX', TMUX_VAR_RE], ['TMUX_PANE', TMUX_PANE_RE],
   ['ZELLIJ', TEXT_RE], ['ZELLIJ_SESSION_NAME', MUX_SESSION_RE], ['ZELLIJ_PANE_ID', ZELLIJ_PANE_RE],
   ['STY', MUX_SESSION_RE], ['WINDOW', INT_RE],

@@ -209,6 +209,16 @@ describe('validateRecord', () => {
     expect(valid(clone({ env: { KITTY_LISTEN_ON: 'unix:/tmp/kitty-1' } })).env.KITTY_LISTEN_ON).toBe('unix:/tmp/kitty-1');
   });
 
+  it('keeps CLAUDE_CODE_HOST_SESSION_ID only in the one shape the planner may put in a URL', () => {
+    const id = 'local_68c60fcb-34f1-4702-a2e0-4dafbd6e200a';
+    expect(valid(clone({ env: { CLAUDE_CODE_HOST_SESSION_ID: id } })).env.CLAUDE_CODE_HOST_SESSION_ID).toBe(id);
+    for (const bad of [id.toUpperCase(), id.slice('local_'.length), `remote_${id.slice(6)}`, `${id}?x=1`, `${id}/../x`]) {
+      const record = valid(clone({ env: { ...AGTERM_RECORD.env, CLAUDE_CODE_HOST_SESSION_ID: bad } }));
+      expect(record.env).not.toHaveProperty('CLAUDE_CODE_HOST_SESSION_ID');
+      expect(record.env.AGTERM_SOCKET).toBe(AGTERM_RECORD.env.AGTERM_SOCKET);
+    }
+  });
+
   it('drops env keys outside the whitelist, non-string values and an odd TERM_PROGRAM', () => {
     const record = valid(clone({
       env: {

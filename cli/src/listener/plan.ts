@@ -2,8 +2,8 @@ import type {
   CommandType, LocalRecord, MachineFacts, Plan, PlanResult, Reach, Reason, Result, Step,
 } from './types';
 import {
-  BUNDLE_RE, CODEX_ID_RE, HERDR_PANE_RE, INT_RE, ITERM_SESSION_RE, KITTY_LISTEN_RE, MUX_SESSION_RE,
-  SOCKET_RE, UUID_RE, WARP_FOCUS_RE, ZELLIJ_PANE_RE, cleanEnv, isAbsPath,
+  BUNDLE_RE, CLAUDE_HOST_SESSION_RE, CODEX_ID_RE, HERDR_PANE_RE, INT_RE, ITERM_SESSION_RE, KITTY_LISTEN_RE,
+  MUX_SESSION_RE, SOCKET_RE, UUID_RE, WARP_FOCUS_RE, ZELLIJ_PANE_RE, cleanEnv, isAbsPath,
 } from './records';
 
 /**
@@ -13,9 +13,12 @@ import {
  *
  * v1 ships the prompt-free rows only (§5.4): a multiplexer's own pane
  * selection, then the outer app by bundle id — agterm, kitty, iTerm2's URL,
- * WezTerm's CLI, Codex Desktop's deep link, JetBrains/Zed root-open, and
- * `open -b` for the other apps in the table. Terminal.app and Ghostty
- * degrade to the app level until the signed sender of v1.1 exists.
+ * WezTerm's CLI, the Codex Desktop and Claude Desktop deep links,
+ * JetBrains/Zed root-open, and `open -b` for the other apps in the table —
+ * Claude Desktop's among them for a `claude` started inside one of its
+ * sessions, whose own bundle is not in the table (insideDesktopAgent()).
+ * Terminal.app and Ghostty degrade to the app level until the signed sender
+ * of v1.1 exists.
  *
  * `resume` (§5.2 step 4) is the same ladder with one extra rung: on a live
  * session it *is* a focus (the user asked for the window, the session never
@@ -23,7 +26,9 @@ import {
  * one process, `agstatus-resume <session-uuid>`, in the directory the
  * runtime resolved. Rows that cannot start a process without AppleScript or
  * a file on disk (Terminal.app, iTerm2) say `unsupported-host` rather than
- * invent one.
+ * invent one. The two desktop apps start nothing at all: each keeps its own
+ * conversations, so its deep link opens the dead one in the app and the app
+ * carries it on from there.
  *
  * Trust (§5.1): argv[0] is `OPEN`, an absolute path from facts.bins, or
  * facts.launcher — never a PATH lookup, never a value from the record. Every
@@ -32,7 +37,11 @@ import {
  * only when it is in the table below — the record's `app.bundle` and the
  * bundle the runtime read off a multiplexer client's process tree are both
  * refused when the table does not know them (and `app.path` is never taken
- * from the record at all, §5.1). A step's `env` carries only the one socket
+ * from the record at all, §5.1). The one record whose unknown bundle is not
+ * refused is still no exception to the first half: a `claude` nested in a
+ * Claude Desktop session records `com.anthropic.claude-code`, and what it gets
+ * is `open -b` of the table's own CLAUDE_DESKTOP constant, never the id it
+ * recorded (insideDesktopAgent()). A step's `env` carries only the one socket
  * variable its tool needs. The one *command string* a plan may contain is
  * `'<launcher>' <uuid>`: a fixed absolute path the installer wrote and a
  * token that passed UUID_RE, and nothing else, ever.
@@ -41,8 +50,20 @@ import {
 /** The one system binary the planner names itself; every other tool comes from ListenerConfig.bins. */
 export const OPEN = '/usr/bin/open';
 
-/** Named because two rows key on it: the app that hosts `entrypoint: claude-desktop`. */
+/**
+ * Named because the focus row, the resume row and the deep link all key on
+ * it: the app that hosts `entrypoint: claude-desktop`.
+ */
 const CLAUDE_DESKTOP = 'com.anthropic.claudefordesktop';
+
+/**
+ * The nested claude.app Claude Desktop bundles under
+ * `~/Library/Application Support/Claude/claude-code/<version>/` and runs its
+ * agent out of. Named so that it can be RECOGNISED, never opened: it is not in
+ * the bundle table, and handing it to `open -b` would launch the agent binary
+ * as an app. See insideDesktopAgent().
+ */
+const CLAUDE_DESKTOP_AGENT = 'com.anthropic.claude-code';
 
 /**
  * Entrypoints that are not a terminal session at all: an SDK run or
@@ -125,6 +146,114 @@ function threadId(record: LocalRecord): string | null {
  */
 const codexLink = (bundle: string, id: string): Step =>
   ({ argv: [OPEN, '-b', bundle, `codex://threads/${id}`], expectFrontmost: bundle, label: 'open: codex thread' });
+
+/**
+ * The Claude Desktop session a record IS — `local_<uuid>`, from the agent's
+ * own CLAUDE_CODE_HOST_SESSION_ID — or null when the record cannot show that
+ * the desktop app itself spawned this agent.
+ *
+ * Every env value involved is INHERITED, which is what makes this more than a
+ * regex. Claude Code fills CLAUDE_CODE_ENTRYPOINT in only when it is unset, so
+ * a `claude` started inside a desktop session — from its Bash tool, say —
+ * reports `claude-desktop` as well, and carries the parent's host session id
+ * and `__CFBundleIdentifier` along with it. Its link would open the PARENT's
+ * conversation and ack `focused` for a session that conversation does not
+ * show: the plausible-but-wrong window the Warp row below guards against. So
+ * the entrypoint is necessary and no more than that, and the record must also
+ * show, from the process tree, that it is the agent the app started:
+ *
+ * - `app` came from the ppid walk and is Claude.app itself. The app runs its
+ *   agent out of a nested claude.app (`com.anthropic.claude-code`) and the
+ *   hook's walk starts at the agent's PARENT (findBundle() in the hook), so
+ *   for the agent the app spawned the first bundle above it is Claude.app,
+ *   while a CLI nested in that session walks into the parent agent's
+ *   claude.app first and records `com.anthropic.claude-code` — a bundle the
+ *   focus table does not even know, and which this function therefore never
+ *   accepts: that record gets Claude Desktop raised by insideDesktopAgent(),
+ *   never a link. `via: 'env'` is the hook falling back to
+ *   the inherited `__CFBundleIdentifier`, and proves nothing about who
+ *   spawned whom.
+ * - no tty. The app starts its agent without a terminal (`??` to ps, and no
+ *   `tty` in any record the app's sessions have produced); a `claude` typed
+ *   into a terminal has one — the app's own terminal panel included, whose
+ *   shells run under Claude Helper inside Claude.app and so walk to exactly
+ *   the same bundle.
+ * - no multiplexer. The app never starts its agent inside one, and with a mux
+ *   in the record the Claude Desktop row is only raising an outer client.
+ *
+ * If a later app version ran its agent from outside any bundle, a CLI nested
+ * in its Bash tool would pass all three, and the link would open the
+ * conversation whose tool call is running that CLI — still the wrong ack, but
+ * the nearest thing that process has to a window, never a stranger's. Any
+ * check that fails is plain activation, never a refusal: the app still comes
+ * forward, which is all this row did before it knew the link.
+ */
+function desktopSessionId(record: LocalRecord): string | null {
+  if (record.entrypoint !== 'claude-desktop' || record.mux || record.tty !== undefined) return null;
+  if (record.app?.via !== 'ppid-walk' || record.app.bundle !== CLAUDE_DESKTOP) return null;
+  // The record's own env, never facts.outer.env: with no multiplexer there is no other.
+  const id = record.env.CLAUDE_CODE_HOST_SESSION_ID;
+  return typeof id === 'string' && CLAUDE_HOST_SESSION_RE.test(id) ? id : null;
+}
+
+/**
+ * True for a `claude` that runs INSIDE a Claude Desktop session without being
+ * the agent the app spawned — one started from a desktop session's Bash tool.
+ * Its walk begins at its parent shell and meets the parent agent's nested
+ * claude.app first (desktopSessionId() above), so the record names
+ * CLAUDE_DESKTOP_AGENT: a bundle the table does not know, and one that must
+ * never reach `open -b`. The window that process lives in is Claude Desktop's,
+ * so Focus raises Claude Desktop — the constant, never the recorded id.
+ *
+ * The bundle id alone is not enough to say so. Nothing promises that
+ * `com.anthropic.claude-code` stays Claude Desktop's private copy: a future
+ * standalone Claude Code install could plausibly ship under the same id, and a
+ * `claude` started under one of those from a terminal would then raise Claude
+ * Desktop for a session it has nothing to do with — a plausible window, and the
+ * wrong one, which is worse than none (the Warp row's argument). So the record
+ * must also show it inherited a desktop session's environment:
+ *
+ * - `entrypoint: claude-desktop`. Claude Code fills CLAUDE_CODE_ENTRYPOINT in
+ *   only when it is unset, so every `claude` below a desktop session reports
+ *   the session's; one started from a terminal reports `cli`.
+ * - `__CFBundleIdentifier` is Claude Desktop's, when the record has one.
+ *   LaunchServices sets it for the app, and the agent and its Bash tool hand
+ *   it down unchanged. A record without it is let through on the entrypoint —
+ *   the hook omits absent keys, and an app that stops exporting it should not
+ *   start refusing taps — but a record that names some OTHER app there was
+ *   launched from that app's environment, and is refused.
+ * - `via: 'ppid-walk'`, and no multiplexer. The bundle came from the process
+ *   tree: the hook's env fallback IS `__CFBundleIdentifier`, so a claude-code
+ *   bundle learned that way would name the app that launched the process, not
+ *   a bundle it lives in. With a mux the outer client decides which window
+ *   comes forward, as for every other row: focusPlan() only asks this of a
+ *   record without one, and the check is here so the predicate says the same
+ *   on its own, to any later caller.
+ *
+ * Which is the reason this is plain activation and never the per-session
+ * link: the two inherited values and the bundle the walk met say the process
+ * lives in the app, not which conversation it belongs to, and the inherited
+ * host session id names the PARENT's (desktopSessionId() refuses this record
+ * on its bundle, so the resume row cannot link it either). A record that fails
+ * any check keeps what it had before this row existed — `unsupported-host`.
+ */
+function insideDesktopAgent(record: LocalRecord): boolean {
+  if (record.entrypoint !== 'claude-desktop' || record.mux) return false;
+  if (record.app?.via !== 'ppid-walk' || record.app.bundle !== CLAUDE_DESKTOP_AGENT) return false;
+  const launchedBy = record.env.__CFBundleIdentifier;
+  return launchedBy === undefined || launchedBy === CLAUDE_DESKTOP;
+}
+
+/**
+ * Claude Desktop's link to one of its sessions. `-b` pins the handler as well
+ * as the app to raise: `claude:` is a scheme any installed app may claim, and
+ * this hands the URL to the one bundle in the table and nothing else.
+ */
+const claudeLink = (id: string): Step => ({
+  argv: [OPEN, '-b', CLAUDE_DESKTOP, `claude://claude.ai/epitaxy/${id}`],
+  expectFrontmost: CLAUDE_DESKTOP,
+  label: 'open: claude desktop session',
+});
 
 // ---- App strategies (§5.2 step 3) ----------------------------------------
 
@@ -221,6 +350,31 @@ const codexDesktop: Strategy = (ctx) => {
   return leg('Codex thread', [codexLink(ctx.bundle, id)], 'thread', 'focused');
 };
 
+/**
+ * Claude Desktop's own link to one Code-tab session,
+ * `claude://claude.ai/epitaxy/<host session id>`: it navigates to that
+ * conversation and raises the app, the shape of the Codex row above.
+ *
+ * The link is UNDOCUMENTED in the way that matters here. The app's own
+ * session API hands back exactly this link for every local session, as the
+ * way to open one from outside the app, and its Info.plist registers the
+ * `claude` scheme — but nothing public promises the path, so any release may
+ * move it. Hence `experimental`, and hence, as with Warp, falling back to
+ * plain activation rather than failing whenever there is no id we trust: an
+ * app that stops handing its agent the id, or a record written before the hook
+ * kept it, must degrade to what this row always did, not start refusing taps.
+ *
+ * The bundle dispatch is not enough to trust the id, unlike Warp's: both the
+ * id and the bundle id are inherited by anything a desktop session starts, so
+ * desktopSessionId() asks the process tree whether this record is the
+ * session the app is hosting before the link is built.
+ */
+const claudeDesktop: Strategy = (ctx) => {
+  const id = desktopSessionId(ctx.record);
+  if (id === null) return appOnly(ctx);
+  return leg('Claude Desktop session', [claudeLink(id)], 'thread', 'focused', true);
+};
+
 /** JetBrains, Android Studio, Zed: opening the project root raises that project's window. */
 const projectOpen: Strategy = (ctx) => {
   const root = ctx.record.project_root;
@@ -233,7 +387,11 @@ const projectOpen: Strategy = (ctx) => {
 /**
  * The bundle table: the only bundle ids the listener ever hands to
  * `open -b` (plus the `com.jetbrains.` prefix). Anything else is an
- * unsupported host, however the record says it learned the id.
+ * unsupported host, however the record says it learned the id — Claude
+ * Desktop's bundled `com.anthropic.claude-code` included, which is why it is
+ * not a key here even though one record shape that carries it raises Claude
+ * Desktop: that is focusPlan()'s check before the table (insideDesktopAgent()),
+ * and a key would hand every other record with that bundle a strategy.
  */
 const STRATEGIES = new Map<string, Strategy>([
   ['com.umputun.agterm', agterm],
@@ -251,7 +409,7 @@ const STRATEGIES = new Map<string, Strategy>([
   ['com.raphaelamorim.rio', appOnly],
   ['com.apple.dt.Xcode', appOnly],
   ['com.openai.codex', codexDesktop],
-  ['com.anthropic.claudefordesktop', appOnly],
+  [CLAUDE_DESKTOP, claudeDesktop],
   ['com.google.android.studio', projectOpen],
   ['dev.zed.Zed', projectOpen],
   ['dev.zed.Zed-Preview', projectOpen],
@@ -378,13 +536,29 @@ const respawnCodexDesktop: Respawner = (ctx) => {
 };
 
 /**
- * Claude Desktop documents no resume-by-id link, so the honest move is to
- * put the app in front and let the user pick the conversation up inside it:
- * `activated`, and nothing was started.
+ * Claude Desktop, agent gone: the same link the focus row opens. The app keeps
+ * its own conversations, so the link shows the dead one in the app and the
+ * app carries it on from there — exactly what a Resume tap asked for, and what
+ * the Codex row above acks for its thread, so it acks the same: `resumed`,
+ * reach `thread`. Nothing is started by the listener, so `respawns` stays
+ * unset, and with it the runtime's respawn guards and its wait for a new
+ * record: whether and when the app brings its agent back for that
+ * conversation is the app's business, and a record that may never come within
+ * the wait is no evidence either way. Experimental for the focus row's
+ * reason: the link is not public.
+ *
+ * Without an id desktopSessionId() trusts (no id, a foreign shape, or a
+ * record that is not the session the app hosts — a CLI nested inside one, a
+ * shell in the app's terminal panel), it is what this row always was: the app
+ * in front for the user to pick the conversation up, `activated`, nothing
+ * started.
  */
-const claudeDesktopLeg = (): LegResult =>
-  leg(`open -b ${CLAUDE_DESKTOP}`, [openApp(CLAUDE_DESKTOP)], 'app', 'activated');
-const respawnClaudeDesktop: Respawner = () => claudeDesktopLeg();
+function claudeDesktopResume(record: LocalRecord): LegResult {
+  const id = desktopSessionId(record);
+  if (id === null) return leg(`open -b ${CLAUDE_DESKTOP}`, [openApp(CLAUDE_DESKTOP)], 'app', 'activated');
+  return leg('Claude Desktop session', [claudeLink(id)], 'thread', 'resumed', true);
+}
+const respawnClaudeDesktop: Respawner = (ctx) => claudeDesktopResume(ctx.record);
 
 /**
  * The respawn table. A bundle that is not here has no way to be handed a
@@ -549,14 +723,27 @@ function only(result: LegResult): PlanResult {
  * that cannot be handed an argv (Terminal.app, iTerm2, Warp), a session
  * that was never in a terminal (sdk-cli, codex-exec) and a machine with no
  * launcher (resume turned off, or a file that failed its 0700-and-ours
- * check) all refuse rather than improvise.
+ * check) all refuse rather than improvise. The two desktop apps start no
+ * process and are the exception to "exactly one": their row opens the app's
+ * own link to the conversation instead.
  */
 function respawnPlan(record: LocalRecord, facts: MachineFacts, resumeCwd?: string): PlanResult {
   const { launcher } = facts;
+  // First, even for the desktop rows that never run the launcher. An absent
+  // launcher is how the runtime says "resume is off on this machine" as well
+  // as "the launcher is not usable" (resolveFacts() in run.ts), and the
+  // planner cannot tell the two apart; the switch is documented to empty the
+  // whole Resume column (§6, §11), and the Codex row has always been refused
+  // here too. Letting the deep links through would make "off" mean "off
+  // except for these two", which no board can explain to the user.
   if (!isAbsPath(launcher)) return fail('unsupported-host');
   if (HEADLESS_ENTRYPOINTS.has(record.entrypoint)) return fail('unsupported-type');
-  // Claude Desktop keeps its own conversation list and documents no resume link.
-  if (record.entrypoint === 'claude-desktop') return only(claudeDesktopLeg());
+  // Claude Desktop keeps its own conversations: its link, or the app in front
+  // — never a terminal, whatever app the ppid walk landed on. Keyed on the
+  // entrypoint alone, which an agent started inside a desktop session
+  // inherits; such a record gets the app in front, never the link (see
+  // desktopSessionId()).
+  if (record.entrypoint === 'claude-desktop') return only(claudeDesktopResume(record));
 
   const uuid = UUID_RE.test(record.session_id) ? record.session_id : '';
   const cwd = isAbsPath(resumeCwd) ? resumeCwd : '';
@@ -603,7 +790,9 @@ function respawnPlan(record: LocalRecord, facts: MachineFacts, resumeCwd?: strin
  * resolved (facts.outer) is raised after it — with no outer, or an outer
  * the table does not know, the pane is selected and the window stays where
  * it was; without a multiplexer the record's own app is raised by its
- * bundle strategy, or refused when the table has none.
+ * bundle strategy, or refused when the table has none — except a `claude`
+ * nested in a Claude Desktop session, whose window is Claude Desktop's
+ * (insideDesktopAgent()).
  *
  * `resumeCwd` is the working directory for a respawn, already resolved and
  * validated by the runtime (this function reads no disk and no clock); it
@@ -654,6 +843,15 @@ function focusPlan(record: LocalRecord, facts: MachineFacts): PlanResult {
     const bundle = record.app?.bundle;
     if (bundle === undefined) return fail('unsupported-host');
     if (!BUNDLE_RE.test(bundle)) return fail('bad-record');
+    // Before the table, and not IN it: the table's keys are the bundles
+    // `open -b` is handed, and this record's bundle is the one thing here that
+    // must never be. The app raised is the CLAUDE_DESKTOP constant, and the leg
+    // is built here rather than through claudeDesktop(), so no route from this
+    // record reaches claudeLink(). Not experimental: it is the same `open -b`
+    // the Claude Desktop row has always fallen back to.
+    if (insideDesktopAgent(record)) {
+      return only(leg(`open -b ${CLAUDE_DESKTOP}`, [openApp(CLAUDE_DESKTOP)], 'app', 'activated'));
+    }
     const known = strategyFor(bundle);
     if (!known) return fail('unsupported-host');
     strategy = known;
