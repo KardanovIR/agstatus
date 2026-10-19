@@ -153,13 +153,33 @@ form, run on the host from the checkout the deploy workflow keeps at
 `/apps/agstatus`.
 
 - **diagnose** only reads: rows per table and per board, project days outside
-  the window or not real dates, the boards over each 1.6.2 bound, and the plan.
-- **dryrun** (the default) flags in one transaction, checks the result, and
-  rolls back. The transaction takes a few seconds, and meanwhile the server's
-  writes queue in memory while the board stays live. If a write already holds
-  a table, the run gives up after 10 s with `lock timeout`. Nothing has
-  changed then, so run it again.
-- **commit** does the same and commits. A second run flags nothing.
+  the window or not real dates, the boards over each 1.6.2 bound, the plan,
+  and how long each board is expected to hold the lock.
+- **dryrun** (the default) takes each board with rows to flag in its own
+  transaction. It locks the usage tables, flags that board, checks the
+  result, and rolls back. Each board's checks have to pass before its
+  transaction ends.
+- **commit** does the same, and commits each board in turn. A second run
+  flags nothing.
+
+While one board's transaction runs, the server's writes, to every board, wait
+in its memory, and the boards stay live. The wait grows with that board's
+rows: on a 2024 laptop, roughly 12 s per million live usage rows on the
+board, plus 30 s per million rows it flags, and longer on a slower disk.
+Floods of a few thousand rows take well under a second. Check diagnose's
+estimate before you start. Writes that are waiting exist only in the
+server's memory, so do not restart or redeploy the server while a run is in
+progress. On agstatus.online, every push to master redeploys.
+
+If a run stops, psql exits with status 3. The board in progress is rolled
+back, and in a commit run the boards before it stay committed.
+
+- `lock timeout`: a write already held a table for 10 s. Run the script
+  again; it picks up where it stopped.
+- `statement timeout`: each board gets ten times its estimate, and at least a
+  minute. Running again will not help, because the same rows take the same
+  time. Pass a larger limit instead, for example `-v statement_timeout=30min`,
+  or `0` for none.
 
 Every row one run flags carries the same `deleted_at`, which the commit run
 prints. Rows that are only past their retention are reported and left alone

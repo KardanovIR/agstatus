@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 import crypto from 'crypto';
 import path from 'path';
+import { performance } from 'perf_hooks';
 import { spawnSync } from 'child_process';
 import request from 'supertest';
 import { makeApp, createWorkspace, TEST_PG_URL, suiteDatabaseUrl, resetTables, sql, type TestApp } from './helpers';
@@ -259,12 +260,18 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
     const diagnose = runScript(dbUrl, { mode: 'diagnose', ...nowArg });
     expect(diagnose.status, diagnose.out).toBe(0);
     expect(diagnose.out).toContain('Diagnose only: nothing was written');
+    // Eight boards to lock in turn, each estimated well under the one-minute
+    // floor of its default statement_timeout.
+    const lock = diagnose.out.split('== The lock')[1] ?? '';
+    expect(lock).toMatch(/^\s*8 \|\s+5089 \|/m);
+    expect(lock.match(/\|\s+60s\s*$/gm)).toHaveLength(8);
     expect(await snapshot(dbUrl)).toEqual(rows0);
 
     const dry = runScript(dbUrl, nowArg); // no mode: a dry run
     expect(dry.status, dry.out).toBe(0);
     expect(dry.out).toContain('Dry run: rolled back');
-    expect(dry.out).toContain('post-check passed: 5089 rows flagged');
+    expect(dry.out).toContain('post-check passed: 5089 rows flagged on 8 boards');
+    expect(dry.out.match(/^board [0-9a-f]{12}: would flag \d+ rows, checks passed/gm)).toHaveLength(8);
     expect(await snapshot(dbUrl)).toEqual(rows0);
 
     const commit = runScript(dbUrl, { mode: 'commit', ...nowArg });
@@ -333,12 +340,59 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
     for (const n of names) if (n !== 'G') expect(agedAfter[n], `board ${n}`).toEqual(before[n]);
   }, 120_000);
 
-  it('a mistyped mode stops before anything runs', async () => {
+  it('a mistyped mode or timeout stops before anything runs', async () => {
     const r = runScript(dbUrl, { mode: 'comit' });
     expect(r.status).not.toBe(0);
     expect(r.out).toContain('mode must be diagnose, dryrun or commit, not comit');
     expect(r.out).not.toContain('== Run');
+    const t = runScript(dbUrl, { statement_timeout: '5 minutes' });
+    expect(t.status).not.toBe(0);
+    expect(t.out).toContain('statement_timeout must be a number with ms, s, min or h, or 0 for none, not 5 minutes');
+    expect(t.out).not.toContain('== Run');
   });
+
+  it('takes the lock per board, and gives up after 10 s on a write that holds a table', async () => {
+    await resetTables(dbUrl);
+    await stop(await boot());
+    await sql(dbUrl,
+      `INSERT INTO usage_project_days (workspace_id, source, project, day, tokens, updated_at)
+       VALUES ('w1', 'claude', 'p', '9999-01-01', 1, 1), ('w2', 'claude', 'p', '9999-01-01', 1, 1)`);
+    const rows0 = await snapshot(dbUrl);
+
+    // -v statement_timeout replaces the per-board default, and each board
+    // with a row to flag gets its own transaction.
+    const diagnose = runScript(dbUrl, { mode: 'diagnose', statement_timeout: '7min', now_ms: String(NOON) });
+    expect(diagnose.status, diagnose.out).toBe(0);
+    expect((diagnose.out.split('== The lock')[1] ?? '').match(/\|\s+7min\s*$/gm)).toHaveLength(2);
+
+    // A write the server has in flight holds ROW EXCLUSIVE until it commits.
+    const { Pool } = await import('pg');
+    const pool = new Pool({ connectionString: dbUrl, max: 1 });
+    const writer = await pool.connect();
+    try {
+      await writer.query('BEGIN');
+      await writer.query('UPDATE usage_history SET deleted_at = deleted_at WHERE false');
+      const started = performance.now();
+      const r = runScript(dbUrl, { mode: 'commit', now_ms: String(NOON) });
+      expect(r.status, r.out).toBe(3);
+      expect(r.out).toContain('canceling statement due to lock timeout');
+      // The read-only pass took no lock it had to wait for: it finished, and
+      // the first board's transaction is the one that waited.
+      expect(r.out).toContain('== Flagging, one board at a time');
+      expect(r.out).not.toContain('post-check passed');
+      expect(performance.now() - started).toBeGreaterThanOrEqual(10_000);
+    } finally {
+      await writer.query('ROLLBACK');
+      writer.release();
+      await pool.end();
+    }
+    expect(await snapshot(dbUrl)).toEqual(rows0);
+
+    const r = runScript(dbUrl, { mode: 'commit', now_ms: String(NOON) });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out.match(/^board w[12]: flagged 1 rows, checks passed/gm)).toHaveLength(2);
+    expect(r.out).toContain('post-check passed: 2 rows flagged on 2 boards');
+  }, 60_000);
 
   it('says a string is a calendar day exactly when isCalendarDay does', async () => {
     await resetTables(dbUrl);

@@ -1,25 +1,29 @@
 -- Flag the rows a server older than 1.6.2 wrote past the bounds 1.6.2 holds.
 --
 -- Flag-only: every change is `UPDATE … SET deleted_at = <now, epoch ms>
--- WHERE deleted_at IS NULL`. Nothing is removed, and every row this script
--- flags carries the same deleted_at, so the run can be listed (or undone)
+-- WHERE deleted_at IS NULL`. Nothing is removed, and every row one run flags
+-- carries the same deleted_at, so the run can be listed (or undone)
 -- afterwards by that one value.
 --
 -- Run it with psql against the board's database, on a server already running
 -- 1.6.2 or later, in this order:
 --
 --   psql … -X -v mode=diagnose -f scripts/flag-flood-rows.sql   read only
---   psql … -X -v mode=dryrun   -f scripts/flag-flood-rows.sql   flags, checks, ROLLBACK
---   psql … -X -v mode=commit   -f scripts/flag-flood-rows.sql   flags, checks, COMMIT
+--   psql … -X -v mode=dryrun   -f scripts/flag-flood-rows.sql   flags, checks, rolls back
+--   psql … -X -v mode=commit   -f scripts/flag-flood-rows.sql   flags, checks, commits
 --
 -- With no mode it is a dry run; only mode=commit commits. The command lines
 -- for the bundled docker-compose Postgres, agstatus.online included, are in
 -- docs/self-hosting.md ("Flagging rows written before 1.6.2's bounds").
 --
--- Optional: -v aged=flag also flags rows that are only past their retention
--- (see AGED below); the default, aged=leave, reports them and leaves them.
--- -v now_ms=<epoch ms> pins the instant the run is computed for (tests use
--- it); the default is the database clock when the run starts.
+-- Optional:
+--   -v aged=flag      also flags rows that are only past their retention (see
+--                     AGED below); the default, aged=leave, reports them and
+--                     leaves them.
+--   -v statement_timeout=<n>ms|s|min|h, or 0 for no limit, replaces the
+--                     default limit on every statement (see HOW IT RUNS).
+--   -v now_ms=<epoch ms> pins the instant the run is computed for (tests use
+--                     it); the default is the database clock when the run starts.
 --
 -- WHAT IS FLAGGED
 --
@@ -83,18 +87,49 @@
 --   2000. No load reads them again, but they are ordinary retention, not
 --   anything a bound refused, and the server leaves most of them as they are.
 --
--- The run is one REPEATABLE READ transaction. The dry run and the commit run
--- first take SHARE ROW EXCLUSIVE on the four usage tables: reads go on, and
--- the server's writes wait until the transaction ends, a few seconds. They
--- queue in its memory, so the board stays live and nothing is lost. If a
--- write already holds a table, lock_timeout gives up after 10 s, nothing is
--- changed, and the run can simply be repeated. Before it ends, the dry run
--- and the commit run check that every planned row was flagged, that the rows
--- a restart loads are the same set as before, and that a second pass would
--- flag nothing. Any failure stops psql, and nothing is committed.
+-- HOW IT RUNS
+--
+-- First one read-only REPEATABLE READ transaction, holding no lock beyond
+-- the one every read takes: the diagnostics, and the plan, board by board.
+-- diagnose stops there.
+--
+-- Then dryrun and commit take each board with rows to flag in its own
+-- transaction, smallest first. Every bound the script applies is computed
+-- per board, so boards can be flagged one at a time. Each transaction first
+-- takes SHARE ROW EXCLUSIVE on the four usage tables: reads go on, and the
+-- server's writes, to every board, wait until that board's transaction ends.
+-- They queue in the server's memory, so the boards stay live, but they exist
+-- only there until they drain: do not restart or redeploy the server while a
+-- run is in progress. (A restart would also wait for the read-only pass,
+-- whose read locks block its startup ALTER TABLE.) Under the lock the
+-- transaction derives that board's plan again, so what it flags is exactly
+-- what it planned, flags it in the order the rows lie on disk, and checks,
+-- before it ends, that every planned row was flagged, that the rows ranked
+-- within each cap are the same set as before, and that a second pass would
+-- flag nothing. Any failure stops psql. The dry run then undoes the board;
+-- the commit run commits it.
+--
+-- How long a board holds the lock grows with that board's rows. diagnose
+-- prints an estimate for each board, sized from what this script took on a
+-- 2024 laptop: roughly 12 s per million live usage rows on the board, plus
+-- 30 s per million rows it flags. A slower disk takes longer.
+--
+-- Each statement has a time limit, statement_timeout. By default the
+-- read-only pass has none, since it holds no lock the server's writes wait
+-- for, and each board's transaction gets ten times its estimate, at least a
+-- minute. -v statement_timeout replaces both.
+--
+-- When a run stops. psql exits with status 3; the board in progress is
+-- rolled back, and in a commit run the boards before it stay committed. If a
+-- write already holds a table, lock_timeout gives up after 10 s: run again,
+-- and the run picks up where the last one stopped, since a finished board
+-- has nothing left to flag. A statement timeout is not cured that way, as
+-- the same rows take the same time: run again with a larger
+-- -v statement_timeout (0 for none).
 --
 -- There is no DELETE, TRUNCATE or DROP in this file. It creates only
--- temporary tables and views, which go when the psql session ends.
+-- temporary tables, views and one temporary function, which go when the
+-- psql session ends.
 
 \set ON_ERROR_STOP on
 \set QUIET on
@@ -109,6 +144,10 @@
 \else
   \set aged leave
 \endif
+\if :{?statement_timeout}
+\else
+  \set statement_timeout auto
+\endif
 \if :{?now_ms}
 \else
   SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms \gset
@@ -122,22 +161,21 @@ SELECT CASE WHEN :'aged' IN ('leave', 'flag') THEN 0
             ELSE ('aged must be leave or flag, not ' || :'aged')::int END AS aged_ok \gset
 SELECT CASE WHEN :'now_ms' ~ '^[0-9]{12,14}$' THEN 0
             ELSE ('now_ms must be epoch milliseconds, not ' || :'now_ms')::int END AS now_ok \gset
-SELECT :'mode' = 'diagnose' AS is_diagnose, :'mode' = 'commit' AS is_commit \gset
+SELECT CASE WHEN :'statement_timeout' ~ '^(auto|[0-9]{1,9}(ms|s|min|h)?)$' THEN 0
+            ELSE ('statement_timeout must be a number with ms, s, min or h, or 0 for none, not '
+                  || :'statement_timeout')::int END AS timeout_ok \gset
+SELECT :'mode' = 'diagnose' AS is_diagnose, :'mode' = 'commit' AS is_commit,
+       :'statement_timeout' = 'auto' AS timeout_auto,
+       CASE WHEN :'statement_timeout' = 'auto' THEN '0' ELSE :'statement_timeout' END AS read_timeout \gset
 
+-- ---------------------------------------------------------------------------
+-- The read-only pass. Nothing in it waits for, or holds off, the server's
+-- writes.
+-- ---------------------------------------------------------------------------
 BEGIN ISOLATION LEVEL REPEATABLE READ;
--- No statement here should take more than a second or two; this bounds how
--- long the lock below can hold the server's writes if one does.
-SET LOCAL statement_timeout = '60s';
--- Room to hash the comparisons in the post-check instead of sorting them.
+SET LOCAL statement_timeout = :'read_timeout';
+-- Room to hash the comparisons in the checks instead of sorting them.
 SET LOCAL work_mem = '64MB';
-\if :is_diagnose
-\else
-  -- Before the first query, so that the snapshot is taken with writers held
-  -- off and what is planned is exactly what is flagged.
-  SET LOCAL lock_timeout = '10s';
-  LOCK TABLE usage_project_days, usage_session_totals, usage_limits, usage_history
-    IN SHARE ROW EXCLUSIVE MODE;
-\endif
 
 -- ---------------------------------------------------------------------------
 -- The instant and the bounds, each as 1.6.2 computes it (src/store.ts):
@@ -188,11 +226,14 @@ FROM flag_params p, (VALUES
   ('usage_history',        'points_over_cap',      false, true,  'past a series'' newest 2000'),
   ('usage_history',        'aged',                 false, true,  'older than 90 days')
 ) AS f (tbl, fate, flagged, aged, meaning);
+ANALYZE flag_params, flag_fates;
 
 -- ---------------------------------------------------------------------------
--- Every live row of the four usage tables, with its fate. These views read
--- the tables as they are now; the plan below is a snapshot of them taken
--- before anything is flagged, and the post-check reads them again after.
+-- Every live row of one board in the four usage tables, with its fate. The
+-- board is the setting flag.board, which the loops below set before each
+-- read; every bound here is per board, so a board's fates never depend on
+-- another board's rows. The views read the tables as they are at that
+-- moment, and row_tid is where the row lies on disk.
 -- Comparisons on text use the database's collation, as load() does.
 -- ---------------------------------------------------------------------------
 
@@ -201,7 +242,7 @@ FROM flag_params p, (VALUES
 CREATE TEMP VIEW flag_class_project_days AS
 WITH p AS (SELECT * FROM flag_params),
 live AS (
-  SELECT d.workspace_id, d.source, d.project, d.day, d.updated_at,
+  SELECT d.ctid AS row_tid, d.workspace_id, d.source, d.project, d.day, d.updated_at,
          CASE WHEN d.day > p.newest_day THEN 'after_window'
               WHEN d.day < p.oldest_day THEN 'before_window' END AS outside,
          -- isCalendarDay(): the string Date.parse(`${day}T00:00:00Z`) gives
@@ -217,7 +258,7 @@ live AS (
                      ELSE 31 END
          END AS is_day
   FROM usage_project_days d CROSS JOIN p
-  WHERE d.deleted_at IS NULL
+  WHERE d.deleted_at IS NULL AND d.workspace_id = current_setting('flag.board', true)
 ),
 win AS (
   SELECT l.*, RANK() OVER (PARTITION BY l.workspace_id ORDER BY l.day DESC, l.updated_at DESC) AS rnk
@@ -231,7 +272,7 @@ board AS (
   FROM win w CROSS JOIN p
   GROUP BY w.workspace_id
 )
-SELECT l.workspace_id, l.source, l.project, l.day, l.updated_at, l.is_day, l.outside AS fate
+SELECT l.workspace_id, l.source, l.project, l.day, l.updated_at, l.is_day, l.outside AS fate, l.row_tid
 FROM live l
 WHERE l.outside IS NOT NULL
 UNION ALL
@@ -239,7 +280,8 @@ SELECT w.workspace_id, w.source, w.project, w.day, w.updated_at, w.is_day,
        CASE WHEN w.rnk > p.max_project_days THEN 'over_cap'
             WHEN NOT w.is_day AND b.within_cap <= p.max_project_days THEN 'not_a_day'
             WHEN NOT w.is_day THEN 'not_a_day_held'
-            ELSE 'kept' END
+            ELSE 'kept' END,
+       w.row_tid
 FROM win w JOIN board b USING (workspace_id) CROSS JOIN p;
 
 -- Store.init(): updated_at within SESSION_TOTAL_TTL_MS, ROW_NUMBER() over
@@ -247,19 +289,19 @@ FROM win w JOIN board b USING (workspace_id) CROSS JOIN p;
 CREATE TEMP VIEW flag_class_session_totals AS
 WITH p AS (SELECT * FROM flag_params),
 live AS (
-  SELECT t.workspace_id, t.source, t.session_id, t.updated_at, t.updated_at >= p.totals_since AS fresh
+  SELECT t.ctid AS row_tid, t.workspace_id, t.source, t.session_id, t.updated_at, t.updated_at >= p.totals_since AS fresh
   FROM usage_session_totals t CROSS JOIN p
-  WHERE t.deleted_at IS NULL
+  WHERE t.deleted_at IS NULL AND t.workspace_id = current_setting('flag.board', true)
 ),
 ranked AS (
   SELECT l.*, RANK() OVER (PARTITION BY l.workspace_id ORDER BY l.updated_at DESC) AS rnk
   FROM live l
   WHERE l.fresh
 )
-SELECT workspace_id, source, session_id, updated_at, 'aged' AS fate FROM live WHERE NOT fresh
+SELECT workspace_id, source, session_id, updated_at, 'aged' AS fate, row_tid FROM live WHERE NOT fresh
 UNION ALL
 SELECT r.workspace_id, r.source, r.session_id, r.updated_at,
-       CASE WHEN r.rnk > p.max_session_totals THEN 'over_cap' ELSE 'kept' END
+       CASE WHEN r.rnk > p.max_session_totals THEN 'over_cap' ELSE 'kept' END, r.row_tid
 FROM ranked r CROSS JOIN p;
 
 -- Store.init(): updated_at within USAGE_TTL_MS, ROW_NUMBER() over
@@ -267,28 +309,28 @@ FROM ranked r CROSS JOIN p;
 CREATE TEMP VIEW flag_class_usage_limits AS
 WITH p AS (SELECT * FROM flag_params),
 live AS (
-  SELECT u.workspace_id, u.source, u.updated_at, u.updated_at >= p.limits_since AS fresh
+  SELECT u.ctid AS row_tid, u.workspace_id, u.source, u.updated_at, u.updated_at >= p.limits_since AS fresh
   FROM usage_limits u CROSS JOIN p
-  WHERE u.deleted_at IS NULL
+  WHERE u.deleted_at IS NULL AND u.workspace_id = current_setting('flag.board', true)
 ),
 ranked AS (
   SELECT l.*, RANK() OVER (PARTITION BY l.workspace_id ORDER BY l.updated_at DESC) AS rnk
   FROM live l
   WHERE l.fresh
 )
-SELECT workspace_id, source, updated_at, 'aged' AS fate FROM live WHERE NOT fresh
+SELECT workspace_id, source, updated_at, 'aged' AS fate, row_tid FROM live WHERE NOT fresh
 UNION ALL
 SELECT r.workspace_id, r.source, r.updated_at,
-       CASE WHEN r.rnk > p.max_sources THEN 'over_cap' ELSE 'kept' END
+       CASE WHEN r.rnk > p.max_sources THEN 'over_cap' ELSE 'kept' END, r.row_tid
 FROM ranked r CROSS JOIN p;
 
--- Every source a board has ever reported under, flagged rows included.
+-- Every source the board has ever reported under, flagged rows included.
 CREATE TEMP VIEW flag_sources_ever AS
 SELECT workspace_id, count(DISTINCT source) AS sources
-FROM (SELECT workspace_id, source FROM usage_limits
-      UNION ALL SELECT workspace_id, source FROM usage_history
-      UNION ALL SELECT workspace_id, source FROM usage_project_days
-      UNION ALL SELECT workspace_id, source FROM usage_session_totals) s
+FROM (SELECT workspace_id, source FROM usage_limits WHERE workspace_id = current_setting('flag.board', true)
+      UNION ALL SELECT workspace_id, source FROM usage_history WHERE workspace_id = current_setting('flag.board', true)
+      UNION ALL SELECT workspace_id, source FROM usage_project_days WHERE workspace_id = current_setting('flag.board', true)
+      UNION ALL SELECT workspace_id, source FROM usage_session_totals WHERE workspace_id = current_setting('flag.board', true)) s
 GROUP BY workspace_id;
 
 -- Store.init(): at within MAX_HISTORY_DAYS; per series the newest
@@ -299,12 +341,12 @@ GROUP BY workspace_id;
 CREATE TEMP VIEW flag_class_usage_history AS
 WITH p AS (SELECT * FROM flag_params),
 live AS (
-  SELECT h.workspace_id, h.source, h.window_id, h.at, h.at >= p.history_since AS fresh
+  SELECT h.ctid AS row_tid, h.workspace_id, h.source, h.window_id, h.at, h.at >= p.history_since AS fresh
   FROM usage_history h CROSS JOIN p
-  WHERE h.deleted_at IS NULL
+  WHERE h.deleted_at IS NULL AND h.workspace_id = current_setting('flag.board', true)
 ),
 pts AS (
-  SELECT l.workspace_id, l.source, l.window_id, l.at,
+  SELECT l.row_tid, l.workspace_id, l.source, l.window_id, l.at,
          ROW_NUMBER() OVER (PARTITION BY l.workspace_id, l.source, l.window_id ORDER BY l.at DESC) AS point_rank,
          MAX(l.at) OVER (PARTITION BY l.workspace_id, l.source, l.window_id) AS newest
   FROM live l
@@ -319,26 +361,71 @@ series AS (
     WHERE s.point_rank <= p.max_points
   ) q
 )
-SELECT workspace_id, source, window_id, at, 'aged' AS fate FROM live WHERE NOT fresh
+SELECT workspace_id, source, window_id, at, 'aged' AS fate, row_tid FROM live WHERE NOT fresh
 UNION ALL
 SELECT pt.workspace_id, pt.source, pt.window_id, pt.at,
        CASE WHEN s.series_rank > p.max_series AND coalesce(e.sources, 0) <= p.max_sources THEN 'series_over_cap'
             WHEN s.series_rank > p.max_series THEN 'series_over_cap_held'
             WHEN pt.point_rank > p.max_points THEN 'points_over_cap'
-            ELSE 'kept' END
+            ELSE 'kept' END,
+       pt.row_tid
 FROM pts pt
 JOIN series s USING (workspace_id, source, window_id)
 LEFT JOIN flag_sources_ever e USING (workspace_id)
 CROSS JOIN p;
 
--- The plan: one snapshot of every view above, before anything changes.
-CREATE TEMP TABLE flag_pd AS SELECT * FROM flag_class_project_days;
-CREATE TEMP TABLE flag_st AS SELECT * FROM flag_class_session_totals;
-CREATE TEMP TABLE flag_ul AS SELECT * FROM flag_class_usage_limits;
-CREATE TEMP TABLE flag_uh AS SELECT * FROM flag_class_usage_history;
--- Autovacuum never analyzes temporary tables; without statistics the joins
--- below against the real tables plan as nested loops.
-ANALYZE flag_pd, flag_st, flag_ul, flag_uh;
+-- The plan for the report: every board with a live usage row, read through
+-- the views above one board at a time.
+CREATE TEMP TABLE flag_boards AS
+SELECT workspace_id FROM usage_project_days WHERE deleted_at IS NULL
+UNION SELECT workspace_id FROM usage_session_totals WHERE deleted_at IS NULL
+UNION SELECT workspace_id FROM usage_limits WHERE deleted_at IS NULL
+UNION SELECT workspace_id FROM usage_history WHERE deleted_at IS NULL;
+CREATE TEMP TABLE flag_pd AS SELECT * FROM flag_class_project_days WITH NO DATA;
+CREATE TEMP TABLE flag_st AS SELECT * FROM flag_class_session_totals WITH NO DATA;
+CREATE TEMP TABLE flag_ul AS SELECT * FROM flag_class_usage_limits WITH NO DATA;
+CREATE TEMP TABLE flag_uh AS SELECT * FROM flag_class_usage_history WITH NO DATA;
+CREATE TEMP TABLE flag_se AS SELECT * FROM flag_sources_ever WITH NO DATA;
+DO $$
+DECLARE
+  ws text;
+BEGIN
+  FOR ws IN SELECT workspace_id FROM flag_boards ORDER BY workspace_id LOOP
+    PERFORM set_config('flag.board', ws, true);
+    INSERT INTO flag_pd SELECT * FROM flag_class_project_days;
+    INSERT INTO flag_st SELECT * FROM flag_class_session_totals;
+    INSERT INTO flag_ul SELECT * FROM flag_class_usage_limits;
+    INSERT INTO flag_uh SELECT * FROM flag_class_usage_history;
+    INSERT INTO flag_se SELECT * FROM flag_sources_ever;
+  END LOOP;
+END $$;
+-- Autovacuum never analyzes temporary tables; without statistics the
+-- queries below plan as if they held a handful of rows.
+ANALYZE flag_boards, flag_pd, flag_st, flag_ul, flag_uh, flag_se;
+
+-- The boards dryrun and commit will lock the tables for, one at a time,
+-- with how long each is expected to take. The rates are what this script
+-- measured on a 2024 laptop (Postgres 16, 128 MB shared_buffers), rounded up:
+-- 12 µs a live usage row to plan and check, 30 µs a row to flag.
+CREATE TEMP TABLE flag_todo AS
+WITH plan AS (
+  SELECT c.workspace_id, f.flagged FROM flag_pd c JOIN flag_fates f ON f.tbl = 'usage_project_days' AND f.fate = c.fate
+  UNION ALL SELECT c.workspace_id, f.flagged FROM flag_st c JOIN flag_fates f ON f.tbl = 'usage_session_totals' AND f.fate = c.fate
+  UNION ALL SELECT c.workspace_id, f.flagged FROM flag_ul c JOIN flag_fates f ON f.tbl = 'usage_limits' AND f.fate = c.fate
+  UNION ALL SELECT c.workspace_id, f.flagged FROM flag_uh c JOIN flag_fates f ON f.tbl = 'usage_history' AND f.fate = c.fate
+),
+per AS (
+  SELECT workspace_id, count(*) AS live_rows, count(*) FILTER (WHERE flagged) AS flag_rows
+  FROM plan GROUP BY workspace_id
+),
+est AS (
+  SELECT workspace_id, live_rows, flag_rows, ceil(live_rows * 0.012 + flag_rows * 0.030)::bigint AS est_ms
+  FROM per WHERE flag_rows > 0
+)
+SELECT workspace_id, live_rows, flag_rows, est_ms,
+       CASE WHEN :'timeout_auto' THEN ceil(greatest(60000, 10 * est_ms) / 1000.0) || 's' ELSE :'statement_timeout' END AS timeout,
+       row_number() OVER (ORDER BY est_ms, workspace_id) AS ord
+FROM est;
 
 CREATE TEMP TABLE flag_totals_before AS
 SELECT 'workspaces' AS tbl, count(*) FILTER (WHERE deleted_at IS NULL) AS live, count(*) FILTER (WHERE deleted_at IS NOT NULL) AS flagged FROM workspaces
@@ -350,11 +437,169 @@ UNION ALL SELECT 'usage_history', count(*) FILTER (WHERE deleted_at IS NULL), co
 UNION ALL SELECT 'usage_project_days', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_project_days
 UNION ALL SELECT 'usage_session_totals', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_session_totals;
 
-\if :is_diagnose
-  -- Everything from here on only reads. Postgres refuses any write to a
-  -- real table for the rest of the transaction.
-  SET TRANSACTION READ ONLY;
-\endif
+-- What each board's transaction plans under its lock: the rows it flags
+-- (flag) and the rows it keeps, kept across boards for the totals at the end.
+CREATE TEMP TABLE flag_run_pd AS SELECT c.*, true AS flag FROM flag_class_project_days c WITH NO DATA;
+CREATE TEMP TABLE flag_run_st AS SELECT c.*, true AS flag FROM flag_class_session_totals c WITH NO DATA;
+CREATE TEMP TABLE flag_run_ul AS SELECT c.*, true AS flag FROM flag_class_usage_limits c WITH NO DATA;
+CREATE TEMP TABLE flag_run_uh AS SELECT c.*, true AS flag FROM flag_class_usage_history c WITH NO DATA;
+CREATE INDEX ON flag_run_pd (workspace_id);
+CREATE INDEX ON flag_run_st (workspace_id);
+CREATE INDEX ON flag_run_ul (workspace_id);
+CREATE INDEX ON flag_run_uh (workspace_id);
+
+-- One board: plan, flag, check. Called once per board, inside a transaction
+-- that already holds SHARE ROW EXCLUSIVE on the four usage tables, so no
+-- other writer can change a row between the plan and the flag, or move one
+-- on disk. With apply false (the dry run) the flags and the checks run in a
+-- subtransaction that is then rolled back; only the plan is kept.
+CREATE FUNCTION pg_temp.flag_board(ws text, apply boolean) RETURNS text
+LANGUAGE plpgsql AS $fn$
+DECLARE
+  started timestamptz := clock_timestamp();
+  stamp bigint;
+  planned bigint;
+  done bigint := 0;
+  n bigint;
+  again bigint := 0;
+  drift bigint := 0;
+  n_again bigint;
+  n_drift bigint;
+BEGIN
+  SELECT now_ms INTO stamp FROM flag_params;
+  PERFORM set_config('flag.board', ws, true);
+
+  -- The board's plan, read under the lock: exactly what is flagged below.
+  -- Only the rows to flag and the kept rows the check compares against.
+  INSERT INTO flag_run_pd SELECT c.*, f.flagged FROM flag_class_project_days c
+    JOIN flag_fates f ON f.tbl = 'usage_project_days' AND f.fate = c.fate WHERE f.flagged OR c.fate = 'kept';
+  INSERT INTO flag_run_st SELECT c.*, f.flagged FROM flag_class_session_totals c
+    JOIN flag_fates f ON f.tbl = 'usage_session_totals' AND f.fate = c.fate WHERE f.flagged OR c.fate = 'kept';
+  INSERT INTO flag_run_ul SELECT c.*, f.flagged FROM flag_class_usage_limits c
+    JOIN flag_fates f ON f.tbl = 'usage_limits' AND f.fate = c.fate WHERE f.flagged OR c.fate = 'kept';
+  INSERT INTO flag_run_uh SELECT c.*, f.flagged FROM flag_class_usage_history c
+    JOIN flag_fates f ON f.tbl = 'usage_history' AND f.fate = c.fate WHERE f.flagged OR c.fate = 'kept';
+  SELECT (SELECT count(*) FROM flag_run_pd WHERE workspace_id = ws AND flag)
+       + (SELECT count(*) FROM flag_run_st WHERE workspace_id = ws AND flag)
+       + (SELECT count(*) FROM flag_run_ul WHERE workspace_id = ws AND flag)
+       + (SELECT count(*) FROM flag_run_uh WHERE workspace_id = ws AND flag)
+    INTO planned;
+
+  BEGIN
+    -- Flag-only, from the plan, and only a row still exactly as planned.
+    -- Matched by row_tid, in row_tid order: each page is read and written
+    -- once, in the order it lies on disk. Matched by key in the plan's own
+    -- order instead, 2.5 million flood rows of one board are a random read
+    -- and a random write each, and took over ten minutes on the laptop above.
+    UPDATE usage_project_days t SET deleted_at = stamp
+    FROM (SELECT * FROM flag_run_pd WHERE workspace_id = ws AND flag ORDER BY row_tid) f
+    WHERE t.ctid = f.row_tid
+      AND t.workspace_id = f.workspace_id AND t.source = f.source AND t.project = f.project AND t.day = f.day
+      AND t.updated_at = f.updated_at AND t.deleted_at IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    done := done + n;
+    UPDATE usage_session_totals t SET deleted_at = stamp
+    FROM (SELECT * FROM flag_run_st WHERE workspace_id = ws AND flag ORDER BY row_tid) f
+    WHERE t.ctid = f.row_tid
+      AND t.workspace_id = f.workspace_id AND t.source = f.source AND t.session_id = f.session_id
+      AND t.updated_at = f.updated_at AND t.deleted_at IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    done := done + n;
+    UPDATE usage_limits t SET deleted_at = stamp
+    FROM (SELECT * FROM flag_run_ul WHERE workspace_id = ws AND flag ORDER BY row_tid) f
+    WHERE t.ctid = f.row_tid
+      AND t.workspace_id = f.workspace_id AND t.source = f.source
+      AND t.updated_at = f.updated_at AND t.deleted_at IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    done := done + n;
+    UPDATE usage_history t SET deleted_at = stamp
+    FROM (SELECT * FROM flag_run_uh WHERE workspace_id = ws AND flag ORDER BY row_tid) f
+    WHERE t.ctid = f.row_tid
+      AND t.workspace_id = f.workspace_id AND t.source = f.source AND t.window_id = f.window_id AND t.at = f.at
+      AND t.deleted_at IS NULL;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    done := done + n;
+
+    -- 1. Every planned row carries this run's flag. (The UPDATEs join the
+    -- plan, so nothing outside it can have been touched.)
+    IF done <> planned THEN
+      RAISE EXCEPTION 'post-check, board %: % rows planned, % flagged', left(ws, 12), planned, done;
+    END IF;
+
+    -- 2. The rows ranked within each cap are the same set as before the
+    -- flags, and 3. a second pass would flag nothing. Read through the same
+    -- views, now that the flags are in.
+    WITH c AS (SELECT v.*, f.flagged FROM flag_class_project_days v
+               JOIN flag_fates f ON f.tbl = 'usage_project_days' AND f.fate = v.fate)
+    SELECT (SELECT count(*) FROM c WHERE flagged),
+           (SELECT count(*) FROM (
+              (SELECT workspace_id, source, project, day FROM flag_run_pd WHERE workspace_id = ws AND fate = 'kept'
+               EXCEPT SELECT workspace_id, source, project, day FROM c WHERE fate = 'kept')
+              UNION ALL
+              (SELECT workspace_id, source, project, day FROM c WHERE fate = 'kept'
+               EXCEPT SELECT workspace_id, source, project, day FROM flag_run_pd WHERE workspace_id = ws AND fate = 'kept')) x)
+      INTO n_again, n_drift;
+    again := again + n_again;
+    drift := drift + n_drift;
+    WITH c AS (SELECT v.*, f.flagged FROM flag_class_session_totals v
+               JOIN flag_fates f ON f.tbl = 'usage_session_totals' AND f.fate = v.fate)
+    SELECT (SELECT count(*) FROM c WHERE flagged),
+           (SELECT count(*) FROM (
+              (SELECT workspace_id, source, session_id FROM flag_run_st WHERE workspace_id = ws AND fate = 'kept'
+               EXCEPT SELECT workspace_id, source, session_id FROM c WHERE fate = 'kept')
+              UNION ALL
+              (SELECT workspace_id, source, session_id FROM c WHERE fate = 'kept'
+               EXCEPT SELECT workspace_id, source, session_id FROM flag_run_st WHERE workspace_id = ws AND fate = 'kept')) x)
+      INTO n_again, n_drift;
+    again := again + n_again;
+    drift := drift + n_drift;
+    WITH c AS (SELECT v.*, f.flagged FROM flag_class_usage_limits v
+               JOIN flag_fates f ON f.tbl = 'usage_limits' AND f.fate = v.fate)
+    SELECT (SELECT count(*) FROM c WHERE flagged),
+           (SELECT count(*) FROM (
+              (SELECT workspace_id, source FROM flag_run_ul WHERE workspace_id = ws AND fate = 'kept'
+               EXCEPT SELECT workspace_id, source FROM c WHERE fate = 'kept')
+              UNION ALL
+              (SELECT workspace_id, source FROM c WHERE fate = 'kept'
+               EXCEPT SELECT workspace_id, source FROM flag_run_ul WHERE workspace_id = ws AND fate = 'kept')) x)
+      INTO n_again, n_drift;
+    again := again + n_again;
+    drift := drift + n_drift;
+    WITH c AS (SELECT v.*, f.flagged FROM flag_class_usage_history v
+               JOIN flag_fates f ON f.tbl = 'usage_history' AND f.fate = v.fate)
+    SELECT (SELECT count(*) FROM c WHERE flagged),
+           (SELECT count(*) FROM (
+              (SELECT workspace_id, source, window_id, at FROM flag_run_uh WHERE workspace_id = ws AND fate = 'kept'
+               EXCEPT SELECT workspace_id, source, window_id, at FROM c WHERE fate = 'kept')
+              UNION ALL
+              (SELECT workspace_id, source, window_id, at FROM c WHERE fate = 'kept'
+               EXCEPT SELECT workspace_id, source, window_id, at FROM flag_run_uh WHERE workspace_id = ws AND fate = 'kept')) x)
+      INTO n_again, n_drift;
+    again := again + n_again;
+    drift := drift + n_drift;
+    IF drift <> 0 THEN
+      RAISE EXCEPTION 'post-check, board %: the rows a restart loads changed (% differ)', left(ws, 12), drift;
+    END IF;
+    IF again <> 0 THEN
+      RAISE EXCEPTION 'post-check, board %: a second pass would flag % more rows', left(ws, 12), again;
+    END IF;
+
+    IF NOT apply THEN
+      RAISE EXCEPTION USING ERRCODE = 'FLDRY', MESSAGE = 'dry run: roll this board back';
+    END IF;
+  EXCEPTION WHEN SQLSTATE 'FLDRY' THEN
+    NULL; -- the dry run: every flag above is rolled back with the subtransaction
+  END;
+
+  RETURN format('board %s: %s %s rows, checks passed, %s s under the lock',
+                left(ws, 12), CASE WHEN apply THEN 'flagged' ELSE 'would flag' END, planned,
+                to_char(extract(epoch FROM clock_timestamp() - started), 'FM9999990.0'));
+END
+$fn$;
+
+-- Everything from here on only reads. Postgres refuses any write to a real
+-- table for the rest of this transaction.
+SET TRANSACTION READ ONLY;
 
 -- ---------------------------------------------------------------------------
 -- (a) Diagnostics. Board ids are shown as their first 12 characters; no
@@ -444,7 +689,7 @@ bounds AS (
   UNION ALL SELECT 'history series, last 90 days', p.max_series, n FROM uh_series, p
   UNION ALL SELECT 'points in one series (per series)', p.max_points, n FROM uh_points, p
   UNION ALL SELECT 'usage sources, live rows', p.max_sources, n FROM src_live, p
-  UNION ALL SELECT 'usage sources, ever (flagged too)', p.max_sources, sources FROM flag_sources_ever, p
+  UNION ALL SELECT 'usage sources, ever (flagged too)', p.max_sources, sources FROM flag_se, p
   UNION ALL SELECT 'live devices', p.max_devices, live FROM dev, p
   UNION ALL SELECT 'device tokens, live + flagged in 90 days', p.max_device_tokens, counted FROM dev, p
   UNION ALL SELECT 'live sessions (hosted cap)', p.max_sessions, n FROM ses, p
@@ -475,7 +720,7 @@ SELECT left(e.workspace_id, 12) AS board, e.sources AS sources_ever,
        coalesce(sum(n) FILTER (WHERE tbl = 'history'), 0) AS in_history,
        coalesce(sum(n) FILTER (WHERE tbl = 'project_days'), 0) AS in_project_days,
        coalesce(sum(n) FILTER (WHERE tbl = 'session_totals'), 0) AS in_session_totals
-FROM flag_sources_ever e CROSS JOIN flag_params p
+FROM flag_se e CROSS JOIN flag_params p
 LEFT JOIN per_table t USING (workspace_id)
 WHERE e.sources > p.max_sources
 GROUP BY e.workspace_id, e.sources
@@ -529,174 +774,92 @@ GROUP BY workspace_id
 ORDER BY count(*) DESC, workspace_id
 LIMIT 20;
 
+\echo
+\echo '== The lock: in dryrun and commit, each of these boards holds off the server''s writes in turn'
+SELECT count(*) AS boards, coalesce(sum(flag_rows), 0) AS rows_to_flag,
+       round(coalesce(sum(est_ms), 0) / 1000.0, 1) AS est_total_s,
+       round(coalesce(max(est_ms), 0) / 1000.0, 1) AS est_longest_hold_s
+FROM flag_todo;
+SELECT left(workspace_id, 12) AS board, live_rows, flag_rows, round(est_ms / 1000.0, 1) AS est_hold_s,
+       timeout AS statement_timeout
+FROM flag_todo
+ORDER BY est_ms DESC, workspace_id
+LIMIT 10;
+
 \if :is_diagnose
   \echo
   \echo 'Diagnose only: nothing was written. Next: -v mode=dryrun'
   ROLLBACK;
   \quit
 \endif
+-- Only temporary tables were written; committing keeps them for what follows.
+COMMIT;
 
 -- ---------------------------------------------------------------------------
--- (b) The flag step. Flag-only, from the plan, and only a row still exactly
--- as planned (live, same updated_at), so a run can never flag anything it
--- did not first report.
+-- (b) The flag step: one transaction per board, smallest first. The lock is
+-- taken before the transaction's first query, so its snapshot, and the plan
+-- read from it, is taken with every other writer held off.
 -- ---------------------------------------------------------------------------
 \echo
-\echo '== Flagging'
-WITH done AS (
-  UPDATE usage_project_days d SET deleted_at = p.now_ms
-  FROM flag_pd f, flag_fates ff, flag_params p
-  WHERE ff.tbl = 'usage_project_days' AND ff.fate = f.fate AND ff.flagged
-    AND d.workspace_id = f.workspace_id AND d.source = f.source AND d.project = f.project AND d.day = f.day
-    AND d.updated_at = f.updated_at AND d.deleted_at IS NULL
-  RETURNING f.fate
-)
-SELECT 'usage_project_days' AS "table", fate, count(*) AS flagged FROM done GROUP BY fate ORDER BY fate;
+\echo '== Flagging, one board at a time'
+\pset tuples_only on
+\pset format unaligned
+SELECT s.cmd
+FROM flag_todo t
+CROSS JOIN LATERAL (VALUES
+  (1, 'BEGIN ISOLATION LEVEL REPEATABLE READ'),
+  (2, format('SET LOCAL statement_timeout = %L', t.timeout)),
+  (3, 'SET LOCAL lock_timeout = ''10s'''),
+  (4, 'SET LOCAL work_mem = ''64MB'''),
+  (5, 'LOCK TABLE usage_project_days, usage_session_totals, usage_limits, usage_history IN SHARE ROW EXCLUSIVE MODE'),
+  (6, format('SELECT pg_temp.flag_board(%L, %L)', t.workspace_id, :'is_commit')),
+  (7, 'COMMIT')
+) AS s (step, cmd)
+ORDER BY t.ord, s.step
+\gexec
+\pset format aligned
+\pset tuples_only off
 
-WITH done AS (
-  UPDATE usage_session_totals t SET deleted_at = p.now_ms
-  FROM flag_st f, flag_fates ff, flag_params p
-  WHERE ff.tbl = 'usage_session_totals' AND ff.fate = f.fate AND ff.flagged
-    AND t.workspace_id = f.workspace_id AND t.source = f.source AND t.session_id = f.session_id
-    AND t.updated_at = f.updated_at AND t.deleted_at IS NULL
-  RETURNING f.fate
-)
-SELECT 'usage_session_totals' AS "table", fate, count(*) AS flagged FROM done GROUP BY fate ORDER BY fate;
-
-WITH done AS (
-  UPDATE usage_limits u SET deleted_at = p.now_ms
-  FROM flag_ul f, flag_fates ff, flag_params p
-  WHERE ff.tbl = 'usage_limits' AND ff.fate = f.fate AND ff.flagged
-    AND u.workspace_id = f.workspace_id AND u.source = f.source
-    AND u.updated_at = f.updated_at AND u.deleted_at IS NULL
-  RETURNING f.fate
-)
-SELECT 'usage_limits' AS "table", fate, count(*) AS flagged FROM done GROUP BY fate ORDER BY fate;
-
-WITH done AS (
-  UPDATE usage_history h SET deleted_at = p.now_ms
-  FROM flag_uh f, flag_fates ff, flag_params p
-  WHERE ff.tbl = 'usage_history' AND ff.fate = f.fate AND ff.flagged
-    AND h.workspace_id = f.workspace_id AND h.source = f.source AND h.window_id = f.window_id AND h.at = f.at
-    AND h.deleted_at IS NULL
-  RETURNING f.fate
-)
-SELECT 'usage_history' AS "table", fate, count(*) AS flagged FROM done GROUP BY fate ORDER BY fate;
+\echo
+SELECT tbl AS "table", fate, count(*) AS "rows"
+FROM (SELECT 'usage_project_days' AS tbl, fate FROM flag_run_pd WHERE flag
+      UNION ALL SELECT 'usage_session_totals', fate FROM flag_run_st WHERE flag
+      UNION ALL SELECT 'usage_limits', fate FROM flag_run_ul WHERE flag
+      UNION ALL SELECT 'usage_history', fate FROM flag_run_uh WHERE flag) x
+GROUP BY tbl, fate
+ORDER BY CASE tbl WHEN 'usage_project_days' THEN 1 WHEN 'usage_session_totals' THEN 2
+                  WHEN 'usage_limits' THEN 3 ELSE 4 END, fate;
 
 -- ---------------------------------------------------------------------------
--- (c) Post-check, inside the transaction and before COMMIT. Any failure
--- raises, psql stops, and the transaction is rolled back.
+-- (c) Every board's checks ran inside its own transaction, before it ended;
+-- psql stops at the first that fails, so reaching here means all passed.
 -- ---------------------------------------------------------------------------
 \echo
 \echo '== Post-check'
--- The same views, read again now that the flags are in.
-CREATE TEMP TABLE flag_pd_after AS SELECT * FROM flag_class_project_days;
-CREATE TEMP TABLE flag_st_after AS SELECT * FROM flag_class_session_totals;
-CREATE TEMP TABLE flag_ul_after AS SELECT * FROM flag_class_usage_limits;
-CREATE TEMP TABLE flag_uh_after AS SELECT * FROM flag_class_usage_history;
-ANALYZE flag_pd_after, flag_st_after, flag_ul_after, flag_uh_after;
-DO $$
-DECLARE
-  planned bigint;
-  marked bigint;
-  drift bigint;
-  again bigint;
-BEGIN
-  -- 1. Every planned row carries this run's flag. (The UPDATEs join the
-  -- plan, so nothing outside it can have been touched.)
-  SELECT count(*) INTO planned FROM (
-    SELECT 1 FROM flag_pd f JOIN flag_fates ff ON ff.tbl = 'usage_project_days' AND ff.fate = f.fate AND ff.flagged
-    UNION ALL SELECT 1 FROM flag_st f JOIN flag_fates ff ON ff.tbl = 'usage_session_totals' AND ff.fate = f.fate AND ff.flagged
-    UNION ALL SELECT 1 FROM flag_ul f JOIN flag_fates ff ON ff.tbl = 'usage_limits' AND ff.fate = f.fate AND ff.flagged
-    UNION ALL SELECT 1 FROM flag_uh f JOIN flag_fates ff ON ff.tbl = 'usage_history' AND ff.fate = f.fate AND ff.flagged
-  ) x;
-  SELECT (SELECT count(*) FROM usage_project_days d JOIN flag_pd f USING (workspace_id, source, project, day)
-            JOIN flag_fates ff ON ff.tbl = 'usage_project_days' AND ff.fate = f.fate AND ff.flagged, flag_params p
-          WHERE d.deleted_at = p.now_ms)
-       + (SELECT count(*) FROM usage_session_totals t JOIN flag_st f USING (workspace_id, source, session_id)
-            JOIN flag_fates ff ON ff.tbl = 'usage_session_totals' AND ff.fate = f.fate AND ff.flagged, flag_params p
-          WHERE t.deleted_at = p.now_ms)
-       + (SELECT count(*) FROM usage_limits u JOIN flag_ul f USING (workspace_id, source)
-            JOIN flag_fates ff ON ff.tbl = 'usage_limits' AND ff.fate = f.fate AND ff.flagged, flag_params p
-          WHERE u.deleted_at = p.now_ms)
-       + (SELECT count(*) FROM usage_history h JOIN flag_uh f USING (workspace_id, source, window_id, at)
-            JOIN flag_fates ff ON ff.tbl = 'usage_history' AND ff.fate = f.fate AND ff.flagged, flag_params p
-          WHERE h.deleted_at = p.now_ms)
-    INTO marked;
-  IF marked <> planned THEN
-    RAISE EXCEPTION 'post-check: % rows planned, % carry this run''s flag', planned, marked;
-  END IF;
-
-  -- 2. The rows a restart loads are the same set as before the flag step.
-  SELECT (SELECT count(*) FROM (
-            (SELECT workspace_id, source, project, day FROM flag_pd WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source, project, day FROM flag_pd_after WHERE fate = 'kept')
-            UNION ALL
-            (SELECT workspace_id, source, project, day FROM flag_pd_after WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source, project, day FROM flag_pd WHERE fate = 'kept')) x)
-       + (SELECT count(*) FROM (
-            (SELECT workspace_id, source, session_id FROM flag_st WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source, session_id FROM flag_st_after WHERE fate = 'kept')
-            UNION ALL
-            (SELECT workspace_id, source, session_id FROM flag_st_after WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source, session_id FROM flag_st WHERE fate = 'kept')) x)
-       + (SELECT count(*) FROM (
-            (SELECT workspace_id, source FROM flag_ul WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source FROM flag_ul_after WHERE fate = 'kept')
-            UNION ALL
-            (SELECT workspace_id, source FROM flag_ul_after WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source FROM flag_ul WHERE fate = 'kept')) x)
-       + (SELECT count(*) FROM (
-            (SELECT workspace_id, source, window_id, at FROM flag_uh WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source, window_id, at FROM flag_uh_after WHERE fate = 'kept')
-            UNION ALL
-            (SELECT workspace_id, source, window_id, at FROM flag_uh_after WHERE fate = 'kept'
-             EXCEPT SELECT workspace_id, source, window_id, at FROM flag_uh WHERE fate = 'kept')) x)
-    INTO drift;
-  IF drift <> 0 THEN
-    RAISE EXCEPTION 'post-check: the rows a restart loads changed (% differ)', drift;
-  END IF;
-
-  -- 3. A second pass, now, would flag nothing.
-  SELECT (SELECT count(*) FROM flag_pd_after c JOIN flag_fates ff ON ff.tbl = 'usage_project_days' AND ff.fate = c.fate AND ff.flagged)
-       + (SELECT count(*) FROM flag_st_after c JOIN flag_fates ff ON ff.tbl = 'usage_session_totals' AND ff.fate = c.fate AND ff.flagged)
-       + (SELECT count(*) FROM flag_ul_after c JOIN flag_fates ff ON ff.tbl = 'usage_limits' AND ff.fate = c.fate AND ff.flagged)
-       + (SELECT count(*) FROM flag_uh_after c JOIN flag_fates ff ON ff.tbl = 'usage_history' AND ff.fate = c.fate AND ff.flagged)
-    INTO again;
-  IF again <> 0 THEN
-    RAISE EXCEPTION 'post-check: a second pass would flag % more rows', again;
-  END IF;
-
-  RAISE NOTICE 'post-check passed: % rows flagged, the rows a restart loads are unchanged, a second pass flags nothing', planned;
-END $$;
-
-WITH after AS (
-  SELECT 'workspaces' AS tbl, count(*) FILTER (WHERE deleted_at IS NULL) AS live, count(*) FILTER (WHERE deleted_at IS NOT NULL) AS flagged FROM workspaces
-  UNION ALL SELECT 'sessions', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM sessions
-  UNION ALL SELECT 'session_events', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM session_events
-  UNION ALL SELECT 'devices', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM devices
-  UNION ALL SELECT 'usage_limits', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_limits
-  UNION ALL SELECT 'usage_history', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_history
-  UNION ALL SELECT 'usage_project_days', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_project_days
-  UNION ALL SELECT 'usage_session_totals', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_session_totals
-)
-SELECT b.tbl AS "table", b.live AS live_before, a.live AS live_after, b.flagged AS flagged_before, a.flagged AS flagged_after
-FROM flag_totals_before b JOIN after a USING (tbl);
+SELECT count(*) AS flagged_total, count(DISTINCT workspace_id) AS flagged_boards
+FROM (SELECT workspace_id FROM flag_run_pd WHERE flag
+      UNION ALL SELECT workspace_id FROM flag_run_st WHERE flag
+      UNION ALL SELECT workspace_id FROM flag_run_ul WHERE flag
+      UNION ALL SELECT workspace_id FROM flag_run_uh WHERE flag) x \gset
+\echo 'post-check passed:' :flagged_total 'rows flagged on' :flagged_boards 'boards. The rows a restart loads are unchanged, and a second pass flags nothing.'
 
 \if :is_commit
-  COMMIT;
+  WITH after AS (
+    SELECT 'workspaces' AS tbl, count(*) FILTER (WHERE deleted_at IS NULL) AS live, count(*) FILTER (WHERE deleted_at IS NOT NULL) AS flagged FROM workspaces
+    UNION ALL SELECT 'sessions', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM sessions
+    UNION ALL SELECT 'session_events', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM session_events
+    UNION ALL SELECT 'devices', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM devices
+    UNION ALL SELECT 'usage_limits', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_limits
+    UNION ALL SELECT 'usage_history', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_history
+    UNION ALL SELECT 'usage_project_days', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_project_days
+    UNION ALL SELECT 'usage_session_totals', count(*) FILTER (WHERE deleted_at IS NULL), count(*) FILTER (WHERE deleted_at IS NOT NULL) FROM usage_session_totals
+  )
+  SELECT b.tbl AS "table", b.live AS live_before, a.live AS live_after, b.flagged AS flagged_before, a.flagged AS flagged_after
+  FROM flag_totals_before b JOIN after a USING (tbl);
   \echo
-  SELECT format('Committed. %s rows flagged, each with deleted_at = %s.',
-                (SELECT count(*) FROM (
-                   SELECT fate, 'usage_project_days' AS tbl FROM flag_pd
-                   UNION ALL SELECT fate, 'usage_session_totals' FROM flag_st
-                   UNION ALL SELECT fate, 'usage_limits' FROM flag_ul
-                   UNION ALL SELECT fate, 'usage_history' FROM flag_uh
-                 ) plan JOIN flag_fates f ON f.tbl = plan.tbl AND f.fate = plan.fate AND f.flagged),
-                now_ms) AS result
+  SELECT format('Committed. %s rows flagged, each with deleted_at = %s.', :flagged_total, now_ms) AS result
   FROM flag_params;
 \else
   \echo
   \echo 'Dry run: rolled back, nothing was changed. To apply: -v mode=commit'
-  ROLLBACK;
 \endif
