@@ -130,6 +130,21 @@ function apnsFromEnv(env: NodeJS.ProcessEnv): AppConfig['apns'] {
   };
 }
 
+/**
+ * The startup log's line for the server-wide creation window (multi-tenant).
+ * An unset or empty MAX_NEW_WORKSPACES_PER_HOUR keeps the default without a
+ * warning, and docker compose reads it only from the .env in the directory it
+ * runs in (DEPLOY_PATH in deploy.yml, on the hosted board), so a value written
+ * anywhere else is silently not the one in force. This line is where that
+ * shows: `docker logs claude-status` prints the number the server is using.
+ */
+export function newWorkspaceLimitLine(cfg: AppConfig): string {
+  return (
+    `Limit:     ${cfg.maxNewWorkspacesPerHour} new workspaces in any 60 minutes, ` +
+    'server-wide (MAX_NEW_WORKSPACES_PER_HOUR)'
+  );
+}
+
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const port = Number(env.PORT || 3000);
   const multiTenant = boolFromEnv(env.MULTI_TENANT);

@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest';
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { JSDOM } from 'jsdom';
 import request from 'supertest';
 import { MemoryStore } from 'express-rate-limit';
-import { configFromEnv } from '../src/config';
+import { configFromEnv, newWorkspaceLimitLine } from '../src/config';
 import { LEGACY_WS, WORKSPACE_CREATIONS_PER_HOUR, type Store } from '../src/store';
 import { makeApp, TEST_PG_URL, suiteDatabaseUrl, resetTables, sql } from './helpers';
 
@@ -45,6 +46,52 @@ describe('MAX_NEW_WORKSPACES_PER_HOUR', () => {
     expect(configFromEnv({ MAX_NEW_WORKSPACES_PER_HOUR: '1' }).maxNewWorkspacesPerHour).toBe(1);
     expect(configFromEnv({ MAX_NEW_WORKSPACES_PER_HOUR: '1000' }).maxNewWorkspacesPerHour).toBe(1000);
   });
+
+  it('names the number in force in the startup line, including when the setting never arrived', () => {
+    // docker compose passes an empty string when its .env has no value, which
+    // falls back without a warning: the log line is the only sign.
+    const line = (env: NodeJS.ProcessEnv) => newWorkspaceLimitLine(configFromEnv({ MULTI_TENANT: 'true', ...env }));
+    expect(line({ MAX_NEW_WORKSPACES_PER_HOUR: '' })).toBe(
+      'Limit:     200 new workspaces in any 60 minutes, server-wide (MAX_NEW_WORKSPACES_PER_HOUR)'
+    );
+    expect(line({ MAX_NEW_WORKSPACES_PER_HOUR: '0' })).toContain(' 200 new workspaces ');
+    expect(line({ MAX_NEW_WORKSPACES_PER_HOUR: '350' })).toContain(' 350 new workspaces ');
+  });
+
+  it('is printed by the server at startup in multi-tenant mode', async () => {
+    const root = path.join(__dirname, '..');
+    const child = spawn(path.join(root, 'node_modules', '.bin', 'tsx'), ['src/server.ts'], {
+      cwd: root,
+      // PORT 0 because nothing here connects; DATABASE_URL empty keeps it in memory.
+      env: { PATH: process.env.PATH, MULTI_TENANT: 'true', MAX_NEW_WORKSPACES_PER_HOUR: '7', PORT: '0', HOST: '127.0.0.1', DATABASE_URL: '' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    try {
+      const out = await new Promise<string>((resolve, reject) => {
+        let text = '';
+        const timer = setTimeout(() => reject(new Error(`no banner within 8 s:\n${text}`)), 8000);
+        const take = (chunk: Buffer) => {
+          text += chunk.toString();
+          // Storage is the banner's last line, so everything before it has arrived.
+          if (text.includes('Storage:')) {
+            clearTimeout(timer);
+            resolve(text);
+          }
+        };
+        child.stdout.on('data', take);
+        child.stderr.on('data', take);
+        child.once('exit', (code) => {
+          clearTimeout(timer);
+          reject(new Error(`server exited (${code}) before its banner:\n${text}`));
+        });
+      });
+      expect(out.split('\n')).toContain(
+        'Limit:     7 new workspaces in any 60 minutes, server-wide (MAX_NEW_WORKSPACES_PER_HOUR)'
+      );
+    } finally {
+      child.kill();
+    }
+  }, 10000);
 });
 
 describe('server-wide workspace creation window', () => {

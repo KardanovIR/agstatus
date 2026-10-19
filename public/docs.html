@@ -1823,7 +1823,7 @@ or set them in your deployment environment.</p>
 <tr>
 <td><code>MAX_NEW_WORKSPACES_PER_HOUR</code></td>
 <td><code>200</code></td>
-<td>Multi-tenant only: new workspaces the whole server creates in any 60 minutes, on top of the 20 an hour each IP may create. Past it, creation returns <code>503</code> with <code>Retry-After</code>, the seconds until the oldest of those creations is an hour old. Boards deleted since still count, and with <code>DATABASE_URL</code> set the count carries across a restart. A whole number, at least 1.</td>
+<td>Multi-tenant only: new workspaces the whole server creates in any 60 minutes, on top of the 20 an hour each IP may create. Past it, creation returns <code>503</code> with <code>Retry-After</code>, the seconds until the oldest of those creations is an hour old. Boards deleted since still count, and with <code>DATABASE_URL</code> set the count carries across a restart. A whole number, at least 1. The server logs the value in force at startup (<code>Limit:</code>), since an unset or empty one falls back to 200 without a warning.</td>
 </tr>
 <tr>
 <td><code>TRUST_PROXY</code></td>

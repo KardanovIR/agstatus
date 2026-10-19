@@ -1,4 +1,4 @@
-import { configFromEnv } from './config';
+import { configFromEnv, newWorkspaceLimitLine } from './config';
 import { createApp } from './app';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -20,6 +20,7 @@ ready
       console.log(`Dashboard: ${cfg.publicUrl}`);
       if (cfg.multiTenant) {
         console.log(`Create a workspace: POST ${cfg.publicUrl}/api/workspaces`);
+        console.log(newWorkspaceLimitLine(cfg));
       } else {
         console.log(`Webhook:   ${cfg.publicUrl}/webhook`);
         if (cfg.webhookSecret) console.log('Auth:      X-Webhook-Secret header required');
