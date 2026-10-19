@@ -34,6 +34,11 @@ Binds host port `3000` (override with `PORT` in `.env`). The prebuilt image
 `ghcr.io/kardanovir/agstatus` is published from tagged releases and works the
 same way: `docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus`.
 
+Building the image needs BuildKit, which Docker Engine 23+ and Compose v2
+use by default. The Dockerfile's build stage is
+`FROM --platform=$BUILDPLATFORM`, which the legacy builder
+(`DOCKER_BUILDKIT=0`) cannot parse.
+
 ### Production without Docker
 
 ```bash

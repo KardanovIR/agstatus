@@ -459,15 +459,24 @@ jobs:
             echo '::endgroup::'
           done
 
+  # Both platforms release.yml publishes, built the way it builds them. This
+  # job used to build amd64 alone, so the arm64 image was first built at the
+  # tag, by the job that publishes it; a multi-arch break now goes red here.
+  # No QEMU, as in the release: the arm64 image is FROM and COPY only, so it
+  # needs no emulator, and without one a RUN added to its stage fails here
+  # instead of being emulated. Nothing is pushed or loaded; the result stays
+  # in the builder's cache.
   docker:
     name: Docker image (build only)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: false
 
   # The Focus listener is macOS-only (cli/src/listener/install.ts refuses any

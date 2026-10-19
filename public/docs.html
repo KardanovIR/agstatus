@@ -1739,6 +1739,10 @@ docker compose up -d --build
 <p>Binds host port <code>3000</code> (override with <code>PORT</code> in <code>.env</code>). The prebuilt image
 <code>ghcr.io/kardanovir/agstatus</code> is published from tagged releases and works the
 same way: <code>docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus</code>.</p>
+<p>Building the image needs BuildKit, which Docker Engine 23+ and Compose v2
+use by default. The Dockerfile&#39;s build stage is
+<code>FROM --platform=$BUILDPLATFORM</code>, which the legacy builder
+(<code>DOCKER_BUILDKIT=0</code>) cannot parse.</p>
 <h4 id="self-hosting-production-without-docker"><a class="anchor" href="#self-hosting-production-without-docker">Production without Docker</a></h4>
 <pre><code class="language-bash">npm ci --omit=dev &amp;&amp; npm run build
 PUBLIC_URL=https://status.example.com \

@@ -16,7 +16,7 @@ jobs:
   # disagrees with cli/package.json ships an artifact whose directory name and
   # whose `agstatus --version` do not match what the installer asked for.
   # Nothing checked that before; check it first, and cheaply, so a mistagged
-  # release dies in seconds instead of after the 45-minute QEMU image build.
+  # release dies in seconds, before any image is built or pushed under its tag.
   version-guard:
     name: Tag matches cli/package.json
     runs-on: ubuntu-latest
@@ -42,11 +42,17 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # The arm64 half builds under QEMU; a wedge must fail, not hang for hours.
-    timeout-minutes: 45
+    # Nothing here runs under emulation, so there is no QEMU step. The
+    # Dockerfile's build stage runs once, natively on this amd64 runner, and
+    # the arm64 image only pulls its base and copies that stage's output in.
+    # The arm64 half of 1.6.2 died twice in `npm ci` under QEMU and hung to
+    # the old 45-minute limit. With no emulator, a RUN added to the runtime
+    # stage fails with "exec format error" instead of bringing emulation
+    # back, and CI's docker job, built the same way, fails first on the PR.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      # buildx for the multi-platform manifest list; it needs no emulator.
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
