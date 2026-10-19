@@ -1821,6 +1821,11 @@ or set them in your deployment environment.</p>
 <td>Multi-tenant only: hard ceiling on live workspaces; creation returns <code>503</code> at the cap.</td>
 </tr>
 <tr>
+<td><code>MAX_NEW_WORKSPACES_PER_HOUR</code></td>
+<td><code>200</code></td>
+<td>Multi-tenant only: new workspaces the whole server creates in any 60 minutes, on top of the 20 an hour each IP may create. Past it, creation returns <code>503</code> with <code>Retry-After</code>, the seconds until the oldest of those creations is an hour old. Boards deleted since still count, and with <code>DATABASE_URL</code> set the count carries across a restart. A whole number, at least 1.</td>
+</tr>
+<tr>
 <td><code>TRUST_PROXY</code></td>
 <td><em>(unset)</em></td>
 <td>Set to <code>1</code> behind a reverse proxy (Caddy, nginx, a load balancer) so client IPs come from <code>X-Forwarded-For</code>. Required for correct per-IP rate limiting on a public instance.</td>
@@ -1856,6 +1861,20 @@ or set them in your deployment environment.</p>
 <td>Which APNs environment is tried <strong>first</strong>: <code>sandbox</code> (<code>api.sandbox.push.apple.com</code>, development builds) or <code>production</code> (<code>api.push.apple.com</code>, TestFlight/App Store). Both are reachable either way — see below — so this is a performance hint, not a switch you have to get right. <code>APNS_SERVER</code> pins one endpoint explicitly and disables the fallback.</td>
 </tr>
 </tbody></table></div>
+<p>To size <code>MAX_NEW_WORKSPACES_PER_HOUR</code> against your own instance, the five
+busiest hours it has had are one query away. <code>created_at</code> is epoch
+milliseconds and is kept on deleted boards too, which the window also counts:</p>
+<pre><code class="language-sql">SELECT to_timestamp(created_at / 1000.0) AS hour_starting, created
+FROM (
+  SELECT created_at,
+         count(*) OVER (ORDER BY created_at
+                        RANGE BETWEEN CURRENT ROW AND 3599999 FOLLOWING) AS created
+  FROM workspaces
+  WHERE id &lt;&gt; &#39;_legacy&#39;
+) hours
+ORDER BY created DESC
+LIMIT 5;
+</code></pre>
 <h3 id="self-hosting-persistence-postgresql"><a class="anchor" href="#self-hosting-persistence-postgresql">Persistence (PostgreSQL)</a></h3>
 <p>Persistence is PostgreSQL, enabled by <code>DATABASE_URL</code>. With Docker Compose a
 <code>postgres:16</code> service is bundled and wired up automatically (data lives in the
@@ -2671,8 +2690,23 @@ once, at creation.</p>
   &quot;webhookUrl&quot;: &quot;https://.../w/ags_.../webhook&quot;
 }
 </code></pre>
-<p>Save the token — it is not shown again. Creation is rate limited to 20 per
-hour per IP (<code>429</code> beyond) and returns <code>503</code> at the <code>MAX_WORKSPACES</code> cap.</p>
+<p>Save the token — it is not shown again. Creation is limited three ways:</p>
+<ul>
+<li><strong>20 per hour per IP</strong>: <code>429</code> beyond.</li>
+<li><strong>200 per hour for the whole server</strong> (<code>MAX_NEW_WORKSPACES_PER_HOUR</code>), in
+any 60 minutes rather than per clock hour: <code>503</code> with a <code>Retry-After</code>
+header giving the seconds until the oldest of those creations is an hour
+old, which is when the next board can be made, and
+<code>{&quot;error&quot;: &quot;too many workspaces were created on this server in the last hour, try again in 12 minutes&quot;}</code>.
+Only boards actually created count, deleted ones included; refused
+requests do not.</li>
+<li><strong><code>MAX_WORKSPACES</code> live workspaces</strong> (default 10000): <code>503</code>
+<code>{&quot;error&quot;: &quot;server at capacity, try again later&quot;}</code>, with no <code>Retry-After</code>,
+because a slot frees only when a board is deleted or idles out.</li>
+</ul>
+<p>Both <code>503</code>s are checked first and mean the server is not taking new boards
+right now, so a client should say so rather than retry on its own, and
+neither spends any of the caller&#39;s 20. <code>429</code> is about the caller.</p>
 <h4 id="api-workspace-scoped-endpoints"><a class="anchor" href="#api-workspace-scoped-endpoints">Workspace-scoped endpoints</a></h4>
 <p>Everything under <code>/w/&lt;token&gt;/...</code> mirrors the legacy API, scoped to one
 workspace:</p>
@@ -2945,6 +2979,11 @@ are closed.</p>
 <td><code>429</code>.</td>
 </tr>
 <tr>
+<td>Workspace creations, server-wide</td>
+<td>200 in any 60 minutes (<code>MAX_NEW_WORKSPACES_PER_HOUR</code>)</td>
+<td><code>503</code> with <code>Retry-After</code> (seconds until the oldest of them is an hour old). Counts created boards only, deleted ones included; with Postgres it carries across a restart. Refusals spend none of the per-IP 20.</td>
+</tr>
+<tr>
 <td>Pair-code claims</td>
 <td>10/min/IP</td>
 <td><code>429</code>.</td>
@@ -2962,7 +3001,7 @@ are closed.</p>
 <tr>
 <td>Live workspaces</td>
 <td><code>MAX_WORKSPACES</code> (default 10000)</td>
-<td>Creation returns <code>503</code>.</td>
+<td>Creation returns <code>503</code>, with no <code>Retry-After</code>.</td>
 </tr>
 <tr>
 <td>Rows per project-day report</td>

@@ -501,8 +501,23 @@ curl -X POST https://agstatus.online/api/workspaces
 }
 ```
 
-Save the token — it is not shown again. Creation is rate limited to 20 per
-hour per IP (`429` beyond) and returns `503` at the `MAX_WORKSPACES` cap.
+Save the token — it is not shown again. Creation is limited three ways:
+
+- **20 per hour per IP**: `429` beyond.
+- **200 per hour for the whole server** (`MAX_NEW_WORKSPACES_PER_HOUR`), in
+  any 60 minutes rather than per clock hour: `503` with a `Retry-After`
+  header giving the seconds until the oldest of those creations is an hour
+  old, which is when the next board can be made, and
+  `{"error": "too many workspaces were created on this server in the last hour, try again in 12 minutes"}`.
+  Only boards actually created count, deleted ones included; refused
+  requests do not.
+- **`MAX_WORKSPACES` live workspaces** (default 10000): `503`
+  `{"error": "server at capacity, try again later"}`, with no `Retry-After`,
+  because a slot frees only when a board is deleted or idles out.
+
+Both `503`s are checked first and mean the server is not taking new boards
+right now, so a client should say so rather than retry on its own, and
+neither spends any of the caller's 20. `429` is about the caller.
 
 ### Workspace-scoped endpoints
 
@@ -646,10 +661,11 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Focus listener connects per workspace | 30/min | `429`; the listener sleeps 60 s. |
 | Focus command TTL | 2 min (`COMMAND_TTL_MS`) | Unclaimed or unacked commands fail as `expired` (a `command_ack` is broadcast); finished ones are forgotten 10 min later. Commands are in memory only — a restart drops them. |
 | Workspace creations | 20/hour/IP | `429`. |
+| Workspace creations, server-wide | 200 in any 60 minutes (`MAX_NEW_WORKSPACES_PER_HOUR`) | `503` with `Retry-After` (seconds until the oldest of them is an hour old). Counts created boards only, deleted ones included; with Postgres it carries across a restart. Refusals spend none of the per-IP 20. |
 | Pair-code claims | 10/min/IP | `429`. |
 | Session TTL | 24 h (`SESSION_TTL_MS`) | Expired sessions are swept and `remove` events broadcast. |
 | Idle workspaces | 60 days | Deleted by a periodic sweep (every 6 hours). |
-| Live workspaces | `MAX_WORKSPACES` (default 10000) | Creation returns `503`. |
+| Live workspaces | `MAX_WORKSPACES` (default 10000) | Creation returns `503`, with no `Retry-After`. |
 | Rows per project-day report | 200 | `400`; the hook sends several reports. |
 | Project days per workspace | 5,000 (source, project, day) keys | New keys are refused and counted in the response's `refused`; held keys still update. |
 | Project-day window | today − 90 days … tomorrow (UTC), real dates only | Other rows are dropped and counted in `dropped`; aged-out days are flagged and free their slots. |

@@ -83,6 +83,7 @@ or set them in your deployment environment.
 | `DATABASE_URL`   | _(empty — in-memory)_             | PostgreSQL connection string (`postgres://user:pass@host:5432/db`) for persistence across restarts. Empty keeps everything in memory. docker-compose defaults it to the bundled `postgres` service; set `DATABASE_URL=` (empty) in `.env` to opt out. (`DB_PATH`/SQLite is no longer supported — see the migration note below.) |
 | `POSTGRES_PASSWORD` | `agstatus`                     | docker-compose only: password for the bundled `postgres` service (baked into the default `DATABASE_URL`). Not read by the app itself. |
 | `MAX_WORKSPACES` | `10000`                           | Multi-tenant only: hard ceiling on live workspaces; creation returns `503` at the cap. |
+| `MAX_NEW_WORKSPACES_PER_HOUR` | `200`                | Multi-tenant only: new workspaces the whole server creates in any 60 minutes, on top of the 20 an hour each IP may create. Past it, creation returns `503` with `Retry-After`, the seconds until the oldest of those creations is an hour old. Boards deleted since still count, and with `DATABASE_URL` set the count carries across a restart. A whole number, at least 1. |
 | `TRUST_PROXY`    | _(unset)_                         | Set to `1` behind a reverse proxy (Caddy, nginx, a load balancer) so client IPs come from `X-Forwarded-For`. Required for correct per-IP rate limiting on a public instance. |
 | `DOMAIN`         | _(unset)_                         | Domain for the bundled Caddy proxy (`--profile tls` only; not read by the app). |
 | `APNS_KEY_PATH`  | _(unset)_                         | Path to the APNs `.p8` auth key. Alternatively set `APNS_KEY` to the PEM content itself. |
@@ -90,6 +91,23 @@ or set them in your deployment environment.
 | `APNS_TEAM_ID`   | _(unset)_                         | 10-character Apple Developer team id. |
 | `APNS_TOPIC`     | _(unset)_                         | The iOS app's bundle id (sent as the `apns-topic` header), e.g. `com.kardanov.agstatus`. |
 | `APNS_ENV`       | `sandbox`                         | Which APNs environment is tried **first**: `sandbox` (`api.sandbox.push.apple.com`, development builds) or `production` (`api.push.apple.com`, TestFlight/App Store). Both are reachable either way — see below — so this is a performance hint, not a switch you have to get right. `APNS_SERVER` pins one endpoint explicitly and disables the fallback. |
+
+To size `MAX_NEW_WORKSPACES_PER_HOUR` against your own instance, the five
+busiest hours it has had are one query away. `created_at` is epoch
+milliseconds and is kept on deleted boards too, which the window also counts:
+
+```sql
+SELECT to_timestamp(created_at / 1000.0) AS hour_starting, created
+FROM (
+  SELECT created_at,
+         count(*) OVER (ORDER BY created_at
+                        RANGE BETWEEN CURRENT ROW AND 3599999 FOLLOWING) AS created
+  FROM workspaces
+  WHERE id <> '_legacy'
+) hours
+ORDER BY created DESC
+LIMIT 5;
+```
 
 ## Persistence (PostgreSQL)
 

@@ -1,5 +1,6 @@
 import fs from 'fs';
 import crypto from 'crypto';
+import { WORKSPACE_CREATIONS_PER_HOUR } from './store';
 
 export interface AppConfig {
   multiTenant: boolean;
@@ -11,6 +12,12 @@ export interface AppConfig {
   trustProxy: boolean;
   rateLimit: boolean;
   maxWorkspaces: number;
+  /**
+   * New workspaces the whole server creates in any 60 minutes (multi-tenant,
+   * and only while rateLimit is on). See WORKSPACE_CREATIONS_PER_HOUR in
+   * store.ts for how the default was chosen.
+   */
+  maxNewWorkspacesPerHour: number;
   /**
    * How long a Focus command (a tap on a session's card) waits for the
    * listener on the machine that hosts the session before it expires.
@@ -149,6 +156,23 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
   }
 
+  let maxNewWorkspacesPerHour = WORKSPACE_CREATIONS_PER_HOUR;
+  const perHourRaw = env.MAX_NEW_WORKSPACES_PER_HOUR;
+  if (perHourRaw !== undefined && perHourRaw.trim() !== '') {
+    const n = Number(perHourRaw);
+    // A whole number of workspaces, at least one: the store keeps one
+    // timestamp per slot, and zero would refuse every board for good, which is
+    // what MAX_WORKSPACES is for.
+    if (Number.isInteger(n) && n >= 1) {
+      maxNewWorkspacesPerHour = n;
+    } else {
+      console.warn(
+        `Ignoring invalid MAX_NEW_WORKSPACES_PER_HOUR=${JSON.stringify(perHourRaw)}; ` +
+        `using ${maxNewWorkspacesPerHour}`
+      );
+    }
+  }
+
   let commandTtlMs = DEFAULT_COMMAND_TTL_MS;
   const cmdTtlRaw = env.COMMAND_TTL_MS;
   if (cmdTtlRaw !== undefined && cmdTtlRaw.trim() !== '') {
@@ -178,6 +202,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trustProxy: boolFromEnv(env.TRUST_PROXY),
     rateLimit: true,
     maxWorkspaces,
+    maxNewWorkspacesPerHour,
     commandTtlMs,
     version: pkgVersion(),
     apns: apnsFromEnv(env),

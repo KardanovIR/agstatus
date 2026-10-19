@@ -819,6 +819,22 @@
     document.getElementById('create-board').addEventListener('click', createBoard);
   }
 
+  // A refused POST /api/workspaces, for the person who clicked. 429 is this
+  // address's own hourly budget. 503 is the server's: at capacity, or past the
+  // number of new boards it makes in an hour, and then Retry-After says when
+  // the next one frees. "Please try again" was wrong for both: the next click
+  // fails the same way. landing.html carries the same function.
+  function createBoardError(res) {
+    if (res.status === 429) return 'Too many boards created from this address. Try again later.';
+    if (res.status === 503) {
+      const seconds = Number(res.headers && res.headers.get('Retry-After'));
+      if (!(seconds > 0)) return "This server isn't taking new boards right now. Try again later.";
+      const minutes = Math.ceil(seconds / 60);
+      return `This server isn't taking new boards right now. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+    }
+    return 'Could not create a board. Please try again.';
+  }
+
   async function createBoard() {
     const btn = document.getElementById('create-board');
     const errEl = document.getElementById('welcome-error');
@@ -828,9 +844,7 @@
       const res = await fetch('/api/workspaces', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !(data.token || data.dashboardUrl)) {
-        errEl.textContent = res.status === 429
-          ? 'Too many boards created from this address. Try again later.'
-          : 'Could not create a board. Please try again.';
+        errEl.textContent = createBoardError(res);
         btn.disabled = false;
         return;
       }

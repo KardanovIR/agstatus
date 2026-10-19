@@ -486,6 +486,50 @@ const DEVICE_RETIRED_WINDOW_MS = DEVICE_RETIRED_WINDOW_DAYS * DAY_MS;
  */
 const HISTORY_READS_PER_MINUTE = 30;
 
+/**
+ * New workspaces the whole server creates in any 60 minutes, by default
+ * (MAX_NEW_WORKSPACES_PER_HOUR overrides it). Multi-tenant only, since only
+ * that mode creates workspaces, and only while rate limiting is on, like the
+ * per-IP limiter beside it.
+ *
+ * Every bound above is per workspace, and creating a workspace costs nothing
+ * but an HTTP request: the only limit on that was 20 an hour per IP
+ * (createLimiter in app.ts). express-rate-limit 7 keys each IPv6 address on
+ * its own, so one /64 is more addresses than anyone needs, and 500 IPv4
+ * addresses reach the MAX_WORKSPACES default of 10,000 within an hour. Each
+ * of those boards then brings the whole per-board allowance with it — 5,000
+ * project days alone are ~1.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE) —
+ * and a create-then-delete loop leaves a flagged workspaces row per turn
+ * without ever nearing MAX_WORKSPACES. At 200 an hour, filling 10,000 takes
+ * at least 50 hours from empty, however many addresses do it, and that loop
+ * writes at most 4,800 rows a day.
+ *
+ * Honest creations are far rarer, and each one is a person acting. Every
+ * client that creates a board does it once per click, tap or run, and none
+ * retries a refusal by itself: the landing page and the web board's welcome
+ * screen (one POST, the button disabled while it runs), the iOS and Android
+ * welcome screens (guarded by isCreating), `agstatus init` (only when this
+ * machine has no board on that server, or with --new-board; both installers
+ * run it once, and a re-run reuses the board), and the plugin's setup command
+ * (one curl). A second machine or a phone joins with a pairing code or the
+ * board URL, which creates nothing. So a board is about one per person per
+ * server, and 200 in an hour is a room of 200 following a demo at once —
+ * from 200 addresses, that is: a room behind one venue NAT meets the per-IP
+ * 20 long before this.
+ *
+ * What the store measures for real growth is workspaces.created_at, kept on
+ * every row, flagged ones included; docs/self-hosting.md has the query for an
+ * instance's busiest hour. Nothing in this repository records that number for
+ * the hosted board, which is why it is a setting.
+ *
+ * Past it, POST /api/workspaces answers 503 with Retry-After: the moment the
+ * oldest of those creations is an hour old. A refusal is never longer than an
+ * hour, unlike MAX_WORKSPACES, whose slots come back only when a board is
+ * deleted or idles out 60 days later.
+ */
+export const WORKSPACE_CREATIONS_PER_HOUR = 200;
+const WORKSPACE_CREATION_WINDOW_MS = 60 * 60 * 1000;
+
 // Pairing codes: short-lived, single-use, in-memory only (never SQLite).
 // No I/L/O/0/1 to keep the codes unambiguous when read aloud or typed.
 const PAIR_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -519,6 +563,16 @@ export class Store {
   private webhookWindows = new Map<string, { windowStart: number; count: number }>();
   private deviceWindows = new Map<string, { windowStart: number; count: number }>();
   private historyWindows = new Map<string, { windowStart: number; count: number }>();
+  // When the newest workspaces were created, server-wide, ascending: at most
+  // workspacesPerHour of them (200 numbers by default), none older than the
+  // window. That is all an exact sliding window needs — the server is full
+  // while it holds that many — and the wait it gives is exact: until the
+  // oldest is an hour old. Not a fixed window, which admits twice the number
+  // across a boundary (200 at 12:59, 200 more at 13:00). Creations, not
+  // attempts: a refused request writes nothing, and counting it would let a
+  // stream of refused requests keep the window shut for everyone else.
+  private recentCreations: number[] = [];
+  private readonly workspacesPerHour: number;
   // Plan-limit usage per workspace, keyed by source ("claude", "codex", …).
   private usageBySource = new Map<string, Map<string, Usage>>();
   // Sources each workspace reports usage under, across all three usage
@@ -574,7 +628,17 @@ export class Store {
   /** Resolves once the schema exists and persisted state is loaded into memory. */
   readonly ready: Promise<void>;
 
-  constructor(databaseUrl: string) {
+  /**
+   * workspacesPerHour is the server-wide creation budget the store keeps
+   * timestamps for (WORKSPACE_CREATIONS_PER_HOUR by default); whether it is
+   * enforced is app.ts's call.
+   */
+  constructor(databaseUrl: string, workspacesPerHour: number = WORKSPACE_CREATIONS_PER_HOUR) {
+    // Whole and at least one, or the default: the slots are array entries.
+    this.workspacesPerHour =
+      Number.isInteger(workspacesPerHour) && workspacesPerHour >= 1
+        ? workspacesPerHour
+        : WORKSPACE_CREATIONS_PER_HOUR;
     if (!databaseUrl) {
       this.ready = Promise.resolve();
       return;
@@ -690,6 +754,27 @@ export class Store {
         lastSeenAt: Number(row.last_seen_at),
       });
     }
+
+    // The creation window carries across a restart, and every push to master
+    // restarts the hosted server: without this, each deploy would hand out a
+    // fresh hour's budget. Flagged rows count too, on purpose — a board created
+    // and deleted inside the hour still wrote its row, and not counting it is
+    // the create-then-delete loop the window exists for. LEGACY_WS is not a
+    // creation (upsertSession writes it). At most workspacesPerHour rows, the
+    // most the window keeps.
+    const created = await pool.query(
+      `SELECT created_at FROM workspaces
+       WHERE created_at >= $1 AND id <> $2
+       ORDER BY created_at DESC
+       LIMIT $3`,
+      [Date.now() - WORKSPACE_CREATION_WINDOW_MS, LEGACY_WS, this.workspacesPerHour]
+    );
+    // Merged rather than assigned: in tests a board can be created before the
+    // load finishes, and that creation must not be lost.
+    this.recentCreations = this.recentCreations
+      .concat((created.rows as Array<{ created_at: string }>).map((row) => Number(row.created_at)))
+      .sort((a, b) => a - b)
+      .slice(-this.workspacesPerHour);
 
     const sessions = await pool.query('SELECT * FROM sessions WHERE deleted_at IS NULL');
     for (const row of sessions.rows as Array<Record<string, unknown>>) {
@@ -1014,7 +1099,42 @@ export class Store {
     const now = Date.now();
     this.workspaces.set(wsId, { createdAt: now, lastSeenAt: now });
     this.exec(Store.INSERT_WS, [wsId, now, now]);
+    this.recordCreation(now);
     return { token };
+  }
+
+  /**
+   * How long until the server-wide creation window admits another workspace:
+   * 0 when it does now, otherwise the ms until the oldest creation it keeps is
+   * an hour old. Whether the answer is enforced is app.ts's call.
+   */
+  workspaceCreationWaitMs(now: number = Date.now()): number {
+    this.dropAgedCreations(now);
+    if (this.recentCreations.length < this.workspacesPerHour) return 0;
+    return Math.max(0, this.recentCreations[0] + WORKSPACE_CREATION_WINDOW_MS - now);
+  }
+
+  /** Counts a creation into the window, keeping only what it can still need. */
+  private recordCreation(at: number): void {
+    this.recentCreations.push(at);
+    this.dropAgedCreations(at);
+    // Only the newest workspacesPerHour decide the answer above. Without this
+    // the array would grow by one per creation while the window is not
+    // enforced (rateLimit off), bounded by nothing but the hour.
+    if (this.recentCreations.length > this.workspacesPerHour) {
+      this.recentCreations.splice(0, this.recentCreations.length - this.workspacesPerHour);
+    }
+  }
+
+  private dropAgedCreations(now: number): void {
+    let aged = 0;
+    while (
+      aged < this.recentCreations.length &&
+      now - this.recentCreations[aged] >= WORKSPACE_CREATION_WINDOW_MS
+    ) {
+      aged += 1;
+    }
+    if (aged > 0) this.recentCreations.splice(0, aged);
   }
 
   /** Returns the workspace id for a valid, known token; null otherwise. */

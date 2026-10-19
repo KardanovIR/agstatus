@@ -830,6 +830,18 @@
 
   // ── create a board ──────────────────────────────────────────────────────
   const errEl = document.getElementById('err');
+  // The same as createBoardError in app.js: 429 is this address's own budget,
+  // 503 the server's, with Retry-After when it knows when a board frees.
+  function createBoardError(res) {
+    if (res.status === 429) return 'Too many boards created from this address. Try again later.';
+    if (res.status === 503) {
+      const seconds = Number(res.headers && res.headers.get('Retry-After'));
+      if (!(seconds > 0)) return "This server isn't taking new boards right now. Try again later.";
+      const minutes = Math.ceil(seconds / 60);
+      return `This server isn't taking new boards right now. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+    }
+    return 'Could not create a board. Please try again.';
+  }
   async function createBoard(btn) {
     btn.disabled = true;
     errEl.textContent = '';
@@ -837,9 +849,7 @@
       const res = await fetch('/api/workspaces', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !(data.token || data.dashboardUrl)) {
-        errEl.textContent = res.status === 429
-          ? 'Too many boards created from this address. Try again later.'
-          : 'Could not create a board. Please try again.';
+        errEl.textContent = createBoardError(res);
         btn.disabled = false;
         return;
       }

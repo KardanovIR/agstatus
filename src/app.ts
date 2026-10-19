@@ -210,7 +210,7 @@ export interface CreatedApp {
 }
 
 export function createApp(cfg: AppConfig): CreatedApp {
-  const store = new Store(cfg.databaseUrl);
+  const store = new Store(cfg.databaseUrl, cfg.maxNewWorkspacesPerHour);
   const pusher = new Pusher(cfg.apns, store);
   const sseClients = new Map<string, Set<Response>>();
   // Focus listeners, wsId → machine id → stream. One per machine (a reconnect
@@ -961,11 +961,55 @@ export function createApp(cfg: AppConfig): CreatedApp {
       skip: () => !cfg.rateLimit,
     });
 
-    app.post('/api/workspaces', createLimiter, (_req, res) => {
+    /**
+     * Answers for the two limits that are the server's rather than the
+     * caller's: MAX_WORKSPACES, and the server-wide creation window
+     * (WORKSPACE_CREATIONS_PER_HOUR in store.ts). True when it refused.
+     *
+     * Both are 503, not 429, because the clients that create boards tell
+     * their user the wrong thing for a 429 here: the CLI says the server is
+     * limiting "your address", the web pages "this address", and both phone
+     * apps "wait a moment". On a 503 the CLI and both apps, as released, say
+     * the server is at capacity right now, and the web pages (served from
+     * here, so they change with it) now say it is not taking new boards and
+     * for how long. RFC 9110 gives Retry-After on a 503 that meaning. Only
+     * the window knows when it reopens, so only it sends one; MAX_WORKSPACES
+     * reopens when some board is deleted or idles out.
+     */
+    const refuseNewWorkspace = (res: Response): boolean => {
       if (store.workspaceCount() >= cfg.maxWorkspaces) {
         res.status(503).json({ error: 'server at capacity, try again later' });
-        return;
+        return true;
       }
+      if (!cfg.rateLimit) return false;
+      const waitMs = store.workspaceCreationWaitMs();
+      if (waitMs <= 0) return false;
+      const seconds = Math.ceil(waitMs / 1000);
+      const minutes = Math.ceil(seconds / 60);
+      res.set('Retry-After', String(seconds));
+      res.status(503).json({
+        error:
+          'too many workspaces were created on this server in the last hour, ' +
+          `try again in ${minutes} minute${minutes === 1 ? '' : 's'}`,
+      });
+      return true;
+    };
+
+    // Checked ahead of the per-IP limiter as well as in the handler. Ahead of
+    // it, so a refusal that is the server's spends none of the caller's 20: a
+    // person who clicked Create a few times while the server was full would
+    // otherwise find, once it reopened, that "this address" had made too many.
+    // In the handler as well, because the limiter awaits its store in
+    // between. The in-memory store it uses settles before any other request
+    // runs, but a store that answers later (Redis, say) lets others pass the
+    // first check and take the last slot meanwhile; this one runs in the same
+    // tick as the creation, which keeps the window exact whatever the store.
+    const serverAdmitsNewWorkspace = (_req: Request, res: Response, next: NextFunction): void => {
+      if (!refuseNewWorkspace(res)) next();
+    };
+
+    app.post('/api/workspaces', serverAdmitsNewWorkspace, createLimiter, (_req, res) => {
+      if (refuseNewWorkspace(res)) return;
       const { token } = store.createWorkspace();
       res.status(201).json({
         ok: true,

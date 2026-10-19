@@ -15,6 +15,8 @@ services:
       SESSION_TTL_MS: ${SESSION_TTL_MS:-}
       # Set MULTI_TENANT=true to enable workspace mode.
       MULTI_TENANT: ${MULTI_TENANT:-}
+      # Multi-tenant only. Empty = server default (200).
+      MAX_NEW_WORKSPACES_PER_HOUR: ${MAX_NEW_WORKSPACES_PER_HOUR:-}
       # Set TRUST_PROXY=1 when running behind a reverse proxy (e.g. the caddy
       # service below, enabled with --profile tls).
       TRUST_PROXY: ${TRUST_PROXY:-}
