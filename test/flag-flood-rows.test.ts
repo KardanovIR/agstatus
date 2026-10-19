@@ -134,7 +134,7 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
   it('flags only what a 1.6.2 restart cannot load, and the restart serves every board the same', async () => {
     vi.spyOn(Date, 'now').mockImplementation(() => clock);
     const first = await boot();
-    const names = ['H', 'H2', 'F', 'G', 'K', 'N', 'S', 'W', 'E'] as const;
+    const names = ['H', 'H2', 'F', 'G', 'K', 'N', 'S', 'W', 'E', 'T'] as const;
     const boards: Record<string, string> = {};
     clock = NOON - 120 * DAY;
     for (const n of names) boards[n] = await createWorkspace(first.app);
@@ -252,6 +252,16 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
       `INSERT INTO usage_session_totals (workspace_id, source, session_id, tokens, updated_at)
        SELECT $1, 'claude', 'old' || i, 1, $2::bigint + i FROM generate_series(0, 9) i`,
       [ws('E'), NOON - 8 * DAY]);
+    // T: seven /usage/sessions posts of 100 totals, each post one updated_at,
+    // the way setSessionTotals writes them, in the order a server writes
+    // them. Posts 7 to 3 take the first 500 places and post 2 ties across the
+    // 550th, so a restart loads 50 of its 100 rows, Postgres's pick; post 1
+    // ranks past the cap.
+    await sql(dbUrl,
+      `INSERT INTO usage_session_totals (workspace_id, source, session_id, tokens, updated_at)
+       SELECT $1, 'claude', 'p' || k || '-' || lpad(i::text, 3, '0'), i, $2::bigint + k * 60000
+       FROM generate_series(1, 7) k, generate_series(0, 99) i ORDER BY k, i`,
+      [ws('T'), NOON - DAY]);
 
     const before = await capture(boards);
     const rows0 = await snapshot(dbUrl);
@@ -260,18 +270,18 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
     const diagnose = runScript(dbUrl, { mode: 'diagnose', ...nowArg });
     expect(diagnose.status, diagnose.out).toBe(0);
     expect(diagnose.out).toContain('Diagnose only: nothing was written');
-    // Eight boards to lock in turn, each estimated well under the one-minute
+    // Nine boards to lock in turn, each estimated well under the one-minute
     // floor of its default statement_timeout.
     const lock = diagnose.out.split('== The lock')[1] ?? '';
-    expect(lock).toMatch(/^\s*8 \|\s+5089 \|/m);
-    expect(lock.match(/\|\s+60s\s*$/gm)).toHaveLength(8);
+    expect(lock).toMatch(/^\s*9 \|\s+5189 \|/m);
+    expect(lock.match(/\|\s+60s\s*$/gm)).toHaveLength(9);
     expect(await snapshot(dbUrl)).toEqual(rows0);
 
     const dry = runScript(dbUrl, nowArg); // no mode: a dry run
     expect(dry.status, dry.out).toBe(0);
     expect(dry.out).toContain('Dry run: rolled back');
-    expect(dry.out).toContain('post-check passed: 5089 rows flagged on 8 boards');
-    expect(dry.out.match(/^board [0-9a-f]{12}: would flag \d+ rows, checks passed/gm)).toHaveLength(8);
+    expect(dry.out).toContain('post-check passed: 5189 rows flagged on 9 boards');
+    expect(dry.out.match(/^board [0-9a-f]{12}: would flag \d+ rows, checks passed/gm)).toHaveLength(9);
     expect(await snapshot(dbUrl)).toEqual(rows0);
 
     const commit = runScript(dbUrl, { mode: 'commit', ...nowArg });
@@ -281,7 +291,7 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
       'usage_project_days.before_window': 320, // F 300, and H2's 20 backfilled days
       'usage_project_days.not_a_day': 1, // N
       'usage_project_days.over_cap': 4201, // F 4000, G 200, K 1
-      'usage_session_totals.over_cap': 50, // E
+      'usage_session_totals.over_cap': 150, // E 50, T 100 (post 1, and none of the tied post)
       'usage_limits.over_cap': 2, // S
       'usage_history.series_over_cap': 14, // W; S is over 8 sources, so its series are left
     });
@@ -299,26 +309,42 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
         byBoard[nameOf[r0.ws]] = (byBoard[nameOf[r0.ws]] ?? 0) + 1;
       }
     }
-    expect(byBoard).toEqual({ H2: 20, F: 4801, G: 200, K: 1, N: 1, S: 2, W: 14, E: 50 });
+    expect(byBoard).toEqual({ H2: 20, F: 4801, G: 200, K: 1, N: 1, S: 2, W: 14, E: 50, T: 100 });
+    // T: exactly post 1. Every row of the tied post stays live, so a restart
+    // can still pick any 50 of them.
+    const flaggedT = Array.from(rows0.keys()).filter((k) =>
+      rows0.get(k)!.ws === ws('T') && rows1.get(k)!.deletedAt !== rows0.get(k)!.deletedAt);
+    expect(flaggedT.filter((k) => k.startsWith(`usage_session_totals|${ws('T')}|claude|p1-`))).toHaveLength(100);
 
-    const after = await capture(boards);
-    for (const n of names) {
-      if (n === 'G') continue;
-      expect(after[n], `board ${n}`).toEqual(before[n]);
-    }
-    // G: identical except which of the 200 rows tied at its cap fill the
-    // last places, and exactly as many of them.
+    // G and T: identical except which of the rows tied at a cap fill its last
+    // places (G's 200 project days of one day, T's 100 totals of one post),
+    // and exactly as many of them.
     const tieDay = day(-89);
-    const outsideTie = (g: any) => ({
-      ...g,
-      history: { ...g.history, projects: g.history.projects.filter((r: any) => r.day !== tieDay) },
-      store: { ...g.store, projectDays: g.store.projectDays.filter(([k]: [string]) => !k.endsWith(tieDay)) },
+    const outsideTies = (b: any) => ({
+      ...b,
+      history: { ...b.history, projects: (b.history.projects ?? []).filter((r: any) => r.day !== tieDay) },
+      store: {
+        ...b.store,
+        projectDays: b.store.projectDays.filter(([k]: [string]) => !k.endsWith(tieDay)),
+        sessionTotals: b.store.sessionTotals.filter(([k]: [string]) => !k.startsWith('claude\np2-')),
+      },
     });
-    expect(outsideTie(after.G)).toEqual(outsideTie(before.G));
-    const tied = (g: any) => g.store.projectDays.filter(([k]: [string]) => k.endsWith(tieDay)).length;
-    expect(after.G.store.projectDays).toHaveLength(before.G.store.projectDays.length);
-    expect(tied(after.G)).toBe(tied(before.G));
-    expect(tied(before.G)).toBe(99); // 5000 places, 4901 ahead of the tie (one of them the impossible day)
+    const tiedDays = (b: any) => b.store.projectDays.filter(([k]: [string]) => k.endsWith(tieDay)).length;
+    const tiedTotals = (b: any) => b.store.sessionTotals.filter(([k]: [string]) => k.startsWith('claude\np2-')).length;
+    const sameAsBefore = (now: Record<string, any>) => {
+      for (const n of names) expect(outsideTies(now[n]), `board ${n}`).toEqual(outsideTies(before[n]));
+      for (const n of names) if (n !== 'G' && n !== 'T') expect(now[n], `board ${n}`).toEqual(before[n]);
+      for (const n of ['G', 'T']) {
+        expect(now[n].store.projectDays, `board ${n}`).toHaveLength(before[n].store.projectDays.length);
+        expect(now[n].store.sessionTotals, `board ${n}`).toHaveLength(before[n].store.sessionTotals.length);
+        expect(tiedDays(now[n]), `board ${n}`).toBe(tiedDays(before[n]));
+        expect(tiedTotals(now[n]), `board ${n}`).toBe(tiedTotals(before[n]));
+      }
+    };
+    expect(tiedDays(before.G)).toBe(99); // 5000 places, 4901 ahead of the tie (one of them the impossible day)
+    expect(tiedTotals(before.T)).toBe(50); // 550 places, 500 ahead of the tied post
+    expect(before.T.store.sessionTotals).toHaveLength(550);
+    sameAsBefore(await capture(boards));
 
     // Idempotent, at the same instant and a minute on; nothing more moves.
     const again = runScript(dbUrl, { mode: 'commit', ...nowArg });
@@ -336,8 +362,7 @@ describe.skipIf(!TEST_PG_URL || !HAVE_PSQL)('scripts/flag-flood-rows.sql (Postgr
       'usage_history.aged': 3, // H, before the window
       'usage_history.points_over_cap': 100, // H's opus_week, past its newest 2000
     });
-    const agedAfter = await capture(boards);
-    for (const n of names) if (n !== 'G') expect(agedAfter[n], `board ${n}`).toEqual(before[n]);
+    sameAsBefore(await capture(boards));
   }, 120_000);
 
   it('a mistyped mode or timeout stops before anything runs', async () => {

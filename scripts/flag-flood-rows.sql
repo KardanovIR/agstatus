@@ -30,16 +30,24 @@
 -- Only rows that 1.6.2's Store.init() (src/store.ts) does not load at this
 -- instant, whichever way Postgres breaks a tie, and that no later load can
 -- reach either unless that same row is written again, which un-flags it the
--- way it always has. Removing them changes nothing a restart loads, so the
--- board shows exactly what it showed. The running server is not affected at
--- all: memory is authoritative and it never re-reads the tables.
+-- way it always has. A restart afterwards loads the rows it would have loaded
+-- before, apart from the ties below, so every board shows what it showed. The
+-- running server is not affected at all: memory is authoritative and it never
+-- re-reads the tables.
 --
--- One caveat, on boards past 5000 project days only. Where the 5000th place
--- falls inside a tie (rows of one report that share a day), Postgres picks
--- which of the tied rows fill the last places from the rows it is handed, and
--- flagging the rows behind the tie can change that pick. It never changes how
--- many are loaded, or any row outside the tie, and the pick can move on its
--- own whenever that board's rows change.
+-- Ties at a cap. load() keeps a board's first N rows by ROW_NUMBER(), and
+-- where the Nth place falls inside a tie, Postgres picks which of the tied
+-- rows fill the last places from the rows it is handed. Flagging the rows
+-- behind the tie can change that pick. It never changes how many rows load,
+-- or any row outside the tie, and the pick can move on its own whenever that
+-- board's rows change. Where a tie can straddle a cap:
+--   - session totals at 550. Every row of one /usage/sessions post (up to
+--     100) carries the same updated_at, so on a board past 550 the 550th
+--     place usually falls inside a post. This is the common case.
+--   - project days at 5000: rows of one report that share a day.
+--   - usage limits at 8: only two sources reported in the same millisecond.
+-- The post-check compares the rows that rank within each cap counting every
+-- tied row, so it does not see the pick move, and does not claim to.
 --
 --   usage_project_days
 --     after_window   day after tomorrow (UTC). 1.6.2 refuses these at write.
@@ -841,7 +849,7 @@ FROM (SELECT workspace_id FROM flag_run_pd WHERE flag
       UNION ALL SELECT workspace_id FROM flag_run_st WHERE flag
       UNION ALL SELECT workspace_id FROM flag_run_ul WHERE flag
       UNION ALL SELECT workspace_id FROM flag_run_uh WHERE flag) x \gset
-\echo 'post-check passed:' :flagged_total 'rows flagged on' :flagged_boards 'boards. The rows a restart loads are unchanged, and a second pass flags nothing.'
+\echo 'post-check passed:' :flagged_total 'rows flagged on' :flagged_boards 'boards. The rows a restart loads are unchanged outside ties at a cap, and the same number load within one; a second pass flags nothing.'
 
 \if :is_commit
   WITH after AS (

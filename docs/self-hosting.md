@@ -135,8 +135,12 @@ tables by flagging old rows rather than refusing new ones, so their database
 can hold rows 1.6.2 would never have kept. 1.6.2 does not load those rows,
 so they cost disk rather than memory. [`scripts/flag-flood-rows.sql`](../scripts/flag-flood-rows.sql)
 flags them. It removes nothing, and it touches only rows that a 1.6.2 restart
-does not load, so every board shows exactly what it showed. The script's
-header lists what it flags, what it leaves, and why.
+does not load, so a restart loads what it loaded before. The one exception is
+a cap that falls inside a tie: Postgres picks which of the tied rows fill the
+last places, and that pick can change, though never how many rows load. On a
+board past 550 session totals this is the usual case, because every row of
+one report shares a timestamp. The script's header lists what it flags, what
+it leaves, and why.
 
 Upgrade to 1.6.2 or later first, then run it from the checkout, in three
 steps. With the bundled Compose Postgres:

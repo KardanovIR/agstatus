@@ -1897,8 +1897,12 @@ tables by flagging old rows rather than refusing new ones, so their database
 can hold rows 1.6.2 would never have kept. 1.6.2 does not load those rows,
 so they cost disk rather than memory. <a href="https://github.com/KardanovIR/agstatus/blob/master/scripts/flag-flood-rows.sql"><code>scripts/flag-flood-rows.sql</code></a>
 flags them. It removes nothing, and it touches only rows that a 1.6.2 restart
-does not load, so every board shows exactly what it showed. The script&#39;s
-header lists what it flags, what it leaves, and why.</p>
+does not load, so a restart loads what it loaded before. The one exception is
+a cap that falls inside a tie: Postgres picks which of the tied rows fill the
+last places, and that pick can change, though never how many rows load. On a
+board past 550 session totals this is the usual case, because every row of
+one report shares a timestamp. The script&#39;s header lists what it flags, what
+it leaves, and why.</p>
 <p>Upgrade to 1.6.2 or later first, then run it from the checkout, in three
 steps. With the bundled Compose Postgres:</p>
 <pre><code class="language-bash">docker compose exec -T postgres psql -U agstatus -d agstatus -X -v mode=diagnose &lt; scripts/flag-flood-rows.sql
