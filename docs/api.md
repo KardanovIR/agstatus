@@ -556,8 +556,8 @@ for the server-side setup and trigger rules.
 
 | Method & path                            | Purpose |
 | ---------------------------------------- | ------- |
-| `POST /w/<token>/devices`                | Register/update a device. Body: `{"device_token": "<hex>", "platform": "ios", "notify_done": false}`. `device_token` must match `^[0-9a-fA-F]{16,200}$` and `platform` must be `"ios"` (`400` otherwise). Upserts by (workspace, token) — re-POST updates `notify_done`. Max 10 devices per workspace: `429` for a new device past the cap; updates to existing devices always succeed. A workspace may also hold at most 100 distinct device tokens counting the ones unregistered in the last 90 days (an unregistered device's row is kept, flagged, and counts until 90 days after it was unregistered — including tokens the server prunes itself when APNs reports them gone): `429 {"error": "too many device tokens have been registered to this workspace in the last 90 days"}` for a new token past that, while a token it already counts can always come back. Returns `{ok: true}`. Registering and unregistering share a budget of 10 a minute per workspace (`429 {"error": "rate limit exceeded"}`). |
-| `DELETE /w/<token>/devices/:deviceToken` | Unregister. Returns `{ok: boolean}`. Shares the device budget above. |
+| `POST /w/<token>/devices`                | Register/update a device. Body: `{"device_token": "<hex>", "platform": "ios", "notify_done": false}`. `device_token` must match `^[0-9a-fA-F]{16,200}$` and `platform` must be `"ios"` (`400` otherwise). Upserts by (workspace, token) — re-POST updates `notify_done`. Max 10 devices per workspace: `429` for a new device past the cap; updates to existing devices always succeed. A workspace may also hold at most 100 distinct device tokens counting the ones unregistered in the last 90 days (an unregistered device's row is kept, flagged, and counts until 90 days after it was unregistered — including tokens the server prunes itself when APNs reports them gone): `429 {"error": "too many device tokens have been registered to this workspace in the last 90 days"}` for a new token past that, while a token it already counts can always come back. Returns `{ok: true}`. At most 10 registrations a minute per workspace (`429 {"error": "rate limit exceeded"}`). |
+| `DELETE /w/<token>/devices/:deviceToken` | Unregister. Returns `{ok: boolean}` (`false` when the token was not registered). Never rate limited, and spends none of the registration budget. |
 
 Deleting the workspace purges its device registrations. Tokens Apple reports
 as expired or unregistered are pruned automatically.
@@ -637,7 +637,7 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Webhook requests per workspace | 120/min | `429`. |
 | Devices per workspace | 10 | `429` for new devices. |
 | Device tokens per workspace | 100, live plus unregistered in the last 90 days | `429` for a token not already counted; a returning one is fine, and a slot frees 90 days after its token was unregistered. |
-| Device registrations + removals per workspace | 10/min | `429`. |
+| Device registrations per workspace | 10/min | `429`. Unregistering is never limited. |
 | Usage-history reads per workspace | 30/min | `429` (its own budget, separate from the webhook's). |
 | Outstanding pairing codes per workspace | 3 | `429`. |
 | Focus commands per workspace | 10/min | `429` (its own budget, separate from the webhook's). |

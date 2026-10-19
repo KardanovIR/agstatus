@@ -1133,18 +1133,18 @@ export function createApp(cfg: AppConfig): CreatedApp {
     });
 
     // Push-notification device registration (upsert by workspace + token).
-    // Register and delete share one small budget (allowDeviceChange): each
-    // delete flags a row that stays on disk, so the pair used to be a free,
-    // unthrottled way to add a permanent row. The device-token cap
-    // ('turnover' below) is what finally ends that loop; the window only
-    // slows it. The cap counts tokens flagged in the last
+    // Registration has a small budget (allowDeviceRegistration). Each delete
+    // flags a row that stays on disk, so register-then-delete used to be a
+    // free, unthrottled way to add a permanent row; throttling the register
+    // half slows that loop, and the device-token cap ('turnover' below) is
+    // what finally ends it. The cap counts tokens flagged in the last
     // DEVICE_RETIRED_WINDOW_DAYS, and the error says so: a board that reaches
     // it honestly, with phones and builds coming and going, gets its slots
     // back by waiting, not by being deleted and re-paired.
     app.post('/w/:token/devices', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
-      if (cfg.rateLimit && !store.allowDeviceChange(wsId)) {
+      if (cfg.rateLimit && !store.allowDeviceRegistration(wsId)) {
         res.status(429).json({ error: 'rate limit exceeded' });
         return;
       }
@@ -1174,13 +1174,16 @@ export function createApp(cfg: AppConfig): CreatedApp {
       res.json({ ok: true });
     });
 
+    // Unregistering is never refused, and spends none of that budget. Only a
+    // POST makes a token live, and deleteDevice writes only when it flags a
+    // live one, so the POST budget and the cap already bound what a delete
+    // can write. A refused delete would bound nothing and would keep a phone
+    // that switched off, or left the board, getting its pushes: the iOS app
+    // drops a failed unregister when it leaves a board, and retries one from
+    // the switch only at its next launch.
     app.delete('/w/:token/devices/:deviceToken', (req, res) => {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
-      if (cfg.rateLimit && !store.allowDeviceChange(wsId)) {
-        res.status(429).json({ error: 'rate limit exceeded' });
-        return;
-      }
       res.json({ ok: store.deleteDevice(wsId, req.params.deviceToken) });
     });
 

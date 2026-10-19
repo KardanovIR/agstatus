@@ -433,13 +433,18 @@ export const COMMAND_GRACE_MS = 10 * 60 * 1000;
 const LAST_SEEN_WRITE_THROTTLE_MS = 60_000;
 const MAX_DEVICES_PER_WORKSPACE = 10;
 /**
- * Device registrations and removals per workspace per minute. The app posts
- * when notifications are switched on, when a flag changes and once at launch,
- * and deletes when they are switched off or the board is left — a handful in
- * a busy minute. Unthrottled, a register-then-delete loop added one permanent
- * flagged row per pair, limited only by how fast HTTP goes.
+ * Device registrations per workspace per minute. The app posts when
+ * notifications are switched on, when a flag changes and once at launch — a
+ * handful in a busy minute. Unthrottled, a register-then-delete loop added one
+ * permanent flagged row per pair, limited only by how fast HTTP goes.
+ *
+ * Removals are not counted and never refused. A delete writes only when it
+ * flags a live token, and only a registration makes one live, so this budget
+ * already bounds the deletes' writes too. Refusing a delete would bound
+ * nothing, and the iOS app does not retry one when it leaves a board, so the
+ * phone would keep getting that board's pushes.
  */
-const DEVICE_CHANGES_PER_MINUTE = 10;
+const DEVICE_REGISTRATIONS_PER_MINUTE = 10;
 /**
  * Device tokens a workspace may have on disk at once, live AND flagged within
  * DEVICE_RETIRED_WINDOW_MS. The window above slows a register/delete loop;
@@ -1742,9 +1747,9 @@ export class Store {
     return this.allowInWindow(this.listenerWindows, wsId, LISTENER_CONNECTS_PER_MINUTE);
   }
 
-  /** Fixed-window limit on device registrations and removals per workspace, one budget for both. */
-  allowDeviceChange(wsId: string): boolean {
-    return this.allowInWindow(this.deviceWindows, wsId, DEVICE_CHANGES_PER_MINUTE);
+  /** Fixed-window limit on device registrations per workspace; removals are never counted. */
+  allowDeviceRegistration(wsId: string): boolean {
+    return this.allowInWindow(this.deviceWindows, wsId, DEVICE_REGISTRATIONS_PER_MINUTE);
   }
 
   /** Fixed-window limit on usage-history reads per workspace, apart from every write budget. */

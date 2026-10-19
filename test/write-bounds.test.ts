@@ -333,20 +333,37 @@ describe('devices: a register/delete loop cannot add rows without end', () => {
     request(app).delete(`/w/${token}/devices/${device}`);
   const device = (i: number) => i.toString(16).padStart(64, '0');
 
-  it('registration and removal share a per-workspace window (rateLimit: true)', async () => {
+  it('registration has a per-workspace window; removal spends none of it (rateLimit: true)', async () => {
     const { app } = makeApp({ rateLimit: true });
     const token = await createWorkspace(app);
     for (let i = 0; i < 5; i++) {
       await register(app, token, device(i)).expect(200);
-      await unregister(app, token, device(i)).expect(200);
+      await unregister(app, token, device(i)).expect(200, { ok: true });
     }
+    // Five removals cost nothing: five more registrations still fit the minute.
+    for (let i = 5; i < 10; i++) await register(app, token, device(i)).expect(200);
     const blocked = await register(app, token, device(99)).expect(429);
     expect(blocked.body).toEqual({ error: 'rate limit exceeded' });
-    await unregister(app, token, device(0)).expect(429);
 
     // Per workspace.
     const other = await createWorkspace(app);
     await register(app, other, device(1)).expect(200);
+  });
+
+  it('a removal is never refused, even right after a refused registration (rateLimit: true)', async () => {
+    // The iOS app drops a failed unregister when it leaves a board, and
+    // retries one from the switch only at its next launch, so a 429 here kept
+    // the phone getting the board's pushes. A delete writes only for a live
+    // token, which only a registration makes, so refusing it bounded nothing.
+    const { app, store } = makeApp({ rateLimit: true });
+    const token = await createWorkspace(app);
+    const wsId = store.resolveToken(token)!;
+    for (let i = 0; i < 10; i++) await register(app, token, device(i)).expect(200);
+    await register(app, token, device(99)).expect(429, { error: 'rate limit exceeded' });
+    for (let i = 0; i < 10; i++) await unregister(app, token, device(i)).expect(200, { ok: true });
+    expect(store.deviceCount(wsId)).toBe(0);
+    // A second removal of the same token finds nothing live, and says so.
+    await unregister(app, token, device(0)).expect(200, { ok: false });
   });
 
   const TURNOVER_ERROR =

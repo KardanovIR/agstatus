@@ -2795,11 +2795,11 @@ for the server-side setup and trigger rules.</p>
 </thead>
 <tbody><tr>
 <td><code>POST /w/&lt;token&gt;/devices</code></td>
-<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. A workspace may also hold at most 100 distinct device tokens counting the ones unregistered in the last 90 days (an unregistered device&#39;s row is kept, flagged, and counts until 90 days after it was unregistered — including tokens the server prunes itself when APNs reports them gone): <code>429 {&quot;error&quot;: &quot;too many device tokens have been registered to this workspace in the last 90 days&quot;}</code> for a new token past that, while a token it already counts can always come back. Returns <code>{ok: true}</code>. Registering and unregistering share a budget of 10 a minute per workspace (<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code>).</td>
+<td>Register/update a device. Body: <code>{&quot;device_token&quot;: &quot;&lt;hex&gt;&quot;, &quot;platform&quot;: &quot;ios&quot;, &quot;notify_done&quot;: false}</code>. <code>device_token</code> must match <code>^[0-9a-fA-F]{16,200}$</code> and <code>platform</code> must be <code>&quot;ios&quot;</code> (<code>400</code> otherwise). Upserts by (workspace, token) — re-POST updates <code>notify_done</code>. Max 10 devices per workspace: <code>429</code> for a new device past the cap; updates to existing devices always succeed. A workspace may also hold at most 100 distinct device tokens counting the ones unregistered in the last 90 days (an unregistered device&#39;s row is kept, flagged, and counts until 90 days after it was unregistered — including tokens the server prunes itself when APNs reports them gone): <code>429 {&quot;error&quot;: &quot;too many device tokens have been registered to this workspace in the last 90 days&quot;}</code> for a new token past that, while a token it already counts can always come back. Returns <code>{ok: true}</code>. At most 10 registrations a minute per workspace (<code>429 {&quot;error&quot;: &quot;rate limit exceeded&quot;}</code>).</td>
 </tr>
 <tr>
 <td><code>DELETE /w/&lt;token&gt;/devices/:deviceToken</code></td>
-<td>Unregister. Returns <code>{ok: boolean}</code>. Shares the device budget above.</td>
+<td>Unregister. Returns <code>{ok: boolean}</code> (<code>false</code> when the token was not registered). Never rate limited, and spends none of the registration budget.</td>
 </tr>
 </tbody></table></div>
 <p>Deleting the workspace purges its device registrations. Tokens Apple reports
@@ -2900,9 +2900,9 @@ are closed.</p>
 <td><code>429</code> for a token not already counted; a returning one is fine, and a slot frees 90 days after its token was unregistered.</td>
 </tr>
 <tr>
-<td>Device registrations + removals per workspace</td>
+<td>Device registrations per workspace</td>
 <td>10/min</td>
-<td><code>429</code>.</td>
+<td><code>429</code>. Unregistering is never limited.</td>
 </tr>
 <tr>
 <td>Usage-history reads per workspace</td>
