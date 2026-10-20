@@ -29,6 +29,20 @@
     · With more agents than fit, the limits scroll with their sections instead
       of staying pinned; one pinned line keeps every agent's name and alarm.
 
+  DECIDED by the owner, 2026-10-21, after the app shipped session titles
+  (1.6.1) and the built board was audited against them:
+    · A card's name may take two lines; when it does, the message takes one.
+      This replaces "names being cut sooner" above, which was decided when
+      names were short folder names — a title cut at 22 characters says
+      nothing. On a titled card "in <repo>" outlasts the machine name.
+    · On a phone, at most two full heads stay pinned; with three or more
+      agents the pinned line of names and alarms is used instead, as on a
+      wide screen with more agents than fit.
+    · A board that has agents but no sessions says "Nothing running", not
+      "No agents yet" with a pairing button.
+  The app is the reference for these three; this mock still draws the
+  earlier versions.
+
   Every variant is addressable, so a state can be linked or captured:
 
     ?device=iphone|iphone-max|ipad-p|ipad-l|ipad11-l|live
