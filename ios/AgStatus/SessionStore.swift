@@ -813,6 +813,10 @@ final class SessionStore {
         // window arithmetic is right or wrong. With no test target in this
         // project, this is where it gets checked.
         Streak.verifyDerivation()
+        // The same argument for the layout rule: a capture proves one width
+        // with one set of agents, and nothing about the width a point
+        // narrower or about what a dismissal does to the cards that stay.
+        BoardArrangement.verify()
         #endif
         sessions = Self.sortedByUpdate(DemoData.initialSessions())
         usage = DemoData.usage()

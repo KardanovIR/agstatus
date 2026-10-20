@@ -1,0 +1,1875 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent sections</title>
+<!--
+  PROTOTYPE — sessions grouped into one section per agent.
+
+  A static, self-contained mock of the NATIVE board (iPhone and iPad) for
+  judging a layout. It is not an implementation and talks to no server. Sizes
+  inside the device are iOS points, taken from ios/AgStatus/BoardView.swift,
+  SessionCardView.swift and Theme.swift; the type is the system face, because
+  the app bundles none.
+
+  DECIDED by the owner, 2026-10-05, after the first round of this prototype:
+    · Agent marks stay the neutral ones. No vendor logos.
+    · A card keeps its place. Nothing moves on a change of state, blocked
+      included; the head's alarm is the way to a blocked card.
+    · One column per agent on a wide screen. Uneven columns, and the re-flow
+      when an agent arrives or leaves, are accepted.
+    · Dismiss goes in the card's long-press menu.
+    · Names being cut sooner in a column is accepted.
+  and, confirmed the same day:
+    · Every card gets that menu, on every device. Today only a card with a
+      machine has one, holding "Bring to front on …".
+    · The phone keeps its swipe as well, since its list is still one column.
+      The swipe itself is not drawn in this mock.
+    · With more agents than fit, the limits scroll with their sections instead
+      of staying pinned; one pinned line keeps every agent's name and alarm.
+
+  Every variant is addressable, so a state can be linked or captured:
+
+    ?device=iphone|iphone-max|ipad-p|ipad-l|ipad11-l|live
+    &layout=flat|cols
+    &scenario=demo|busy|lopsided|solo|three|long|empty
+    &blocked=given|claude|none
+    &limits=given|hi
+    &menu=<session id>  (open that card's long-press menu, e.g. menu=docs)
+    &bare=1             (the device alone at 1:1, for screenshots)
+-->
+<style>
+/* ---- Tokens ---------------------------------------------------------------
+ * Colour, space, radius and motion are public/tokens.css, verbatim, and
+ * Theme.swift carries the same values as sRGB. --tier-silver is the one that
+ * exists only on iOS (Theme.swift:177). Do not edit them here. */
+:root {
+  color-scheme: dark;
+  --hue: 155;
+  --ink-950: oklch(16.5% 0.008 var(--hue));
+  --ink-900: oklch(20.5% 0.009 var(--hue));
+  --ink-850: oklch(24.5% 0.010 var(--hue));
+  --ink-800: oklch(30% 0.011 var(--hue));
+  --ink-700: oklch(38% 0.012 var(--hue));
+  --text-1: oklch(94% 0.010 var(--hue));
+  --text-2: oklch(74% 0.012 var(--hue));
+  --text-3: oklch(64.5% 0.012 var(--hue));
+  --st-done:     oklch(76% 0.125 155);
+  --st-blocked:  oklch(68% 0.190 28);
+  --st-idle:     oklch(66% 0.020 155);
+  --st-planning: oklch(78% 0.100 320);
+  --st-coding:   oklch(74% 0.085 240);
+  --st-testing:  oklch(74% 0.080 200);
+  --st-limit-warn: oklch(78% 0.150 80);
+  --tier-silver: oklch(82% 0.010 240);
+  --blocked-edge: oklch(from var(--st-blocked) l c h / 0.42);
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --d-fast: 120ms;
+
+  /* The native app sets everything in the system face, and the limit blocks in
+   * its rounded cut. Chrome has no `ui-rounded` and falls back to the upright,
+   * which runs about a tenth narrower; Safari draws the real thing. */
+  --font-sys: system-ui, -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  --font-round: ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, sans-serif;
+
+  /* The viewer's own ground: a step below the board's, so the device reads as
+   * the lit thing on the page and the controls do not. */
+  --pv-ground: oklch(12.5% 0.006 var(--hue));
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body { margin: 0; }
+
+body {
+  min-height: 100dvh;
+  background: var(--pv-ground);
+  color: var(--text-1);
+  font-family: var(--font-sys);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+ * VIEWER — the frame around the prototype. Quieter than the board it shows.
+ * ========================================================================== */
+
+.pv-bar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-sm) var(--space-lg);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--pv-ground);
+  border-bottom: 1px solid var(--ink-800);
+}
+
+.pv-title {
+  flex: 1 0 100%;
+  margin: 0;
+  font-family: var(--font-round);
+  font-size: 0.9375rem;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.pv-title small {
+  margin-left: var(--space-xs);
+  font-family: var(--font-sys);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* Two rows, because they are two different questions: what is being proposed,
+ * and what the board happens to be holding while you look at it. */
+.pv-rows { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
+.pv-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-sm) var(--space-lg); }
+
+.pv-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.pv-group legend {
+  padding: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Separate keys rather than one joined control: a joined control that wraps
+ * onto a second row leaves its own background showing through the gap. */
+.pv-seg { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
+
+.pv-seg button, .pv-act {
+  appearance: none;
+  min-height: 30px;
+  padding: 0 var(--space-sm);
+  background: transparent;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease),
+    border-color var(--d-fast) var(--ease);
+}
+
+.pv-seg button:hover, .pv-act:hover { color: var(--text-1); background: var(--ink-850); }
+
+/* Pressed is carried by fill, edge and weight together, not by colour alone. */
+.pv-seg button[aria-pressed='true'] {
+  background: var(--ink-850);
+  border-color: var(--text-3);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.pv-act { border-color: var(--ink-700); color: var(--text-1); }
+.pv-acts { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
+
+@media (pointer: coarse) {
+  .pv-seg button, .pv-act { min-height: 44px; }
+}
+
+/* On a small screen the controls are most of a screenful; pinned, they would
+ * leave no room for the thing they control. */
+@media (max-width: 760px), (max-height: 700px) {
+  .pv-bar { position: static; }
+}
+
+/* What the layout is, beside what it costs: two short columns where there is
+ * room, so the board is not pushed down the page by its own caption. */
+.pv-rule {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-xs) var(--space-xl);
+  max-width: 110rem;
+  padding: var(--space-md) var(--space-md) 0;
+  color: var(--text-2);
+}
+
+.pv-rule p { max-width: 92ch; margin: 0; }
+.pv-rule b { color: var(--text-1); font-weight: 600; }
+
+.pv-stage { padding: var(--space-md) var(--space-md) var(--space-2xl); }
+
+/* Holds the scaled device's footprint, since a transform does not. */
+.pv-fit { position: relative; }
+
+.pv-caption {
+  margin: var(--space-xs) 0 0;
+  font-size: 0.6875rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Controls put away: the board alone, at the size of this window. The way back
+ * sits in its own strip under the board, so it covers none of it. */
+.pv-back { display: none; margin: var(--space-xs) var(--space-md); }
+.is-immersive .pv-bar, .is-immersive .pv-rule, .is-immersive .pv-caption { display: none; }
+.is-immersive .pv-stage { padding: 0; }
+.is-immersive .pv-back { display: block; }
+.is-immersive .device.is-live { height: calc(100dvh - 48px); min-height: 0; outline: 0; border-radius: 0; }
+
+/* ==========================================================================
+ * DEVICE — a screen in iOS points, scaled to fit the viewer.
+ * ========================================================================== */
+
+.device {
+  --pad: 16px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--w);
+  height: var(--h);
+  overflow: hidden;
+  background: var(--ink-950);
+  outline: 1px solid var(--ink-700);
+  border-radius: var(--corner, 20px);
+  transform-origin: 0 0;
+  font-family: var(--font-sys);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.device.is-live {
+  width: auto;
+  height: 84dvh;
+  min-height: 480px;
+  border-radius: var(--r-lg);
+}
+
+.statusbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--pad);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.statusbar svg { width: 24px; height: 12px; display: block; }
+
+.device.is-phone .statusbar {
+  height: 62px;
+  padding: 10px 44px 0;
+  font-size: 16px;
+}
+
+.device.is-live .statusbar { display: none; }
+
+/* The sensor housing. Present because it costs the phone a strip of screen
+ * that the layout has to live below. */
+.device.is-phone::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 124px;
+  height: 36px;
+  margin-left: -62px;
+  border-radius: var(--r-pill);
+  background: oklch(8% 0.004 var(--hue));
+}
+
+/* 44pt of capsules and the 10pt the system bar keeps beneath them. */
+.navbar {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  column-gap: 14px;
+  height: 44px;
+  margin-bottom: 10px;
+  padding: 0 10px;
+}
+
+.device.is-live .navbar { margin-top: 10px; }
+.device.is-phone .navbar { grid-template-columns: auto 1fr auto; padding: 0 20px; }
+
+.capsule {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-pill);
+  background: var(--ink-900);
+  color: var(--text-1);
+}
+
+.capsule.is-trailing { justify-self: end; }
+.capsule svg { width: 20px; height: 20px; display: block; }
+
+.conn {
+  width: 9px;
+  height: 9px;
+  margin: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--st-done);
+}
+
+.nav-title {
+  font-family: var(--font-round);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+/* Pinned above the list, where the limit blocks already sit today: the list
+ * scrolls beneath, so what is pinned never leaves the screen. */
+.pinned { flex: none; padding: 10px var(--pad) 2px; }
+.pinned.is-bar { padding-block: 0; }
+
+.board-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.board-scroll::-webkit-scrollbar { display: none; }
+
+.board { padding: 6px var(--pad) 18px; }
+
+.streak {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 12px;
+  padding: 8px var(--pad) 24px;
+  background: var(--ink-900);
+  border-top: 1px solid var(--ink-800);
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.device.is-phone .streak { padding-bottom: 38px; }
+.streak > svg { width: 13px; height: 13px; margin-top: 3px; color: var(--tier-silver); }
+.streak-line { display: flex; align-items: baseline; gap: 8px; }
+.streak-name { font-size: 15px; font-weight: 600; color: var(--tier-silver); }
+.streak-next { margin-left: auto; }
+
+.pips { display: inline-flex; gap: 4px; align-self: center; }
+.pips i { width: 5px; height: 5px; border-radius: var(--r-pill); border: 1px solid var(--ink-800); }
+.pips i.on { background: var(--tier-silver); border-color: var(--tier-silver); }
+
+.streak-track {
+  height: 2px;
+  margin-top: 4px;
+  border-radius: var(--r-pill);
+  background: var(--ink-850);
+}
+
+.streak-track i {
+  display: block;
+  width: 31.25%;
+  height: 100%;
+  border-radius: var(--r-pill);
+  background: var(--text-3);
+}
+
+/* ==========================================================================
+ * BOARD
+ * ========================================================================== */
+
+.meter-value, .ts, .tok, .count, .alarm b { font-variant-numeric: tabular-nums; }
+
+/* ---- The agent head -------------------------------------------------------
+ * Today this is the plan-limit block and nothing else: the agent's name over
+ * its bars, with the sessions in a separate list below. It was already one
+ * block per agent. Here it becomes the head of that agent's section — who it
+ * is, whether anything of its is waiting on you, how much of the plan is gone
+ * — and the sessions hang beneath it. As today, the whole head opens that
+ * agent's thirty days of usage. */
+.heads {
+  display: grid;
+  grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr));
+  gap: 10px;
+}
+
+/* On a phone the heads sit two across and keep their own heights; an odd one
+ * out — a third agent, or the only agent — takes the whole row. */
+.heads.is-narrow { align-items: start; }
+.heads.is-narrow .head-none { display: none; }
+.heads.is-narrow > .head:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+.head {
+  /* A query container cannot restyle itself, so the layout lives one level in. */
+  container: head / inline-size;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.head:active { background: var(--ink-850); }
+
+/* Something of this agent's is blocked. The head takes the blocked card's own
+ * edge, because a red word is not enough on its own here: a plan limit past
+ * 85% is also drawn in that red, and a quiet head with a full bar must not read
+ * like a head that needs you. The box changing is a second channel the bar
+ * does not have. */
+.head.has-blocked { border-color: var(--blocked-edge); }
+
+.head-in {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.head-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  min-width: 0;
+}
+
+.ident {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-round);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+.ident-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Today's header, for the baseline: the name alone, at the size it ships. */
+.head.is-plain .ident { font-size: 11px; }
+.head.is-plain .head-line { min-height: 0; }
+
+.count {
+  flex: none;
+  font-family: var(--font-sys);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* The agent's mark: the shipped geometric ones, by decision — no vendor logo
+ * goes on this board. Told apart by shape and never by a brand colour, because
+ * colour here means state and nothing else. */
+.mark {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: block;
+  color: var(--text-2);
+}
+
+/* ---- The alarm ------------------------------------------------------------
+ * Absent unless something is blocked: a quiet head means nothing of this
+ * agent's is waiting on you. It is the same solid mark and the same word the
+ * blocked card carries, so it is never hue alone. It is also the way to that
+ * card, which matters because a card that becomes blocked stays where it is:
+ * a separate control laid over the head, with an arrow that says it goes
+ * somewhere, and not part of the head's own tap.
+ *
+ * `done` is deliberately not counted: Codex has no session-end hook, so its
+ * finished cards rest on the board for a day, and a standing "6 done" would be
+ * a tally of nothing. */
+.alarm {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  font-family: var(--font-sys);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--st-blocked);
+  white-space: nowrap;
+}
+
+button.alarm {
+  appearance: none;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* 16pt tall to look at, 44 to hit. */
+button.alarm::before { content: ''; position: absolute; inset: -15px -8px; }
+.alarm svg { width: 15px; height: 15px; flex: none; }
+.alarm .alarm-go { width: 11px; height: 11px; margin-left: -1px; }
+
+/* ---- Meters --------------------------------------------------------------- */
+.meters { display: grid; gap: 10px; }
+
+.meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.meter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-round);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.meter-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-round);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.meter-reset {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+.meter-track {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: oklch(100% 0 0 / 0.06);
+  overflow: hidden;
+}
+
+.meter-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-pill);
+  transform-origin: left center;
+  background: var(--st-done);
+}
+
+/* The 60 / 85 ladder is the shipped one (Theme.limitColor) and is not this
+ * prototype's to change. */
+.meter-fill.mid { background: var(--st-limit-warn); }
+.meter-fill.high { background: var(--st-blocked); }
+
+.head-none { margin: 0; font-size: 12px; color: var(--text-3); }
+
+/* Half a phone wide. The value drops under its label, as it does today; the
+ * alarm keeps its mark, its number and its arrow and gives up the word; and an
+ * agent with no limits to show is one line. */
+@container head (max-width: 300px) {
+  .meter { grid-template-columns: minmax(0, 1fr); }
+  .count, .alarm-word, .head-none { display: none; }
+}
+
+/* A column's head. Three windows fit across, so the head is two rows instead
+ * of four: fifty points handed back to the list, and far less bar for the
+ * alarm to be seen against. */
+@container head (min-width: 520px) {
+  .head:not(.is-plain) .meters { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 20px; }
+  .head:not(.is-plain) .meter { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* A full-width head: identity on the left, the limits in one strip beside it.
+ * The same height with or without an alarm, whatever the window count. Only
+ * from the width where three limits fit on one row beside the identity: a
+ * little narrower and the third wrapped under the first two, which made the
+ * strip the tallest form of the head instead of the shortest. */
+@container head (min-width: 806px) {
+  .head.can-strip .head-in { flex-direction: row; align-items: center; gap: 24px; }
+  .head.can-strip .head-line { flex: 0 0 284px; flex-wrap: wrap; row-gap: 6px; }
+  .head.can-strip .alarm { margin-left: 0; }
+  .head.can-strip .meters { flex: 1 1 auto; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 24px; }
+  .head.can-strip .head-none { flex: 1 1 auto; }
+}
+
+/* ---- The agent line --------------------------------------------------------
+ * With more agents than fit, the sections scroll, heads and all. This one line
+ * stays: each agent's mark and name, which take you to its section, and its
+ * alarm, which takes you to its first blocked card. Two controls, side by
+ * side, because one cannot sit inside the other. */
+.agentbar {
+  display: grid;
+  /* Wide enough for a mark, a name and an alarm; a third agent on a phone
+   * starts a second row sooner than any name is cut to a letter. */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  column-gap: 24px;
+  border-bottom: 1px solid var(--ink-800);
+}
+
+.agentbar-cell {
+  container: head / inline-size;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 44px;
+}
+
+.agentbar-cell .alarm { margin-left: 0; }
+
+.agentbar-item {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  color: var(--text-1);
+  font-family: var(--font-round);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* ---- One column per agent -------------------------------------------------
+ * One column per agent, and the heads above take the same tracks. The gutter
+ * between two agents (24) is twice the gap between two cards (12): proximity
+ * says which cards belong to which head, so nothing has to be drawn around
+ * them. */
+.is-cols { column-gap: 24px; }
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr));
+  align-items: start;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* ---- Groups (where two columns do not fit) --------------------------------
+ * Not a box. A mark and a name on the ground are enough to start a group; a
+ * container here would be a card holding cards. The name sticks while its
+ * group scrolls, because with the chip gone it is the only thing saying whose
+ * cards these are. */
+.groups { display: flex; flex-direction: column; gap: 8px; }
+
+.group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 calc(var(--pad) * -1) -4px;
+  padding: 8px calc(var(--pad) + 2px);
+  background: var(--ink-950);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* ---- One agent, or more agents than fit ----------------------------------- */
+.sections { display: flex; flex-direction: column; gap: 24px; padding-top: 4px; }
+.section { display: flex; flex-direction: column; gap: 8px; min-width: 0; scroll-margin-top: 4px; }
+
+/* Two across, as two columns that each keep their cards: a card is given a
+ * side once, so a dismissal moves the cards beneath it up and never across. */
+.cards2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+  align-items: start;
+}
+
+/* ---- Card -----------------------------------------------------------------
+ * The shipping card, unchanged except for what the section made redundant.
+ * The border is drawn inside the 8 / 12 padding, as strokeBorder draws it. */
+.card {
+  --state: var(--st-idle);
+  min-width: 0;
+  padding: 7px 11px;
+  background: color-mix(in oklab, var(--ink-900) 90%, var(--state));
+  border: 1px solid color-mix(in oklab, var(--ink-800) 62%, var(--state));
+  border-radius: 12px;
+  /* A long press is for the menu, not for selecting the card's text. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* A ring only where one is news: the card the alarm just brought into view, or
+ * the card a keyboard is on. Neutral ink — a green ring on a card that is not
+ * done would be a colour claiming a state. */
+.card:focus { outline: 0; }
+.card:focus-visible, .card.is-jumped { outline: 2px solid var(--text-1); outline-offset: 2px; }
+
+.card.status-planning { --state: var(--st-planning); }
+.card.status-coding { --state: var(--st-coding); }
+.card.status-testing { --state: var(--st-testing); }
+.card.status-blocked { --state: var(--st-blocked); }
+.card.status-done { --state: var(--st-done); }
+
+.card.status-blocked {
+  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+  border-color: var(--blocked-edge);
+}
+
+.card-row { display: flex; align-items: flex-start; gap: 12px; }
+
+.card-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.name {
+  margin: 0;
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message {
+  margin: 0;
+  font-size: 15px;
+  line-height: 18px;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* One line, and nothing in it is ever cut: when it does not fit the project
+ * goes, then the machine (the ViewThatFits cascade in SessionCardView). */
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 16px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.meta > * { flex: none; }
+.meta .sep { color: var(--ink-700); }
+
+.source {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-sm);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.source .mark { width: 9px; height: 9px; color: inherit; }
+
+.note { margin-top: 4px; font-size: 12px; line-height: 14.5px; color: var(--text-3); }
+
+.rail {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 13px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--state);
+  white-space: nowrap;
+}
+
+.badge svg { width: 12px; height: 12px; }
+
+.focus {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--ink-850);
+  border: 1px solid var(--ink-800);
+  border-radius: 8px;
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.focus svg { width: 18px; height: 18px; }
+.focus.is-off { color: var(--text-3); opacity: 0.5; }
+
+/* ---- The long-press menu ---------------------------------------------------
+ * Where Dismiss goes, by decision. A card with a machine already has this
+ * menu on iOS ("Bring to front on …"); every card gets it now, on every
+ * device, because columns cannot use the list's swipe. Drawn as the system draws one: the card held
+ * above a dimmed board, the menu beside it, the destructive item in the same
+ * red the swipe action uses today. */
+.card.is-held { position: relative; z-index: 6; }
+
+.menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: oklch(from var(--ink-950) l c h / 0.62);
+}
+
+@keyframes menu-in {
+  from { opacity: 0; transform: scale(0.96); }
+}
+
+.menu {
+  position: absolute;
+  z-index: 7;
+  width: 250px;
+  overflow: hidden;
+  background: var(--ink-850);
+  border: 1px solid var(--ink-700);
+  border-radius: 13px;
+  transform-origin: top left;
+  animation: menu-in var(--d-fast) var(--ease);
+}
+
+.menu-item {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 16px;
+  background: none;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 17px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-item + .menu-item { border-top: 1px solid var(--ink-700); }
+.menu-item svg { width: 20px; height: 20px; flex: none; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--ink-800); }
+/* The red label keeps the surface its contrast was measured on. */
+.menu-item.is-destructive:hover, .menu-item.is-destructive:focus-visible { background: none; }
+.menu:focus { outline: 0; }
+.menu:focus-visible, .menu-item:focus-visible { outline: 2px solid var(--text-1); outline-offset: -2px; }
+/* Opened by a link, for a capture: there is nothing to animate from. */
+.menu.is-instant { animation: none; }
+.menu-item:disabled { color: var(--text-3); cursor: default; }
+.menu-item:disabled:hover { background: none; }
+.menu-item.is-destructive { color: var(--st-blocked); }
+
+/* ---- Motion ---------------------------------------------------------------
+ * Only what changed moves: a card that changed state lifts its own edge once,
+ * where it is, and when a card is dismissed the ones below it close the gap. */
+@keyframes state-change {
+  50% { border-color: var(--state); }
+}
+
+.card.changed { animation: state-change 900ms var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---- Empty: the shipping empty state, which this proposal does not touch --- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 46ch;
+  margin: 0 auto;
+  padding: 88px 24px 24px;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.empty svg { width: 44px; height: 44px; }
+
+.empty strong {
+  font-family: var(--font-round);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.empty p { margin: 0; }
+
+/* ---- Bare: the device alone, for capture ---------------------------------- */
+.is-bare .pv-bar, .is-bare .pv-rule, .is-bare .pv-caption, .is-bare .pv-back { display: none; }
+.is-bare .pv-stage { padding: 0; }
+.is-bare .device { outline: 0; border-radius: 0; }
+</style>
+</head>
+<body>
+
+<header class="pv-bar">
+  <h1 class="pv-title">Agent sections<small>AgStatus prototype</small></h1>
+
+  <div class="pv-rows">
+    <div class="pv-row">
+      <fieldset class="pv-group">
+        <legend>Device</legend>
+        <div class="pv-seg" data-key="device">
+          <button type="button" data-v="iphone">iPhone</button>
+          <button type="button" data-v="iphone-max">iPhone Max</button>
+          <button type="button" data-v="ipad-p">iPad portrait</button>
+          <button type="button" data-v="ipad-l">iPad landscape</button>
+          <button type="button" data-v="ipad11-l">iPad 11″ landscape</button>
+          <button type="button" data-v="live">This screen</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>Layout</legend>
+        <div class="pv-seg" data-key="layout">
+          <button type="button" data-v="flat">Today</button>
+          <button type="button" data-v="cols">By agent</button>
+        </div>
+      </fieldset>
+
+    </div>
+
+    <div class="pv-row">
+      <fieldset class="pv-group">
+        <legend>Sessions on the board</legend>
+        <div class="pv-seg" data-key="scenario">
+          <button type="button" data-v="demo">3 + 1</button>
+          <button type="button" data-v="busy">5 + 4</button>
+          <button type="button" data-v="lopsided">7 + 1</button>
+          <button type="button" data-v="solo">One agent</button>
+          <button type="button" data-v="three">Three agents</button>
+          <button type="button" data-v="long">Long names</button>
+          <button type="button" data-v="empty">None</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>Blocked</legend>
+        <div class="pv-seg" data-key="blocked">
+          <button type="button" data-v="given">As given</button>
+          <button type="button" data-v="claude">Claude quiet</button>
+          <button type="button" data-v="none">Nobody</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>Plan limits</legend>
+        <div class="pv-seg" data-key="limits">
+          <button type="button" data-v="given">As reported</button>
+          <button type="button" data-v="hi">Claude at 91%</button>
+        </div>
+      </fieldset>
+
+      <div class="pv-acts">
+        <button class="pv-act" type="button" id="simulate">Change one</button>
+        <button class="pv-act" type="button" id="immerse">Hide controls</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="pv-rule" id="rule"></div>
+
+<main class="pv-stage">
+  <div class="pv-fit" id="fit">
+    <div class="device" id="device"></div>
+  </div>
+  <p class="pv-caption" id="caption"></p>
+</main>
+
+<button class="pv-act pv-back" type="button" id="surface">Show controls</button>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---- Icons ---------------------------------------------------------------
+  // The six state marks and the focus mark are public/app.js's own, which
+  // mirror the SF Symbols the native card draws.
+
+  const stroked = (body, attrs = '') =>
+    `<svg ${attrs} viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"`
+    + ` stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  const punched = (body, attrs = '') =>
+    `<svg ${attrs} viewBox="0 0 16 16" aria-hidden="true" fill="currentColor" fill-rule="evenodd">${body}</svg>`;
+  const DISC = 'M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Z';
+
+  const STATE_MARK = {
+    idle: stroked('<circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.6 1.5"/>'),
+    planning: stroked('<path d="M6.5 4.3h7M6.5 8h7M6.5 11.7h7"/>'
+      + '<circle cx="3" cy="4.3" r="1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="3" cy="8" r="1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="3" cy="11.7" r="1" fill="currentColor" stroke="none"/>'),
+    coding: stroked('<path d="M5.6 4.4 2.2 8l3.4 3.6M10.4 4.4 13.8 8l-3.4 3.6M9.4 3.4 6.6 12.6"/>'),
+    testing: stroked('<path d="M4.6 2.2h6.8M6.2 2.2v8.3a1.8 1.8 0 0 0 3.6 0V2.2M6.2 8.2h3.6"/>'),
+    blocked: punched(`<path d="${DISC}M8.9 4.35v4.8a.9.9 0 0 1-1.8 0V4.35a.9.9 0 0 1 1.8 0ZM8 12.3a1.05 1.05 0 1 1 0-2.1 1.05 1.05 0 0 1 0 2.1Z"/>`),
+    done: stroked('<circle cx="8" cy="8" r="6"/><path d="M5.3 8.2 7.2 10.1 10.8 5.9"/>'),
+  };
+
+  const FOCUS = stroked(
+    '<path d="M6 9.5H2.4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H9a1 1 0 0 1 1 1v2.5"/>'
+    + '<path d="M6.9 6.5h6.7a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H6.9a1 1 0 0 1-1-1V7.5a1 1 0 0 1 1-1Z"/>');
+  const GEAR = stroked('<circle cx="8" cy="8" r="2.1"/>'
+    + '<path d="M8 1.5l1 1.7 1.9-.5.6 1.9 1.9.6-.5 1.9 1.6.9-1.6.9.5 1.9-1.9.6-.6 1.9-1.9-.5-1 1.7-1-1.7-1.9.5-.6-1.9-1.9-.6.5-1.9L1.5 8l1.6-.9-.5-1.9 1.9-.6.6-1.9 1.9.5Z"/>');
+  const LAPTOP = stroked('<path d="M3.2 3.6h9.6v6.6H3.2zM1.4 12.4h13.2"/>');
+  const DOWN = stroked('<path d="M3.5 6 8 10.5 12.5 6"/>', 'class="alarm-go"');
+  // A plain x for Dismiss in the menu. The swipe's filled disc is left to the
+  // blocked mark, which a held card may be showing right above it.
+  const X_MARK = stroked('<path d="M4 4l8 8M12 4l-8 8"/>');
+  const MOON = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M9.6 2.2a6 6 0 1 0 4.3 8.2 5 5 0 0 1-4.3-8.2Z"/></svg>';
+  const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 1.2l2 4.4 4.8.5-3.6 3.2 1 4.7L8 11.6 3.8 14l1-4.7L1.2 6.1 6 5.6Z"/></svg>';
+  const BATTERY = '<svg viewBox="0 0 24 12" aria-hidden="true" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="20" height="11" rx="3"/><rect x="2.2" y="2.2" width="13" height="7.6" rx="1.6" fill="currentColor" stroke="none"/><path d="M22.5 4v4" stroke-linecap="round" stroke-width="1.5"/></svg>';
+
+  // ---- Agent marks ---------------------------------------------------------
+  // The shipped geometric marks (Theme.swift:193, public/app.js:77). Decided:
+  // they stay, and no vendor logo goes on this board.
+  const MARKS = {
+    claude: stroked('<path d="M8 2.4v11.2M3.15 5.2l9.7 5.6M3.15 10.8l9.7-5.6"/>', 'class="mark"'),
+    codex: stroked('<path d="M8 1.9 13.3 4.95v6.1L8 14.1 2.7 11.05v-6.1Z"/>', 'class="mark"'),
+    // A source this build has no mark for still gets a section, and it should
+    // not borrow Claude's asterisk, which is what the web board and the iOS
+    // app give it today.
+    fallback: stroked('<path d="M8 2.2 13.8 8 8 13.8 2.2 8Z"/>', 'class="mark"'),
+  };
+
+  const AGENT_NAMES = { claude: 'Claude', codex: 'Codex' };
+
+  const agentName = (src) => AGENT_NAMES[src] || src.charAt(0).toUpperCase() + src.slice(1);
+  const agentMark = (src) => (Object.hasOwn(AGENT_NAMES, src) ? MARKS[src] : MARKS.fallback);
+  // Today's rule, for the baseline: the hexagon for Codex, the asterisk for
+  // everyone else (Theme.agentSymbol).
+  const shippedMark = (src) => (src.startsWith('codex') ? MARKS.codex : MARKS.claude);
+
+  // ---- Data ----------------------------------------------------------------
+  // `demo` is the App Store demo board, card for card (DemoData.swift). The
+  // other boards extend it. `t` is seconds since the last update; `calm` is
+  // what a blocked session is doing on a board where it is not blocked.
+
+  const S = (id, source, name, status, message, age, t, extra = {}) =>
+    ({ id, source, name, status, message, age, t, ...extra });
+
+  const POOL = {
+    api: S('api', 'claude', 'api-server', 'coding', 'Editing src/auth/token.ts', 'just now', 15,
+      { host: 'Mac', project: 'acme-api', tokens: '486.2K', focus: true }),
+    pipe: S('pipe', 'claude', 'data-pipeline', 'blocked', 'Needs permission approval', '3m ago', 180,
+      { host: 'MacBook', project: 'etl-jobs', offline: 'MacBook is offline (5m ago)', focus: false,
+        calm: { status: 'coding', message: 'Backfilling the March partitions', offline: null, focus: true } }),
+    web: S('web', 'claude', 'webapp', 'done', 'Finished — 12 files changed', '8m ago', 480,
+      { project: 'acme-web', tokens: '1.4M' }),
+    bill: S('bill', 'claude', 'billing-worker', 'testing', 'Running 214 tests — 3 failing', '1m ago', 60,
+      { host: 'Studio', tokens: '912.4K', focus: true }),
+    ios: S('ios', 'claude', 'ios-app', 'planning', 'Drafting the push-token migration plan', '5m ago', 300,
+      { host: 'Mac', tokens: '88.1K', focus: true }),
+    infra: S('infra', 'claude', 'infra', 'idle', 'Session started', '12m ago', 720,
+      { host: 'Mac', focus: true }),
+    tokens: S('tokens', 'claude', 'design-tokens', 'done', 'Finished — 4 files changed', '31m ago', 1860,
+      { host: 'Studio', tokens: '220.5K', focus: true }),
+    docs: S('docs', 'codex', 'docs-site', 'done', 'All tasks complete — 12 files changed', '26m ago', 1560,
+      { project: 'docs', tokens: '2.8M' }),
+    land: S('land', 'codex', 'landing', 'coding', 'Rewriting the pricing table', 'just now', 20,
+      { host: 'Mac', tokens: '312.7K', focus: true }),
+    sdk: S('sdk', 'codex', 'sdk-python', 'testing', 'pytest -k retry — 41 passed', '2m ago', 120,
+      { host: 'Studio', tokens: '540.3K', focus: true }),
+    search: S('search', 'codex', 'search-indexer', 'blocked', 'Approve: cargo publish --dry-run', '6m ago', 360,
+      { host: 'Studio', tokens: '2.1M', focus: true,
+        calm: { status: 'testing', message: 'cargo test — 212 passed' } }),
+    evals: S('evals', 'gemini', 'notebook-evals', 'coding', 'Editing eval/harness.py', '1m ago', 70,
+      { host: 'Mac', focus: true }),
+    tf: S('tf', 'gemini', 'terraform-live', 'blocked', 'Approve: terraform plan', '4m ago', 240,
+      { host: 'Studio', focus: true,
+        calm: { status: 'coding', message: 'Writing modules/vpc/main.tf' } }),
+    // Worktree names, which is what a session is called when it runs in one.
+    wt1: S('wt1', 'claude', 'session-organization-agents-c27901', 'coding', 'Editing ios/AgStatus/BoardView.swift', 'just now', 10,
+      { host: 'MacBook Pro', project: 'claude-status', tokens: '1.1M', focus: true }),
+    wt2: S('wt2', 'claude', 'session-organization-agents-b1f44e', 'blocked', 'Approve: xcodebuild -scheme AgStatus test', '2m ago', 130,
+      { host: 'MacBook Pro', project: 'claude-status', tokens: '640.8K', focus: true,
+        calm: { status: 'testing', message: 'xcodebuild test — 318 passed' } }),
+    wt3: S('wt3', 'claude', 'claude-status-dashboard-release-1.6', 'done', 'Finished — 23 files changed', '14m ago', 840,
+      { host: 'Studio', tokens: '3.4M', focus: true }),
+    wt4: S('wt4', 'codex', 'agstatus-listener-windows-terminal-focus', 'testing', 'npm test -- focus/wt — 57 passed', '1m ago', 80,
+      { host: 'Studio', tokens: '402.6K', focus: true }),
+  };
+
+  const SCENARIOS = {
+    demo: ['api', 'pipe', 'web', 'docs'],
+    busy: ['api', 'bill', 'pipe', 'ios', 'web', 'land', 'sdk', 'search', 'docs'],
+    lopsided: ['api', 'bill', 'pipe', 'ios', 'web', 'infra', 'tokens', 'docs'],
+    solo: ['api', 'bill', 'pipe', 'web'],
+    three: ['api', 'pipe', 'web', 'land', 'docs', 'evals', 'tf'],
+    long: ['wt1', 'wt2', 'wt3', 'wt4', 'docs'],
+    empty: [],
+  };
+
+  // A plan limit is a percentage of an unknown quota. It is never a token
+  // count, and nothing here converts one into the other. Only the Claude and
+  // Codex hooks report limits, so a third agent has none.
+  const LIMITS = {
+    claude: [
+      { label: 'Current session', pct: 34, reset: 'resets in 2h 17m' },
+      { label: 'Weekly (all models)', pct: 62, reset: 'resets in 2d 5h' },
+      { label: 'Weekly (Fable)', pct: 41, reset: 'resets in 2d 5h' },
+    ],
+    codex: [
+      { label: 'Weekly (all models)', pct: 47, reset: 'resets in 4d 2h' },
+      { label: 'Session (GPT-6-Astra)', pct: 22, reset: 'resets in 1h 36m' },
+      { label: 'Weekly (GPT-6-Astra)', pct: 38, reset: 'resets in 4d 2h' },
+    ],
+  };
+
+  const limitsFor = (src) => {
+    const rows = LIMITS[src];
+    if (!rows || state.limits !== 'hi' || src !== 'claude') return rows;
+    return rows.map((w, i) => (i === 1 ? { ...w, pct: 91 } : w));
+  };
+
+  const DEVICES = {
+    iphone: { w: 393, h: 852, corner: 52, name: 'iPhone 6.1″', phone: true },
+    'iphone-max': { w: 440, h: 956, corner: 56, name: 'iPhone 6.9″', phone: true },
+    'ipad-p': { w: 1032, h: 1376, corner: 22, name: 'iPad 13″ portrait' },
+    'ipad-l': { w: 1376, h: 1032, corner: 22, name: 'iPad 13″ landscape' },
+    'ipad11-l': { w: 1210, h: 834, corner: 22, name: 'iPad 11″ landscape' },
+    live: { name: 'This screen' },
+  };
+
+  // ---- State ---------------------------------------------------------------
+
+  const DEFAULTS = { device: 'ipad-l', layout: 'cols', scenario: 'busy', blocked: 'given', limits: 'given' };
+  const params = new URLSearchParams(location.search);
+  const state = { ...DEFAULTS };
+  // A value is taken from the link only if one of the keys on the page offers it.
+  document.querySelectorAll('.pv-seg').forEach((seg) => {
+    const asked = params.get(seg.dataset.key);
+    if ([...seg.querySelectorAll('button')].some((b) => b.dataset.v === asked)) state[seg.dataset.key] = asked;
+  });
+  // On a phone or a tablet the honest preview is the device in your hand, not a
+  // picture of one scaled down to fit it.
+  if (!params.get('device') && matchMedia('(pointer: coarse)').matches) state.device = 'live';
+  const BARE = params.has('bare');
+  document.body.classList.toggle('is-bare', BARE);
+
+  const WORKING = new Set(['planning', 'coding', 'testing']);
+
+  // Stands in for the apps' sticky order: newest arrival on top, and after
+  // that a card keeps its place. Decided: nothing moves it, blocked included.
+  const byRecent = (a, b) => a.t - b.t;
+
+  let sessions = [];
+
+  /** Agents with sessions, in source-key order — the order the server already
+   *  returns limits in. Never by activity, so an agent's place does not move
+   *  while the same agents are on the board. */
+  const agentsOnBoard = () => [...new Set(sessions.map((s) => s.source))].sort();
+
+  function loadScenario() {
+    sessions = SCENARIOS[state.scenario].map((id) => ({ ...POOL[id] }));
+    const first = agentsOnBoard()[0];
+    for (const s of sessions) {
+      const quiet = state.blocked === 'none' || (state.blocked === 'claude' && s.source === first);
+      if (quiet && s.status === 'blocked' && s.calm) Object.assign(s, s.calm);
+    }
+    // A side for every card, given once, for the layouts that run two across.
+    for (const src of agentsOnBoard()) {
+      sessions.filter((s) => s.source === src).sort(byRecent).forEach((s, i) => { s.side = i % 2; });
+    }
+  }
+
+  // ---- Markup --------------------------------------------------------------
+
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const blockedIn = (list) => list.filter((s) => s.status === 'blocked').length;
+
+  /** The alarm: a count of what is blocked, and the way to the first of it. */
+  const alarmHTML = (src, n) => (n
+    ? `<button class="alarm" type="button" data-jump="${esc(src)}" aria-label="${esc(agentName(src))}: ${n} blocked, show the first">`
+      + `${STATE_MARK.blocked}<b>${n}</b><span class="alarm-word">blocked</span>${DOWN}</button>`
+    : '');
+
+  function metersHTML(src) {
+    const rows = limitsFor(src);
+    if (!rows) return '<p class="head-none">No plan limits reported</p>';
+    return `<div class="meters">${rows.map((w) => {
+      const level = w.pct >= 85 ? 'high' : w.pct >= 60 ? 'mid' : 'low';
+      return `<div class="meter">
+        <span class="meter-label">${esc(w.label)}</span>
+        <span class="meter-value">${w.pct}% <span class="meter-reset">· ${esc(w.reset)}</span></span>
+        <div class="meter-track"><div class="meter-fill ${level}" style="transform:scaleX(${w.pct / 100})"></div></div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  /** The agent's head. `plain` is today's limits block: a name and its bars. */
+  function headHTML(src, list, { plain = false, strip = false } = {}) {
+    const n = blockedIn(list);
+    const name = `<span class="ident-name">${esc(agentName(src))}</span>`;
+    const line = plain
+      ? `<h2 class="ident">${name}</h2>`
+      : `<h2 class="ident" id="head-${esc(src)}">${agentMark(src)}${name}</h2>`
+        + (list.length ? `<span class="count">${plural(list.length, 'session')}</span>` : '')
+        + alarmHTML(src, n);
+    const cls = `head${plain ? ' is-plain' : ''}${strip ? ' can-strip' : ''}${n && !plain ? ' has-blocked' : ''}`;
+    return `<section class="${cls}" data-agent="${esc(src)}"><div class="head-in">
+      <div class="head-line">${line}</div>${metersHTML(src)}</div></section>`;
+  }
+
+  /** One pinned line for a board whose sections scroll. */
+  function agentbarHTML(agents, by) {
+    return `<nav class="agentbar" aria-label="Agents">${agents.map((src) =>
+      `<div class="agentbar-cell"><button class="agentbar-item" type="button" data-section="${esc(src)}" aria-label="${esc(agentName(src))}, show its sessions">`
+      + `${agentMark(src)}<span class="ident-name">${esc(agentName(src))}</span></button>`
+      + `${alarmHTML(src, blockedIn(by(src)))}</div>`).join('')}</nav>`;
+  }
+
+  function cardHTML(s, { chip }) {
+    const facts = [];
+    if (chip) facts.push(`<span class="source">${shippedMark(s.source)}${esc(s.source)}</span>`);
+    if (s.host) facts.push(`<span data-fact="host">${esc(s.host)}</span>`);
+    if (s.project) facts.push(`<span data-fact="project">in ${esc(s.project)}</span>`);
+    facts.push(`<span class="ts">${esc(s.age)}</span>`);
+    if (s.tokens) facts.push(`<span class="tok">${esc(s.tokens)}</span>`);
+    const focus = s.host ? `<span class="focus${s.focus ? '' : ' is-off'}">${FOCUS}Focus</span>` : '';
+    // Today only a card with a machine has a long-press menu; in the proposal
+    // every card does.
+    const menuable = !chip || Boolean(s.host);
+    // With the chip gone the agent is carried by where the card sits, which a
+    // screen reader cannot see: the name stays in the card's own label.
+    return `<article class="card status-${s.status}" data-id="${s.id}" data-agent="${esc(s.source)}" tabindex="${menuable ? 0 : -1}"
+        ${menuable ? 'aria-haspopup="menu" ' : ''}aria-label="${esc(agentName(s.source))}, ${esc(s.name)}, ${s.status}">
+      <div class="card-row">
+        <div class="card-main">
+          <h3 class="name">${esc(s.name)}</h3>
+          <p class="message">${esc(s.message)}</p>
+          <div class="meta">${facts.map((f, i) => (i ? `<span class="sep" aria-hidden="true">·</span>${f}` : f)).join('')}</div>
+        </div>
+        <div class="rail"><span class="badge">${STATE_MARK[s.status]}${s.status}</span>${focus}</div>
+      </div>
+      ${s.offline ? `<div class="note">${esc(s.offline)}</div>` : ''}
+    </article>`;
+  }
+
+  const cardsHTML = (list, opts) => list.map((s) => cardHTML(s, opts)).join('');
+
+  const stackHTML = (src, inner) =>
+    `<div class="stack" data-agent="${esc(src)}" role="group" aria-labelledby="head-${esc(src)}">${inner}</div>`;
+
+  /** Two across, with every card kept on the side it was given. */
+  function cardGrid(src, list) {
+    const side = (k) => `<div class="stack">${cardsHTML(list.filter((s) => s.side === k), { chip: false })}</div>`;
+    return `<div class="cards2" role="group" aria-labelledby="head-${esc(src)}">${side(0)}${side(1)}</div>`;
+  }
+
+  // The shipping empty state (BoardView.swift:267). This proposal leaves it be;
+  // the Pair button and the webhook row under it are not drawn here.
+  const EMPTY = `<div class="empty">${MOON}<strong>No agents yet</strong>
+    <p>Pair your computer and your coding agents will show up here the moment they report in.</p></div>`;
+
+  // The narrowest a column may be. At 340pt a card with a Focus button leaves a
+  // name 211pt, about twenty characters; narrower than that and ordinary
+  // project names start to be cut.
+  const MIN_COL = 340;
+  const GUTTER = 24;
+
+  /**
+   * Which arrangement a width allows. This is the whole rule, and it is the
+   * same few lines in CSS, SwiftUI and Compose — measured width, not size
+   * class, so an iPad in Split View gets the narrow answer:
+   *
+   *   fit = how many MIN_COL columns the board holds
+   *   fit < 2           → heads pinned two across, sessions in named groups
+   *   2 ≤ agents ≤ fit  → one column per agent
+   *   otherwise         → agents stacked full width, cards two across
+   */
+  function arrangement(width) {
+    const fit = Math.max(1, Math.floor((width + GUTTER) / (MIN_COL + GUTTER)));
+    const agents = agentsOnBoard();
+    const n = agents.length;
+    const base = { agents, fit, wide: fit >= 2 };
+    if (state.layout === 'flat') return { ...base, mode: 'flat' };
+    if (fit < 2) return { ...base, mode: 'narrow' };
+    if (n >= 2 && n <= fit) return { ...base, mode: 'cols' };
+    return { ...base, mode: 'rows' };
+  }
+
+  /** → { a, pinned, bar, scroll }: what sits above the list, and the list. */
+  function boardHTML(width) {
+    const a = arrangement(width);
+    const by = (src) => sessions.filter((s) => s.source === src).sort(byRecent);
+    const perRow = (n) => (a.wide ? Math.min(n, 3) : Math.min(n, 2));
+    const heads = (list, cls, n) => `<div class="heads${cls}" style="--n:${n}">${list.join('')}</div>`;
+    const flat = a.mode === 'flat';
+
+    if (sessions.length === 0) {
+      // With nothing on the board there is nothing to disambiguate, and the
+      // limits still matter between runs — so every agent with limits shows.
+      const known = Object.keys(LIMITS);
+      return {
+        a,
+        pinned: heads(known.map((src) => headHTML(src, [], { plain: flat })), a.wide ? '' : ' is-narrow', perRow(known.length)),
+        scroll: EMPTY,
+      };
+    }
+
+    if (flat) {
+      const list = a.agents.filter((src) => LIMITS[src]).map((src) => headHTML(src, by(src), { plain: true }));
+      return {
+        a,
+        pinned: list.length ? heads(list, '', perRow(list.length)) : '',
+        scroll: `<div class="stack">${cardsHTML([...sessions].sort(byRecent), { chip: true })}</div>`,
+      };
+    }
+
+    if (a.mode === 'cols') {
+      const n = a.agents.length;
+      return {
+        a,
+        pinned: heads(a.agents.map((src) => headHTML(src, by(src))), ' is-cols', n),
+        scroll: `<div class="columns is-cols" style="--n:${n}">${a.agents.map((src) =>
+          stackHTML(src, cardsHTML(by(src), { chip: false }))).join('')}</div>`,
+      };
+    }
+
+    if (a.mode === 'narrow') {
+      const one = a.agents.length === 1;
+      return {
+        a,
+        pinned: heads(a.agents.map((src) => headHTML(src, by(src))), ' is-narrow', perRow(a.agents.length)),
+        scroll: `<div class="groups">${a.agents.map((src) => {
+          const list = by(src);
+          // One agent has its head directly above: a second name would only repeat it.
+          const label = one ? '' : `<h2 class="group-label">${agentMark(src)}${esc(agentName(src))}`
+            + `<span class="count">${plural(list.length, 'session')}</span></h2>`;
+          return stackHTML(src, label + cardsHTML(list, { chip: false }));
+        }).join('')}</div>`,
+      };
+    }
+
+    // Stacked full width. One agent keeps its head pinned, as its limits are today.
+    if (a.agents.length === 1) {
+      const [src] = a.agents;
+      return { a, pinned: headHTML(src, by(src), { strip: true }), scroll: cardGrid(src, by(src)) };
+    }
+    return {
+      a,
+      bar: true,
+      pinned: agentbarHTML(a.agents, by),
+      scroll: `<div class="sections">${a.agents.map((src) => {
+        const list = by(src);
+        return `<section class="section" data-agent="${esc(src)}">${headHTML(src, list, { strip: true })}
+          ${cardGrid(src, list)}</section>`;
+      }).join('')}</div>`,
+    };
+  }
+
+  // ---- What it is, and what was decided -----------------------------------
+  // The figures are read off the board as drawn, so they are true for the
+  // device on show and not for some other one.
+
+  function ruleHTML(a, m) {
+    const p = [];
+    const pinned = m.pinned ? `Pinned here: ${m.pinned} pt, leaving the list ${m.list}.` : '';
+
+    if (state.layout === 'flat') {
+      p.push('<b>Today.</b> One list, newest arrival on top. Each card names its agent in a chip, and the plan limits sit pinned above the list with no sessions under them.');
+      p.push(`Dismiss is a swipe, which this mock does not draw, and only a card with a machine has a long-press menu. ${pinned}`);
+      return p;
+    }
+    if (!sessions.length) {
+      p.push('<b>No sessions.</b> Every agent with limits keeps its head, pinned. The empty state itself is the shipping one, unchanged.');
+      return p;
+    }
+
+    let also = '';
+    if (a.mode === 'cols') {
+      // What this width can hold, not what some other device can.
+      const upTo = a.fit === 2 ? 'two' : a.fit === 3 ? 'two or three' : `two to ${a.fit}`;
+      p.push(`<b>One column per agent.</b> While ${upTo} agents have sessions here, each has its own column: its head pinned on top, its sessions scrolling beneath. The head still opens that agent’s usage; its alarm jumps to the first blocked card.`);
+      also = `Accepted: uneven columns, a re-flow when an agent arrives or leaves (long-press docs-site on 7 + 1 and dismiss it), and names cut sooner in a column (about ${m.chars} characters here).`;
+    } else if (a.mode === 'narrow' && a.agents.length < 2) {
+      p.push('<b>One agent, where two columns do not fit</b> (a phone, or an iPad in Split View). Its head stays pinned, as its limits are today, with its sessions beneath.');
+    } else if (a.mode === 'narrow') {
+      p.push('<b>Where two columns do not fit</b> (a phone, or an iPad in Split View) the heads stay pinned two across, so every agent’s alarm is always in view. The sessions follow in named groups, and the name sticks while its group scrolls.');
+    } else if (a.agents.length < 2) {
+      p.push('<b>One agent.</b> There is nothing to put beside it, so its head runs full width, still pinned, with the sessions two across.');
+      also = 'Accepted: the re-flow into columns when a second agent arrives.';
+    } else {
+      p.push(`<b>More agents than fit.</b> A column narrower than ${MIN_COL} pt leaves a name about twenty characters, so the agents stack full width instead, sessions two across. One pinned line keeps every agent in view: its name jumps to its section, its alarm to its first blocked card.`);
+      also = 'Accepted: here the limits scroll with their sections instead of staying pinned.';
+    }
+    p.push(`<b>Decided.</b> Neutral marks, no vendor logos. A card keeps its place: a change of state recolours it where it is, so a blocked card can be a screen down, and the alarm is the way to it. Dismiss is in every card’s long-press menu, on every device; the phone keeps its swipe as well, which this mock does not draw. ${also} ${pinned}`);
+
+    if (state.limits === 'hi') {
+      p.push('<b>A limit past 85%</b> is drawn in the alarm’s red today, on every client. That is why a head with something blocked also takes the blocked card’s edge: set Blocked to “Claude quiet” and compare the two heads.');
+    }
+    return p;
+  }
+
+  // ---- Paint ---------------------------------------------------------------
+
+  const deviceEl = document.getElementById('device');
+  const fitEl = document.getElementById('fit');
+  const captionEl = document.getElementById('caption');
+  const ruleEl = document.getElementById('rule');
+  const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const immersive = () => document.body.classList.contains('is-immersive');
+
+  const boardWidth = () => (DEVICES[state.device].w || deviceEl.clientWidth) - 32;
+
+  /** The card's one-line facts: the project goes first, then the machine. */
+  function fitMeta() {
+    deviceEl.querySelectorAll('.meta').forEach((meta) => {
+      for (const fact of ['project', 'host']) {
+        if (meta.scrollWidth <= meta.clientWidth) return;
+        const el = meta.querySelector(`[data-fact="${fact}"]`);
+        if (!el) continue;
+        (el.previousElementSibling?.classList.contains('sep') ? el.previousElementSibling : el.nextElementSibling)?.remove();
+        el.remove();
+      }
+    });
+  }
+
+  function render({ changed, moved } = {}) {
+    const d = DEVICES[state.device];
+    const live = state.device === 'live';
+    const flat = state.layout === 'flat';
+
+    // First: where every card is now, so a card that changes place can travel.
+    const before = new Map();
+    deviceEl.querySelectorAll('.card').forEach((el) => before.set(el.dataset.id, el.getBoundingClientRect()));
+    const scrollTop = deviceEl.querySelector('.board-scroll')?.scrollTop || 0;
+
+    // The redraw below takes any open menu, and any press in progress, with it.
+    endPress();
+    menu = null;
+    deviceEl.className = `device${d.phone ? ' is-phone' : ''}${live ? ' is-live' : ''}`;
+    deviceEl.style.setProperty('--w', d.w ? `${d.w}px` : 'auto');
+    deviceEl.style.setProperty('--h', d.h ? `${d.h}px` : 'auto');
+    deviceEl.style.setProperty('--corner', `${d.corner || 12}px`);
+    // A live board is measured, so the last device's footprint has to be gone
+    // before the measuring, or it is laid out for that device's width.
+    if (live) { deviceEl.style.transform = ''; fitEl.style.width = fitEl.style.height = ''; }
+
+    const { a, pinned, bar, scroll } = boardHTML(boardWidth());
+    deviceEl.innerHTML = `
+      <div class="statusbar"><span>${d.phone ? '9:41' : '9:41 AM&ensp;Mon 5 Oct'}</span>${BATTERY}</div>
+      <div class="navbar">
+        <span class="capsule"><i class="conn" title="Live"></i></span>
+        <span class="nav-title">AgStatus</span>
+        <span class="capsule is-trailing">${LAPTOP}${GEAR}</span>
+      </div>
+      ${pinned ? `<div class="pinned${bar ? ' is-bar' : ''}">${pinned}</div>` : ''}
+      <div class="board-scroll"><div class="board">${scroll}</div></div>
+      <div class="streak">${STAR}<div>
+        <div class="streak-line"><span class="streak-name">Silver</span>
+          <span class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span>
+          <span>19 days active</span><span class="streak-next">11d to Gold</span></div>
+        <div class="streak-track"><i></i></div>
+      </div></div>`;
+    fitMeta();
+    const list = deviceEl.querySelector('.board-scroll');
+    list.scrollTop = scrollTop;
+
+    const names = [...deviceEl.querySelectorAll('.name')].map((el) => el.clientWidth);
+    ruleEl.innerHTML = ruleHTML(a, {
+      pinned: deviceEl.querySelector('.pinned')?.offsetHeight || 0,
+      list: list.clientHeight,
+      // SF at 20pt semibold averages a little over ten points a character.
+      chars: names.length ? Math.floor(Math.min(...names) / 10.5) : 0,
+    }).map((t) => `<p>${t}</p>`).join('');
+
+    document.querySelectorAll('.pv-seg').forEach((seg) => {
+      seg.querySelectorAll('button').forEach((b) =>
+        b.setAttribute('aria-pressed', String(b.dataset.v === state[seg.dataset.key])));
+    });
+    document.getElementById('simulate').disabled = sessions.length === 0;
+
+    scale();
+
+    deviceEl.querySelectorAll('.card').forEach((el) => {
+      // Today's card recolours in place; the lifted edge is the proposal's.
+      if (el.dataset.id === changed && !flat) el.classList.add('changed');
+      const was = before.get(el.dataset.id);
+      if (!was || reduced() || !(changed || moved)) return;
+      const now = el.getBoundingClientRect();
+      const k = now.width / el.offsetWidth || 1;
+      const dx = (was.left - now.left) / k;
+      const dy = (was.top - now.top) / k;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }],
+        { duration: 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+    });
+
+    if (!BARE && !immersive()) {
+      try { history.replaceState(null, '', `${location.pathname}?${new URLSearchParams(state)}`); } catch { /* a sandboxed frame */ }
+    }
+  }
+
+  const menuHint = () => (state.layout === 'flat'
+    ? 'Long-press or right-click a card that has a machine for today’s menu'
+    : 'Long-press or right-click a card for its menu');
+
+  function scale() {
+    const d = DEVICES[state.device];
+    if (!d.w || BARE) {
+      deviceEl.style.transform = '';
+      fitEl.style.width = fitEl.style.height = '';
+      captionEl.textContent = d.w ? '' : `Laid out for the width of this window: rotate or resize it to watch the board re-arrange. ${menuHint()}.`;
+      return;
+    }
+    const availW = fitEl.parentElement.clientWidth - 32;
+    const availH = innerHeight - document.querySelector('.pv-bar').offsetHeight - 150;
+    const k = Math.min(1, availW / d.w, Math.max(availH / d.h, 0.5));
+    deviceEl.style.transform = k < 1 ? `scale(${k})` : '';
+    fitEl.style.width = `${d.w * k}px`;
+    fitEl.style.height = `${d.h * k}px`;
+    captionEl.textContent = `${d.name} · ${d.w} × ${d.h} pt · shown at ${Math.round(k * 100)}%`
+      + (k < 1 ? ' · “Hide controls” shows the board at this window’s own size' : '')
+      + ` · ${menuHint()}`;
+  }
+
+  // ---- Controls ------------------------------------------------------------
+
+  let step = 0;
+
+  document.querySelectorAll('.pv-seg').forEach((seg) => {
+    seg.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const key = seg.dataset.key;
+      state[key] = b.dataset.v;
+      if (key === 'scenario' || key === 'blocked') { loadScenario(); step = 0; }
+      render();
+      // The board was redrawn; the key that was pressed keeps the focus.
+      b.focus();
+    });
+  });
+
+  // Inside the board: the alarm brings that agent's first blocked card into
+  // view, and a name on the agent line brings its section. Only the list
+  // scrolls — never the page around the device.
+  deviceEl.addEventListener('click', (e) => {
+    // The click that ends a long press is the press, not a new instruction.
+    if (justOpened) { justOpened = false; return; }
+    // A tap on the card being held puts its menu away, as a tap beside it does.
+    if (menu && e.target.closest('.card.is-held')) { closeMenu(); return; }
+    const list = deviceEl.querySelector('.board-scroll');
+    const to = (el, lead) => list.scrollTo({
+      top: Math.max(0, el.offsetTop - list.offsetTop - lead),
+      behavior: reduced() ? 'auto' : 'smooth',
+    });
+    const jump = e.target.closest('[data-jump]');
+    if (jump) {
+      // The first as the eye meets it: topmost, then leftmost. Two-across
+      // layouts keep their columns apart in the markup, so its order will not do.
+      const card = [...deviceEl.querySelectorAll(`.card.status-blocked[data-agent="${CSS.escape(jump.dataset.jump)}"]`)]
+        .sort((p, q) => p.offsetTop - q.offsetTop || p.offsetLeft - q.offsetLeft)[0];
+      if (!card) return;
+      // Clear of the group's name where one is stuck to the top of the list.
+      to(card, deviceEl.querySelector('.group-label') ? 44 : 8);
+      deviceEl.querySelector('.is-jumped')?.classList.remove('is-jumped');
+      card.classList.add('is-jumped');
+      card.addEventListener('blur', () => card.classList.remove('is-jumped'), { once: true });
+      card.focus({ preventScroll: true });
+      return;
+    }
+    const sect = e.target.closest('[data-section]');
+    if (sect) {
+      const el = deviceEl.querySelector(`.section[data-agent="${CSS.escape(sect.dataset.section)}"]`);
+      if (el) to(el, 4);
+    }
+  });
+
+  // One session of the last agent walks through the states that matter:
+  // it gets stuck, it is let go, it finishes.
+  const SCRIPT = [
+    ['blocked', 'Approve: npm publish --access public'],
+    ['coding', 'Publishing 1.6.0 to the registry'],
+    ['done', 'Finished — published 1.6.0'],
+  ];
+
+  document.getElementById('simulate').addEventListener('click', () => {
+    const agents = agentsOnBoard();
+    if (agents.length === 0) return;
+    const own = sessions.filter((s) => s.source === agents[agents.length - 1]);
+    const target = own.find((s) => s.sim) || own.find((s) => WORKING.has(s.status)) || own[0];
+    const [status, message] = SCRIPT[step % SCRIPT.length];
+    step += 1;
+    // Its place among the others is left alone, whatever it becomes: the apps
+    // freeze a card's position, and so does this.
+    Object.assign(target, { status, message, age: 'just now', sim: true });
+    render({ changed: target.id });
+  });
+
+  // ---- The long-press menu -------------------------------------------------
+  // Opened by a long press, by a right-click, or from the keyboard with Enter
+  // on a card. In Today it is today's menu: only a card with a machine has
+  // one, and it holds the one item it ships with. Dismissing a card that was
+  // its agent's last takes the agent off the board with it, and the board
+  // re-flows — try it on docs-site in 7 + 1.
+
+  let menu = null;
+  let press = null;
+  let justOpened = false;
+  const endPress = () => { if (press) { clearTimeout(press.timer); press = null; } };
+  const hasMenu = (s) => state.layout !== 'flat' || Boolean(s.host);
+
+  function closeMenu({ refocus = true } = {}) {
+    if (!menu) return;
+    const { card, el, scrim, list, byKey } = menu;
+    menu = null;
+    el.remove();
+    scrim.remove();
+    card.classList.remove('is-held');
+    list.style.overflowY = '';
+    // Focus goes back to the card only for someone who came by keyboard; after
+    // a press there was none to give back.
+    if (refocus && byKey && card.isConnected) card.focus({ preventScroll: true });
+  }
+
+  /** → true if a menu opened. */
+  function openMenu(card, { byKey = false, instant = false } = {}) {
+    if (!card.isConnected || (menu && menu.card === card)) return false;
+    const s = sessions.find((x) => x.id === card.dataset.id);
+    if (!s || !hasMenu(s)) return false;
+    closeMenu({ refocus: false });
+    const list = deviceEl.querySelector('.board-scroll');
+
+    // The card comes wholly into the list first, clear of a stuck group name:
+    // the system lifts the whole card, and a menu beside half of one is lost.
+    const lead = deviceEl.querySelector('.group-label') ? 44 : 8;
+    const at = card.offsetTop - list.offsetTop - list.scrollTop;
+    if (at < lead) list.scrollTop += at - lead;
+    else if (at + card.offsetHeight > list.clientHeight - 8) list.scrollTop += at + card.offsetHeight - (list.clientHeight - 8);
+
+    const items = [];
+    // The item iOS already has, on the cards that already have it.
+    if (s.host) {
+      items.push(`<button class="menu-item" role="menuitem" type="button" data-act="focus"${s.focus ? '' : ' disabled'}>`
+        + `Bring to front on ${esc(s.host)}${FOCUS}</button>`);
+    }
+    if (state.layout !== 'flat') {
+      items.push(`<button class="menu-item is-destructive" role="menuitem" type="button" data-act="dismiss">Dismiss${X_MARK}</button>`);
+    }
+
+    const scrim = document.createElement('div');
+    scrim.className = 'menu-scrim';
+    const el = document.createElement('div');
+    el.className = `menu${instant ? ' is-instant' : ''}`;
+    el.setAttribute('role', 'menu');
+    el.setAttribute('aria-label', s.name);
+    el.tabIndex = -1;
+    el.innerHTML = items.join('');
+    deviceEl.append(scrim, el);
+    card.classList.add('is-held');
+    list.style.overflowY = 'hidden';
+
+    // Under the card when there is room, above it when there is not, and never
+    // in the strip the home indicator owns. Offsets are the device's own
+    // points, so the viewer's scaling does not come into it.
+    const top = card.offsetTop - list.scrollTop;
+    const below = top + card.offsetHeight + 8;
+    const floor = deviceEl.clientHeight - (deviceEl.classList.contains('is-phone') ? 34 : 20) - 8;
+    const fitsBelow = below + el.offsetHeight <= floor;
+    el.style.top = `${fitsBelow ? below : Math.max(12, top - 8 - el.offsetHeight)}px`;
+    el.style.left = `${Math.min(Math.max(12, card.offsetLeft), deviceEl.clientWidth - el.offsetWidth - 12)}px`;
+    if (!fitsBelow) el.style.transformOrigin = 'bottom left';
+
+    menu = { card, el, scrim, list, byKey };
+    scrim.addEventListener('click', () => closeMenu());
+    el.addEventListener('click', (e) => {
+      const item = e.target.closest('.menu-item');
+      if (!item) return;
+      if (item.dataset.act !== 'dismiss') { closeMenu(); return; }
+      // Where a keyboard goes next: the card that takes this one's place.
+      const own = [...deviceEl.querySelectorAll(`.card[data-agent="${CSS.escape(s.source)}"]`)];
+      const next = (own[own.indexOf(card) + 1] || own[own.indexOf(card) - 1])?.dataset.id;
+      closeMenu({ refocus: false });
+      sessions = sessions.filter((x) => x !== s);
+      render({ moved: true });
+      if (byKey && next) deviceEl.querySelector(`.card[data-id="${CSS.escape(next)}"]`)?.focus({ preventScroll: true });
+    });
+    // The menu takes the focus, not its first live item: that item is often
+    // Dismiss, and the key that opened the menu must not be able to press it.
+    // (A menu opened by a link is for a picture, and takes none.)
+    if (!instant) el.focus({ preventScroll: true });
+    return true;
+  }
+
+  deviceEl.addEventListener('contextmenu', (e) => {
+    if (menu) { e.preventDefault(); return; }
+    const card = e.target.closest('.card');
+    if (card && openMenu(card)) e.preventDefault();
+  });
+
+  deviceEl.addEventListener('keydown', (e) => {
+    if (menu) {
+      const live = [...menu.el.querySelectorAll('.menu-item:not(:disabled)')];
+      const at = live.indexOf(document.activeElement);
+      const go = (i) => { e.preventDefault(); live[(i + live.length) % live.length]?.focus(); };
+      if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); closeMenu(); }
+      else if (e.key === 'ArrowDown') go(at + 1);
+      else if (e.key === 'ArrowUp') go(at < 0 ? live.length - 1 : at - 1);
+      else if (e.key === 'Home') go(0);
+      else if (e.key === 'End') go(live.length - 1);
+      return;
+    }
+    if (!e.repeat && e.target.classList?.contains('card') && (e.key === 'Enter' || e.key === ' ')) {
+      if (openMenu(e.target, { byKey: true })) e.preventDefault();
+    }
+  });
+
+  // The press itself: half a second from one finger that does not wander. A
+  // second finger, a scroll, or the pointer leaving ends the wait.
+  deviceEl.addEventListener('pointerdown', (e) => {
+    justOpened = false;
+    // The next touch anywhere on the board is the end of "you were just brought here".
+    if (!e.target.closest('[data-jump]')) deviceEl.querySelector('.is-jumped')?.classList.remove('is-jumped');
+    if (press) { endPress(); return; }
+    const card = e.target.closest('.card');
+    if (!card || e.button !== 0 || menu) return;
+    press = {
+      id: e.pointerId, x: e.clientX, y: e.clientY,
+      timer: setTimeout(() => { press = null; justOpened = openMenu(card); }, 500),
+    };
+  });
+  deviceEl.addEventListener('pointermove', (e) => {
+    if (press && e.pointerId === press.id && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) endPress();
+  });
+  for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
+    deviceEl.addEventListener(type, (e) => { if (press && e.pointerId === press.id) endPress(); });
+  }
+  // A scroll does not bubble, and the list is rebuilt on every redraw: caught on the way down.
+  deviceEl.addEventListener('scroll', endPress, true);
+
+  // Putting the controls away only means something at this window's own size,
+  // so the device on show is set aside and comes back with the controls.
+  let shown = null;
+  const immerse = (on) => {
+    document.body.classList.toggle('is-immersive', on);
+    if (on) { shown = state.device; state.device = 'live'; } else if (shown) { state.device = shown; shown = null; }
+    render();
+    document.getElementById(on ? 'surface' : 'immerse').focus();
+  };
+  document.getElementById('immerse').addEventListener('click', () => immerse(true));
+  document.getElementById('surface').addEventListener('click', () => immerse(false));
+
+  addEventListener('resize', () => (state.device === 'live' ? render() : scale()));
+
+  loadScenario();
+  render();
+  // A link can ask for one card's menu to be open, for a capture.
+  const asked = params.get('menu') && deviceEl.querySelector(`.card[data-id="${CSS.escape(params.get('menu'))}"]`);
+  if (asked) openMenu(asked, { instant: true });
+})();
+</script>
+</body>
+</html>

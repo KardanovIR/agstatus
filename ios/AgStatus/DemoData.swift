@@ -28,6 +28,9 @@ enum DemoData {
     /// absent case has to be in front of the owner, showing no number rather
     /// than a zero or a dash.
     static func initialSessions() -> [Session] {
+        #if DEBUG
+        if scenario != .demo { return scenarioSessions() }
+        #endif
         let now = nowMillis()
         return [
             Session(id: "demo-api-server",
@@ -93,6 +96,9 @@ enum DemoData {
                                      online: true, since: now - 2 * 3_600_000)
         let offline = MachinePresence(id: offlineMachine.id, name: offlineMachine.name,
                                       online: false, lastSeen: now - 5 * 60_000)
+        #if DEBUG
+        if scenario != .demo { return scenarioMachines([online, offline], now: now) }
+        #endif
         return [online.id: online, offline.id: offline]
     }
 
@@ -100,6 +106,14 @@ enum DemoData {
     /// per agent, each with its own session, all-models and per-model windows.
     static func usage() -> [UsageInfo] {
         let now = nowMillis()
+        var claudeWeek: Double = 62
+        #if DEBUG
+        // AGSTATUS_DEMO_LIMITS=hi puts Claude's weekly window past the 85%
+        // where a limit is drawn in the alarm's red. That is the capture the
+        // head's blocked edge was designed against: a head with a red bar and
+        // nothing blocked must not read like a head that needs you.
+        if ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"] == "hi" { claudeWeek = 91 }
+        #endif
         return [
             UsageInfo(source: "claude",
                       windows: [
@@ -109,7 +123,7 @@ enum DemoData {
                                       resetsAt: now + 137 * 60_000),
                           UsageWindow(id: "week",
                                       label: "Weekly (all models)",
-                                      usedPct: 62,
+                                      usedPct: claudeWeek,
                                       resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
                           UsageWindow(id: "week_fable",
                                       label: "Weekly (Fable)",
@@ -278,8 +292,12 @@ enum DemoData {
 
     /// Advances a random subset of sessions (at least one) along plausible
     /// transitions, refreshing messages and updatedAt. An emptied demo board
-    /// re-seeds itself so the demo never dead-ends.
+    /// re-seeds itself so the demo never dead-ends — with whatever the launch
+    /// seeded it with, which for the debug `empty` scenario is nothing.
     static func tick(_ sessions: [Session]) -> [Session] {
+        #if DEBUG
+        if isFrozen { return sessions }
+        #endif
         guard !sessions.isEmpty else { return initialSessions() }
         let now = nowMillis()
         var updated = sessions
@@ -325,6 +343,214 @@ enum DemoData {
                                    at: session.updatedAt))
         return events.reversed() // newest first, like the server
     }
+
+    // MARK: Scenarios
+
+    #if DEBUG
+    /// The boards the per-agent layout was designed against, by name.
+    ///
+    /// `docs/design/prototypes/agent-sections.html` is the agreed design, and
+    /// it draws seven boards: the demo, and six that each put a different
+    /// strain on the layout. AGSTATUS_DEMO_SCENARIO=<name> starts demo mode on
+    /// the same one — the same sessions, card for card, from the same pool —
+    /// so a simulator capture can be laid beside the prototype's and differ
+    /// only where the implementation does.
+    ///
+    /// Debug builds only, like every other launch variable here. `demo` is the
+    /// default and is the App Store demo board, untouched.
+    ///
+    /// The launch variables that go with it, all read only in a debug build:
+    ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three | long | empty
+    ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
+    ///                           are working instead) | none (nobody is blocked)
+    ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%)
+    ///   AGSTATUS_DEMO_FREEZE    1 (the demo stops ticking, so a capture
+    ///                           cannot race a status change)
+    ///   AGSTATUS_BOARD_WIDTH    <points> (BoardView: clamps the board, so a
+    ///                           full-screen iPad can stand in for Split View)
+    ///   AGSTATUS_JUMP           <source> (BoardView: presses that agent's
+    ///                           alarm once the board is laid out)
+    enum Scenario: String {
+        case demo
+        /// Five and four: two full columns, something blocked in each.
+        case busy
+        /// Seven and one: uneven columns, and one card whose dismissal takes
+        /// its agent — and its column — off the board.
+        case lopsided
+        /// One agent: nothing to put beside it.
+        case solo
+        /// Three agents, the third reporting no limits.
+        case three
+        /// Worktree names, which is what a session is called when it runs in
+        /// one, and which are longer than any column.
+        case long
+        /// Nothing running. The heads are the limits and nothing else.
+        case empty
+    }
+
+    static let scenario = Scenario(
+        rawValue: ProcessInfo.processInfo.environment["AGSTATUS_DEMO_SCENARIO"] ?? ""
+    ) ?? .demo
+
+    /// AGSTATUS_DEMO_FREEZE=1 — `tick` does nothing, so the board stays as it
+    /// was seeded. Without it a capture is a race against the next status
+    /// change, and no two would ever match.
+    static let isFrozen = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_FREEZE"] == "1"
+
+    /// Two more machines for the scenarios, both with a listener connected.
+    private static let studioMachine = Host.Machine(id: "5a1d93c07e2b4f86a0c3d7e915b4f260", name: "Studio")
+    private static let laptopMachine = Host.Machine(id: "c7e04b1a96d3f25870b1e4a3d92c6f15", name: "MacBook Pro")
+
+    /// One card of the prototype's pool. `age` is seconds since its last
+    /// update; `calm` is what a blocked session is doing on a board where it
+    /// is not blocked.
+    private struct Pooled {
+        let id: String
+        let source: String
+        let name: String
+        let status: AgentStatus
+        let message: String
+        let age: Int64
+        var machine: Host.Machine?
+        /// Only when the session has moved; otherwise it is where it started,
+        /// and the card says nothing about it.
+        var project: String?
+        var tokens: Int64?
+        var calm: (status: AgentStatus, message: String)?
+    }
+
+    /// The prototype's `POOL`, in its order and under its ids.
+    private static let pool: [Pooled] = [
+        Pooled(id: "api", source: "claude", name: "api-server", status: .coding,
+               message: "Editing src/auth/token.ts", age: 15,
+               machine: onlineMachine, project: "acme-api", tokens: 486_200),
+        Pooled(id: "pipe", source: "claude", name: "data-pipeline", status: .blocked,
+               message: "Needs permission approval", age: 180,
+               machine: offlineMachine, project: "etl-jobs",
+               calm: (.coding, "Backfilling the March partitions")),
+        Pooled(id: "web", source: "claude", name: "webapp", status: .done,
+               message: "Finished — 12 files changed", age: 480,
+               project: "acme-web", tokens: 1_438_000),
+        Pooled(id: "bill", source: "claude", name: "billing-worker", status: .testing,
+               message: "Running 214 tests — 3 failing", age: 60,
+               machine: studioMachine, tokens: 912_400),
+        Pooled(id: "ios", source: "claude", name: "ios-app", status: .planning,
+               message: "Drafting the push-token migration plan", age: 300,
+               machine: onlineMachine, tokens: 88_100),
+        Pooled(id: "infra", source: "claude", name: "infra", status: .idle,
+               message: "Session started", age: 720,
+               machine: onlineMachine),
+        Pooled(id: "tokens", source: "claude", name: "design-tokens", status: .done,
+               message: "Finished — 4 files changed", age: 1860,
+               machine: studioMachine, tokens: 220_500),
+        Pooled(id: "docs", source: "codex", name: "docs-site", status: .done,
+               message: "All tasks complete — 12 files changed", age: 1560,
+               project: "docs", tokens: 2_830_000),
+        Pooled(id: "land", source: "codex", name: "landing", status: .coding,
+               message: "Rewriting the pricing table", age: 20,
+               machine: onlineMachine, tokens: 312_700),
+        Pooled(id: "sdk", source: "codex", name: "sdk-python", status: .testing,
+               message: "pytest -k retry — 41 passed", age: 120,
+               machine: studioMachine, tokens: 540_300),
+        Pooled(id: "search", source: "codex", name: "search-indexer", status: .blocked,
+               message: "Approve: cargo publish --dry-run", age: 360,
+               machine: studioMachine, tokens: 2_100_000,
+               calm: (.testing, "cargo test — 212 passed")),
+        Pooled(id: "evals", source: "gemini", name: "notebook-evals", status: .coding,
+               message: "Editing eval/harness.py", age: 70,
+               machine: onlineMachine),
+        Pooled(id: "tf", source: "gemini", name: "terraform-live", status: .blocked,
+               message: "Approve: terraform plan", age: 240,
+               machine: studioMachine,
+               calm: (.coding, "Writing modules/vpc/main.tf")),
+        Pooled(id: "wt1", source: "claude", name: "session-organization-agents-c27901", status: .coding,
+               message: "Editing ios/AgStatus/BoardView.swift", age: 10,
+               machine: laptopMachine, project: "claude-status", tokens: 1_100_000),
+        Pooled(id: "wt2", source: "claude", name: "session-organization-agents-b1f44e", status: .blocked,
+               message: "Approve: xcodebuild -scheme AgStatus test", age: 130,
+               machine: laptopMachine, project: "claude-status", tokens: 640_800,
+               calm: (.testing, "xcodebuild test — 318 passed")),
+        Pooled(id: "wt3", source: "claude", name: "claude-status-dashboard-release-1.6", status: .done,
+               message: "Finished — 23 files changed", age: 840,
+               machine: studioMachine, tokens: 3_400_000),
+        Pooled(id: "wt4", source: "codex", name: "agstatus-listener-windows-terminal-focus", status: .testing,
+               message: "npm test -- focus/wt — 57 passed", age: 80,
+               machine: studioMachine, tokens: 402_600),
+    ]
+
+    /// The prototype's `SCENARIOS`: which cards are on which board.
+    private static var scenarioCards: [Pooled] {
+        let ids: [String]
+        switch scenario {
+        case .demo: ids = ["api", "pipe", "web", "docs"]
+        case .busy: ids = ["api", "bill", "pipe", "ios", "web", "land", "sdk", "search", "docs"]
+        case .lopsided: ids = ["api", "bill", "pipe", "ios", "web", "infra", "tokens", "docs"]
+        case .solo: ids = ["api", "bill", "pipe", "web"]
+        case .three: ids = ["api", "pipe", "web", "land", "docs", "evals", "tf"]
+        case .long: ids = ["wt1", "wt2", "wt3", "wt4", "docs"]
+        case .empty: ids = []
+        }
+        return ids.compactMap { id in pool.first { $0.id == id } }
+    }
+
+    /// Whether `card` is one the launch asked to be quiet.
+    ///
+    /// AGSTATUS_DEMO_BLOCKED=none calms every blocked session; `claude` calms
+    /// only the first agent's — the prototype's "Claude quiet", which leaves
+    /// one head with an alarm beside one without, the comparison the blocked
+    /// edge exists for.
+    private static func isCalmed(_ card: Pooled, among cards: [Pooled]) -> Bool {
+        guard card.calm != nil else { return false }
+        switch ProcessInfo.processInfo.environment["AGSTATUS_DEMO_BLOCKED"] {
+        case "none": return true
+        case "claude": return card.source == cards.map(\.source).min()
+        default: return false
+        }
+    }
+
+    private static func scenarioSessions() -> [Session] {
+        let now = nowMillis()
+        let cards = scenarioCards
+        return cards.map { card in
+            let calm = isCalmed(card, among: cards) ? card.calm : nil
+            return Session(id: card.id,
+                           name: card.name,
+                           status: calm?.status ?? card.status,
+                           message: calm?.message ?? card.message,
+                           // A session that stayed where it started reports
+                           // its own name, which is what the card reads as
+                           // "has not moved".
+                           project: card.project ?? card.name,
+                           source: card.source,
+                           createdAt: now - (card.age + 40 * 60) * 1000,
+                           updatedAt: now - card.age * 1000,
+                           host: card.machine.map {
+                               Host(machine: $0,
+                                    app: Host.App(slug: "agterm", name: "agterm", kind: "terminal"))
+                           },
+                           tokens: card.tokens)
+        }
+    }
+
+    /// The scenarios' machines: the demo's two, the two above, and — on a
+    /// board where data-pipeline has been calmed — its MacBook back online,
+    /// because the prototype's calm card is a working one with a live Focus
+    /// control, not a quiet card on a dead machine.
+    private static func scenarioMachines(_ demo: [MachinePresence], now: Int64) -> [String: MachinePresence] {
+        let cards = scenarioCards
+        let woken = cards.contains { $0.machine == offlineMachine && isCalmed($0, among: cards) }
+        var all = demo.map { presence -> MachinePresence in
+            guard woken, presence.id == offlineMachine.id else { return presence }
+            return MachinePresence(id: presence.id, name: presence.name, online: true,
+                                   since: now - 20 * 60_000)
+        }
+        for machine in [studioMachine, laptopMachine] {
+            all.append(MachinePresence(id: machine.id, name: machine.name, online: true,
+                                       since: now - 2 * 3_600_000))
+        }
+        return Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
+    }
+    #endif
 
     // MARK: Decoding checks
 

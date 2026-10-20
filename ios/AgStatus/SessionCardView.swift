@@ -6,7 +6,19 @@ import SwiftUI
 struct SessionCardView: View {
     @Environment(SessionStore.self) private var store
     @Environment(\.openSession) private var openSession
+    @Environment(\.cardsSwipeToDismiss) private var swipesToDismiss
     let session: Session
+    /// Whose session this is, spelled as its section's head spells it.
+    ///
+    /// The card no longer shows it. It used to carry the agent in a chip on
+    /// its meta line, and now says it by where it sits — under that agent's
+    /// head, in that agent's column — which a screen reader cannot see. So the
+    /// name is still handed in, and goes into the card's label and nowhere on
+    /// its face.
+    let agentName: String
+    /// Set by the board when an alarm brings this card into view, so that
+    /// VoiceOver lands on the card and not on the alarm that was pressed.
+    let jumpFocus: AccessibilityFocusState<String?>.Binding
 
     /// An active card gone quiet for this long is probably a dead agent
     /// (killed mid-turn, crashed machine) — stop pulsing and dim it.
@@ -18,13 +30,33 @@ struct SessionCardView: View {
         // One shared clock: refreshes the relative timestamp and re-evaluates
         // staleness every 30 s.
         TimelineView(.periodic(from: .now, by: 30)) { context in
+            card(now: context.date)
+        }
+        // What the system lifts for the menu is the card's own rounded shape,
+        // not the rectangle around it: against a dimmed board, square corners
+        // on a rounded card show the ground through at all four.
+        .contentShape(.contextMenuPreview,
+                      RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
+        // One menu, on every card, on every device — and outside the timeline,
+        // so the half-minute tick that refreshes the timestamp does not rebuild
+        // a menu somebody has open.
+        //
+        // It used to exist only on a card with a machine, holding the one item
+        // below. Every card has it now because Dismiss lives here: on a wide
+        // board the cards stand in columns, a column is not a List, and only a
+        // List can be swiped. The phone's list keeps its swipe as well.
+        .contextMenu {
             if let host = session.host {
                 // The focus control is explicit — the card tap stays history —
                 // so it is also offered where a long press looks for it.
-                card(now: context.date)
-                    .contextMenu { focusMenuItem(host) }
-            } else {
-                card(now: context.date)
+                focusMenuItem(host)
+            }
+            Button(role: .destructive) {
+                Task { await store.dismiss(session) }
+            } label: {
+                // A plain x. The swipe's filled disc is left to the blocked
+                // mark, which a held card may be showing right above it.
+                Label("Dismiss", systemImage: "xmark")
             }
         }
     }
@@ -100,6 +132,11 @@ struct SessionCardView: View {
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
+                // Read with its agent in front. The whole column is combined
+                // into one element below, and a child's own label is the one
+                // way to put a word into that element without drawing it —
+                // the tokens figure further down does the same.
+                .accessibilityLabel("\(agentName), \(session.name)")
 
             if !session.message.isEmpty {
                 Text(session.message)
@@ -108,58 +145,29 @@ struct SessionCardView: View {
                     .lineLimit(2)
             }
 
-            // Agent, machine, when — three different facts. The machine is
+            // Machine, when, how much — three different facts. The machine is
             // the one the card never showed; it was buried in the Focus
             // control's label, so two sessions of the same project on two
             // machines were indistinguishable at a glance.
-            HStack(spacing: Theme.Space.xxs) {
-                HStack(spacing: 3) {
-                    Image(systemName: Theme.agentSymbol(for: session.source))
-                        .font(.system(size: 8, weight: .bold))
-                    Text(session.source.uppercased())
-                        .font(.system(size: 10, weight: .semibold))
-                        .kerning(0.4)
-                }
-                .foregroundStyle(Theme.textTertiary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.Radius.sm)
-                        .strokeBorder(Theme.cardBorder)
-                )
-                // Never truncates. It is one short word in a box, and with the
-                // rail taking width off this line SwiftUI began shrinking the
-                // leftmost item first — the badge came out as "CLA…" inside a
-                // border, which reads as a bug. A fixed token should hold its
-                // size and let the variable-length text beside it give way.
-                .fixedSize()
-                // The two optional facts — machine and directory — as ONE
-                // cascade rather than two independent decisions.
-                //
-                // They were separate: the machine pinned with `.fixedSize()`
-                // and the directory wrapped in its own ViewThatFits. Neither
-                // could see the other, and between them, the badge and the
-                // timestamp, every item on the row had become unshrinkable. A
-                // row that cannot shrink does not truncate — it overflows, and
-                // the card went past the edge of the screen.
-                //
-                // One cascade always has a fitting option, and its order is the
-                // priority, stated once: the directory is expendable (it is
-                // context — the repo a titled session is working in, or where
-                // an untitled one has moved to — and the name still tells you
-                // which card this is), the machine is not (two sessions of the
-                // same project on two machines are otherwise identical here).
-                ViewThatFits(in: .horizontal) {
-                    metaFacts(includeProject: true)
-                    metaFacts(includeProject: false)
-                    EmptyView()
-                }
-                Text("·").foregroundStyle(Theme.textTertiary)
+            //
+            // The agent used to lead this line, in a chip. It is gone: the
+            // card now sits under its agent's head, and a chip repeating the
+            // section's title on every card in the section was the loudest
+            // thing on the line saying the least.
+            //
+            // No spacing of its own. The optional facts carry the separator
+            // that FOLLOWS them, and the tokens figure the one before it, so
+            // whatever drops out takes its dot with it. With the chip gone the optional facts are first on the
+            // line, and a stack that spaced its children would leave a gap —
+            // and the old leading "·" — in front of the time whenever they
+            // collapsed to nothing.
+            HStack(spacing: 0) {
+                metaLead
                 Text(Self.relativeTime(from: session.updatedDate, to: now))
                     .monospacedDigit()
                     .foregroundStyle(Theme.textTertiary)
                     // "just now" / "12m ago" — short, and a truncated time is
-                    // worse than no time. It holds its width like the badge.
+                    // worse than no time. It holds its width.
                     .fixedSize()
                 // What this session has spent, and ONLY when the board has a
                 // figure for it. An absent total means unknown — reporting off,
@@ -177,7 +185,7 @@ struct SessionCardView: View {
                 // second loud element on a card whose whole job is to have
                 // exactly one.
                 if let tokensLabel = session.tokensLabel {
-                    Text("·").foregroundStyle(Theme.textTertiary)
+                    metaSeparator
                     Text(tokensLabel)
                         // Tabular figures: this ticks in place as the hook
                         // reports, and proportional digits would make the whole
@@ -189,9 +197,9 @@ struct SessionCardView: View {
                         // after the card itself — and appending it leaves
                         // everything already on the line where the eye left it.
                         //
-                        // Fixed width for the badge's reason: "1.2…" reads as a
-                        // bug. When the line is tight it is the project label,
-                        // marked above as the one to give way, that yields.
+                        // Fixed width, because "1.2…" reads as a bug. When
+                        // the line is tight it is the project label, marked
+                        // below as the first to give way, that yields.
                         .fixedSize()
                         // Combined into the card's one accessibility element,
                         // where a bare "1.4M" would be read as a quantity of
@@ -214,52 +222,112 @@ struct SessionCardView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens this session's history")
+        .accessibilityFocused(jumpFocus, equals: session.id)
         .accessibilityActions {
             if let host = session.host, store.isMachineOnline(host.machine.id) {
                 Button("Bring to front on \(store.machineLabel(for: host))") {
                     send(.focus)
                 }
             }
+            // The long-press menu is not something VoiceOver's rotor offers,
+            // so where there is no swipe to stand in for it, Dismiss is an
+            // action in its own right. In the list the swipe already puts one
+            // there, and a second would read "Dismiss, Dismiss".
+            if !swipesToDismiss {
+                Button("Dismiss") {
+                    Task { await store.dismiss(session) }
+                }
+            }
         }
     }
 
-    /// The optional middle of the meta line: the machine this session runs on,
+    /// The optional start of the meta line: the machine this session runs on,
     /// and the working directory when it has diverged from the card's name.
     ///
-    /// `includeProject` is the lever the caller's cascade pulls. The name is
-    /// the session's title when the agent has one (the Claude app titles every
-    /// session, `/rename` titles one in the CLI) and the folder it started in
-    /// otherwise, held for the session's life; `project` follows the live
-    /// directory, with a Claude worktree root reported as its repository
-    /// rather than the folder name the app made up. So a titled card shows
-    /// "in <repo>" — where that work is happening, which a title does not say
-    /// — and an untitled one shows the directory once the session has moved.
-    /// It also shows it from the first event at a worktree root, where the
-    /// name is the worktree's own folder and the project its repository
-    /// ("feature-x · in my-repo"); anywhere else the two are the same word
-    /// until the session moves. Either way it is
-    /// context, never identity, which is the reason it is the first thing to
-    /// give way.
+    /// The two as ONE cascade rather than two independent decisions. They
+    /// were separate once: the machine pinned with `.fixedSize()` and the
+    /// directory wrapped in its own ViewThatFits. Neither could see the other,
+    /// and between them and the timestamp every item on the row had become
+    /// unshrinkable. A row that cannot shrink does not truncate — it
+    /// overflows, and the card went past the edge of the screen.
+    ///
+    /// One cascade always has a fitting option, and its order is the
+    /// priority, stated once: the directory goes first (it is context — the
+    /// repo a titled session is working in, or where an untitled one has moved
+    /// to — and the name still tells you which card this is), then the
+    /// machine, and nothing here is ever cut to an ellipsis.
+    ///
+    /// The last candidate is `FitsAsNothing`, not `EmptyView()` — see its
+    /// note. With EmptyView last, the cascade fell back to the machine even
+    /// where the machine did not fit, so "always has a fitting option" was
+    /// not true. In a 340pt column that is the difference between a line that
+    /// fits and a card that overflows its column into the next agent's.
+    ///
+    /// Spelled out case by case rather than with an `if` inside the
+    /// ViewThatFits: a false condition contributes no candidate at all, as
+    /// EmptyView does not, so the cascade would have a different number of
+    /// options depending on the data.
+    @ViewBuilder
+    private var metaLead: some View {
+        let machine = session.host.map { store.machineLabel(for: $0) }
+        // The directory appears whenever it says something the name does not.
+        // The name is the session's title when the agent has one (the Claude
+        // app titles every session, `/rename` titles one in the CLI) and the
+        // folder it started in otherwise, held for the session's life;
+        // `project` follows the live directory, with a Claude worktree root
+        // reported as its repository rather than the folder name the app made
+        // up. So a titled card reads "in <repo>" — where that work is
+        // happening, which a title does not say — a card at a worktree root
+        // reads "feature-x · in my-repo" from its first event, and any other
+        // untitled card shows the directory only once the session has moved.
+        // Either way it is context, never identity.
+        let place = !session.project.isEmpty && session.project != session.name
+            ? "in \(session.project)" : nil
+        switch (machine, place) {
+        case let (machine?, place?):
+            ViewThatFits(in: .horizontal) {
+                metaFacts([machine, place])
+                metaFacts([machine])
+                FitsAsNothing()
+            }
+        case let (machine?, nil):
+            ViewThatFits(in: .horizontal) {
+                metaFacts([machine])
+                FitsAsNothing()
+            }
+        case let (nil, place?):
+            ViewThatFits(in: .horizontal) {
+                metaFacts([place])
+                FitsAsNothing()
+            }
+        case (nil, nil):
+            EmptyView()
+        }
+    }
+
+    /// Facts in a row, each followed by its separator.
     ///
     /// `.fixedSize()` here is what lets ViewThatFits measure a candidate at its
     /// full width; it binds this row only, not the line it sits in.
-    @ViewBuilder
-    private func metaFacts(includeProject: Bool) -> some View {
-        HStack(spacing: Theme.Space.xxs) {
-            if let host = session.host {
-                Text("·").foregroundStyle(Theme.textTertiary)
-                Text(store.machineLabel(for: host))
+    private func metaFacts(_ facts: [String]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
+                Text(fact)
                     .lineLimit(1)
                     .foregroundStyle(Theme.textTertiary)
-            }
-            if includeProject && !session.project.isEmpty && session.project != session.name {
-                Text("·").foregroundStyle(Theme.textTertiary)
-                Text("in \(session.project)")
-                    .lineLimit(1)
-                    .foregroundStyle(Theme.textTertiary)
+                metaSeparator
             }
         }
         .fixedSize()
+    }
+
+    /// The dot between two facts, with the 4pt either side that the line's
+    /// own spacing used to supply. Punctuation, so it is not read out.
+    private var metaSeparator: some View {
+        Text("·")
+            .foregroundStyle(Theme.hairlineStrong)
+            .padding(.horizontal, Theme.Space.xxs)
+            .accessibilityHidden(true)
     }
 
     /// The right rail: what state this session is in, and the one thing you
@@ -539,10 +607,23 @@ private struct OpenSessionKey: EnvironmentKey {
     static let defaultValue: (String) -> Void = { _ in }
 }
 
+/// Whether the container a card sits in lets it be swiped away.
+///
+/// Only the phone's List does. The card asks so that it can offer VoiceOver a
+/// Dismiss action exactly where the swipe is not already offering one.
+private struct CardsSwipeToDismissKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var openSession: (String) -> Void {
         get { self[OpenSessionKey.self] }
         set { self[OpenSessionKey.self] = newValue }
+    }
+
+    var cardsSwipeToDismiss: Bool {
+        get { self[CardsSwipeToDismissKey.self] }
+        set { self[CardsSwipeToDismissKey.self] = newValue }
     }
 }
 
