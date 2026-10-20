@@ -1,8 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import {
+  IOREG,
+  IOREG_ARGS,
+  MACHINE_ID_FILES,
+  deviceHash,
+  deviceVerdict,
+  parseIoregUuid,
+  readDeviceId,
+} from '../src/listener/device';
 import {
   boardBase,
   machineKey,
@@ -86,6 +95,25 @@ function withCodexUrl(home: string, url: string, secret?: string): void {
 }
 
 /**
+ * This Mac's IOPlatformUUID as every fake below reports it. A fixture: no
+ * test reads the real one, and none may ever find this string on disk.
+ */
+const DEVICE_UUID = '0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D';
+/** Another computer's, for the state directory that was copied from it. */
+const OTHER_DEVICE_UUID = 'F0E1D2C3-B4A5-4968-8776-655443322110';
+
+/** `ioreg -rd1 -c IOPlatformExpertDevice` as a Mac prints it, trimmed to the lines around the one we read. */
+const ioregPrints = (uuid: string): string =>
+  '+-o J614sAP  <class IOPlatformExpertDevice, id 0x1000002c6, registered, matched, active, busy 0 (12 ms), retain 39>\n' +
+  '    {\n' +
+  '      "IOPolledInterface" = "AppleARMWatchdogTimerHibernateHandler is not serializable"\n' +
+  '      "IOPlatformSerialNumber" = "XXXXXXXXXX"\n' +
+  `      "IOPlatformUUID" = "${uuid}"\n` +
+  '      "IOConsoleSecurityInterest" = "IOCommand is not serializable"\n' +
+  '    }\n';
+const IOREG_OK = { code: 0, stdout: ioregPrints(DEVICE_UUID) };
+
+/**
  * launchctl stand-in: records every call, answers success (or a canned
  * print). It also answers doctor's Node probe — a rendered copy of the shim,
  * run to ask which Node the real one would pick — so no test ever executes a
@@ -94,16 +122,31 @@ function withCodexUrl(home: string, url: string, secret?: string): void {
  * doctor asks the question under the *agent's* environment and not this
  * process's. A `bootout` takes the canned job away until the next
  * `bootstrap`, as launchd's would, so an install never waits on it.
+ *
+ * And it is ioreg, answering `ioreg` (DEVICE_UUID unless told otherwise) so
+ * no test reads this Mac's real hardware UUID. Those calls go to `ioreg`,
+ * with the full path and the environment they were given, and not to
+ * `calls`, which stays launchctl's.
  */
-function recorder(print?: string, node: { code: number; stdout: string } = NODE_PROBE): {
+function recorder(
+  print?: string,
+  node: { code: number; stdout: string } = NODE_PROBE,
+  ioreg: { code: number; stdout: string } = IOREG_OK
+): {
   exec: Exec;
   calls: string[][];
+  ioreg: Array<{ file: string; args: string[]; env?: NodeJS.ProcessEnv }>;
   probeEnv: () => NodeJS.ProcessEnv | undefined;
 } {
   const calls: string[][] = [];
+  const ioregCalls: Array<{ file: string; args: string[]; env?: NodeJS.ProcessEnv }> = [];
   let probed: NodeJS.ProcessEnv | undefined;
   let bootedOut = false;
   const exec: Exec = async (file, args, env) => {
+    if (path.basename(file) === 'ioreg') {
+      ioregCalls.push({ file, args, env });
+      return ioreg;
+    }
     calls.push([path.basename(file), ...args]);
     if (path.basename(file) === 'agstatus') {
       probed = env;
@@ -114,7 +157,7 @@ function recorder(print?: string, node: { code: number; stdout: string } = NODE_
     if (args[0] === 'print') return print && !bootedOut ? { code: 0, stdout: print } : { code: 113, stdout: '' };
     return { code: 0, stdout: '' };
   };
-  return { exec, calls, probeEnv: () => probed };
+  return { exec, calls, ioreg: ioregCalls, probeEnv: () => probed };
 }
 
 /**
@@ -139,6 +182,7 @@ function launchd(opts: { exiting: number; boots?: number[]; onExit?: () => void 
   let listedFor = 0;
   let booted = 0;
   const exec: Exec = async (file, args) => {
+    if (path.basename(file) === 'ioreg') return IOREG_OK; // not launchd's, so not in `calls`
     calls.push([path.basename(file), ...args]);
     switch (args[0]) {
       case 'bootout':
@@ -256,16 +300,101 @@ describe('machine key and public id', () => {
 
 describe('machine.json', () => {
   it('round-trips with a 0600 file, and rejects anything without a uuid', () => {
-    writeMachine(ws.state, { machineId: MACHINE_ID, name: 'Studio', machineHost: 'host.local' });
+    const hash = deviceHash(MACHINE_ID, DEVICE_UUID.toLowerCase());
+    writeMachine(ws.state, { machineId: MACHINE_ID, name: 'Studio', machineHost: 'host.local', deviceHash: hash });
     const file = path.join(ws.state, 'machine.json');
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-    expect(readMachine(ws.state)).toEqual({ machineId: MACHINE_ID, name: 'Studio', machineHost: 'host.local' });
+    expect(readMachine(ws.state)).toEqual({ machineId: MACHINE_ID, name: 'Studio', machineHost: 'host.local', deviceHash: hash });
 
     fs.writeFileSync(file, JSON.stringify({ machineId: 'not-a-uuid', name: 'x' }));
     expect(readMachine(ws.state)).toBeNull();
     fs.writeFileSync(file, '{oops');
     expect(readMachine(ws.state)).toBeNull();
     expect(() => writeMachine(ws.state, { machineId: 'nope' })).toThrow(/uuid/);
+  });
+
+  it('reads a device hash that is not 64 hex as no hash, so the machine is adopted rather than re-minted', () => {
+    const file = path.join(ws.state, 'machine.json');
+    for (const bad of ['', 'abc', DEVICE_UUID, 'Z'.repeat(64), 42, null]) {
+      fs.writeFileSync(file, JSON.stringify({ machineId: MACHINE_ID, deviceHash: bad }));
+      const machine = readMachine(ws.state);
+      expect(machine).toEqual({ machineId: MACHINE_ID });
+      expect(deviceVerdict(machine!, DEVICE_UUID.toLowerCase())).toBe('unrecorded');
+    }
+  });
+});
+
+describe('the device hash', () => {
+  it('reads IOPlatformUUID out of ioreg, and nothing that merely looks like it', () => {
+    expect(parseIoregUuid(ioregPrints(DEVICE_UUID))).toBe(DEVICE_UUID.toLowerCase());
+    expect(parseIoregUuid('')).toBeNull();
+    expect(parseIoregUuid('      "IOPlatformUUID" = "not-a-uuid"\n')).toBeNull();
+    // Another key holding a uuid is not the platform's.
+    expect(parseIoregUuid(`      "IOPlatformSomethingUUID" = "${DEVICE_UUID}"\n`)).toBeNull();
+    expect(parseIoregUuid(`      "IOPlatformUUID" = "${DEVICE_UUID}" trailing\n`)).toBeNull();
+  });
+
+  it('runs ioreg by its absolute path, with none of our environment, through the injected exec', async () => {
+    const { exec, ioreg } = recorder();
+    expect(await readDeviceId('darwin', exec)).toBe(DEVICE_UUID.toLowerCase());
+    expect(ioreg).toHaveLength(1);
+    expect(ioreg[0].file).toBe('/usr/sbin/ioreg');
+    expect(IOREG).toBe('/usr/sbin/ioreg');
+    expect(ioreg[0].args).toEqual(['-rd1', '-c', 'IOPlatformExpertDevice']);
+    expect(ioreg[0].args).toEqual(IOREG_ARGS);
+    // The environment is replaced, not added to (install.ts's Exec): ioreg gets a PATH and nothing of this shell.
+    expect(ioreg[0].env).toEqual({ PATH: '/usr/bin:/bin:/usr/sbin:/sbin' });
+
+    // A failed or unparseable ioreg, or an exec that throws, is "unreadable", never an error.
+    expect(await readDeviceId('darwin', recorder(undefined, NODE_PROBE, { code: 1, stdout: '' }).exec)).toBeNull();
+    expect(await readDeviceId('darwin', recorder(undefined, NODE_PROBE, { code: 0, stdout: 'garbage' }).exec)).toBeNull();
+    expect(await readDeviceId('darwin', async () => { throw new Error('spawn EACCES'); })).toBeNull();
+  });
+
+  it('reads /etc/machine-id on Linux, then the D-Bus copy, and runs nothing', async () => {
+    const { exec, calls, ioreg } = recorder();
+    const files = (map: Record<string, string>) => (file: string): string => {
+      if (!(file in map)) throw Object.assign(new Error(`ENOENT ${file}`), { code: 'ENOENT' });
+      return map[file];
+    };
+    const ID = '0123456789abcdef0123456789abcdef';
+    expect(MACHINE_ID_FILES).toEqual(['/etc/machine-id', '/var/lib/dbus/machine-id']);
+    expect(await readDeviceId('linux', exec, files({ '/etc/machine-id': `${ID}\n` }))).toBe(ID);
+    expect(await readDeviceId('linux', exec, files({ '/var/lib/dbus/machine-id': `${ID.toUpperCase()}\n` }))).toBe(ID);
+    // systemd writes "uninitialized" until first boot completes; an empty file is the same.
+    expect(
+      await readDeviceId('linux', exec, files({ '/etc/machine-id': 'uninitialized\n', '/var/lib/dbus/machine-id': `${ID}\n` }))
+    ).toBe(ID);
+    expect(await readDeviceId('linux', exec, files({ '/etc/machine-id': '\n' }))).toBeNull();
+    expect(await readDeviceId('linux', exec, files({}))).toBeNull();
+    // Windows has no listener install, so nothing reads an id there.
+    expect(await readDeviceId('win32', exec, files({ '/etc/machine-id': `${ID}\n` }))).toBeNull();
+    expect(calls).toEqual([]);
+    expect(ioreg).toEqual([]);
+  });
+
+  it('is salted by the machine id, and never equal to the machine key', () => {
+    const device = DEVICE_UUID.toLowerCase();
+    const hash = deviceHash(MACHINE_ID, device);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(hash).toBe(
+      crypto.createHash('sha256').update(`agstatus-device-v1\n${MACHINE_ID}\n${device}`).digest('hex')
+    );
+    expect(hash).not.toContain(device.replace(/-/g, ''));
+    // The same hardware under another install's id is another hash: nothing in it links the two.
+    expect(deviceHash('7a2d3c4b-5e6f-4a70-8b9c-0d1e2f3a4b5c', device)).not.toBe(hash);
+    expect(deviceHash(MACHINE_ID, OTHER_DEVICE_UUID.toLowerCase())).not.toBe(hash);
+    expect(hash).not.toBe(machineKey(MACHINE_ID, device));
+  });
+
+  it('gives a verdict from the hash alone, whatever the hostname says', () => {
+    const device = DEVICE_UUID.toLowerCase();
+    const mine = { machineId: MACHINE_ID, machineHost: 'Mac', deviceHash: deviceHash(MACHINE_ID, device) };
+    expect(deviceVerdict(mine, device)).toBe('match');
+    expect(deviceVerdict({ ...mine, machineHost: 'MacBook-Pro-5.local' }, device)).toBe('match');
+    expect(deviceVerdict(mine, OTHER_DEVICE_UUID.toLowerCase())).toBe('mismatch');
+    expect(deviceVerdict({ machineId: MACHINE_ID, machineHost: 'Mac' }, device)).toBe('unrecorded');
+    expect(deviceVerdict(mine, null)).toBe('unreadable');
   });
 });
 
@@ -329,6 +458,8 @@ describe('install', () => {
     expect(machine.machineId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(machine.name).toBe('Studio');
     expect(machine.machineHost).toBe(os.hostname());
+    expect(machine.deviceHash).toBe(deviceHash(machine.machineId as string, DEVICE_UUID.toLowerCase()));
+    expect(Object.keys(machine).sort()).toEqual(['deviceHash', 'machineHost', 'machineId', 'name']);
 
     // url/secret untouched, focus added, mode tightened.
     expect(readJson(agstatusJson)).toEqual({
@@ -443,7 +574,7 @@ describe('install', () => {
     expect(s.out()).not.toContain(idFor(BOARD));
 
     const d = quiet();
-    expect(await doctor(darwin({ log: d.log }))).toBe(1);
+    expect(await doctor(darwin({ exec, log: d.log }))).toBe(1);
     expect(d.out()).toContain(`✖ the agent runs with --url ${other}, but the hook reads ${BOARD}`);
   });
 
@@ -462,6 +593,188 @@ describe('install', () => {
     expect(plistUrlFlag(renderPlist({
       label: LAUNCH_AGENT_LABEL, program: '/p/bin/agstatus', args: ['listener', 'run', '--url', 'not a url'], path: '', logFile: '/l',
     }))).toBeUndefined();
+  });
+});
+
+describe('which computer machine.json belongs to', () => {
+  const machineFile = (): string => path.join(ws.state, 'machine.json');
+  const device = DEVICE_UUID.toLowerCase();
+  /** The incident: written as "Mac" on 2026-10-05, read back as "MacBook-Pro-5.local" on 2026-10-19. */
+  const BEFORE = 'Mac';
+  const AFTER = 'MacBook-Pro-5.local';
+  let hostname: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    hostname = vi.spyOn(os, 'hostname').mockReturnValue(AFTER);
+  });
+  afterEach(() => {
+    hostname.mockRestore();
+  });
+
+  /** Every byte the install left under the throwaway HOME: state dir, plist, shim, ~/.agstatus.json. */
+  const everythingOnDisk = (): string => {
+    const out: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else if (entry.isFile()) out.push(fs.readFileSync(p, 'latin1'));
+      }
+    };
+    walk(ws.home);
+    return out.join('\n');
+  };
+  const expectNoHardwareId = (text: string): void => {
+    for (const uuid of [DEVICE_UUID, OTHER_DEVICE_UUID]) {
+      for (const form of [uuid, uuid.toLowerCase(), uuid.replace(/-/g, ''), uuid.replace(/-/g, '').toLowerCase()]) {
+        expect(text).not.toContain(form);
+      }
+    }
+  };
+
+  it('keeps the machine id when only the hostname changed', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    writeMachine(ws.state, { machineId: MACHINE_ID, name: 'MacBook', machineHost: BEFORE, deviceHash: deviceHash(MACHINE_ID, device) });
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ exec: recorder().exec, log }))).toBe(0);
+
+    const after = readJson(machineFile());
+    expect(after.machineId).toBe(MACHINE_ID);
+    expect(after.name).toBe('MacBook');
+    expect(after.deviceHash).toBe(deviceHash(MACHINE_ID, device));
+    // The hostname is refreshed as a hint and nothing more.
+    expect(after.machineHost).toBe(AFTER);
+    expect(out()).toContain(`"id": "${EXPECTED_PUBLIC_ID}"`);
+    expect(out()).not.toContain('another computer');
+    expect(out()).not.toContain('⚠');
+  });
+
+  it('adopts this Mac for a file written before the hash existed: same id, hash added', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    // Exactly what every install up to 1.6.2 left, on a Mac whose hostname has since moved.
+    fs.writeFileSync(machineFile(), JSON.stringify({ machineId: MACHINE_ID, name: 'MacBook', machineHost: BEFORE }, null, 2) + '\n', { mode: 0o600 });
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ exec: recorder().exec, log }))).toBe(0);
+
+    const after = readJson(machineFile());
+    expect(after.machineId).toBe(MACHINE_ID);
+    expect(after.deviceHash).toBe(deviceHash(MACHINE_ID, device));
+    expect(out()).toContain(`"id": "${EXPECTED_PUBLIC_ID}"`);
+    expect(out()).not.toContain('⚠');
+
+    // …and from then on it is this Mac's: another hostname, another install, the same id.
+    hostname.mockReturnValue('Mac-2.local');
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    expect(readJson(machineFile()).machineId).toBe(MACHINE_ID);
+  });
+
+  it('mints a new id for a state directory copied from another computer, even under the same hostname', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    hostname.mockReturnValue(BEFORE);
+    writeMachine(ws.state, {
+      machineId: MACHINE_ID,
+      name: 'Studio',
+      machineHost: BEFORE,
+      deviceHash: deviceHash(MACHINE_ID, OTHER_DEVICE_UUID.toLowerCase()),
+    });
+    const { log, out } = quiet();
+
+    expect(await install(darwin({ exec: recorder().exec, log }))).toBe(0);
+
+    const after = readJson(machineFile());
+    expect(after.machineId).not.toBe(MACHINE_ID);
+    expect(after.machineId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    // The label travels; the id and the hash are this Mac's own now.
+    expect(after.name).toBe('Studio');
+    expect(after.deviceHash).toBe(deviceHash(after.machineId as string, device));
+    expect(out()).toContain(`⚠ ${machineFile()} was written on another computer (last installed as "Mac"):`);
+    expect(out()).toContain("this Mac gets one of its own");
+    expect(out()).not.toContain(EXPECTED_PUBLIC_ID);
+    expect(out()).toContain(`"id": "${publicId(machineKey(after.machineId as string, BOARD))}"`);
+
+    // Minted once: the next install finds its own hash and keeps the new id.
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    expect(readJson(machineFile()).machineId).toBe(after.machineId);
+  });
+
+  it('keeps the id, and says so, when the hardware UUID cannot be read', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    const unreadable = (): Exec => recorder(undefined, NODE_PROBE, { code: 1, stdout: '' }).exec;
+
+    // A legacy file under a moved hostname: the case 1.6.2 re-minted. Nothing to compare, so nothing changes.
+    fs.writeFileSync(machineFile(), JSON.stringify({ machineId: MACHINE_ID, machineHost: BEFORE }) + '\n', { mode: 0o600 });
+    const legacy = quiet();
+    expect(await install(darwin({ exec: unreadable(), log: legacy.log }))).toBe(0);
+    expect(readJson(machineFile()).machineId).toBe(MACHINE_ID);
+    expect(readJson(machineFile()).deviceHash).toBeUndefined();
+    expect(legacy.out()).toContain(`⚠ Could not read this Mac's hardware UUID (/usr/sbin/ioreg)`);
+    expect(legacy.out()).toContain('The machine id is kept as it is.');
+
+    // A file that has a hash keeps it, so the next install that can read the UUID still checks.
+    const hash = deviceHash(MACHINE_ID, OTHER_DEVICE_UUID.toLowerCase());
+    writeMachine(ws.state, { machineId: MACHINE_ID, machineHost: BEFORE, deviceHash: hash });
+    expect(await install(darwin({ exec: unreadable(), log: quiet().log }))).toBe(0);
+    expect(readJson(machineFile())).toMatchObject({ machineId: MACHINE_ID, deviceHash: hash });
+
+    const checked = quiet();
+    await doctor(darwin({ exec: unreadable(), log: checked.log }));
+    expect(checked.out()).toContain("⚠ could not read this Mac's hardware UUID (/usr/sbin/ioreg)");
+    expect(checked.out()).toContain('the machine id is kept as it is');
+
+    // A first install with no UUID still installs; it just has nothing to record.
+    fs.rmSync(machineFile());
+    const fresh = quiet();
+    expect(await install(darwin({ exec: unreadable(), log: fresh.log }))).toBe(0);
+    expect(readJson(machineFile()).deviceHash).toBeUndefined();
+    expect(fresh.out()).toContain('a copy of it on another Mac would keep this id');
+  });
+
+  it('never writes the hardware UUID, nor prints it', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    const lines = quiet();
+    // A fresh install, an adoption, a re-mint over a copy, and the reports.
+    expect(await install(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: lines.log }))).toBe(0);
+    fs.writeFileSync(machineFile(), JSON.stringify({ machineId: MACHINE_ID, machineHost: BEFORE }), { mode: 0o600 });
+    expect(await install(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: lines.log }))).toBe(0);
+    writeMachine(ws.state, { machineId: MACHINE_ID, deviceHash: deviceHash(MACHINE_ID, OTHER_DEVICE_UUID.toLowerCase()) });
+    expect(await install(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: lines.log }))).toBe(0);
+    await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: lines.log }));
+    await status(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: lines.log }));
+
+    expectNoHardwareId(everythingOnDisk());
+    expectNoHardwareId(lines.out());
+    expect(lines.out()).toContain('written on another computer'); // the copy really was seen
+  });
+
+  it('is what doctor reports, and a changed hostname alone is not news', async () => {
+    withSettingsUrl(ws.home, BOARD);
+    withCliAt(cliPath());
+    writeMachine(ws.state, { machineId: MACHINE_ID, name: 'MacBook', machineHost: BEFORE, deviceHash: deviceHash(MACHINE_ID, device) });
+    expect(await install(darwin({ exec: recorder().exec, log: quiet().log }))).toBe(0);
+    hostname.mockReturnValue('Mac-3.local');
+
+    const mine = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: mine.log }))).toBe(0);
+    expect(mine.out()).toContain("✔ written on this machine (its device hash matches this machine's hardware id)");
+    expect(mine.out()).not.toContain('hostname is now');
+    expect(mine.out()).not.toContain('mints a new id');
+
+    // The same file on another Mac: a problem, with the way out.
+    const copied = quiet();
+    const elsewhere = recorder(PRINTS_RUNNING, NODE_PROBE, { code: 0, stdout: ioregPrints(OTHER_DEVICE_UUID) }).exec;
+    expect(await doctor(darwin({ exec: elsewhere, log: copied.log }))).toBe(1);
+    expect(copied.out()).toContain(`✖ written on another computer, last installed as "${AFTER}": its device hash does not match this one`);
+    expect(copied.out()).toContain('`agstatus listener install` mints this one its own');
+
+    // A file from before the hash: a note, not a problem.
+    fs.writeFileSync(machineFile(), JSON.stringify({ machineId: MACHINE_ID, machineHost: BEFORE }), { mode: 0o600 });
+    const legacy = quiet();
+    expect(await doctor(darwin({ exec: recorder(PRINTS_RUNNING).exec, log: legacy.log }))).toBe(0);
+    expect(legacy.out()).toContain('· no device hash yet');
+    expect(legacy.out()).toContain('records this machine and keeps its id');
   });
 });
 

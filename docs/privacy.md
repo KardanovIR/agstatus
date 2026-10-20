@@ -7,7 +7,7 @@
 > "Children" and "Changes" sections and the `Timestamps` row — so if you change
 > one, change both, and keep the dates equal.
 
-_Last updated: October 19, 2026_
+_Last updated: October 21, 2026_
 
 AgStatus is an open-source status board for coding agents such as Claude Code
 and OpenAI Codex. This policy covers the AgStatus iOS app and the hosted server
@@ -120,7 +120,10 @@ Those local records are **not** deleted by turning Focus off or by uninstalling
 the listener — a plain uninstall leaves them in place and says so on screen.
 `agstatus listener uninstall --purge` removes them along with the listener's log,
 and keeps only the machine's own id so a reinstall is the same machine to your
-board.
+board. To notice when that id has been copied to another computer with a backup,
+the installer reads the Mac's hardware UUID and keeps only a hash of it, salted
+with the machine's random id, in the same local file. Neither the UUID nor the
+hash is ever sent anywhere.
 
 ## What we do not collect
 

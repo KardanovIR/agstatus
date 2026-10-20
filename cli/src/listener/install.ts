@@ -41,6 +41,7 @@ import {
   writeLauncher,
   writeShim,
 } from './resume';
+import { IOREG, MACHINE_ID_FILES, deviceHash, deviceVerdict, readDeviceId } from './device';
 import type { MachineState } from './types';
 
 /**
@@ -191,9 +192,10 @@ export interface ExecResult {
 /**
  * argv-only process launch; `file` is always an absolute path from a fixed
  * table. `env`, when given, REPLACES this process's environment rather than
- * adding to it — the one caller that passes it is doctor's Node probe, which
- * has to run under the environment launchd hands the agent and not under this
- * shell's (see probeNode).
+ * adding to it. Two callers pass it: doctor's Node probe, which has to run
+ * under the environment launchd hands the agent and not under this shell's
+ * (see probeNode), and the hardware-UUID read, which needs none of ours
+ * (device.ts).
  */
 export type Exec = (file: string, args: string[], env?: NodeJS.ProcessEnv) => Promise<ExecResult>;
 
@@ -572,20 +574,39 @@ export async function install(opts: ListenerCommandOptions = {}): Promise<number
     return 1;
   }
 
+  // A new id only for a state directory copied from another computer, and
+  // only on the hardware's word: a hostname that changed says nothing, since
+  // macOS changes it with the network (device.ts). A file with no hash, which
+  // is what every install up to 1.6.2 left, is taken to be this Mac's; and a
+  // hardware id that cannot be read keeps what is there rather than guessing.
   const existing = readMachine(stateDir);
-  const hostname = os.hostname();
+  const device = await readDeviceId(platform, exec);
+  const verdict = existing ? deviceVerdict(existing, device) : undefined;
   let machineId = existing?.machineId;
-  if (existing?.machineHost && existing.machineHost !== hostname) {
-    log(`⚠ ${machinePath(stateDir)} was created on "${existing.machineHost}" — this looks like a copied`);
-    log('  state directory, so a fresh machine id is being minted for this Mac.');
+  if (existing && verdict === 'mismatch') {
+    const from = existing.machineHost ? ` (last installed as "${existing.machineHost}")` : '';
+    log(`⚠ ${machinePath(stateDir)} was written on another computer${from}:`);
+    log("  it does not match this Mac's hardware UUID. A copied state directory would share");
+    log("  that computer's machine id, so this Mac gets one of its own.");
     machineId = undefined;
+  } else if (device === null) {
+    log(`⚠ Could not read this Mac's hardware UUID (${IOREG}), so machine.json cannot record`);
+    log(
+      existing
+        ? '  which computer it belongs to. The machine id is kept as it is.'
+        : '  which computer it belongs to; a copy of it on another Mac would keep this id.'
+    );
   }
   const name = machineLabel(opts.name || existing?.name, NAME_FALLBACK);
   const machine: MachineState = {
     machineId: machineId ?? crypto.randomUUID(),
     name,
-    machineHost: hostname,
+    machineHost: os.hostname(),
   };
+  // The hash, never the hardware id. Unreadable this time, a kept id keeps
+  // the hash it had, so the next install that can read the id still checks.
+  if (device !== null) machine.deviceHash = deviceHash(machine.machineId, device);
+  else if (machineId && existing?.deviceHash) machine.deviceHash = existing.deviceHash;
   writeMachine(stateDir, machine);
   const id = publicId(machineKey(machine.machineId, base));
 
@@ -1063,6 +1084,14 @@ export function staleFocusHooks(): string[] {
   return [hookInstallPath(), codexHookInstallPath()].filter((f) => hookSupportsFocus(f) === false);
 }
 
+/** What readDeviceId() reads on this platform, for the line that says it could not. */
+const deviceSource = (platform: NodeJS.Platform): string =>
+  platform === 'darwin'
+    ? `this Mac's hardware UUID (${IOREG})`
+    : platform === 'linux'
+      ? MACHINE_ID_FILES.join(' or ')
+      : 'a hardware id (none is read on this platform)';
+
 export async function doctor(opts: ListenerCommandOptions = {}): Promise<number> {
   const { log, exec, platform, stateDir, uid } = context(opts);
   let problems = 0;
@@ -1090,8 +1119,27 @@ export async function doctor(opts: ListenerCommandOptions = {}): Promise<number>
     log(`  ✔ ${machinePath(stateDir)} — "${machineLabel(machine.name, NAME_FALLBACK)}"`);
     const mode = fs.statSync(machinePath(stateDir)).mode & 0o777;
     if (mode & 0o077) bad(`  ✖ machine.json mode is ${mode.toString(8)}; expected 600`);
-    if (machine.machineHost && machine.machineHost !== os.hostname()) {
-      log(`  ⚠ created on "${machine.machineHost}", hostname is now "${os.hostname()}" — a reinstall mints a new id`);
+    // The hardware's word only. The hostname is no evidence either way —
+    // macOS changes it with the network — so it is named, never compared.
+    const device = await readDeviceId(platform, exec);
+    switch (deviceVerdict(machine, device)) {
+      case 'match':
+        log("  ✔ written on this machine (its device hash matches this machine's hardware id)");
+        break;
+      case 'mismatch': {
+        const from = machine.machineHost ? `, last installed as "${machine.machineHost}"` : '';
+        bad(`  ✖ written on another computer${from}: its device hash does not match this one`);
+        log("    — a copied state directory shares that computer's id; `agstatus listener install` mints this one its own");
+        break;
+      }
+      case 'unrecorded':
+        log('  · no device hash yet (an older installer wrote this file) — the next install');
+        log('    records this machine and keeps its id');
+        break;
+      case 'unreadable':
+        log(`  ⚠ could not read ${deviceSource(platform)}, so a state directory copied from`);
+        log('    another computer would go unnoticed — the machine id is kept as it is');
+        break;
     }
   }
 

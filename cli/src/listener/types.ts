@@ -85,8 +85,19 @@ export interface LocalRecord {
 export interface MachineState {
   machineId: string;
   name?: string;
-  /** Hostname at creation; a mismatch means the state dir was copied to another machine. */
+  /**
+   * os.hostname() at the last install, for people reading the file or a
+   * warning. Never compared: macOS changes it with the network, and 1.6.2
+   * minted a second id for one Mac because it did (see device.ts).
+   */
   machineHost?: string;
+  /**
+   * deviceHash(machineId, <this computer's hardware id>), 64 hex — how the
+   * installer tells a copied state directory from this machine's own. Absent
+   * in files from before it existed, and when the hardware id could not be
+   * read. The hardware id itself is never written.
+   */
+  deviceHash?: string;
 }
 
 /** What the listener resolved at start: the board, this machine's credential, where things are. */

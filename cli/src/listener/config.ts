@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { HOOK_MARKER, readSettings, settingsPath } from '../settings';
 import { codexHasOurHooks, codexHooksPath, readCodexHookConfig, readCodexHooks } from '../codex';
+import { DEVICE_HASH_RE } from './device';
 import type { ListenerConfig, MachineState } from './types';
 
 /**
@@ -112,6 +113,11 @@ export function readMachine(dir: string): MachineState | null {
   if (name) state.name = machineLabel(name);
   const host = str(parsed.machineHost);
   if (host) state.machineHost = host;
+  // Anything but 64 lowercase hex is read as no hash at all: the installer
+  // then adopts this machine and keeps the id, which is the safe direction —
+  // a damaged field is never a reason to mint a second one.
+  const hash = str(parsed.deviceHash);
+  if (DEVICE_HASH_RE.test(hash)) state.deviceHash = hash;
   return state;
 }
 

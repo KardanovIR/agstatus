@@ -842,7 +842,12 @@ yourself to give the machine a name, to turn Focus on after installing with
 <ul>
 <li>creates <code>machine.json</code> in the state directory (see the table above) with
 a random machine id — the raw id never leaves the file; the board sees
-only a hash of it and the board URL, so it links nothing across boards;</li>
+only a hash of it and the board URL, so it links nothing across boards.
+A reinstall keeps the id; renaming the Mac or joining another network
+does not change it. Beside it goes a hash of the Mac&#39;s hardware UUID,
+salted with that id (the UUID itself is never written), so a state
+directory copied to another Mac, by a restored backup or a migrated home
+folder, is noticed and that Mac gets an id of its own;</li>
 <li>sets <code>&quot;focus&quot;: true</code> in <code>~/.agstatus.json</code>, keeping every other key (and
 writes <code>url</code> there only if the file had none);</li>
 <li>writes the resume launcher <code>agstatus-resume</code> (mode <code>0700</code>) into the state

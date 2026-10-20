@@ -582,7 +582,12 @@ agstatus listener install --name "Studio"   # --name is the label shown on the b
 
 - creates `machine.json` in the state directory (see the table above) with
   a random machine id — the raw id never leaves the file; the board sees
-  only a hash of it and the board URL, so it links nothing across boards;
+  only a hash of it and the board URL, so it links nothing across boards.
+  A reinstall keeps the id; renaming the Mac or joining another network
+  does not change it. Beside it goes a hash of the Mac's hardware UUID,
+  salted with that id (the UUID itself is never written), so a state
+  directory copied to another Mac, by a restored backup or a migrated home
+  folder, is noticed and that Mac gets an id of its own;
 - sets `"focus": true` in `~/.agstatus.json`, keeping every other key (and
   writes `url` there only if the file had none);
 - writes the resume launcher `agstatus-resume` (mode `0700`) into the state
