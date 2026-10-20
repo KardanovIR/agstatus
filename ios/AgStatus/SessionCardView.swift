@@ -123,27 +123,15 @@ struct SessionCardView: View {
     /// the whole-card tap belongs to.
     private func content(now: Date) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            // The name owns the top line by itself now. It used to share the
-            // row with the status badge, pushing it right with a layout
-            // priority so a long name would not be the thing that truncates —
-            // the name is how you know WHICH card this is. With the badge in
-            // the rail that contest is gone: the name simply gets the width.
-            Text(session.name)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(1)
-                // Read with its agent in front. The whole column is combined
-                // into one element below, and a child's own label is the one
-                // way to put a word into that element without drawing it —
-                // the tokens figure further down does the same.
-                .accessibilityLabel("\(agentName), \(session.name)")
-
-            if !session.message.isEmpty {
-                Text(session.message)
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(2)
-            }
+            nameAndMessage
+                // The height its width needs, whatever height it is offered.
+                // A card with a status line under it ("MacBook is offline")
+                // stacks two children that can each give up a line, and the
+                // card's stack shared its height out between them: in a
+                // column the name came out as one cut line in a card sized
+                // for two. Fixed vertically, the lines are kept and the card
+                // grows around them.
+                .fixedSize(horizontal: false, vertical: true)
 
             // Machine, when, how much — three different facts. The machine is
             // the one the card never showed; it was buried in the Focus
@@ -241,6 +229,83 @@ struct SessionCardView: View {
         }
     }
 
+    /// The name, and under it what the session last said.
+    ///
+    /// The name owns the top line by itself. It used to share the row with
+    /// the status badge, pushing it right with a layout priority so a long
+    /// name would not be the thing that truncates — the name is how you know
+    /// WHICH card this is. With the badge in the rail that contest is gone:
+    /// the name simply gets the width.
+    ///
+    /// And, when one line is not enough, a second. Names used to be folder
+    /// names, some twenty characters, and one line held them; now a Claude
+    /// session is named by its title, three to eight words, and one line cut
+    /// "Fix listener reinstall leaving Focus stopped" to "Fix listener
+    /// reinstall leaving…" — the words that say which session it is were the
+    /// ones that went. A worktree slug lost its suffix the same way, so two
+    /// sibling worktrees read as the same name. Two lines keep both: the
+    /// title whole, the slug broken at a hyphen.
+    ///
+    /// The message gives a line back. A card whose name takes two lines keeps
+    /// one line of message, so where the message would have run to two the
+    /// card grows by about 6pt (a 24pt line of name for an 18pt line of
+    /// message) rather than by a whole line — the cards have been shortened
+    /// twice on the owner's ask, and a card that grew by a line for every
+    /// title would undo that. A short message was one line anyway, and there
+    /// the second line of name is simply added.
+    ///
+    /// Decided by fit, not by counting characters. The first candidate fits
+    /// only when the name fits on one line: its message proposes no width of
+    /// its own to ViewThatFits (an ideal width of zero), so the name alone is
+    /// what is measured. Laid out, the message takes the full width and wraps
+    /// to its two lines as before.
+    @ViewBuilder
+    private var nameAndMessage: some View {
+        if session.message.isEmpty {
+            name(lines: 2)
+        } else {
+            ViewThatFits(in: .horizontal) {
+                VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                    name(lines: 1)
+                    message(lines: 2)
+                        .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+                }
+                VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                    name(lines: 2)
+                    message(lines: 1)
+                }
+            }
+        }
+    }
+
+    private func name(lines: Int) -> some View {
+        Text(session.name)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(Theme.textPrimary)
+            .lineLimit(lines)
+            // Read with its agent in front. The whole column is combined
+            // into one element below, and a child's own label is the one
+            // way to put a word into that element without drawing it —
+            // the tokens figure further down does the same.
+            .accessibilityLabel("\(agentName), \(session.name)")
+    }
+
+    private func message(lines: Int) -> some View {
+        Text(session.message)
+            .font(.subheadline)
+            .foregroundStyle(Theme.textSecondary)
+            .lineLimit(lines)
+    }
+
+    /// Whether the name is a title the agent gave the session, rather than
+    /// the folder it started in.
+    ///
+    /// No field says so — the board sends one `name` either way — so this
+    /// goes by what each looks like: a title is words, and a folder name or a
+    /// worktree slug is one. Codex sessions are never titled, and nor is a
+    /// Claude CLI session until somebody runs `/rename`.
+    private var isTitled: Bool { session.name.contains(" ") }
+
     /// The optional start of the meta line: the machine this session runs on,
     /// and the working directory when it has diverged from the card's name.
     ///
@@ -252,10 +317,18 @@ struct SessionCardView: View {
     /// overflows, and the card went past the edge of the screen.
     ///
     /// One cascade always has a fitting option, and its order is the
-    /// priority, stated once: the directory goes first (it is context — the
-    /// repo a titled session is working in, or where an untitled one has moved
-    /// to — and the name still tells you which card this is), then the
-    /// machine, and nothing here is ever cut to an ellipsis.
+    /// priority, stated once, and nothing here is ever cut to an ellipsis.
+    ///
+    /// Which of the two goes first depends on what the name is. Under a
+    /// folder name the directory goes first: it is where an untitled session
+    /// has moved to, usually the same repo the name already says, and the
+    /// name still tells you which card this is. Under a title it is the
+    /// machine that goes first. A title says what the session is doing and
+    /// not where, and "in <repo>" was added to the line for exactly that —
+    /// yet with the directory dropped first, whether a phone showed the repo
+    /// came down to how long the machine's name was: "Mac" left room for it,
+    /// "MacBook Pro" did not. The machine is not lost when it goes: it is in
+    /// the long-press menu's "Bring to front on …" and in the offline note.
     ///
     /// The last candidate is `FitsAsNothing`, not `EmptyView()` — see its
     /// note. With EmptyView last, the cascade fell back to the machine even
@@ -285,10 +358,19 @@ struct SessionCardView: View {
             ? "in \(session.project)" : nil
         switch (machine, place) {
         case let (machine?, place?):
-            ViewThatFits(in: .horizontal) {
-                metaFacts([machine, place])
-                metaFacts([machine])
-                FitsAsNothing()
+            if isTitled {
+                ViewThatFits(in: .horizontal) {
+                    metaFacts([machine, place])
+                    metaFacts([place])
+                    metaFacts([machine])
+                    FitsAsNothing()
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    metaFacts([machine, place])
+                    metaFacts([machine])
+                    FitsAsNothing()
+                }
             }
         case let (machine?, nil):
             ViewThatFits(in: .horizontal) {

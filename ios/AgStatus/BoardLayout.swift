@@ -83,8 +83,9 @@ struct AgentGroup: Identifiable, Equatable {
 /// Which arrangement a width allows. This is the whole rule:
 ///
 ///     fit = how many `minColumn` columns the board holds
-///     fit < 2             → narrow: heads pinned two across, sessions in one
-///                           list under named groups
+///     fit < 2             → narrow: sessions in one list under named groups,
+///                           the heads pinned two across — or, from a third
+///                           agent, scrolling with their groups (`headsScroll`)
 ///     2 ≤ agents ≤ fit    → columns: one column per agent
 ///     one agent           → stackedOne: its head full width, cards two across
 ///     otherwise           → stackedMany: agents stacked full width, cards two
@@ -100,9 +101,31 @@ enum BoardArrangement: Equatable {
     case stackedMany
 
     /// The narrowest a column may be. At 340pt a card with a Focus button
-    /// leaves the name about 211pt — some twenty characters. Narrower than
-    /// that and ordinary project names start to be cut.
+    /// leaves the name about 211pt — some twenty characters a line. That
+    /// holds an ordinary folder name on one line, and gives a session title,
+    /// which runs to several words, the two lines the card allows a name
+    /// (SessionCardView's `nameAndMessage`). Narrower than that and titles
+    /// start to be cut even on two.
     static let minColumn: CGFloat = 340
+
+    /// The most heads the phone pins: two across, one row.
+    ///
+    /// A third agent's head went on a row of its own, and with limits the
+    /// pinned heads ran to almost half of a 6.9" screen, leaving two and a
+    /// half cards under them. So from a third agent the phone does what a
+    /// wide board does with more agents than fit: one pinned line keeps every
+    /// agent's name and alarm, and each full head scrolls with its group.
+    static let narrowPinnedHeads = 2
+
+    /// Whether the heads scroll with their sections, one pinned `AgentLine`
+    /// standing in for them. Columns and a lone agent always pin their heads.
+    static func headsScroll(_ arrangement: BoardArrangement, agents: Int) -> Bool {
+        switch arrangement {
+        case .narrow: agents > narrowPinnedHeads
+        case .stackedMany: true
+        case .columns, .stackedOne: false
+        }
+    }
 
     /// Between two agents. Twice the gap between two cards, on purpose:
     /// proximity is what says which cards belong to which head, so nothing has
@@ -364,6 +387,24 @@ extension BoardArrangement {
             for (agents, expected) in row.expected.enumerated() {
                 assert(resolve(width: row.width, agents: agents) == expected,
                        "\(agents) agents at \(row.width)")
+            }
+        }
+
+        // Which heads are pinned. A phone pins two and no more; from a third
+        // agent it pins the agent line, as a wide board with more agents than
+        // fit does. Where there are columns, every head stands over its own.
+        let scrolls: [(width: CGFloat, expected: [Bool])] = [
+            (361, [false, false, false, true, true]),
+            (408, [false, false, false, true, true]),
+            (646, [false, false, false, true, true]),
+            (1000, [false, false, false, true, true]),
+            (1344, [false, false, false, false, true]),
+        ]
+        for row in scrolls {
+            for (agents, expected) in row.expected.enumerated() {
+                let arrangement = resolve(width: row.width, agents: agents)
+                assert(headsScroll(arrangement, agents: agents) == expected,
+                       "heads scroll with \(agents) agents at \(row.width)")
             }
         }
 

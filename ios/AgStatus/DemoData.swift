@@ -29,7 +29,7 @@ enum DemoData {
     /// than a zero or a dash.
     static func initialSessions() -> [Session] {
         #if DEBUG
-        if scenario != .demo { return scenarioSessions() }
+        if usesPool { return scenarioSessions() }
         #endif
         let now = nowMillis()
         return [
@@ -97,7 +97,7 @@ enum DemoData {
         let offline = MachinePresence(id: offlineMachine.id, name: offlineMachine.name,
                                       online: false, lastSeen: now - 5 * 60_000)
         #if DEBUG
-        if scenario != .demo { return scenarioMachines([online, offline], now: now) }
+        if usesPool { return scenarioMachines([online, offline], now: now) }
         #endif
         return [online.id: online, offline.id: offline]
     }
@@ -113,8 +113,13 @@ enum DemoData {
         // head's blocked edge was designed against: a head with a red bar and
         // nothing blocked must not read like a head that needs you.
         if ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"] == "hi" { claudeWeek = 91 }
+        if scenario == .threeLimits { return claudeAndCodex(now: now, claudeWeek: claudeWeek) + [geminiUsage(now: now)] }
         #endif
-        return [
+        return claudeAndCodex(now: now, claudeWeek: claudeWeek)
+    }
+
+    private static func claudeAndCodex(now: Int64, claudeWeek: Double) -> [UsageInfo] {
+        [
             UsageInfo(source: "claude",
                       windows: [
                           UsageWindow(id: "session",
@@ -360,10 +365,14 @@ enum DemoData {
     /// default and is the App Store demo board, untouched.
     ///
     /// The launch variables that go with it, all read only in a debug build:
-    ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three | long | empty
+    ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three |
+    ///                           three-limits | long | empty
     ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
     ///                           are working instead) | none (nobody is blocked)
     ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%)
+    ///   AGSTATUS_DEMO_TITLES    1 (Claude's cards carry session titles, as
+    ///                           the Claude app names them, with the folder
+    ///                           as the "in <repo>" — any scenario)
     ///   AGSTATUS_DEMO_FREEZE    1 (the demo stops ticking, so a capture
     ///                           cannot race a status change)
     ///   AGSTATUS_BOARD_WIDTH    <points> (BoardView: clamps the board, so a
@@ -381,6 +390,11 @@ enum DemoData {
         case solo
         /// Three agents, the third reporting no limits.
         case three
+        /// The same three agents, every one reporting limits. Not one of the
+        /// prototype's boards: it is the phone's worst case for pinned heads,
+        /// which the prototype never drew, and why a phone pins no more than
+        /// two (`BoardArrangement.narrowPinnedHeads`).
+        case threeLimits = "three-limits"
         /// Worktree names, which is what a session is called when it runs in
         /// one, and which are longer than any column.
         case long
@@ -396,6 +410,32 @@ enum DemoData {
     /// was seeded. Without it a capture is a race against the next status
     /// change, and no two would ever match.
     static let isFrozen = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_FREEZE"] == "1"
+
+    /// AGSTATUS_DEMO_TITLES=1 — Claude's cards are named by session titles.
+    ///
+    /// The prototype's pool predates titles and names every card by its
+    /// folder. A real board no longer looks like that: the Claude app titles
+    /// every session, and a title runs to several words where a folder name
+    /// was one. Without this the demo shows nothing longer than a worktree
+    /// slug, and the card's two-line name and its meta line's priorities have
+    /// nothing to be checked against.
+    static let showsTitles = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_TITLES"] == "1"
+
+    /// The board's sessions come from the pool below rather than from the
+    /// App Store demo, which a plain launch leaves untouched.
+    private static var usesPool: Bool { scenario != .demo || showsTitles }
+
+    /// A third agent's limits, as a Gemini plan reports them.
+    private static func geminiUsage(now: Int64) -> UsageInfo {
+        UsageInfo(source: "gemini",
+                  windows: [
+                      UsageWindow(id: "daily", label: "Daily requests", usedPct: 18,
+                                  resetsAt: now + 9 * 3_600_000),
+                      UsageWindow(id: "minute", label: "Per minute", usedPct: 5,
+                                  resetsAt: now + 40_000),
+                  ],
+                  updatedAt: now)
+    }
 
     /// Two more machines for the scenarios, both with a listener connected.
     private static let studioMachine = Host.Machine(id: "5a1d93c07e2b4f86a0c3d7e915b4f260", name: "Studio")
@@ -417,26 +457,34 @@ enum DemoData {
         var project: String?
         var tokens: Int64?
         var calm: (status: AgentStatus, message: String)?
+        /// What the Claude app calls it, under AGSTATUS_DEMO_TITLES. Claude
+        /// cards only: Codex does not title its sessions.
+        var title: String?
     }
 
     /// The prototype's `POOL`, in its order and under its ids.
     private static let pool: [Pooled] = [
         Pooled(id: "api", source: "claude", name: "api-server", status: .coding,
                message: "Editing src/auth/token.ts", age: 15,
-               machine: onlineMachine, project: "acme-api", tokens: 486_200),
+               machine: onlineMachine, project: "acme-api", tokens: 486_200,
+               title: "Fix token refresh race in the auth middleware"),
         Pooled(id: "pipe", source: "claude", name: "data-pipeline", status: .blocked,
                message: "Needs permission approval", age: 180,
                machine: offlineMachine, project: "etl-jobs",
-               calm: (.coding, "Backfilling the March partitions")),
+               calm: (.coding, "Backfilling the March partitions"),
+               title: "Backfill March partitions for the events table"),
         Pooled(id: "web", source: "claude", name: "webapp", status: .done,
                message: "Finished — 12 files changed", age: 480,
-               project: "acme-web", tokens: 1_438_000),
+               project: "acme-web", tokens: 1_438_000,
+               title: "Migrate checkout to the new design tokens"),
         Pooled(id: "bill", source: "claude", name: "billing-worker", status: .testing,
                message: "Running 214 tests — 3 failing", age: 60,
-               machine: studioMachine, tokens: 912_400),
+               machine: studioMachine, tokens: 912_400,
+               title: "Investigate failing proration tests in the billing worker"),
         Pooled(id: "ios", source: "claude", name: "ios-app", status: .planning,
                message: "Drafting the push-token migration plan", age: 300,
-               machine: onlineMachine, tokens: 88_100),
+               machine: onlineMachine, tokens: 88_100,
+               title: "Plan the push-token migration for iOS 26"),
         Pooled(id: "infra", source: "claude", name: "infra", status: .idle,
                message: "Session started", age: 720,
                machine: onlineMachine),
@@ -465,14 +513,17 @@ enum DemoData {
                calm: (.coding, "Writing modules/vpc/main.tf")),
         Pooled(id: "wt1", source: "claude", name: "session-organization-agents-c27901", status: .coding,
                message: "Editing ios/AgStatus/BoardView.swift", age: 10,
-               machine: laptopMachine, project: "claude-status", tokens: 1_100_000),
+               machine: laptopMachine, project: "claude-status", tokens: 1_100_000,
+               title: "Session organization by agent"),
         Pooled(id: "wt2", source: "claude", name: "session-organization-agents-b1f44e", status: .blocked,
                message: "Approve: xcodebuild -scheme AgStatus test", age: 130,
                machine: laptopMachine, project: "claude-status", tokens: 640_800,
-               calm: (.testing, "xcodebuild test — 318 passed")),
+               calm: (.testing, "xcodebuild test — 318 passed"),
+               title: "Fix listener reinstall leaving Focus stopped"),
         Pooled(id: "wt3", source: "claude", name: "claude-status-dashboard-release-1.6", status: .done,
                message: "Finished — 23 files changed", age: 840,
-               machine: studioMachine, tokens: 3_400_000),
+               machine: studioMachine, tokens: 3_400_000,
+               title: "Investigate why the SSE stream drops after the iPad wakes from sleep"),
         Pooled(id: "wt4", source: "codex", name: "agstatus-listener-windows-terminal-focus", status: .testing,
                message: "npm test -- focus/wt — 57 passed", age: 80,
                machine: studioMachine, tokens: 402_600),
@@ -486,7 +537,7 @@ enum DemoData {
         case .busy: ids = ["api", "bill", "pipe", "ios", "web", "land", "sdk", "search", "docs"]
         case .lopsided: ids = ["api", "bill", "pipe", "ios", "web", "infra", "tokens", "docs"]
         case .solo: ids = ["api", "bill", "pipe", "web"]
-        case .three: ids = ["api", "pipe", "web", "land", "docs", "evals", "tf"]
+        case .three, .threeLimits: ids = ["api", "pipe", "web", "land", "docs", "evals", "tf"]
         case .long: ids = ["wt1", "wt2", "wt3", "wt4", "docs"]
         case .empty: ids = []
         }
@@ -514,12 +565,13 @@ enum DemoData {
         return cards.map { card in
             let calm = isCalmed(card, among: cards) ? card.calm : nil
             return Session(id: card.id,
-                           name: card.name,
+                           name: showsTitles ? card.title ?? card.name : card.name,
                            status: calm?.status ?? card.status,
                            message: calm?.message ?? card.message,
                            // A session that stayed where it started reports
                            // its own name, which is what the card reads as
-                           // "has not moved".
+                           // "has not moved". Under a title that folder is
+                           // no longer the name, and reads as "in <folder>".
                            project: card.project ?? card.name,
                            source: card.source,
                            createdAt: now - (card.age + 40 * 60) * 1000,

@@ -79,6 +79,7 @@ struct BoardView: View {
                 SessionHistoryView(sessionId: sessionId)
             }
             .environment(\.openSession) { path.append($0) }
+            .environment(\.openUsage) { path.append(UsageDetailRoute(source: $0)) }
             .navigationTitle("AgStatus")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.background, for: .navigationBar)
@@ -163,7 +164,7 @@ struct BoardView: View {
                     // "No agents yet" is only true when we're actually live —
                     // while (re)connecting, an empty list just means "unknown".
                     if store.isDemo || store.connection == .live {
-                        emptyState
+                        emptyState(hasAgents: !plan.groups.isEmpty)
                     } else {
                         connectingState
                     }
@@ -296,11 +297,17 @@ struct BoardView: View {
                 .padding(.horizontal, Theme.Space.md)
                 .padding(.top, 10)
                 .padding(.bottom, 2)
+        } else if plan.headsScroll {
+            // More agents than this board pins heads for: on a wide board more
+            // than fit, on a phone more than two. Their heads scroll with
+            // their sections; this one line is what stays.
+            agentLine(plan, scroller: scroller)
         } else {
             switch plan.arrangement {
             case .narrow:
-                // Two across, each keeping its own height; an odd one out — a
-                // third agent, or the only agent — takes the whole row.
+                // Two across, each keeping its own height; the only agent
+                // takes the whole row. A third agent no longer gets a row of
+                // its own here — see `BoardArrangement.narrowPinnedHeads`.
                 headRows(plan, perRow: 2, gap: BoardArrangement.headGap, level: false, scroller: scroller)
                     .padding(.horizontal, Theme.Space.md)
                     .padding(.top, 10)
@@ -323,28 +330,35 @@ struct BoardView: View {
                     .padding(.top, 10)
                     .padding(.bottom, 2)
             case .stackedMany:
-                // More agents than fit. Their heads scroll with their
-                // sections; this one line is what stays.
-                AgentLine(groups: plan.groups,
-                          width: plan.width,
-                          scale: plan.scale,
-                          onSection: { source in
-                              withMotion(.snappy) {
-                                  scroller.scrollTo(JumpTarget.section(source), anchor: .top)
-                              }
-                          },
-                          onJump: { jump(to: $0, in: plan, scroller: scroller) })
-                    .padding(.horizontal, Theme.Space.md)
+                // Always `headsScroll`, and drawn above. The case is here
+                // for the switch to be exhaustive, and draws the same line.
+                agentLine(plan, scroller: scroller)
             }
         }
+    }
+
+    /// One pinned line for every agent: its name, which takes you to its
+    /// section, and its alarm, which takes you to its first blocked card.
+    private func agentLine(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
+        AgentLine(groups: plan.groups,
+                  width: plan.width,
+                  scale: plan.scale,
+                  onSection: { source in
+                      withMotion(.snappy) {
+                          scroller.scrollTo(JumpTarget.section(source), anchor: .top)
+                      }
+                  },
+                  onJump: { jump(to: $0, in: plan, scroller: scroller) })
+            .padding(.horizontal, Theme.Space.md)
     }
 
     /// The heads in rows of `perRow`, every one a fixed track wide.
     ///
     /// `level` draws a row as one band: each head stretches to the tallest in
     /// its row. Where the heads are not level, a short last row — one head
-    /// under a pair — is given the full width, so a third agent on a phone is
-    /// a line of its own and not half of an empty row.
+    /// under a pair — is given the full width, so a third agent on an idle
+    /// phone board is a line of its own and not half of an empty row. (With
+    /// sessions running, a phone never pins a third head: `headsScroll`.)
     private func headRows(_ plan: BoardPlan, perRow: Int, gap: CGFloat, level: Bool,
                           canStrip: Bool = false, scroller: ScrollViewProxy) -> some View {
         let track = BoardArrangement.track(width: plan.width, count: perRow, gap: gap)
@@ -384,7 +398,7 @@ struct BoardView: View {
     private func sessionBoard(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
         switch plan.arrangement {
         case .narrow:
-            scrollChrome(groupedList(plan))
+            scrollChrome(groupedList(plan, scroller: scroller))
                 .transition(.identity)
         case .columns:
             scrollChrome(columnBoard(plan))
@@ -418,9 +432,39 @@ struct BoardView: View {
     /// Where two columns do not fit — a phone, or an iPad in Split View — the
     /// sessions stay one list, because the list is the only container that can
     /// be swiped, and the swipe is how a phone has always dismissed a card.
-    private func groupedList(_ plan: BoardPlan) -> some View {
+    private func groupedList(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
         List {
-            if plan.groups.count > 1 {
+            if plan.headsScroll {
+                // Three agents or more: the agent line is pinned above, and
+                // each agent's full head opens its group and scrolls with it,
+                // as the sections of a wide board do. No pinned group name as
+                // well — it would stand directly over a head saying the same
+                // name, which is the repetition one agent already avoids.
+                ForEach(plan.groups, id: \.section) { group in
+                    AgentHead(group: group,
+                              width: plan.width,
+                              canStrip: true,
+                              scale: plan.scale,
+                              now: now,
+                              onJump: { jump(to: group.source, in: plan, scroller: scroller) })
+                        // Where the agent line's names send the list. A row
+                        // is the one thing in a List that can be scrolled to.
+                        .id(JumpTarget.section(group.source))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        // The wide board's spacing: the first head 10pt under
+                        // the agent line, a head 24pt under the card before it
+                        // (6 of that is the card's own), and 8pt above its
+                        // first card (the card brings 6). No swipe: a head is
+                        // not something to dismiss.
+                        .listRowInsets(EdgeInsets(top: group.id == plan.groups.first?.id ? 10 : 18,
+                                                  leading: Theme.Space.md, bottom: 2,
+                                                  trailing: Theme.Space.md))
+                    ForEach(group.sessions) { session in
+                        row(session, in: group)
+                    }
+                }
+            } else if plan.groups.count > 1 {
                 ForEach(plan.groups, id: \.section) { group in
                     Section {
                         ForEach(group.sessions) { session in
@@ -454,7 +498,7 @@ struct BoardView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .modifier(OpaquePinnedLabels(pinned: plan.groups.count > 1))
+        .modifier(OpaquePinnedLabels(pinned: plan.groups.count > 1 && !plan.headsScroll))
         .environment(\.cardsSwipeToDismiss, true)
         // The list is rebuilt, not morphed, when the set of agents changes:
         // one agent is a flat run of rows and two are sections, and animating
@@ -660,10 +704,11 @@ struct BoardView: View {
     /// very top would hide the card's name behind the label — the one outcome
     /// a jump must not have, since the name is what you jumped to read. So
     /// before 26, with several agents, the row goes to the centre, which no
-    /// version can put under anything. With one agent there is no label, and
-    /// the top is simply the top.
+    /// version can put under anything. With one agent there is no label, nor
+    /// with three or more, whose heads scroll and leave nothing pinned inside
+    /// the list — and there the top is simply the top.
     private func listAnchor(_ plan: BoardPlan) -> UnitPoint {
-        if plan.groups.count < 2 { return .top }
+        if plan.groups.count < 2 || plan.headsScroll { return .top }
         if #available(iOS 26.0, *) { return .top }
         return .center
     }
@@ -744,43 +789,35 @@ struct BoardView: View {
 
     // MARK: - Empty state
 
-    private var emptyState: some View {
+    /// No sessions on the board — in one of two quite different situations.
+    ///
+    /// `hasAgents` is whether any agent has a head above this, which with no
+    /// sessions means it reports plan limits. Limits on the board prove it is
+    /// paired and that an agent has reported, so "No agents yet" and a
+    /// prominent "Pair your computer" under two named heads with live bars
+    /// contradicted the screen they were on. It is a common state, too: the
+    /// morning after the evening's sessions have expired. There the board
+    /// says only that nothing is running. Pairing a further computer stays in
+    /// the toolbar, and the webhook in Settings, where they always were.
+    ///
+    /// A board with no heads at all keeps the first-run copy and the button.
+    private func emptyState(hasAgents: Bool) -> some View {
         ScrollView {
             VStack(spacing: 16) {
                 Image(systemName: "moon.zzz.fill")
                     .font(.system(size: 44))
                     .foregroundStyle(Theme.textSecondary)
                     .accessibilityHidden(true)
-                Text("No agents yet")
-                    .font(.system(.title2, design: .rounded).weight(.semibold))
-                    .foregroundStyle(Theme.textPrimary)
-                Text("Pair your computer and your coding agents will show up here the moment they report in.")
-                    .font(.subheadline)
-                    .foregroundStyle(Theme.textSecondary)
-                    .multilineTextAlignment(.center)
-
-                if store.board?.token != nil {
-                    Button {
-                        showPairSheet = true
-                    } label: {
-                        Label("Pair your computer", systemImage: "laptopcomputer.and.arrow.down")
-                            .font(.headline)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
-                    .padding(.top, 4)
-                }
-
-                if let board = store.board {
-                    VStack(spacing: 8) {
-                        Text("Or send updates straight to the webhook:")
-                            .font(.caption)
-                            .foregroundStyle(Theme.textSecondary)
-                        webhookRow(board.webhookURL)
-                    }
-                    .padding(.top, 16)
+                if hasAgents {
+                    Text("Nothing running")
+                        .font(.system(.title2, design: .rounded).weight(.semibold))
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Sessions appear here when an agent starts.")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center)
+                } else {
+                    firstRun
                 }
             }
             .padding(24)
@@ -788,6 +825,42 @@ struct BoardView: View {
             .frame(maxWidth: .infinity)
         }
         .refreshable { await store.refresh() }
+    }
+
+    /// A board nothing has reported to: how to get something onto it.
+    @ViewBuilder
+    private var firstRun: some View {
+        Text("No agents yet")
+            .font(.system(.title2, design: .rounded).weight(.semibold))
+            .foregroundStyle(Theme.textPrimary)
+        Text("Pair your computer and your coding agents will show up here the moment they report in.")
+            .font(.subheadline)
+            .foregroundStyle(Theme.textSecondary)
+            .multilineTextAlignment(.center)
+
+        if store.board?.token != nil {
+            Button {
+                showPairSheet = true
+            } label: {
+                Label("Pair your computer", systemImage: "laptopcomputer.and.arrow.down")
+                    .font(.headline)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Theme.accent)
+            .padding(.top, 4)
+        }
+
+        if let board = store.board {
+            VStack(spacing: 8) {
+                Text("Or send updates straight to the webhook:")
+                    .font(.caption)
+                    .foregroundStyle(Theme.textSecondary)
+                webhookRow(board.webhookURL)
+            }
+            .padding(.top, 16)
+        }
     }
 
     private func webhookRow(_ url: URL) -> some View {
@@ -951,6 +1024,12 @@ private struct BoardPlan {
     /// Whether two columns fit: every arrangement but the narrow one. An idle
     /// board asks it too, to choose between two heads across and three.
     var wide: Bool { arrangement != .narrow }
+
+    /// Whether the heads scroll with their sections under one pinned agent
+    /// line. Never on an idle board, where the heads are all there is.
+    var headsScroll: Bool {
+        !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count)
+    }
 
     /// One agent's column, and the head over it.
     var track: CGFloat { BoardArrangement.track(width: width, count: groups.count) }
