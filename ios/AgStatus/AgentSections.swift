@@ -72,6 +72,7 @@ private struct AgentIdentity: View {
 /// reader inside it: every arrangement already knows how wide its heads are,
 /// and a head that measured itself would pick its form a pass late.
 struct AgentHead: View {
+    @Environment(\.openUsage) private var openUsage
     let group: AgentGroup
     /// The head's full width, edge to edge.
     let width: CGFloat
@@ -136,8 +137,17 @@ struct AgentHead: View {
             // the alarm. A tap on the name, a bar or bare padding falls
             // through to the surface and opens usage; a tap on the alarm stops
             // at the alarm.
+            //
+            // The surface is a button that asks the board to push usage, not
+            // a NavigationLink — the same reason the cards open history
+            // through a closure. On a phone with three agents the heads are
+            // rows of the List, and a link in a List row draws its own
+            // disclosure chevron and claims the whole row. A button with a
+            // style of its own is left to be the size it is drawn.
             .background {
-                NavigationLink(value: UsageDetailRoute(source: group.source)) {
+                Button {
+                    openUsage(group.source)
+                } label: {
                     Color.clear
                 }
                 .buttonStyle(HeadSurfaceStyle(edge: edge))
@@ -385,6 +395,21 @@ struct AgentHead: View {
                 }
             }
         }
+    }
+}
+
+/// How a head asks the board to open an agent's usage, by its source key.
+///
+/// The board pushes a `UsageDetailRoute` onto its own path; the destination is
+/// declared at its root, beside the session one.
+private struct OpenUsageKey: EnvironmentKey {
+    static let defaultValue: (String) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var openUsage: (String) -> Void {
+        get { self[OpenUsageKey.self] }
+        set { self[OpenUsageKey.self] = newValue }
     }
 }
 
