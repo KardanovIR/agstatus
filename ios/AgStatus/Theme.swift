@@ -196,15 +196,27 @@ enum Theme {
         return color(for: .done)
     }
 
-    /// The agent behind a session.
+    /// The agent behind a section.
     ///
     /// Simple geometry, deliberately NOT Anthropic's or OpenAI's logo: this
     /// board is open source and self-hosted by other people, and shipping
     /// someone else's trademark inside it is a different thing from naming
-    /// their tool. They identify the integration in a 13pt slot, which is all
-    /// the badge needs to do.
+    /// their tool. The owner has since confirmed it as a decision, not a
+    /// stopgap: the marks stay neutral. They sit beside the agent's name at
+    /// the head of its section, and telling two sections apart by shape is all
+    /// they need to do — never by a brand colour, because colour on this board
+    /// means state.
+    ///
+    /// An agent this build has no mark for gets a diamond. It used to get
+    /// Claude's asterisk, which was harmless while the mark was an 8pt glyph in
+    /// a chip that also spelled the name out; at the head of a section it
+    /// would be one agent wearing another's badge. Matched by prefix, so
+    /// `claude-code` and `codex-cli` keep the marks they have always had.
     static func agentSymbol(for source: String) -> String {
-        source.lowercased().hasPrefix("codex") ? "hexagon" : "asterisk"
+        let source = source.lowercased()
+        if source.hasPrefix("claude") { return "asterisk" }
+        if source.hasPrefix("codex") { return "hexagon" }
+        return "diamond"
     }
 
     /// The SF Symbol for a status.
@@ -317,4 +329,17 @@ func withMotion<Result>(
     _ body: () throws -> Result
 ) rethrows -> Result {
     try withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : animation, body)
+}
+
+/// The last option of a `ViewThatFits` that is allowed to show nothing.
+///
+/// A real view of no size, because `EmptyView()` is not one: a layout probe
+/// showed ViewThatFits does not count EmptyView as a candidate at all. With it
+/// last, a cascade falls back to the option before it even where that option
+/// does not fit — so a cascade written to "always have a fitting option" did
+/// not have one.
+struct FitsAsNothing: View {
+    var body: some View {
+        Color.clear.frame(width: 0, height: 0)
+    }
 }
