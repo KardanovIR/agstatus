@@ -908,6 +908,9 @@ final class SessionStore {
         // snapshot that carries it — and the words are the web's and
         // Android's too, so they are pinned.
         DemoData.verifySubtaskDecoding()
+        // …and what a 1.7 server really sends decodes, every item of it, to
+        // the rows, footers and readings the other clients draw from it.
+        DemoData.verifyServerSubtasks()
         SubtaskCopy.verify()
         // The wait a beat reports, across the gaps — the phone in the
         // background, a reconnect — that a demo board never has.

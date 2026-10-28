@@ -1369,6 +1369,262 @@ enum DemoData {
         assert(nextOrdinal(items: listed([1, 2]), done: 0) == 3, "nothing finished yet")
     }
 
+    /// The `subtasks` contract against the server itself, checked beside
+    /// `verifySubtaskDecoding` when demo mode starts in a debug build.
+    ///
+    /// That table holds this client to the spec; this one holds it to what a
+    /// 1.7 server actually sends. The sessions below are the snapshot frame
+    /// of `GET /events` from the merged 1.7 server, seeded with the hook's own
+    /// rules: a workflow of ten and one of thirty, one subagent waiting on
+    /// approval and then two, a failure, every row finished, the turn over
+    /// with two still working, the report hold, minimal mode, Codex, labels
+    /// at their real lengths, and a card with no subagents. Joined into one
+    /// array they are that frame's data, byte for byte. Each is broken into
+    /// lines here only to be read, one subagent to a line, and joined again
+    /// before it is decoded.
+    static func verifyServerSubtasks() {
+        let decoder = JSONDecoder()
+        // In the frame's own order, the most recently updated first.
+        let frame: [(scenario: String, json: String)] = [
+            ("long", #"""
+                {"id":"seed-long","name":"Fix listener reinstall leaving Focus stopped","status":"coding","message":"Editing install.ts","project":"claude-status","source":"claude","host":null,"createdAt":1793209331895,"updatedAt":1793209331900,
+                "subtasks":{"turnEnded":false,"running":3,"blocked":0,"failed":0,"done":2,"items":[
+                {"id":"691024b85fbf8ed1fdc3dab8","n":3,"label":"Find why the listener reinstall leaves Focus stopped","state":"planning","activity":"Searching: launchctl bootstrap leaves the LaunchAgent unloaded after a reinstall"},
+                {"id":"fe5c9a2f13b1ec7e17cf7483","n":4,"label":"Run the store migration tests against Postgres 16.15","state":"testing","activity":"Run the store migration tests with --no-file-parallelism against a disposable cl"},
+                {"id":"eac87fba0a27afc05409e6d2","n":5,"label":"Check the Codex rollout schema for spawn_agent calls","state":"planning","activity":"Reading developers.openai.com"}]}}
+                """#),
+            ("codex", #"""
+                {"id":"seed-codex","name":"search-indexer","status":"coding","message":"Editing files","project":"search-indexer","source":"codex","host":null,"createdAt":1793209331890,"updatedAt":1793209331895,
+                "subtasks":{"turnEnded":false,"running":3,"blocked":0,"failed":0,"done":2,"items":[
+                {"id":"eda034f3b538b230c6bd40eb","n":3,"label":"Feynman","state":"testing","activity":"cargo test -p indexer"},
+                {"id":"389b9beddd053d3df2cd0c32","n":4,"label":"Noether","state":"coding","activity":"Editing files"},
+                {"id":"13fb52e6f6f78f771bfa0c6e","n":5,"label":"Hypatia","state":"planning","activity":""}]}}
+                """#),
+            ("minimal", #"""
+                {"id":"seed-minimal","name":"claude-status","status":"coding","message":"Edit","project":"claude-status","source":"claude","host":null,"createdAt":1793209331884,"updatedAt":1793209331890,
+                "subtasks":{"turnEnded":false,"running":4,"blocked":0,"failed":0,"done":2,"items":[
+                {"id":"5394db0c7caa12460b2ee93c","n":3,"label":"Subagent 3","state":"testing","activity":"Bash"},
+                {"id":"acfaf4d87e271423e1e00c4a","n":4,"label":"Subagent 4","state":"coding","activity":"Edit"},
+                {"id":"7432dad7af008ed097925c74","n":5,"label":"Subagent 5","state":"planning","activity":"WebFetch"},
+                {"id":"3d93bcc479369cf4d295b2b6","n":6,"label":"Subagent 6","state":"coding","activity":"Write"}]}}
+                """#),
+            ("hold", #"""
+                {"id":"seed-hold","name":"Collect the background reports","status":"planning","message":"Reading subagent results","project":"claude-status","source":"claude","host":null,"createdAt":1793209331880,"updatedAt":1793209331884,
+                "subtasks":{"turnEnded":false,"running":0,"blocked":0,"failed":0,"done":3,"items":[]}}
+                """#),
+            ("background", #"""
+                {"id":"seed-background","name":"Land the docs and CI sweep","status":"testing","message":"2 subagents still running","project":"claude-status","source":"claude","host":null,"createdAt":1793209331874,"updatedAt":1793209331879,
+                "subtasks":{"turnEnded":true,"running":2,"blocked":0,"failed":0,"done":3,"items":[
+                {"id":"08fee937f71c6198e80fbc87","n":4,"label":"Run the server suite on Postgres","state":"testing","activity":"Run the root suite with --no-file-parallelism"},
+                {"id":"3059021926a12f41407c831d","n":5,"label":"Sweep docs for stale flags","state":"coding","activity":"Editing docs.html"}]}}
+                """#),
+            ("finished", #"""
+                {"id":"seed-finished","name":"Map the board layout code","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331859,"updatedAt":1793209331874,
+                "subtasks":{"turnEnded":false,"running":0,"blocked":0,"failed":0,"done":12,"items":[]}}
+                """#),
+            ("failed", #"""
+                {"id":"seed-failed","name":"Prepare the 1.6.4 release","status":"coding","message":"Editing RELEASE-1.6.4.md","project":"claude-status","source":"claude","host":null,"createdAt":1793209331851,"updatedAt":1793209331859,
+                "subtasks":{"turnEnded":false,"running":2,"blocked":0,"failed":1,"done":4,"items":[
+                {"id":"e64b1cceac06588757ecc96b","n":5,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
+                {"id":"e2c73d81da1455b3eaf358cc","n":6,"label":"Audit the Android strings","state":"failed","activity":"Failed: API error (overloaded)"},
+                {"id":"caa9caff0545175d746dae6c","n":7,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"}]}}
+                """#),
+            ("two-blocked", #"""
+                {"id":"seed-two-blocked","name":"Prepare the Android release","status":"blocked","message":"Needs approval: Audit the Android strings +1","project":"claude-status","source":"claude","host":null,"createdAt":1793209331845,"updatedAt":1793209331851,
+                "subtasks":{"turnEnded":false,"running":3,"blocked":2,"failed":0,"done":0,"items":[
+                {"id":"578acf7e9e0804166a49689e","n":1,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
+                {"id":"78844cab97ff5fb50d2b0e52","n":2,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"},
+                {"id":"b5da9de92b72cca9506f79d0","n":3,"label":"Audit the Android strings","state":"blocked","activity":"Approve: Editing strings.xml"},
+                {"id":"3c80c99fd926cdb015609ece","n":4,"label":"Run the page checks","state":"testing","activity":"Run test/pages.test.ts"},
+                {"id":"3029de2f327479a99a6c53ff","n":5,"label":"Summarize the hook diff","state":"blocked","activity":"Approve: git diff origin/master -- cli"}]}}
+                """#),
+            ("blocked", #"""
+                {"id":"seed-blocked","name":"Verify the hook before release","status":"blocked","message":"Needs approval: verify:hook","project":"claude-status","source":"claude","host":null,"createdAt":1793209331823,"updatedAt":1793209331845,
+                "subtasks":{"turnEnded":false,"running":9,"blocked":1,"failed":0,"done":15,"items":[
+                {"id":"d6eb60f4020603989cf4fc11","n":13,"label":"review:hook","state":"testing","activity":"Run hook tests with --no-file-parallelism"},
+                {"id":"fbb414dd278da301e2b11d84","n":14,"label":"review:listener","state":"coding","activity":"Editing listener.ts"},
+                {"id":"462d60f8f5125275240ab941","n":15,"label":"review:product","state":"planning","activity":"Searching: SubagentStop payload fields"},
+                {"id":"d549dc809644b0887afef25e","n":16,"label":"review:server","state":"coding","activity":"Editing store.ts"},
+                {"id":"b41cc0fd5f8877cae7dc3b1c","n":17,"label":"review:ios","state":"coding","activity":"Editing SessionCardView.swift"},
+                {"id":"cd424cb9fc231993f5545373","n":18,"label":"review:android","state":"planning","activity":"Reading developer.android.com"},
+                {"id":"667bbd533aee86e94294dbf6","n":19,"label":"verify:hook","state":"blocked","activity":"Approve: npm test -- hook"},
+                {"id":"aaa1e2f4f9481280bf271125","n":20,"label":"verify:server","state":"testing","activity":"npm test -- store"},
+                {"id":"e345355ee495c85c8e44185e","n":21,"label":"verify:web","state":"coding","activity":"Editing card.css"},
+                {"id":"9670b0f4ef4ad5a9d3572c54","n":22,"label":"verify:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"}]}}
+                """#),
+            ("thirty", #"""
+                {"id":"seed-thirty","name":"Implement subtasks across all clients","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331671,"updatedAt":1793209331823,
+                "subtasks":{"turnEnded":false,"running":30,"blocked":0,"failed":0,"done":186,"items":[
+                {"id":"6b944b2ed97ca824f6d749b8","n":187,"label":"implement:server","state":"coding","activity":"Editing store.ts"},
+                {"id":"9055dd87cbfe940cc74d6561","n":188,"label":"implement:hook","state":"coding","activity":"Editing agstatus-hook.js"},
+                {"id":"ee2d8bae880193b6eda980c8","n":189,"label":"implement:ios","state":"coding","activity":"Editing SessionCardView.swift"},
+                {"id":"93e06926147934b85ad993d9","n":190,"label":"implement:android","state":"coding","activity":"Editing SessionCard.kt"},
+                {"id":"f21cbb093be1e0854d52a0ee","n":191,"label":"implement:web","state":"coding","activity":"Editing card.css"},
+                {"id":"31dc951143043d5452b3ec35","n":192,"label":"implement:docs","state":"coding","activity":"Editing docs.html"},
+                {"id":"aba0002f0691ee6a6fe13924","n":193,"label":"test:server","state":"testing","activity":"npm test -- store"},
+                {"id":"89bb1395e4b93fb2a375ea5a","n":194,"label":"test:hook","state":"testing","activity":"Run hook tests — 214 passed"},
+                {"id":"d5e763e3494c53f2241cd407","n":195,"label":"test:ios","state":"coding","activity":"xcodebuild test -scheme AgStatus"},
+                {"id":"9c293ccf6b3bd87b349d6ef8","n":196,"label":"test:android","state":"coding","activity":"./gradlew testDebugUnitTest"},
+                {"id":"f0208bf3682908cfac847fb6","n":197,"label":"review:server","state":"planning","activity":"Searching: store.ts agent_id"},
+                {"id":"240edba1286f081e2f177a46","n":198,"label":"review:hook","state":"planning","activity":"Reading code.claude.com"},
+                {"id":"94666b14292859c4ed92f716","n":199,"label":"review:ios","state":"coding","activity":"Editing BoardView.swift"},
+                {"id":"d9d353c4b5b58de54aca01b1","n":200,"label":"review:android","state":"planning","activity":"Searching: SessionCard usages"},
+                {"id":"9a9393614c7cfe617e97eb55","n":201,"label":"review:web","state":"planning","activity":"Searching: app.js paint()"},
+                {"id":"f81ad6ffdd0494661e5ad9f1","n":202,"label":"review:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"},
+                {"id":"17363a5918465b4f89898d79","n":203,"label":"verify:server","state":"testing","activity":"Run the e2e suite"},
+                {"id":"935d45b0baaab44021dc9a57","n":204,"label":"verify:hook","state":"testing","activity":"Run the payload fixtures"},
+                {"id":"8cb0d54424bfbcdb8088dc77","n":205,"label":"verify:ios","state":"coding","activity":"Snapshot the card at three widths"},
+                {"id":"653132b30469127aff3b3828","n":206,"label":"verify:android","state":"coding","activity":"Run the screenshot tests"},
+                {"id":"059dac80ccf7e503202b4320","n":207,"label":"verify:web","state":"testing","activity":"Run the card fixtures"},
+                {"id":"ac37cbca5a5d12b98c785520","n":208,"label":"verify:migration","state":"testing","activity":"Run the migration on a copy"},
+                {"id":"37198b1aeac1783cdc155f30","n":209,"label":"Map the SubagentStart payload","state":"planning","activity":"Searching: SubagentStart agent_type"},
+                {"id":"75853e47f3b95f0fa64779a6","n":210,"label":"Check the Codex rollout schema","state":"planning","activity":"Reading github.com"},
+                {"id":"c3e15533a54d147d1edc026b","n":211,"label":"Draft the 1.7 release notes","state":"coding","activity":"Writing v1.7.0.md"},
+                {"id":"25a719db4b6f7d51a6870e71","n":212,"label":"Audit push copy for subtasks","state":"coding","activity":"Editing NotificationManager.swift"},
+                {"id":"4141b3a62ee9ab57f5cae685","n":213,"label":"map:sizing","state":"planning","activity":"Delegating: Count subagents per session"},
+                {"id":"bb54c51687583f6ea70f5565","n":214,"label":"map:limits","state":"planning","activity":"Searching: webhook budget per workspace"},
+                {"id":"7fcbafa2f50d8ad21d2f7d6c","n":215,"label":"map:minimal","state":"planning","activity":"Delegating: Search the hook for MINIMAL"},
+                {"id":"9cb8c8907d472f4546ed1c22","n":216,"label":"map:codex","state":"planning","activity":"Reading developers.openai.com"}]}}
+                """#),
+            ("ten", #"""
+                {"id":"seed-ten","name":"Review and verify the subtasks branch","status":"planning","message":"Running workflow: review-and-verify","project":"claude-status","source":"claude","host":null,"createdAt":1793209331639,"updatedAt":1793209331670,
+                "subtasks":{"turnEnded":false,"running":10,"blocked":0,"failed":0,"done":15,"items":[
+                {"id":"2c6fb5642df321bc8ae2919b","n":13,"label":"review:hook","state":"testing","activity":"Run hook tests with --no-file-parallelism"},
+                {"id":"2f438243b248645cd24f356c","n":14,"label":"review:listener","state":"coding","activity":"Editing listener.ts"},
+                {"id":"0fde93dbef73e5bbadd64051","n":15,"label":"review:product","state":"planning","activity":"Searching: SubagentStop payload fields"},
+                {"id":"f2a1bd024956b34ae8dca8db","n":16,"label":"review:server","state":"coding","activity":"Editing store.ts"},
+                {"id":"d0bc857c743573ba42f7591a","n":17,"label":"review:ios","state":"coding","activity":"Editing SessionCardView.swift"},
+                {"id":"ab7ded2567f5ac7ac905f077","n":18,"label":"review:android","state":"planning","activity":"Reading developer.android.com"},
+                {"id":"5d02973dc88279cb00964bd8","n":19,"label":"verify:hook","state":"testing","activity":"Run the hook suite — 214 tests"},
+                {"id":"4847f0afc440241b25eec65f","n":20,"label":"verify:server","state":"testing","activity":"npm test -- store"},
+                {"id":"90c2d294f975ed17708b8d34","n":21,"label":"verify:web","state":"coding","activity":"Editing card.css"},
+                {"id":"71d73939988e8fcf028e3eed","n":22,"label":"verify:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"}]}}
+                """#),
+            ("two", #"""
+                {"id":"seed-two","name":"Ship the store migration","status":"planning","message":"Draft release notes","project":"claude-status","source":"claude","host":null,"createdAt":1793209331631,"updatedAt":1793209331639,
+                "subtasks":{"turnEnded":false,"running":2,"blocked":0,"failed":0,"done":0,"items":[
+                {"id":"44a4dc7558ae7a432f86b923","n":1,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
+                {"id":"62668ff106691d43c7be2abe","n":2,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"}]}}
+                """#),
+            ("none", #"""
+                {"id":"seed-none","name":"Fix the iPad board layout","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331627,"updatedAt":1793209331630}
+                """#),
+        ]
+        // The line breaks taken out again: the server's own bytes.
+        let sent = frame.map { (scenario: $0.scenario, json: $0.json.replacingOccurrences(of: "\n", with: "")) }
+
+        // The frame as SSEClient decodes a snapshot: one array, where one
+        // session this build could not read would have cost the whole board.
+        let board = try? decoder.decode([Session].self,
+                                        from: Data("[\(sent.map(\.json).joined(separator: ","))]".utf8))
+        assert(board?.map(\.id) == sent.map { "seed-\($0.scenario)" }, "the snapshot decodes, every card in it")
+
+        for (scenario, json) in sent {
+            guard let session = try? decoder.decode(Session.self, from: Data(json.utf8)),
+                  let raw = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else {
+                assertionFailure("\(scenario): the session decodes")
+                continue
+            }
+            // Field for field what the server sent, set beside a reading of
+            // the same bytes with no tolerance in it: nothing a real server
+            // sends is dropped, defaulted or re-derived on the way in.
+            assert(session.status.rawValue == raw["status"] as? String && session.message == raw["message"] as? String
+                   && session.source == raw["source"] as? String, "\(scenario): the card's reading")
+            if let block = raw["subtasks"] as? [String: Any] {
+                let items = block["items"] as? [[String: Any]] ?? []
+                let subtasks = session.subtasks
+                assert(subtasks?.turnEnded == block["turnEnded"] as? Bool && subtasks?.running == block["running"] as? Int
+                       && subtasks?.blocked == block["blocked"] as? Int && subtasks?.failed == block["failed"] as? Int
+                       && subtasks?.done == block["done"] as? Int, "\(scenario): the counts as sent")
+                assert(subtasks?.items.count == items.count, "\(scenario): every item kept")
+                for (item, sentItem) in zip(subtasks?.items ?? [], items) {
+                    assert(item.id == sentItem["id"] as? String && item.n == sentItem["n"] as? Int
+                           && item.label == sentItem["label"] as? String
+                           && item.state.rawValue == sentItem["state"] as? String
+                           && item.activity == sentItem["activity"] as? String, "\(scenario): item \(item.n) as sent")
+                }
+                let ordinals = subtasks?.items.map(\.n) ?? []
+                assert(zip(ordinals, ordinals.dropFirst()).allSatisfy { $0 < $1 }, "\(scenario): in start order")
+            } else {
+                assert(session.subtasks == nil, "\(scenario): no block, today's card")
+            }
+            // WORKING on the one card whose turn is over while its subagents
+            // work; every other card wears the status it was sent.
+            assert(session.displayStatus == (scenario == "background" ? .working : DisplayStatus(session.status)),
+                   "\(scenario): display status")
+            assert((try? JSONEncoder().encode(session)).flatMap { try? decoder.decode(Session.self, from: $0) }
+                   == session, "\(scenario): round trip")
+        }
+
+        // What each card draws from them, in a column's three slots and under
+        // the phone's two: the rows on show by ordinal — the oldest, with
+        // every blocked one among them — and the footer. Then the session
+        // screen's counts. The web board reads the same footers off the same
+        // frame.
+        let drawn: [String: (column: [Int], columnFooter: String?, phone: [Int], phoneFooter: String?,
+                             counts: String)] = [
+            "two": ([1, 2], nil, [1, 2], nil, "2 running"),
+            "ten": ([13, 14, 15], "+7 more · 15 done", [13, 14], "+8 more · 15 done", "10 running"),
+            "thirty": ([187, 188, 189], "+27 more · 186 done", [187, 188], "+28 more · 186 done", "30 running"),
+            "blocked": ([13, 14, 19], "+7 more · 15 done", [13, 19], "+8 more · 15 done", "9 running · 1 blocked"),
+            "two-blocked": ([1, 3, 5], "+2 more", [3, 5], "+3 more", "3 running · 2 blocked"),
+            "failed": ([5, 6, 7], "4 done", [5, 6], "+1 more · 4 done", "2 running · 1 failed"),
+            "finished": ([], "12 done", [], "12 done", ""),
+            "background": ([4, 5], "3 done", [4, 5], "3 done", "2 running"),
+            "hold": ([], "3 done", [], "3 done", ""),
+            "minimal": ([3, 4, 5], "+1 more · 2 done", [3, 4], "+2 more · 2 done", "4 running"),
+            "codex": ([3, 4, 5], "2 done", [3, 4], "+1 more · 2 done", "3 running"),
+            "long": ([3, 4, 5], "2 done", [3, 4], "+1 more · 2 done", "3 running"),
+        ]
+        for session in board ?? [] {
+            let scenario = String(session.id.dropFirst("seed-".count))
+            guard let subtasks = session.subtasks else { continue }
+            guard let expected = drawn[scenario] else {
+                assertionFailure("\(scenario): a block with nothing to check it against")
+                continue
+            }
+            for (slots, phoneRules, rows, footer) in [(3, false, expected.column, expected.columnFooter),
+                                                     (2, true, expected.phone, expected.phoneFooter)] {
+                let shown = SubtaskSlots().resolved(for: [session], slots: slots, expanded: []).rows(for: session)
+                assert(shown.map(\.n) == rows, "\(scenario): the rows in \(slots) slots")
+                assert(SubtaskFooter.resolve(items: subtasks.items.count, shown: shown.count, done: subtasks.done,
+                                             slots: slots, open: false, phoneRules: phoneRules)?.text == footer,
+                       "\(scenario): the footer in \(slots) slots")
+            }
+            assert(SubtaskCopy.counts(running: subtasks.running, blocked: subtasks.blocked, failed: subtasks.failed)
+                   == expected.counts, "\(scenario): the session screen's counts")
+        }
+        // Opened in place, the ten show whole in start order, and fold back.
+        if let ten = board?.first(where: { $0.id == "seed-ten" }), let subtasks = ten.subtasks {
+            let open = SubtaskSlots().resolved(for: [ten], slots: 3, expanded: [ten.id]).rows(for: ten)
+            assert(open.map(\.n) == Array(13...22), "ten: open in place")
+            assert(SubtaskFooter.resolve(items: subtasks.items.count, shown: open.count, done: subtasks.done,
+                                         slots: 3, open: true, phoneRules: false)?.text == "Show less · 15 done",
+                   "ten: the open footer")
+        } else {
+            assertionFailure("ten: on the board")
+        }
+        // The session screen puts whoever waits on you first.
+        func screenOrder(_ id: String) -> [Int]? {
+            board?.first { $0.id == id }?.subtasks.map { SubtaskScreenRow.ordered($0.items).map(\.n) }
+        }
+        assert(screenOrder("seed-blocked") == [19, 13, 14, 15, 16, 17, 18, 20, 21, 22], "blocked: first on the screen")
+        assert(screenOrder("seed-two-blocked") == [3, 5, 1, 2, 4], "two blocked: first, in start order")
+
+        // The demo, which has no server, reads these subagents as this one
+        // did. A parent's own reading is what its last main-thread post said.
+        let owns: [(id: String, own: (status: AgentStatus, message: String))] = [
+            ("seed-background", (.done, "Turn finished")),
+            ("seed-blocked", (.planning, "Running workflow: review-and-verify")),
+            ("seed-two-blocked", (.planning, "Summarize the hook diff")),
+        ]
+        for (id, own) in owns {
+            let session = board?.first { $0.id == id }
+            assert(session.map { derived(own: own, items: $0.subtasks?.items ?? []) == ($0.status, $0.message) } == true,
+                   "\(id): the demo derives what the server did")
+        }
+    }
+
     /// Pairing, checked alongside the decoders above when demo mode starts in
     /// a debug build. The pair command is the one string this app tells the
     /// user to paste into a terminal, and three things keep it to the words
