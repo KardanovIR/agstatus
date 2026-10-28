@@ -1,0 +1,33 @@
+{
+  "about": "e_Stop_while_workflow_running: a running workflow, whose agents are never listed one by one.",
+  "context": [
+    {
+      "session_id": "b10dc3bd-70ff-435e-a81d-bbd8e635c41e",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "04116727684b3264eb403f6d",
+        "state": "planning",
+        "kind": "workflow",
+        "label": "echo:one",
+        "at": 1793139061654
+      }
+    }
+  ],
+  "requests": [
+    {
+      "session_id": "b10dc3bd-70ff-435e-a81d-bbd8e635c41e",
+      "name": "proj",
+      "status": "done",
+      "message": "Turn finished",
+      "project": "proj",
+      "source": "claude",
+      "turn": {
+        "phase": "end",
+        "running": [],
+        "workflows": 1
+      }
+    }
+  ]
+}

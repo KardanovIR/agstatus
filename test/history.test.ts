@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
+import crypto from 'crypto';
 import { makeApp, createWorkspace, webhookBody, TEST_PG_URL, suiteDatabaseUrl } from './helpers';
 import { MAX_EVENTS_PER_SESSION } from '../src/store';
 
@@ -81,6 +82,34 @@ describe('session history', () => {
     await request(app).post('/webhook').send(webhookBody('leg-1')).expect(200);
     const res = await request(app).get('/api/sessions/leg-1/history').expect(200);
     expect(res.body).toHaveLength(1);
+  });
+});
+
+describe('session history: subagents', () => {
+  it('a 30-agent drain after Stop records the running reading once, then the hold, then done', async () => {
+    const { app } = makeApp();
+    const token = await createWorkspace(app);
+    const post = (body: Record<string, unknown>) =>
+      request(app).post(`/w/${token}/webhook`).send({ session_id: 'drain', ...body }).expect(200);
+    const ids = Array.from({ length: 30 }, (_, i) => crypto.createHash('sha256').update(`agent ${i}`).digest('hex').slice(0, 24));
+    let at = Date.now();
+    const agent = (id: string, state: string) => post({ status: 'planning', agent: { id, state, at: (at += 1) } });
+
+    await post({ status: 'planning', message: 'Fan out thirty reviews', turn: { phase: 'start' } });
+    // Ten of each class, so the busiest flips from testing to coding to planning as they finish.
+    for (const [i, id] of ids.entries()) await agent(id, ['testing', 'coding', 'planning'][Math.floor(i / 10)]);
+    await post({ status: 'done', message: 'Turn finished', turn: { phase: 'end', running: ids, workflows: 0 } });
+    for (const id of ids) await agent(id, 'done');
+    await post({ status: 'planning', message: 'Reading subagent results' }); // the notification-only prompt
+    await post({ status: 'done', message: 'Turn finished', turn: { phase: 'end', running: [], workflows: 0 } });
+
+    const res = await request(app).get(`/w/${token}/api/sessions/drain/history`).expect(200);
+    expect(res.body.map((e: { status: string; message: string }) => `${e.status} · ${e.message}`)).toEqual([
+      'done · Turn finished',
+      'planning · Reading subagent results',
+      'testing · 30 subagents still running',
+      'planning · Fan out thirty reviews',
+    ]);
   });
 });
 

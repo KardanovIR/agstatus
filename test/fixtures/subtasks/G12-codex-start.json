@@ -1,0 +1,18 @@
+{
+  "about": "Codex SubagentStart; the rollout session_meta names the sub-agent \"Feynman\".",
+  "requests": [
+    {
+      "session_id": "019a2f3c-7d41-7c52-9e0b-3f6a1c2d4e5f",
+      "status": "planning",
+      "source": "codex",
+      "name": "proj",
+      "agent": {
+        "id": "8d9662e191f6438a40147b1e",
+        "state": "planning",
+        "kind": "codex",
+        "label": "Feynman",
+        "at": 1793139200000
+      }
+    }
+  ]
+}

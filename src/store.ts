@@ -1,6 +1,24 @@
 import crypto from 'crypto';
 import type { Pool } from 'pg';
-import { safeClip } from './subtasks';
+import {
+  afterApply,
+  AgentUpdate,
+  applyAgent,
+  applyMain,
+  blockedIds,
+  derive,
+  historyKey,
+  liveCount,
+  materialize,
+  MAX_LIVE_ROWS,
+  MAX_LIVE_ROWS_PER_WORKSPACE,
+  safeClip,
+  SubtaskState,
+  sweepState,
+  toWireSubtasks,
+  TurnHint,
+  WireSubtasks,
+} from './subtasks';
 
 export const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -102,10 +120,23 @@ export interface Session {
    * Lifetime tokens the agent's own logs attribute to this session, when the
    * board holds a total for it. Never part of the stored card: it arrives on
    * its own endpoint, is keyed by (source, id) rather than by the card, and
-   * is attached on the way out (see withTokens). Absent — not zero — when
+   * is attached on the way out (see toWire). Absent — not zero — when
    * nothing has been reported, so a card never claims a session spent nothing.
    */
   tokens?: number;
+  /**
+   * The session's running subagents, for clients. Like `tokens`, attached on
+   * the way out (toWire) and never stored as such; absent when there is
+   * nothing to show, which is every session of an older hook.
+   */
+  subtasks?: WireSubtasks;
+  /**
+   * Internal: the subtask state behind `subtasks` and behind the derived
+   * status and message (src/subtasks.ts). It lives on the stored object so
+   * that every path removing a session drops it too, and it is never
+   * serialized directly: toWire copies fields by name.
+   */
+  sub?: SubtaskState | null;
 }
 
 export interface UpsertInput {
@@ -118,6 +149,15 @@ export interface UpsertInput {
   source?: string;
   // undefined = carry forward, null = clear (the hook opted out), object = set
   host?: Host | null;
+  /**
+   * Present: an agent post, about one subagent of this session. Its `status`
+   * and `message` are for older servers and are not applied here.
+   */
+  agent?: AgentUpdate;
+  /** Main-thread posts only: where the parent's turn is (start, end, reset). */
+  turn?: TurnHint;
+  /** Main-thread blocked posts only: a prompt the hook could not pin on any thread. */
+  unattributed?: boolean;
 }
 
 export interface Device {
@@ -503,7 +543,10 @@ const HISTORY_READS_PER_MINUTE = 30;
  * its own, so one /64 is more addresses than anyone needs, and 500 IPv4
  * addresses reach the MAX_WORKSPACES default of 10,000 within an hour. Each
  * of those boards then brings the whole per-board allowance with it — 5,000
- * project days alone are ~1.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE) —
+ * project days alone are ~1.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE), and
+ * subtask state up to ~0.7 MB more for a pathological 50-card board: 256 live
+ * rows across the board (MAX_LIVE_ROWS_PER_WORKSPACE in subtasks.ts), plus 8
+ * failed rows and 64 tombs per card, at about 500 and 120 bytes each in V8 —
  * and a create-then-delete loop leaves a flagged workspaces row per turn
  * without ever nearing MAX_WORKSPACES. At 200 an hour, filling 10,000 takes
  * at least 50 hours from empty, however many addresses do it, and that loop
@@ -626,6 +669,9 @@ export class Store {
   // read) or cancelled with their session — and has not yet handed to app.ts,
   // so each gets exactly one command_ack broadcast.
   private unannounced: Command[] = [];
+  // Subtask states that have already logged turning a subagent away at a
+  // live-row cap. Weak, so the entry goes with the state.
+  private untrackedWarned = new WeakSet<SubtaskState>();
   private pool: Pool | null = null;
   // Writes are fire-and-forget but strictly ordered: each is chained onto this
   // queue so an upsert can never overtake the delete that preceded it.
@@ -1204,11 +1250,34 @@ export class Store {
     return existed;
   }
 
+  /**
+   * Applies one webhook post and returns the card as it now goes on the wire.
+   *
+   * A main-thread post (no `agent`) is the parent speaking: it sets the
+   * parent's own reading. An agent post updates one subagent row and never
+   * touches that reading. Either way the status and message stored and sent
+   * are the ones derived from the two (src/subtasks.ts), which for a session
+   * with no subagents is simply what the post said, exactly as before.
+   *
+   * `session` is null for a subagent's finish when the card is not on the
+   * board: nothing was stored. `newlyBlocked` is true when this post put a
+   * subagent (or the parent) into waiting on a card that ends up blocked —
+   * including one that was blocked already, which a status transition alone
+   * would miss: a row stays blocked until its agent's next class change, so a
+   * second approval would otherwise never be pushed.
+   */
   upsertSession(
     wsId: string,
     input: UpsertInput,
     maxSessions: number
-  ): { session: Session; evictedId: string | null; prevStatus: Status | null } {
+  ): { session: Session | null; evictedId: string | null; prevStatus: Status | null; newlyBlocked: boolean } {
+    const agent = input.agent;
+    // A finish for a card that is not on the board (never seen, dismissed,
+    // evicted, expired, ended): there is nothing live to show, and a card made
+    // from it would be a ghost no later post updates. No upsert at all.
+    if (agent && (agent.state === 'done' || agent.state === 'failed') && !this.sessions.get(wsId)?.has(input.id)) {
+      return { session: null, evictedId: null, prevStatus: null, newlyBlocked: false };
+    }
     let map = this.sessions.get(wsId);
     if (!map) {
       map = new Map();
@@ -1223,11 +1292,48 @@ export class Store {
 
     const now = Date.now();
     const prev = map.get(input.id);
+
+    // With no subtask state, the stored reading IS the parent's own.
+    const ownBefore = prev ? (prev.sub ? prev.sub.own.status : prev.status) : null;
+    const blockedBefore = prev?.sub ? blockedIds(prev.sub) : new Set<string>();
+    let st = prev?.sub ?? null;
+    let status: Status = input.status;
+    let message = '';
+    if (agent) {
+      // The post's own status is its compat reading, for older servers. A card
+      // it creates starts idle, never in that status: a blocked agent then
+      // reads "Needs approval: …", and the card goes back to idle when the
+      // agent unblocks.
+      st ??= prev ? materialize(prev.status, prev.message) : materialize('idle', '');
+      if (applyAgent(st, agent, now, this.liveRowsIn(wsId)) === 'untracked') this.warnUntracked(st);
+    } else {
+      message = input.message !== undefined ? input.message : st ? st.own.message : prev?.message ?? '';
+      if (st) {
+        applyMain(st, { status: input.status, message, unattributed: input.unattributed, turn: input.turn }, now);
+      }
+    }
+    let ownAfter: Status = status;
+    if (st) {
+      const kept = afterApply(st, now);
+      // Derived from the state as applied, even when afterApply let it go:
+      // an empty state derives own, which is then the stored reading again.
+      ({ status, message } = derive(st));
+      ownAfter = st.own.status;
+      st = kept;
+    }
+    const blockedAfter = st ? blockedIds(st) : new Set<string>();
+    const newlyBlocked =
+      status === 'blocked' &&
+      ([...blockedAfter].some((id) => !blockedBefore.has(id)) || (ownAfter === 'blocked' && ownBefore !== 'blocked'));
+
     const session: Session = {
       id: input.id,
-      name: input.name !== undefined ? input.name || prev?.name || input.id : prev?.name || input.id,
-      status: input.status,
-      message: input.message !== undefined ? input.message : prev?.message ?? '',
+      // An agent post names only a card it creates.
+      name: agent && prev
+        ? prev.name
+        : input.name !== undefined ? input.name || prev?.name || input.id : prev?.name || input.id,
+      status,
+      message,
       project: input.project !== undefined ? input.project : prev?.project ?? '',
       source: input.source ?? prev?.source ?? 'claude',
       // Always a key (null, never undefined) so the wire shape is stable.
@@ -1235,6 +1341,7 @@ export class Store {
       createdAt: prev?.createdAt ?? now,
       updatedAt: now,
     };
+    if (st) session.sub = st;
 
     let evictedId: string | null = null;
     if (!prev && map.size >= maxSessions) {
@@ -1259,10 +1366,18 @@ export class Store {
 
     map.set(session.id, session);
     // Timeline: record real transitions, not keep-alive re-posts of the same
-    // status+message (PreToolUse fires between every tool call).
-    if (!prev || prev.status !== session.status || prev.message !== session.message) {
+    // status+message (PreToolUse fires between every tool call). Compared by
+    // historyKey, which gives every "N subagents still running" one key: a
+    // drain of thirty subagents is one reading on the timeline, not thirty.
+    if (!prev || historyKey(prev.status, prev.message) !== historyKey(session.status, session.message)) {
       this.recordEvent(wsId, session.id, session.status, session.message, now);
     }
+    this.persistSession(wsId, session);
+    return { session: this.toWire(wsId, session), evictedId, prevStatus: prev?.status ?? null, newlyBlocked };
+  }
+
+  /** Writes the whole sessions row. Memory stays authoritative. */
+  private persistSession(wsId: string, session: Session): void {
     this.exec(
       `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -1283,7 +1398,65 @@ export class Store {
         session.updatedAt,
       ]
     );
-    return { session: this.withTokens(wsId, session), evictedId, prevStatus: prev?.status ?? null };
+  }
+
+  /** Live subtask rows across a board, for MAX_LIVE_ROWS_PER_WORKSPACE. */
+  private liveRowsIn(wsId: string): number {
+    let n = 0;
+    for (const s of this.sessions.get(wsId)?.values() ?? []) {
+      if (s.sub) n += liveCount(s.sub);
+    }
+    return n;
+  }
+
+  /** Says once per state that a live-row cap turned a subagent away. */
+  private warnUntracked(st: SubtaskState): void {
+    if (this.untrackedWarned.has(st)) return;
+    this.untrackedWarned.add(st);
+    console.warn(
+      `Subtasks: a session reached a live-row cap (${MAX_LIVE_ROWS} per card, ` +
+      `${MAX_LIVE_ROWS_PER_WORKSPACE} per board); its further subagents are not listed`
+    );
+  }
+
+  /**
+   * The subtask sweep, which app.ts runs every SUBTASK_SWEEP_MS in both modes:
+   * sweepState over every session that has state. A session whose wire reading
+   * moved gets the derived status and message, updatedAt + 1 (enough to win a
+   * REST tie on every client, without reordering the grid or resetting its
+   * "12m ago"), a timeline event when the history key moved, and a place in
+   * the list returned, for app.ts to broadcast and hand to the pusher with its
+   * previous status. A state that changed without the wire moving (a tomb
+   * retiring) is only written.
+   */
+  sweepSubtasks(now: number = Date.now()): Array<{ wsId: string; session: Session; prevStatus: Status }> {
+    const moved: Array<{ wsId: string; session: Session; prevStatus: Status }> = [];
+    for (const [wsId, map] of this.sessions) {
+      for (const s of map.values()) {
+        const st = s.sub;
+        if (!st) continue;
+        const wireBefore = JSON.stringify(toWireSubtasks(st));
+        const swept = sweepState(st, now);
+        if (!swept.changed) continue;
+        const { status, message } = derive(st);
+        const wireAfter = JSON.stringify(swept.state ? toWireSubtasks(swept.state) : null);
+        if (swept.state) s.sub = swept.state;
+        else delete s.sub;
+        const prevStatus = s.status;
+        const prevMessage = s.message;
+        if (status !== prevStatus || message !== prevMessage || wireAfter !== wireBefore) {
+          s.status = status;
+          s.message = message;
+          s.updatedAt += 1;
+          if (historyKey(prevStatus, prevMessage) !== historyKey(status, message)) {
+            this.recordEvent(wsId, s.id, status, message, now);
+          }
+          moved.push({ wsId, session: this.toWire(wsId, s), prevStatus });
+        }
+        this.persistSession(wsId, s);
+      }
+    }
+    return moved;
   }
 
   /**
@@ -1739,18 +1912,35 @@ export class Store {
   }
 
   /**
-   * The card as it goes on the wire: the stored session plus whatever total is
-   * held under its (source, id). The key is absent, not zero, when nothing has
-   * been reported — a board with usage reporting off, an agent other than
-   * Claude or Codex, or a session whose total aged out all look the same to a
-   * client, and none of them means "this session spent nothing".
+   * The card as it goes on the wire: a fresh object, built field by field in
+   * the order clients have always received, then `tokens` and `subtasks` when
+   * there is anything for them. A card with neither emits exactly the JSON it
+   * did before either existed, and nothing internal can ride along — the
+   * subtask state above all, which lives on the stored object.
    *
-   * The stored object is returned unchanged in that case, so a board that
-   * never receives a total emits exactly the frames it emitted before.
+   * `tokens` is whatever total is held under the card's (source, id). The key
+   * is absent, not zero, when nothing has been reported — a board with usage
+   * reporting off, an agent other than Claude or Codex, or a session whose
+   * total aged out all look the same to a client, and none of them means "this
+   * session spent nothing".
    */
-  private withTokens(wsId: string, session: Session): Session {
+  private toWire(wsId: string, session: Session): Session {
+    const wire: Session = {
+      id: session.id,
+      name: session.name,
+      status: session.status,
+      message: session.message,
+      project: session.project,
+      source: session.source,
+      host: session.host ?? null,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+    };
     const tokens = this.getSessionTokens(wsId, session.source, session.id);
-    return tokens === null ? session : { ...session, tokens };
+    if (tokens !== null) wire.tokens = tokens;
+    const subtasks = session.sub ? toWireSubtasks(session.sub) : null;
+    if (subtasks) wire.subtasks = subtasks;
+    return wire;
   }
 
   /** Current plan usage for a workspace, freshest first. Stale entries are dropped. */
@@ -1817,13 +2007,13 @@ export class Store {
 
   getSession(wsId: string, id: string): Session | null {
     const session = this.sessions.get(wsId)?.get(id);
-    return session ? this.withTokens(wsId, session) : null;
+    return session ? this.toWire(wsId, session) : null;
   }
 
   getSessions(wsId: string): Session[] {
     const map = this.sessions.get(wsId);
     if (!map) return [];
-    return Array.from(map.values(), (s) => this.withTokens(wsId, s)).sort(
+    return Array.from(map.values(), (s) => this.toWire(wsId, s)).sort(
       (a, b) => b.updatedAt - a.updatedAt
     );
   }

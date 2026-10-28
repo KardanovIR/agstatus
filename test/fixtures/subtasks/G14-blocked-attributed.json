@@ -1,0 +1,35 @@
+{
+  "about": "d2_PermissionRequest_inside_subagent left a marker; the Notification claims it, and the agent is blocked. context: the start that preceded it.",
+  "context": [
+    {
+      "session_id": "fdabcccc-3f36-4fed-9029-f326702a365b",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "b306b65af647c0cab171aec0",
+        "state": "planning",
+        "kind": "agent",
+        "label": "try touch",
+        "at": 1793138921000
+      }
+    }
+  ],
+  "requests": [
+    {
+      "session_id": "fdabcccc-3f36-4fed-9029-f326702a365b",
+      "status": "blocked",
+      "message": "Claude needs your permission to use Bash",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "b306b65af647c0cab171aec0",
+        "state": "blocked",
+        "kind": "agent",
+        "label": "try touch",
+        "activity": "Approve: Create empty file denied-probe.txt",
+        "at": 1793138932500
+      }
+    }
+  ]
+}

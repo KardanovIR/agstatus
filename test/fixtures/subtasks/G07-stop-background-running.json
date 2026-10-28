@@ -1,0 +1,20 @@
+{
+  "about": "c_Stop_while_bg_running: background_tasks lists one running subagent.",
+  "requests": [
+    {
+      "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+      "name": "proj",
+      "status": "done",
+      "message": "Turn finished",
+      "project": "proj",
+      "source": "claude",
+      "turn": {
+        "phase": "end",
+        "running": [
+          "fac377eb5e21506535baeb49"
+        ],
+        "workflows": 0
+      }
+    }
+  ]
+}

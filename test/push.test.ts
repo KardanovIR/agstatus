@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
 import http2 from 'http2';
@@ -14,6 +14,7 @@ import {
 import { Pusher } from '../src/push';
 import { configFromEnv } from '../src/config';
 import type { AppConfig, Session } from '../src/app';
+import { LIVE_STALE_MS, REPORT_HOLD_MS, SUBTASK_SWEEP_MS } from '../src/subtasks';
 
 // ---- test APNs credentials --------------------------------------------------
 
@@ -672,5 +673,138 @@ describe('push transport resilience', () => {
     } finally {
       pusher.shutdown();
     }
+  });
+});
+
+// ---- subtasks ---------------------------------------------------------------
+// A subagent's state reaches the push through the card's derived status: a
+// blocked subagent makes the card blocked, with the server's own line as the
+// body, and the done push waits for the turn to be over, report turn included.
+
+describe('push: subagents', () => {
+  const agentKey = (seed: string): string => crypto.createHash('sha256').update(seed).digest('hex').slice(0, 24);
+  const A = agentKey('review');
+  const B = agentKey('verify');
+  const X = agentKey('background');
+  let clock = Date.now();
+
+  /** A board with one device, its webhook, and a clock the test moves. */
+  async function pushBoard(mock: MockApns, notifyDone = false) {
+    clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const t = makeApp({ apns: apnsCfg(mock.url) });
+    const token = await createWorkspace(t.app);
+    await request(t.app).post(`/w/${token}/devices`).send(registerBody(DEVICE_A, { notify_done: notifyDone })).expect(200);
+    const post = (body: Record<string, unknown>) => request(t.app).post(`/w/${token}/webhook`).send(body).expect(200);
+    const main = (status: string, message: string, extra: Record<string, unknown> = {}) =>
+      post({ session_id: 'sub-1', name: 'Fan out', status, message, ...extra });
+    const sub = (id: string, state: string, extra: Record<string, unknown> = {}) =>
+      post({ session_id: 'sub-1', status: state === 'done' ? 'planning' : state, agent: { id, state, at: clock, ...extra } });
+    return { ...t, token, post, main, sub };
+  }
+  const bodies = (mock: MockApns) =>
+    mock.requests.map((r) => (r.body as { aps: { alert: { title: string; body: string } } }).aps.alert);
+  // waitFor() above reads Date.now(), which these tests hold still.
+  async function arrived(fn: () => boolean, what: string): Promise<void> {
+    const deadline = performance.now() + 2000;
+    while (!fn()) {
+      if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await sleep(10);
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('a blocked subagent pushes once, with "Needs approval: <label>" and the same aps keys', async () => {
+    const mock = await mockApns();
+    const b = await pushBoard(mock);
+    await b.main('coding', 'Editing app.ts');
+    await b.sub(A, 'planning', { label: 'review:hook' });
+    await b.sub(A, 'blocked', { activity: 'Approve: Run the hook suite' }); // the card turns blocked
+    await arrived(() => mock.requests.length === 1, 'the blocked push');
+    await b.sub(A, 'blocked'); // the same row again: nothing new
+    await sleep(150);
+
+    expect(mock.requests).toHaveLength(1);
+    const body = mock.requests[0].body as { aps: Record<string, unknown> };
+    expect(Object.keys(body)).toEqual(['aps']);
+    expect(Object.keys(body.aps).sort()).toEqual(['alert', 'category', 'sound', 'thread-id']);
+    expect(body.aps.alert).toEqual({ title: 'Fan out needs input', body: 'Needs approval: review:hook' });
+  });
+
+  it('a second subagent waiting 90 s later, while the first still waits, pushes again', async () => {
+    const mock = await mockApns();
+    const b = await pushBoard(mock);
+    await b.main('coding', 'Editing app.ts');
+    await b.sub(A, 'planning', { label: 'review:hook' });
+    await b.sub(B, 'planning', { label: 'verify:hook' });
+    await b.sub(A, 'blocked');
+    await arrived(() => mock.requests.length === 1, 'the first push');
+    clock += 90_000;
+    await b.sub(B, 'blocked');
+    await arrived(() => mock.requests.length === 2, 'the second push');
+    expect(bodies(mock).map((a) => a.body)).toEqual(['Needs approval: review:hook', 'Needs approval: review:hook +1']);
+  });
+
+  it('a second subagent waiting 30 s after the first push is inside the debounce', async () => {
+    const mock = await mockApns();
+    const b = await pushBoard(mock);
+    await b.main('coding', 'Editing app.ts');
+    await b.sub(A, 'blocked', { label: 'review:hook' });
+    await arrived(() => mock.requests.length === 1, 'the first push');
+    clock += 30_000;
+    await b.sub(B, 'blocked', { label: 'verify:hook' });
+    await sleep(150);
+    expect(mock.requests).toHaveLength(1);
+  });
+
+  it('no done push while a background subagent runs or during the hold, then one at the report turn\'s Stop', async () => {
+    const mock = await mockApns();
+    const b = await pushBoard(mock, true);
+    await b.main('planning', 'Run it in the background', { turn: { phase: 'start' } });
+    await b.sub(X, 'coding', { label: 'bg echo' });
+    await b.main('done', 'Turn finished', { turn: { phase: 'end', running: [X], workflows: 0 } });
+    await b.sub(X, 'done'); // the hold: "Reading subagent results"
+    await b.main('planning', 'Reading subagent results'); // the notification-only prompt
+    await b.main('coding', 'Summarizing');
+    await sleep(150);
+    expect(mock.requests).toHaveLength(0);
+
+    await b.main('done', 'Turn finished', { turn: { phase: 'end', running: [], workflows: 0 } });
+    await arrived(() => mock.requests.length === 1, 'the done push');
+    await sleep(150);
+    expect(mock.requests).toHaveLength(1);
+    expect(bodies(mock)[0]).toEqual({ title: 'Fan out is done', body: 'Turn finished' });
+  });
+
+  it('a hold the sweep releases pushes done once; an expiry that leaves the card working does not push', async () => {
+    // The sweep runs on the app's own interval, so that interval is the one
+    // driven here; everything else keeps real timers.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const mock = await mockApns();
+    const b = await pushBoard(mock, true);
+    await b.main('planning', 'Go', { turn: { phase: 'start' } });
+    await b.sub(X, 'coding', { label: 'bg echo' });
+    await b.main('done', 'Turn finished', { turn: { phase: 'end', running: [X], workflows: 0 } });
+    await b.sub(X, 'done');
+    await b.post({ session_id: 'busy', name: 'Busy', status: 'coding', message: 'Editing app.ts' });
+    await b.post({ session_id: 'busy', status: 'coding', agent: { id: A, state: 'coding', at: clock } });
+
+    clock += REPORT_HOLD_MS + 1;
+    vi.advanceTimersByTime(SUBTASK_SWEEP_MS);
+    await arrived(() => mock.requests.length === 1, 'the done push');
+    expect(bodies(mock)[0]).toEqual({ title: 'Fan out is done', body: 'Turn finished' });
+
+    clock += LIVE_STALE_MS + 1;
+    vi.advanceTimersByTime(SUBTASK_SWEEP_MS);
+    await sleep(150);
+    expect(mock.requests).toHaveLength(1);
+    const busy = (await request(b.app).get(`/w/${b.token}/api/sessions`).expect(200)).body
+      .find((s: { id: string }) => s.id === 'busy');
+    expect(busy).toMatchObject({ status: 'coding', message: 'Editing app.ts' });
+    expect(busy).not.toHaveProperty('subtasks');
   });
 });

@@ -26,13 +26,14 @@ import {
   MAX_USAGE_WINDOWS,
   normalizeHost,
   PAIR_CODE_TTL_MS,
+  Session,
   STATUSES,
   Status,
   Store,
   UpsertInput,
   UsageWindow,
 } from './store';
-import { safeClip } from './subtasks';
+import { AGENT_FRAME_THROTTLE_MS, parseAgent, parseTurn, safeClip, SUBTASK_SWEEP_MS } from './subtasks';
 
 export type { AppConfig } from './config';
 export { Store, STATUSES } from './store';
@@ -126,6 +127,10 @@ const frame = (event: string, data: unknown): string =>
  */
 const clean = (v: unknown, max: number): string | undefined =>
   typeof v === 'string' ? safeClip(v.replace(CONTROL_CHARS_RE, ''), max) : undefined;
+
+const AGENT_ERROR =
+  'agent must be an object with id matching ^[A-Za-z0-9._:-]{1,64}$ ' +
+  'and state one of planning, coding, testing, blocked, done, failed';
 
 /**
  * Validates the `host` field of a webhook. undefined = absent (carry forward),
@@ -302,13 +307,71 @@ export function createApp(cfg: AppConfig): CreatedApp {
     for (const cmd of cmds) broadcast(cmd.wsId, 'command_ack', ackPayload(cmd));
   }
 
+  // Per session, wsId → session id → when its last `session` frame went out,
+  // and the trailing agent frame waiting to go, if any. Only the last
+  // AGENT_FRAME_THROTTLE_MS matter, so the subtask sweep forgets older marks.
+  const frameMarks = new Map<string, Map<string, { lastAt: number; trailing: NodeJS.Timeout | null }>>();
+
+  /** A `session` frame, now. It supersedes a trailing agent frame the session had waiting. */
+  function broadcastSession(wsId: string, session: Session): void {
+    let marks = frameMarks.get(wsId);
+    if (!marks) {
+      marks = new Map();
+      frameMarks.set(wsId, marks);
+    }
+    const mark = marks.get(session.id);
+    if (mark?.trailing) clearTimeout(mark.trailing);
+    marks.set(session.id, { lastAt: Date.now(), trailing: null });
+    broadcast(wsId, 'session', session);
+  }
+
+  /**
+   * The frame for an agent post, throttled per session. A subagent burst would
+   * otherwise send every viewer a frame of up to ~9.5 KB per post: thirty
+   * agents starting inside a second, on fifteen streams. So the frame goes at
+   * once only when the card's status changed or the session had no frame in the
+   * last AGENT_FRAME_THROTTLE_MS; otherwise one trailing frame goes when that
+   * window closes, carrying the session as it is by then. A 10-agent burst
+   * inside a second is at most four frames. The webhook's answer and the push
+   * decision are never held back by this.
+   */
+  function sendAgentFrame(wsId: string, session: Session, prevStatus: Status | null): void {
+    const mark = frameMarks.get(wsId)?.get(session.id);
+    const now = Date.now();
+    if (!mark || session.status !== prevStatus || now - mark.lastAt >= AGENT_FRAME_THROTTLE_MS) {
+      broadcastSession(wsId, session);
+      return;
+    }
+    if (mark.trailing) return;
+    mark.trailing = setTimeout(() => {
+      mark.trailing = null;
+      const current = store.getSession(wsId, session.id);
+      if (current) broadcastSession(wsId, current);
+    }, AGENT_FRAME_THROTTLE_MS - (now - mark.lastAt));
+    mark.trailing.unref();
+  }
+
+  /** Drops the frame marks of one session, or of a whole workspace, and any trailing frame with them. */
+  function forgetFrames(wsId: string, id?: string): void {
+    const marks = frameMarks.get(wsId);
+    if (!marks) return;
+    for (const [sessionId, mark] of Array.from(marks)) {
+      if (id !== undefined && sessionId !== id) continue;
+      if (mark.trailing) clearTimeout(mark.trailing);
+      marks.delete(sessionId);
+    }
+    if (marks.size === 0) frameMarks.delete(wsId);
+  }
+
   /** A session left the board: viewers drop the card, and the taps still waiting on it fail. */
   function announceRemoved(wsId: string, id: string): void {
+    forgetFrames(wsId, id);
     broadcast(wsId, 'remove', { id });
     announceAcks(store.takeFinishedCommands());
   }
 
   function closeStreams(wsId: string): void {
+    forgetFrames(wsId);
     const clients = sseClients.get(wsId);
     if (clients) {
       for (const res of Array.from(clients)) {
@@ -444,6 +507,14 @@ export function createApp(cfg: AppConfig): CreatedApp {
       });
       return;
     }
+    // A subagent's own post. Refused when malformed, like host: its top-level
+    // status is the compat reading for older servers, and applying that as if
+    // it were the parent's would be wrong.
+    const agent = parseAgent(body.agent, Date.now());
+    if (agent === 'invalid') {
+      res.status(400).json({ error: AGENT_ERROR });
+      return;
+    }
     const input: UpsertInput = {
       id,
       status: body.status,
@@ -453,12 +524,30 @@ export function createApp(cfg: AppConfig): CreatedApp {
       source: body.source as string | undefined,
       host,
     };
+    if (agent) {
+      input.agent = agent;
+    } else {
+      // Main-thread only, and dropped rather than refused when malformed: the
+      // post also carries the parent's own update, which must not be lost.
+      const turn = parseTurn(body.turn);
+      if (turn) input.turn = turn;
+      if (body.unattributed === true && body.status === 'blocked') input.unattributed = true;
+    }
     const max = cfg.multiTenant ? MAX_SESSIONS_PER_WORKSPACE : Infinity;
-    const { session, evictedId, prevStatus } = store.upsertSession(wsId, input, max);
+    const { session, evictedId, prevStatus, newlyBlocked } = store.upsertSession(wsId, input, max);
+    if (!session) {
+      // A subagent's finish for a card that is not on the board: nothing was
+      // stored, so there is nothing to broadcast or push.
+      res.json({ ok: true, session: null });
+      return;
+    }
     if (evictedId) announceRemoved(wsId, evictedId);
-    broadcast(wsId, 'session', session);
-    // Fire-and-forget: enqueues async APNs work, never throws or blocks.
-    pusher.notifyTransition(wsId, session, prevStatus);
+    if (agent) sendAgentFrame(wsId, session, prevStatus);
+    else broadcastSession(wsId, session);
+    // Fire-and-forget: enqueues async APNs work, never throws or blocks. A
+    // null previous status pushes a blocked card again (push.ts treats it as
+    // new): a second subagent waiting on a card already blocked is news too.
+    pusher.notifyTransition(wsId, session, newlyBlocked ? null : prevStatus);
     res.json({ ok: true, session });
   }
 
@@ -529,7 +618,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
    * other, and neither is a share of any plan limit.
    *
    * The card is where this number is read, so a stored total is attached to
-   * the session on its way out (Store.withTokens) and the cards that moved are
+   * the session on its way out (Store.toWire) and the cards that moved are
    * rebroadcast below. That keeps SSE the one delivery path for anything a
    * card shows: no second stream to join, no polling, and a client that has
    * never heard of the field simply ignores it.
@@ -599,7 +688,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
     const { changed, stored, refused } = store.setSessionTotals(wsId, source, rows);
     for (const id of changed) {
       const session = store.getSession(wsId, id);
-      if (session && session.source === source) broadcast(wsId, 'session', session);
+      if (session && session.source === source) broadcastSession(wsId, session);
     }
     // `refused`: new ids the board had no room for (see setSessionTotals).
     res.json({ ok: true, sessions: stored, refused });
@@ -973,6 +1062,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
     app.post('/sessions/clear', requireSecret, (_req, res) => {
       store.clearSessions(LEGACY_WS);
+      forgetFrames(LEGACY_WS);
       broadcast(LEGACY_WS, 'snapshot', []);
       announceAcks(store.takeFinishedCommands());
       res.json({ ok: true });
@@ -1298,6 +1388,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       const wsId = resolveWs(req, res);
       if (!wsId) return;
       store.clearSessions(wsId);
+      forgetFrames(wsId);
       broadcast(wsId, 'snapshot', []);
       announceAcks(store.takeFinishedCommands());
       res.json({ ok: true });
@@ -1360,6 +1451,27 @@ export function createApp(cfg: AppConfig): CreatedApp {
   commandSweep.unref();
   timers.push(commandSweep);
 
+  // Subtask rows nobody closed, report holds nobody ended, idle tallies
+  // (Store.sweepSubtasks). Its own interval and in both modes: the TTL sweep
+  // below never runs in legacy mode, where sessionTtlMs is 0, and rows must
+  // expire whatever the card's TTL. Frame marks older than the throttle window
+  // are forgotten on the same tick.
+  const subtaskSweep = setInterval(() => {
+    const now = Date.now();
+    for (const { wsId, session, prevStatus } of store.sweepSubtasks(now)) {
+      broadcastSession(wsId, session);
+      pusher.notifyTransition(wsId, session, prevStatus);
+    }
+    for (const [wsId, marks] of Array.from(frameMarks)) {
+      for (const [id, mark] of Array.from(marks)) {
+        if (!mark.trailing && now - mark.lastAt >= AGENT_FRAME_THROTTLE_MS) marks.delete(id);
+      }
+      if (marks.size === 0) frameMarks.delete(wsId);
+    }
+  }, SUBTASK_SWEEP_MS);
+  subtaskSweep.unref();
+  timers.push(subtaskSweep);
+
   if (cfg.sessionTtlMs > 0) {
     const sweep = setInterval(() => {
       for (const { wsId, id } of store.sweepExpiredSessions(cfg.sessionTtlMs)) {
@@ -1388,6 +1500,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
   function shutdown(): Promise<void> {
     for (const t of timers) clearInterval(t);
+    for (const wsId of Array.from(frameMarks.keys())) forgetFrames(wsId);
     endStreams();
     pusher.shutdown();
     // Drains queued writes then closes the pool; nothing left to surface here.

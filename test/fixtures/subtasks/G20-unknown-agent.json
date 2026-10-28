@@ -1,0 +1,13 @@
+{
+  "about": "Agent-tagged PreToolUse for an agent with no local state: the 1.6.3 path, a main-thread body with no agent and no host.",
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "name": "proj",
+      "status": "coding",
+      "message": "Say hi",
+      "project": "proj",
+      "source": "claude"
+    }
+  ]
+}

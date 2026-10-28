@@ -1,0 +1,32 @@
+{
+  "about": "PostToolUse(Agent) async_launched whose description differs from the label already sent (none, here): one label post. context: the unlabelled start.",
+  "context": [
+    {
+      "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "fac377eb5e21506535baeb49",
+        "state": "planning",
+        "kind": "agent",
+        "at": 1793138845219
+      }
+    }
+  ],
+  "requests": [
+    {
+      "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "fac377eb5e21506535baeb49",
+        "state": "planning",
+        "kind": "agent",
+        "label": "bg echo",
+        "at": 1793138845221
+      }
+    }
+  ]
+}

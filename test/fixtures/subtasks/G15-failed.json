@@ -1,0 +1,62 @@
+{
+  "about": "PostToolUseFailure for a bound launch: failed with the first line of the error; with is_interrupt, \"Stopped\" (interrupt). The spec body carries no kind. context: the start and first class change.",
+  "context": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "planning",
+        "kind": "agent",
+        "label": "Run echo alpha",
+        "at": 1793138688551
+      }
+    },
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "coding",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "coding",
+        "kind": "agent",
+        "label": "Run echo alpha",
+        "activity": "Print alpha",
+        "at": 1793138690842
+      }
+    }
+  ],
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "coding",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "failed",
+        "label": "Run echo alpha",
+        "activity": "Failed: Agent type \"reviewer\" not found",
+        "at": 1793138691500
+      }
+    }
+  ],
+  "interrupt": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "coding",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "failed",
+        "label": "Run echo alpha",
+        "activity": "Stopped",
+        "at": 1793138691500
+      }
+    }
+  ]
+}

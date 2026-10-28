@@ -1,0 +1,18 @@
+{
+  "about": "a_SubagentStart right after G01: the start, labelled from the launch claim.",
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "planning",
+        "kind": "agent",
+        "label": "Run echo alpha",
+        "at": 1793138688551
+      }
+    }
+  ]
+}
