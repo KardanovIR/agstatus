@@ -231,9 +231,10 @@ struct Subtask: Identifiable, Equatable, Codable, Sendable {
     /// which in minimal mode is always. The server fills that in, never blank.
     var label: String
     var state: SubtaskState
-    /// What it is doing, as of its last change of state; may be empty. A
-    /// subagent posts only when it starts, stops or changes state, so this is
-    /// what it last changed to, not a live feed.
+    /// What it is doing, as of its last post; may be empty. A subagent posts
+    /// when it starts, stops or changes state, and within a state at most once
+    /// a minute, when what it does has changed — so this is what it last
+    /// reported, not a live feed.
     var activity: String
 
     init(id: String, n: Int, label: String, state: SubtaskState, activity: String) {
@@ -434,10 +435,11 @@ extension Session {
 
     /// A card with a subagent running is never dimmed as stale.
     ///
-    /// Subagents post only when they start, stop or change state, so one can
-    /// work in silence for many minutes and the card's timestamp stands
-    /// still. Silence is not a sign of death here: the server closes rows that
-    /// really went quiet, and it is the authority on whether they are alive.
+    /// Within one state a subagent posts at most once a minute, and only when
+    /// what it does changes, so one in a long command can work in silence for
+    /// many minutes and the card's timestamp stands still. Silence is not a
+    /// sign of death here: the server closes rows that really went quiet, and
+    /// it is the authority on whether they are alive.
     var isStaleExempt: Bool {
         (subtasks?.running ?? 0) > 0
     }

@@ -1035,11 +1035,11 @@ enum DemoData {
     }
 
     /// The card with subagents, a tick on: one starts, one finishes, or one is
-    /// blocked — or let go, if one already is. Nothing else about them changes,
-    /// because nothing else would reach the board: a subagent posts only when
-    /// it starts, stops or changes state, and an activity changing within its
-    /// state is never sent. After its turn a parent starts nothing, and Codex
-    /// never runs more than three.
+    /// blocked — or let go, if one already is. Those are what move a row, and
+    /// nothing else about them changes here. A subagent also posts what it is
+    /// doing within its state, at most once a minute, but that is written in
+    /// place and moves nothing. After its turn a parent starts nothing, and
+    /// Codex never runs more than three.
     private static func advanceSubtasks(_ session: Session, on board: SubtaskBoard, at now: Int64) -> Session {
         guard let subtasks = session.subtasks else { return session }
         var items = subtasks.items
@@ -1336,8 +1336,8 @@ enum DemoData {
         ]
         for (index, row) in readings.enumerated() {
             assert(row.0.displayStatus == row.1, "display status, row \(index)")
-            // Stale is never applied while a subagent runs: it posts only on
-            // a change of state, and the server is the judge of its silence.
+            // Stale is never applied while a subagent runs: it can work in
+            // silence for minutes, and the server is the judge of that.
             assert(row.0.isStaleExempt == row.2, "stale exemption, row \(index)")
         }
         assert(DisplayStatus.working.isActive && DisplayStatus.coding.isActive && !DisplayStatus.done.isActive,

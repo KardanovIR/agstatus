@@ -271,7 +271,8 @@ private struct SubtaskRow: View {
 extension SubtaskState {
     /// What a row's state cell re-enters on: into or out of blocked, and into
     /// failed. Planning, coding and testing share one value, because under the
-    /// hook's flood rule every post after a start IS a change of class, and
+    /// hook's flood rule nearly every post after a start is a change of class
+    /// (the rest are a once-a-minute activity, which changes no state), and
     /// animating each would move rows almost continuously.
     var entryKey: Int {
         switch self {
