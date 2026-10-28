@@ -2829,9 +2829,15 @@ const SUBTASK_AGES_MS = {
 // A whole session directory goes after a day without a write. Codex never
 // sends SessionEnd, so its directories only ever leave this way.
 const SUBTASK_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Pruning is bounded per run, like every other read on an event.
+// Pruning is bounded per run, like every other read on an event: entries and
+// sibling directories examined, sibling directories removed (each can hold a
+// few thousand files), and time. It runs after the event's posts have gone
+// out, but Stop is a synchronous hook, so Claude Code still waits for it;
+// whatever a run leaves is the next run's.
 const SUBTASK_PRUNE_MAX_ENTRIES = 512;
 const SUBTASK_PRUNE_MAX_SESSIONS = 64;
+const SUBTASK_PRUNE_MAX_REMOVALS = 4;
+const SUBTASK_PRUNE_BUDGET_MS = 200;
 // What minimal mode may say a subagent is doing: tool names that describe
 // nothing of the work. An MCP tool's name names a server, so it never goes out
 // in minimal mode, here as on the parent's own line.
@@ -4224,11 +4230,18 @@ function notificationPosts(ctx, notes) {
   return posts;
 }
 
-/** SessionStart and Stop: entries past their age, then sibling sessions gone quiet for a day. */
+/**
+ * SessionStart and Stop, once their posts have gone out: entries past their
+ * age, then sibling sessions gone quiet for a day — at most
+ * SUBTASK_PRUNE_MAX_REMOVALS of them, and nothing more once
+ * SUBTASK_PRUNE_BUDGET_MS have passed. The next run takes up the rest.
+ */
 function pruneSubtaskState(root, dir, now) {
+  const until = Date.now() + SUBTASK_PRUNE_BUDGET_MS;
   for (const kind of Object.keys(SUBTASK_AGES_MS)) {
     const folder = path.join(dir, kind);
     for (const name of listDir(folder, SUBTASK_PRUNE_MAX_ENTRIES)) {
+      if (Date.now() > until) return;
       const file = path.join(folder, name);
       try {
         // lstat: an entry's own age, never what a link points at.
@@ -4239,7 +4252,9 @@ function pruneSubtaskState(root, dir, now) {
     }
   }
   const own = path.basename(dir);
+  let removed = 0;
   for (const name of listDir(root, SUBTASK_PRUNE_MAX_SESSIONS)) {
+    if (removed >= SUBTASK_PRUNE_MAX_REMOVALS || Date.now() > until) return;
     if (name === own || !SESSION_DIR_RE.test(name)) continue;
     const full = path.join(root, name);
     try {
@@ -4255,22 +4270,28 @@ function pruneSubtaskState(root, dir, now) {
           /* never written */
         }
       }
-      if (now - newest > SUBTASK_SESSION_MAX_AGE_MS) fs.rmSync(full, { recursive: true, force: true });
+      if (now - newest > SUBTASK_SESSION_MAX_AGE_MS) {
+        fs.rmSync(full, { recursive: true, force: true });
+        removed += 1;
+      }
     } catch {
       /* gone already */
     }
   }
 }
 
-/** SessionEnd: the session's own directory goes with its card. Never anyone else's. */
+/**
+ * SessionEnd: the session's own directory goes with its card. Never anyone
+ * else's. Removed off the event loop, so the DELETE issued just before it is
+ * written to the socket while the files go, not after: a session can leave a
+ * few thousand of them, and SessionEnd hooks share a 1.5 s budget.
+ */
 function forgetSubtaskState(base, session) {
   const sub = subtaskDir(base, session, false);
-  if (!sub) return;
-  try {
-    fs.rmSync(sub.dir, { recursive: true, force: true });
-  } catch (err) {
+  if (!sub) return Promise.resolve();
+  return fs.promises.rm(sub.dir, { recursive: true, force: true }).catch((err) => {
     dbg(`subtasks: session state removal failed: ${err && err.message ? err.message : String(err)}`);
-  }
+  });
 }
 
 // Notification types that ask nobody anything. Each would otherwise turn a
@@ -4330,17 +4351,17 @@ async function main() {
     // tiny, and a failure inside it is already swallowed.
     forgetSessionName(base, session);
     // The DELETE goes out first, then the session's subagent state is removed
-    // while it is in flight: SessionEnd hooks share a 1.5 s budget, and the
-    // card is gone either way.
+    // while it is in flight (off the event loop, see forgetSubtaskState):
+    // SessionEnd hooks share a 1.5 s budget, and the card is gone either way.
     const removal = send('DELETE', `${base}/sessions/${encodeURIComponent(session)}`);
-    forgetSubtaskState(base, session);
+    const forgotten = forgetSubtaskState(base, session);
     // Side by side: the `ps` endHostRecord may need is bounded, but running it
     // in front of the DELETE would stack two timeouts against the safety exit.
     // allSettled, not all: a rejection here would abort main() while
     // endHostRecord's `ps` is still out — so the safety exit would fire and
     // the record would never get its `ended_at`. A board that is down must not
     // cost us the local stamp.
-    await Promise.allSettled([endHostRecord(base, session), removal]);
+    await Promise.allSettled([endHostRecord(base, session), removal, forgotten]);
     return;
   }
 
@@ -4407,6 +4428,8 @@ async function main() {
   let unattributed = false;
   // Agent posts this main-thread event produces besides (or instead of) its own.
   let agentPosts = () => [];
+  // SessionStart and Stop prune the subagent state, once their posts are out.
+  let prune = false;
 
   if (event === 'SessionStart') {
     if (payload.source === 'compact') {
@@ -4421,8 +4444,7 @@ async function main() {
       status = 'idle';
       message = 'Session started';
       turn = { phase: 'reset' };
-      const sub = subtaskDir(base, session, false);
-      if (sub) pruneSubtaskState(sub.root, sub.dir, at);
+      prune = true;
     }
   } else if (event === 'Notification') {
     const type = typeof payload.notification_type === 'string' ? payload.notification_type : '';
@@ -4599,10 +4621,8 @@ async function main() {
     message = 'Turn finished';
     turn = stopTurn(payload, base, session);
     const sub = subtaskDir(base, session, false);
-    if (sub) {
-      dropPermMarkers(sub.dir, 'main');
-      pruneSubtaskState(sub.root, sub.dir, at);
-    }
+    if (sub) dropPermMarkers(sub.dir, 'main');
+    prune = true;
   } else {
     return;
   }
@@ -4695,6 +4715,13 @@ async function main() {
   // Every request this event makes goes out together, and one that fails —
   // send() never rejects, but the reports might — cannot cut the rest short.
   await Promise.allSettled([statusPost, ...subagentPosts, usagePost, projectPost]);
+  // Housekeeping last, so the board has heard about the turn first: a prune
+  // is synchronous, and run ahead of the post it could hold it past the
+  // safety exit.
+  if (prune) {
+    const sub = subtaskDir(base, session, false);
+    if (sub) pruneSubtaskState(sub.root, sub.dir, at);
+  }
 }
 
 /**

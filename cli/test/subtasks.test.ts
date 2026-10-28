@@ -1492,6 +1492,61 @@ describe.skipIf(!POSIX)('local state safety', () => {
     expect(fs.existsSync(stateRoot(ws))).toBe(true);
   });
 
+  it('sends the SessionEnd DELETE without waiting for the session\'s files to go', async () => {
+    const ws = workspace();
+    post(ws, load(ws, 'a_parent_pre_agent_alpha'));
+    post(ws, load(ws, 'a_subagent_start_alpha'));
+    // A removal that takes its time, however it is done.
+    const preload = path.join(ws.root, 'slow-rm.js');
+    fs.writeFileSync(preload, `
+      const fs = require('fs');
+      const SLOW = 2500;
+      const rm = fs.promises.rm;
+      fs.promises.rm = (...args) => new Promise((r) => setTimeout(r, SLOW)).then(() => rm.apply(fs.promises, args));
+      const rmSync = fs.rmSync;
+      fs.rmSync = function (...args) { const end = Date.now() + SLOW; while (Date.now() < end); return rmSync.apply(this, args); };
+    `);
+    const before = captured().length;
+    const ended = fireAsync(ws, { session_id: A, cwd: ws.cwd, hook_event_name: 'SessionEnd', reason: 'exit' }, {}, ['--require', preload]);
+    await until(() => captured().length > before, 8000);
+    // The board has the DELETE while the directory is still on its way out.
+    expect(captured().slice(before).map((r) => `${r.method} ${r.url}`)).toEqual([`DELETE /sessions/${A}`]);
+    expect(fs.existsSync(sessionDir(ws, A))).toBe(true);
+    await ended;
+    expect(fs.existsSync(sessionDir(ws, A))).toBe(false);
+  }, 20_000);
+
+  it('prunes only once the Stop post is out, and a few quiet sessions at a time', () => {
+    const ws = workspace();
+    post(ws, load(ws, 'c_parent_pre_agent')); // the root and this session's directory
+    const t = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
+    const quiet = Array.from({ length: 6 }, (_, i) => path.join(stateRoot(ws), `00000000000000${String(i).padStart(2, '0')}`));
+    for (const d of quiet) {
+      fs.mkdirSync(path.join(d, 'agents'), { recursive: true, mode: 0o700 });
+      for (const p of [path.join(d, 'agents'), d]) fs.utimesSync(p, t, t);
+    }
+    // Each removal notes whether the board had already been sent anything.
+    const trace = path.join(ws.root, 'prune-trace.txt');
+    const preload = path.join(ws.root, 'prune-order.js');
+    fs.writeFileSync(preload, `
+      const fs = require('fs');
+      const rmSync = fs.rmSync;
+      fs.rmSync = function (...args) {
+        const sent = fs.statSync(process.env.CAPTURE_FILE).size > Number(process.env.CAPTURE_SIZE);
+        fs.appendFileSync(process.env.TRACE_FILE, (sent ? 'after' : 'before') + '\\n');
+        return rmSync.apply(this, args);
+      };
+    `);
+    fs.writeFileSync(trace, '');
+    const env = { CAPTURE_FILE: capturePath, CAPTURE_SIZE: String(fs.statSync(capturePath).size), TRACE_FILE: trace };
+    expect(posts(fire(ws, load(ws, 'c_stop_report'), env, ['--require', preload])).map((b) => b.message)).toEqual(['Turn finished']);
+    expect(fs.readFileSync(trace, 'utf8').split('\n').filter(Boolean)).toEqual(['after', 'after', 'after', 'after']);
+    expect(quiet.filter((d) => fs.existsSync(d))).toHaveLength(2);
+    // The next Stop takes the rest.
+    post(ws, load(ws, 'c_stop_report'));
+    expect(quiet.filter((d) => fs.existsSync(d))).toEqual([]);
+  });
+
   it('ages entries out by kind, and quiet sessions with them', () => {
     const ws = workspace();
     post(ws, load(ws, 'a_parent_pre_agent_alpha'));
