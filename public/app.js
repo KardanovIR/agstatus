@@ -192,9 +192,15 @@
     el.innerHTML = html;
     painted.set(el, html);
     paintTimes(el);
+    // The control found again stands where the old one stood, or beside it,
+    // so getting focus back must not move the page. A plain focus() scrolls
+    // the new node into view: a reader who had scrolled away from a focused
+    // title was pulled back to it by every frame about its card, and on the
+    // session screen, where the arrived row keeps focus for the whole visit,
+    // by every frame at all.
     for (const key of keys) {
       const again = el.querySelector(key);
-      if (again) { again.focus(); break; }
+      if (again) { again.focus({ preventScroll: true }); break; }
     }
     return true;
   }

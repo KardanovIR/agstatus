@@ -73,7 +73,18 @@ function ended(el: Element, name: string) {
   el.dispatchEvent(e);
 }
 
+/**
+ * Every focus() the board makes from here on: on what, and with which
+ * options. jsdom has no layout and so never scrolls, which leaves the
+ * options as the only evidence of whether a browser would have.
+ */
+function focusCalls(b: Board) {
+  const spy = vi.spyOn(b.dom.window.HTMLElement.prototype, 'focus');
+  return () => spy.mock.calls.map(([opts], i) => ({ el: spy.mock.contexts[i] as HTMLElement, opts }));
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -292,6 +303,26 @@ describe('focus on a row', () => {
     b.emit('session', session({ subtasks: block(items.filter((x) => x.n !== 2), { done: 16 }) }));
     expect((document.activeElement as HTMLElement).dataset.sub).toBe(key(4));
     expect((document.activeElement as HTMLElement).dataset.slot).toBe('1');
+  });
+
+  // A frame is not the reader asking to go anywhere. The control found again
+  // stands where the old one stood, so it gets focus without the scroll a
+  // plain focus() brings: a reader who scrolled away from a focused row, or
+  // a focused title, was pulled back to it by every frame about its card.
+  it('gets focus back without moving the page', async () => {
+    vi.useFakeTimers();
+    const items = ten();
+    const b = await boardWith(block(items));
+    rows(b)[1].focus();
+    const calls = focusCalls(b);
+    b.emit('session', session({ subtasks: block(set(items, 2, { activity: 'Editing app.ts' })) }));
+    // The heir to a finished row's slot, too.
+    b.emit('session', session({ subtasks: block(items.filter((x) => x.n !== 2), { done: 16 }) }));
+    expect(calls().map((c) => [c.el.dataset.sub, c.opts])).toEqual([
+      [key(2), { preventScroll: true }],
+      [key(4), { preventScroll: true }],
+    ]);
+    expect(document.activeElement).toBe(rows(b)[1]);
   });
 
   it('falls back to the footer, then the title, when nothing takes the slot', async () => {
@@ -591,6 +622,27 @@ describe('the session screen', () => {
     (document.getElementById('dv-back') as HTMLButtonElement).click();
     await b.settle();
     expect(document.activeElement).toBe(b.$(`.card[data-id="s1"] [data-sub="${key(7)}"]`));
+  });
+
+  // The arrived row keeps focus for the whole visit, so every frame that
+  // repaints the section finds it again. A plain focus() scrolled it back
+  // into view each time, and the timeline below it could not be read while
+  // subagents ran.
+  it('leaves the page where the reader scrolled it through the frames that follow', async () => {
+    vi.useFakeTimers();
+    const items = blockedTen();
+    const b = await boardWith(block(items), { status: 'blocked', message: 'Needs approval: verify:hook' });
+    b.click(rows(b)[2]);
+    await open(b);
+    const calls = focusCalls(b);
+    b.emit('session', session({ status: 'blocked', message: 'Needs approval: verify:hook', subtasks: block(set(items, 1, { activity: 'Rerun' })) }));
+    await vi.advanceTimersByTimeAsync(2000);
+    b.emit('session', session({ status: 'blocked', message: 'Needs approval: verify:hook', subtasks: block(set(items, 2, { activity: 'Rerun' })) }));
+    expect(document.activeElement).toBe(document.querySelector(`#dv-subs [data-sub="${key(7)}"]`));
+    expect(calls().map((c) => [c.el.dataset.sub, c.opts])).toEqual([
+      [key(7), { preventScroll: true }],
+      [key(7), { preventScroll: true }],
+    ]);
   });
 
   it('opens at the top when the subtask has already gone', async () => {
