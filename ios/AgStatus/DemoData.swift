@@ -1050,7 +1050,7 @@ enum DemoData {
 
         switch Int.random(in: canStart ? 0...2 : 1...2) {
         case 0:
-            let n = (items.map(\.n).max() ?? done + board.firstN - 1) + 1
+            let n = nextOrdinal(items: items, done: done)
             let start = starts(board.kind)[n % 2]
             items.append(Subtask(id: "k\(n)", n: n, label: start.label.isEmpty ? "Subagent \(n)" : start.label,
                                  state: start.state, activity: start.activity))
@@ -1073,6 +1073,17 @@ enum DemoData {
         var next = withSubtasks(session, items: items, done: done, on: board)
         next.updatedAt = now
         return next
+    }
+
+    /// The ordinal a tick gives the subagent it starts: one past every
+    /// subagent this turn has started, the finished ones included, as the
+    /// server's `nextN` is — so never the number of one that has just
+    /// finished. Taken from the rows on show alone, Subagent 6 finishing
+    /// handed its "Subagent 6", and its id, to the next one to start. A start
+    /// adds one to `done + items.count` and a finish moves one across it, so
+    /// the sum only climbs.
+    private static func nextOrdinal(items: [Subtask], done: Int) -> Int {
+        max(items.map(\.n).max() ?? 0, done + items.count) + 1
     }
 
     /// The prototype's `TIMELINE` for the card being judged: its own history,
@@ -1345,6 +1356,17 @@ enum DemoData {
         assert(derived(own: (.done, "Turn finished"), items: [two[2]]) == (.testing, "1 subagent still running"),
                "after the turn")
         assert(derived(own: (.coding, "x"), items: [two[2]]) == (.coding, "x"), "own reading")
+
+        // Nor does it hand out an ordinal twice, which the server never does:
+        // with minimal mode's Subagent 6 just finished, the next is 7.
+        func listed(_ ordinals: [Int]) -> [Subtask] {
+            ordinals.map { Subtask(id: "k\($0)", n: $0, label: "Subagent \($0)", state: .coding, activity: "") }
+        }
+        assert(nextOrdinal(items: listed([3, 4, 5, 6]), done: 2) == 7, "minimal: after the four on show")
+        assert(nextOrdinal(items: listed([3, 4, 5]), done: 3) == 7, "the highest just finished: not its number")
+        assert(nextOrdinal(items: listed(Array(1...10)), done: 15) == 26, "past the finished ones too")
+        assert(nextOrdinal(items: [], done: 12) == 13, "every row finished")
+        assert(nextOrdinal(items: listed([1, 2]), done: 0) == 3, "nothing finished yet")
     }
 
     /// Pairing, checked alongside the decoders above when demo mode starts in
