@@ -18,10 +18,33 @@ object DemoData {
     private const val DEMO_MACBOOK_ID = "3f9a1c7e5b2d4086a9c1e3f5b7d90246"
     private const val DEMO_MAC_MINI_ID = "7c2e9b4d1f8a6035c4e2a8b6d0f13579"
 
-    /** Four sessions that look like a real evening of agent work. */
+    /** The workflow session's own line, which a waiting subagent's takes over. */
+    private const val REVIEW_MESSAGE = "Running the review-and-verify workflow"
+
+    /** Five sessions that look like a real evening of agent work. */
     fun initialSessions(): List<Session> {
         val now = System.currentTimeMillis()
         return listOf(
+            // A workflow at full stretch — the prototype's ten subagents with
+            // fifteen already done — so the board shows two rows, the footer
+            // and the session screen's list. Newest, so it leads the board.
+            Session(
+                id = "demo-review",
+                name = "Review and verify the subtasks branch",
+                status = AgentStatus.PLANNING,
+                message = REVIEW_MESSAGE,
+                project = "claude-status",
+                createdAt = now - 38 * 60_000L,
+                updatedAt = now - 5_000L,
+                subtasks = demoSubtasks(
+                    reviewRows.mapIndexed { index, (label, state, activity) ->
+                        // Numbered from 3, as two finished before these
+                        // started; agstatus_open_subtask 9 is verify:hook.
+                        demoSubtask(n = index + 3, label = label, state = state, activity = activity)
+                    },
+                    done = 15,
+                ),
+            ),
             Session(
                 id = "demo-api-server",
                 name = "api-server",
@@ -216,13 +239,13 @@ object DemoData {
 
         for (index in updated.indices) {
             if (Random.nextDouble() < 0.45) {
-                updated[index] = advance(updated[index], now)
+                updated[index] = step(updated[index], now)
                 changedAny = true
             }
         }
         if (!changedAny) {
             val index = updated.indices.random()
-            updated[index] = advance(updated[index], now)
+            updated[index] = step(updated[index], now)
         }
         return updated
     }
@@ -342,6 +365,104 @@ object DemoData {
     private val demoProjects: Map<String, List<Pair<String, Double>>> = mapOf(
         "claude" to listOf("acme-api" to 1.0, "acme-web" to 0.64, "etl-jobs" to 0.27),
         "codex" to listOf("docs" to 0.58, "acme-web" to 0.31),
+    )
+
+    private fun step(session: Session, now: Long): Session {
+        val subtasks = session.subtasks ?: return advance(session, now)
+        return advanceSubtasks(session, subtasks, now)
+    }
+
+    // MARK: - Subagents
+
+    /**
+     * One change to the workflow session's subagents, and only the kind that
+     * moves a row: one starts, one finishes, or one blocks or is approved.
+     * Activities are never rewritten in place, which is what the 1.7 hook
+     * sends too, and the status and line follow from the rows as the server
+     * derives them. The tally only climbs, like a turn that has not ended.
+     */
+    private fun advanceSubtasks(session: Session, subtasks: Subtasks, now: Long): Session {
+        val items = subtasks.items.toMutableList()
+        var done = subtasks.done
+        val waiting = items.indexOfFirst { it.state == SubtaskState.BLOCKED }
+        val working = items.indices.filter { items[it].state.isWorking }
+        val roll = Random.nextDouble()
+        when {
+            // Approval comes before anything else blocks.
+            waiting >= 0 && roll < 0.5 -> {
+                val row = items[waiting]
+                items[waiting] = row.copy(state = SubtaskState.CODING, activity = row.activity.removePrefix(APPROVE))
+            }
+            waiting < 0 && roll < 0.2 && working.isNotEmpty() -> {
+                val index = working.random()
+                items[index] = items[index].copy(state = SubtaskState.BLOCKED, activity = APPROVE + items[index].activity)
+            }
+            (roll < 0.65 || items.size >= MAX_DEMO_ROWS) && working.isNotEmpty() -> {
+                items.removeAt(working.random())
+                done += 1
+            }
+            else -> {
+                val n = (items.maxOfOrNull { it.n } ?: done) + 1
+                val (label, state, activity) = startRows[n % startRows.size]
+                items += demoSubtask(n = n, label = label, state = state, activity = activity)
+            }
+        }
+        val next = if (items.isEmpty()) {
+            // A finished workflow starts over, so the demo never dead-ends.
+            demoSubtasks(reviewRows.mapIndexed { i, (l, s, a) -> demoSubtask(i + 3, l, s, a) }, done = 0)
+        } else {
+            demoSubtasks(items, done)
+        }
+        val blocked = next.items.filter { it.state == SubtaskState.BLOCKED }
+        return session.copy(
+            status = if (blocked.isEmpty()) AgentStatus.PLANNING else AgentStatus.BLOCKED,
+            message = if (blocked.isEmpty()) {
+                REVIEW_MESSAGE
+            } else {
+                "Needs approval: ${blocked.first().label}" + if (blocked.size > 1) " +${blocked.size - 1}" else ""
+            },
+            subtasks = next,
+            updatedAt = now,
+        )
+    }
+
+    private fun demoSubtask(n: Int, label: String, state: SubtaskState, activity: String) =
+        Subtask(id = "demo-agent-$n", n = n, label = label, state = state, activity = activity)
+
+    /** Counts exactly as the server sends them: derived from the rows, plus the tally. */
+    private fun demoSubtasks(items: List<Subtask>, done: Int) = Subtasks(
+        turnEnded = false,
+        running = items.count { it.state.isWorking },
+        blocked = items.count { it.state == SubtaskState.BLOCKED },
+        failed = items.count { it.state == SubtaskState.FAILED },
+        done = done,
+        items = items,
+    )
+
+    private const val APPROVE = "Approve: "
+    private const val MAX_DEMO_ROWS = 12
+
+    /** The prototype's review-and-verify workflow, in start order. */
+    private val reviewRows: List<Triple<String, SubtaskState, String>> = listOf(
+        Triple("review:hook", SubtaskState.TESTING, "Run hook tests with --no-file-parallelism"),
+        Triple("review:listener", SubtaskState.CODING, "Editing listener.ts"),
+        Triple("review:product", SubtaskState.PLANNING, "Searching: SubagentStop payload fields"),
+        Triple("review:server", SubtaskState.CODING, "Editing store.ts"),
+        Triple("review:ios", SubtaskState.CODING, "Editing SessionCardView.swift"),
+        Triple("review:android", SubtaskState.PLANNING, "Reading developer.android.com"),
+        Triple("verify:hook", SubtaskState.TESTING, "Run the hook suite — 214 tests"),
+        Triple("verify:server", SubtaskState.TESTING, "npm test -- store"),
+        Triple("verify:web", SubtaskState.CODING, "Editing card.css"),
+        Triple("verify:privacy", SubtaskState.PLANNING, "Search payloads for prompt text"),
+    )
+
+    /** What the workflow starts next. */
+    private val startRows: List<Triple<String, SubtaskState, String>> = listOf(
+        Triple("verify:android", SubtaskState.TESTING, "Run ./gradlew lint"),
+        Triple("verify:docs", SubtaskState.CODING, "Editing docs.html"),
+        Triple("map:limits", SubtaskState.PLANNING, "Search for the webhook budget"),
+        Triple("test:ios", SubtaskState.TESTING, "xcodebuild test -scheme AgStatus"),
+        Triple("Draft the 1.7 release notes", SubtaskState.CODING, "Writing v1.7.0.md"),
     )
 
     private fun advance(session: Session, now: Long): Session {
