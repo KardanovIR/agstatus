@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import { JSDOM } from 'jsdom';
 import request from 'supertest';
 import { configFromEnv } from '../src/config';
 import { makeApp } from './helpers';
+import { loadBoard, session, online, HISTORY, type Board } from './board-harness';
 
 describe('configFromEnv hardening', () => {
   it('TRUST_PROXY only enables on "1" or "true"', () => {
@@ -88,149 +86,8 @@ describe('/api/config legacy fields', () => {
   });
 });
 
-/*
- * The board script, run for real against the real shell.
- *
- * This used to drive a hand-written stub `document` whose elements held an
- * innerHTML string, on the argument that public/app.js only ever wrote whole
- * HTML strings. That stopped being true: the grid is reconciled by key now, so
- * it needs createElement, insertBefore and a live child list. The stub also
- * never exercised `paintFocus()` at all — its querySelector returned null, so
- * the function returned early every time and focus state was only ever read
- * back out of `renderFocus()`, which is the *other* producer of the same
- * markup. Half of what these tests are named for went unchecked.
- *
- * So: jsdom, seeded from public/index.html rather than a fixture, which means
- * the suite now also fails if the page stops carrying an element app.js needs.
- * `window` and `location` stay stubbed — the board assigns location.hash, and
- * jsdom treats that as navigation.
- */
-
-const BOARD_SRC = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'app.js'), 'utf8');
-// index.html loads this before app.js, and app.js reads it at definition time.
-const MARKS_SRC = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'marks.js'), 'utf8');
-const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
-
-/** The stream the board subscribed to, with a way to push one frame into it. */
-class FakeStream {
-  private listeners = new Map<string, (e: { data: string }) => void>();
-  addEventListener(type: string, fn: (e: { data: string }) => void): void { this.listeners.set(type, fn); }
-  close(): void {}
-  emit(type: string, data: unknown): void {
-    const fn = this.listeners.get(type);
-    if (!fn) throw new Error(`the board is not listening for "${type}"`);
-    fn({ data: JSON.stringify(data) });
-  }
-}
-
-const HOST = {
-  machine: { id: 'm1', name: 'Studio' },
-  app: { slug: 'agterm', name: 'agterm', kind: 'terminal' },
-};
-const session = (over: Record<string, unknown> = {}) => ({
-  id: 's1',
-  name: 'Fix the parser',
-  status: 'coding',
-  message: 'editing src/app.ts',
-  project: 'agstatus',
-  updatedAt: Date.now(),
-  host: HOST,
-  ...over,
-});
-const online = () => [{ id: 'm1', name: 'Studio', online: true, since: Date.now() }];
-
-/** What GET /api/sessions/:id/history returns: SessionEvent[], newest first. */
-const HISTORY = [
-  { seq: 3, status: 'done', message: 'Turn finished', at: 1_700_000_300_000 },
-  { seq: 2, status: 'blocked', message: 'May I push to master?', at: 1_700_000_200_000 },
-  { seq: 1, status: 'coding', message: 'editing src/app.ts', at: 1_700_000_100_000 },
-  { seq: 0, status: 'planning', message: '', at: 1_700_000_000_000 },
-];
-
-/**
- * Evaluates public/app.js against a real DOM and returns the handles a test drives it by.
- * `usageHistory` is what GET /api/usage/history answers, built when it is asked for.
- */
-async function loadBoard(opts: { usageHistory?: () => unknown } = {}) {
-  const dom = new JSDOM(INDEX_HTML, { url: 'http://board.test/' });
-  const doc = dom.window.document;
-  const calls: Array<{ url: string; method: string; body: string }> = [];
-  let stream: FakeStream | null = null;
-  const reply = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-
-  vi.stubGlobal('document', doc);
-  // Not dom.window: the board assigns location.hash, which jsdom treats as a
-  // navigation it then refuses to perform. Only these four members are read.
-  // Captured, so a hash assignment can fire hashchange the way a browser
-  // does. The previous stub swallowed both, which meant the board's two hash
-  // routes were never exercised by a test at all — a click set a property on
-  // a plain object and nothing downstream ran.
-  const listeners: Record<string, () => void> = {};
-  vi.stubGlobal('window', {                            // marks.js writes AGSTATUS_MARKS onto this
-    addEventListener(type: string, fn: () => void) { listeners[type] = fn; },
-  });
-  // A browser global the board uses and the plain stub above does not carry.
-  vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
-  let hash = '';
-  vi.stubGlobal('location', {
-    pathname: '/', origin: 'http://board.test', href: '',
-    get hash() { return hash; },
-    set hash(v: string) {
-      // A browser normalises a bare fragment to one with '#', and leaves the
-      // empty string empty rather than making it '#'.
-      const next = v === '' ? '' : v.startsWith('#') ? v : `#${v}`;
-      if (next === hash) return;
-      hash = next;
-      listeners.hashchange?.();
-    },
-  });
-  vi.stubGlobal('navigator', { clipboard: { writeText: async () => {} } });
-  vi.stubGlobal('EventSource', class extends FakeStream {
-    constructor(_url: string) { super(); stream = this; }
-  });
-  vi.stubGlobal('fetch', async (url: string, init?: { method?: string; body?: string }) => {
-    calls.push({ url, method: init?.method || 'GET', body: init?.body || '' });
-    if (url.endsWith('/api/config')) return reply({ mode: 'legacy', webhookUrl: 'http://board.test/webhook' });
-    if (url.endsWith('/commands')) return reply({ id: JSON.parse(init!.body!).id, delivered: true });
-    if (url.includes('/api/usage/history')) {
-      return reply(opts.usageHistory ? opts.usageHistory() : { days: 30, history: [], projects: [] });
-    }
-    if (url.includes('/history')) return reply(HISTORY);
-    return reply({});
-  });
-
-  new Function(MARKS_SRC)();
-  new Function(BOARD_SRC)();
-  await vi.advanceTimersByTimeAsync(1);   // let init()'s /api/config settle and the stream open
-  if (!stream) throw new Error('the board never opened its event stream');
-
-  const gridEl = doc.getElementById('grid')!;
-  return {
-    /** The DOM's own window, for the prototypes a test has to stand in for layout on. */
-    win: dom.window,
-    grid: () => gridEl,
-    /** Element-level reads, now that there is a real tree to query. */
-    $: (sel: string) => gridEl.querySelector(sel),
-    $$: (sel: string) => [...gridEl.querySelectorAll(sel)],
-    emit: (type: string, data: unknown) => stream!.emit(type, data),
-    /** Any session event re-renders the grid, which is where focus state is readable. */
-    repaint(over: Record<string, unknown> = {}) { stream!.emit('session', session(over)); return gridEl; },
-    /** A real click on the real control, so aria-disabled is honoured as it is in a browser. */
-    tap(id: string, kind: 'focus' | 'resume' | 'dismiss' | 'open') {
-      const sel = kind === 'dismiss'
-        ? `[data-dismiss="${id}"]`
-        : kind === 'open'
-          ? `[data-open="${id}"]`
-          : `[data-focus="${id}"][data-type="${kind}"]`;
-      const btn = gridEl.querySelector(sel);
-      if (!btn) throw new Error(`no ${kind} control on the card for ${id}`);
-      btn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    },
-    settle: () => vi.advanceTimersByTimeAsync(1),
-    lastCommandId: () => JSON.parse(calls.filter((c) => c.url.endsWith('/commands')).pop()!.body).id as string,
-    calls,
-  };
-}
+// The board script, run for real against the real shell: see
+// board-harness.ts for why it is jsdom seeded from public/index.html.
 
 // Read off the tree rather than off a serialization of it. The old versions
 // regex-matched `class="focus-status"` out of an HTML string, which meant an
@@ -563,7 +420,7 @@ describe('board script: focus lifecycle', () => {
   // through. The landing page had to say "In the app, tap any session for its
   // timeline" to stay honest about it.
   describe('a card opens its own timeline', () => {
-    const openCard = async (b: Awaited<ReturnType<typeof loadBoard>>) => {
+    const openCard = async (b: Board) => {
       b.tap('s1', 'open');
       await b.settle();
       await b.settle();   // openSession awaits a fetch before it paints
