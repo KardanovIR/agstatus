@@ -8,11 +8,15 @@ import {
   blockedIds,
   derive,
   historyKey,
+  isDerivedMessage,
   liveCount,
   materialize,
   MAX_LIVE_ROWS,
   MAX_LIVE_ROWS_PER_WORKSPACE,
+  normalizeSubtaskState,
   safeClip,
+  serializeSubtaskState,
+  SUBTASKS_COLUMN_MAX_CHARS,
   SubtaskState,
   sweepState,
   toWireSubtasks,
@@ -729,6 +733,7 @@ export class Store {
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
         host TEXT,
+        subtasks TEXT,
         PRIMARY KEY (workspace_id, id)
       );
       CREATE TABLE IF NOT EXISTS devices (
@@ -793,6 +798,9 @@ export class Store {
     // Databases created before these columns existed.
     await pool.query('ALTER TABLE devices ADD COLUMN IF NOT EXISTS apns_server TEXT');
     await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host TEXT');
+    // Nullable, and a column rather than a table: a session with no subagents
+    // stores NULL, and scripts/migrate-sqlite-to-postgres.js inserts without it.
+    await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS subtasks TEXT');
 
     // node-postgres returns BIGINT as string to avoid precision loss; every
     // epoch-ms value here fits a double, so Number() them on the way in.
@@ -827,7 +835,15 @@ export class Store {
       .sort((a, b) => a - b)
       .slice(-this.workspacesPerHour);
 
-    const sessions = await pool.query('SELECT * FROM sessions WHERE deleted_at IS NULL');
+    // Named columns, not *, so the subtasks column can be guarded in SQL: an
+    // oversized value is never shipped to the process at all, for the reason
+    // given at the retired-device query below.
+    const sessions = await pool.query(
+      `SELECT workspace_id, id, name, status, message, project, source, host, created_at, updated_at,
+              CASE WHEN length(subtasks) <= $1 THEN subtasks END AS subtasks
+       FROM sessions WHERE deleted_at IS NULL`,
+      [SUBTASKS_COLUMN_MAX_CHARS]
+    );
     for (const row of sessions.rows as Array<Record<string, unknown>>) {
       const wsId = row.workspace_id as string;
       let map = this.sessions.get(wsId);
@@ -843,17 +859,33 @@ export class Store {
       } catch {
         // not JSON at all
       }
-      map.set(row.id as string, {
+      const updatedAt = Number(row.updated_at);
+      // Rebuilt and re-capped like host; anything off — including a state saved
+      // with another updated_at, as a 1.6.3 server in between leaves it — loads
+      // as no state.
+      const sub = typeof row.subtasks === 'string' ? normalizeSubtaskState(row.subtasks, updatedAt) : null;
+      let status = row.status as Status;
+      let message = row.message as string;
+      // The stored reading is the derived one clients saw. Without the state it
+      // was derived from, a "Needs approval: …" or "3 subagents still running"
+      // would pose as the parent's own line until the parent next posts.
+      if (!sub && isDerivedMessage(message)) {
+        status = 'idle';
+        message = '';
+      }
+      const session: Session = {
         id: row.id as string,
         name: row.name as string,
-        status: row.status as Status,
-        message: row.message as string,
+        status,
+        message,
         project: row.project as string,
         source: (row.source as string) || 'claude',
         host,
         createdAt: Number(row.created_at),
-        updatedAt: Number(row.updated_at),
-      });
+        updatedAt,
+      };
+      if (sub) session.sub = sub;
+      map.set(session.id, session);
     }
 
     const devices = await pool.query(
@@ -1376,15 +1408,19 @@ export class Store {
     return { session: this.toWire(wsId, session), evictedId, prevStatus: prev?.status ?? null, newlyBlocked };
   }
 
-  /** Writes the whole sessions row. Memory stays authoritative. */
+  /**
+   * Writes the whole sessions row, with the subtask state in its own column
+   * (NULL when there is none) saved against this updatedAt. Memory stays
+   * authoritative; the column is read only at load.
+   */
   private persistSession(wsId: string, session: Session): void {
     this.exec(
-      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at, subtasks)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (workspace_id, id) DO UPDATE SET
          name = EXCLUDED.name, status = EXCLUDED.status, message = EXCLUDED.message,
          project = EXCLUDED.project, source = EXCLUDED.source, host = EXCLUDED.host,
-         updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
+         updated_at = EXCLUDED.updated_at, subtasks = EXCLUDED.subtasks, deleted_at = NULL`,
       [
         wsId,
         session.id,
@@ -1396,6 +1432,7 @@ export class Store {
         session.host ? JSON.stringify(session.host) : null,
         session.createdAt,
         session.updatedAt,
+        session.sub ? serializeSubtaskState(session.sub, session.updatedAt) : null,
       ]
     );
   }
