@@ -11,8 +11,9 @@
  * Subagents — anything that runs under the session with an `agent_id` of its
  * own — are posted as an `agent` object on the parent session's webhook,
  * keyed by a hash of that id, and only when one starts, stops or changes
- * status class (see "Subagents" below). The board lists them on the parent's
- * card; their tool calls no longer overwrite the parent's own line.
+ * status class, or, at most once a minute, when what it is doing changes
+ * (see "Subagents" below). The board lists them on the parent's card; their
+ * tool calls no longer overwrite the parent's own line.
  *
  * IMPORTANT: this script must never write to stdout — Codex interprets hook
  * stdout as behavior-control JSON, and a stray print could block a tool call.
@@ -2754,16 +2755,17 @@ function lookupPinnedName(base, session, folder) {
 // the parent's own line instead, one post apiece, so ten parallel subagents
 // took turns overwriting it and the parent's own reading was lost.
 //
-// A subagent is posted only when it starts, when it stops and when its status
-// class changes (planning, coding, testing, blocked) — about four posts each,
-// against the twenty-odd tool calls it used to post. Posting nothing within a
-// class takes memory between hook runs, since every event is its own process:
-// which subagents this hook saw start, the class the board last confirmed for
-// each, and the label it was told. That lives in a private directory under the
-// system temp dir (subtaskRoot), one small file per subagent, so the ten or
-// thirty that run at once never race on a shared file. It is scratch of the
-// same kind as the names map: losing it costs a post or a label, never an
-// event.
+// A subagent is posted when it starts, when it stops and when its status class
+// changes (planning, coding, testing, blocked) — about four posts each, against
+// the twenty-odd tool calls it used to post. Within a class it posts only what
+// it is now doing, when that changed, and at most once a minute
+// (AGENT_REFRESH_MS). Holding the rest back takes memory between hook runs,
+// since every event is its own process: which subagents this hook saw start,
+// the class, activity and label the board last confirmed for each, and when
+// each last posted. That lives in a private directory under the system temp
+// dir (subtaskRoot), one small file per subagent, so the ten or thirty that
+// run at once never race on a shared file. It is scratch of the same kind as
+// the names map: losing it costs a post or a label, never an event.
 //
 // A subagent this hook holds no state for is UNKNOWN, and is posted exactly as
 // 1.6.3 posted it: on the parent's line, with no `agent`. A machine with the
@@ -2845,15 +2847,18 @@ const MINIMAL_TOOL_NAMES = new Set([
   'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch', 'Bash', 'Agent', 'Task',
   'WebSearch', 'WebFetch', 'Workflow', 'Read', 'Glob', 'Grep', 'Skill',
 ]);
-// The owner's open question: may a running subagent also post when its
-// activity changes within its status class? 0 is the decided rule — a start, a
-// stop and a class change, nothing else. Above 0, a known subagent whose class
-// has not changed posts its new activity once this many ms have passed since
-// its last confirmed post. AGSTATUS_AGENT_REFRESH_MS sets it for the tests
-// only; it is internal, not a setting.
+// How often a running subagent may post a new activity within its status class
+// (the owner's rule: at most once a minute). A known subagent whose class has
+// not changed posts what it is now doing when that differs from what the board
+// last confirmed, and this long has passed since both its last confirmed post
+// and its last refresh attempt. The attempt counts even when the board refused
+// it — a 429, a 5xx, a timeout — so a board shedding load is not asked again
+// on every tool call; a class change or a stop is never held back by it, and
+// keeps posting until the board confirms it. AGSTATUS_AGENT_REFRESH_MS sets it
+// for the tests only; it is internal, not a setting.
 const AGENT_REFRESH_MS = (() => {
   const v = Number(process.env.AGSTATUS_AGENT_REFRESH_MS);
-  return Number.isInteger(v) && v > 0 ? v : 0;
+  return Number.isInteger(v) && v > 0 ? v : 60 * 1000;
 })();
 
 const AGENT_KEY_RE = /^[0-9a-f]{24}$/;
@@ -3098,10 +3103,13 @@ function writeStateFile(dir, kind, name, obj) {
 /**
  * A subagent's own record, re-validated field by field on the way in:
  *   {v, seen, kind, cls?, clsAt?, runCls?, label?, labelSrc?, labelSent?,
- *    labelPosts, activitySent?, lastPostAt?, metaTries, runId?, claim?, at}
+ *    labelPosts, activitySent?, lastPostAt?, refreshAt?, metaTries, runId?,
+ *    claim?, at}
  * `cls` is the last state the board CONFIRMED (a 2xx), never one merely sent;
  * `runCls` the last running one, which a finished subagent's posts still
- * carry as their compat status (see compatStatus).
+ * carry as their compat status (see compatStatus). `lastPostAt` is when the
+ * last confirmed post was made, `refreshAt` when the last activity refresh was
+ * tried, confirmed or not (see AGENT_REFRESH_MS).
  */
 function readAgent(dir, key) {
   const raw = readStateFile(path.join(dir, 'agents', `${key}.json`));
@@ -3128,6 +3136,7 @@ function readAgent(dir, key) {
   if (typeof raw.labelSent === 'string') st.labelSent = clip(raw.labelSent, LABEL_MAX);
   if (typeof raw.activitySent === 'string') st.activitySent = clip(raw.activitySent, ACTIVITY_MAX);
   if (num(raw.lastPostAt) > 0) st.lastPostAt = num(raw.lastPostAt);
+  if (num(raw.refreshAt) > 0) st.refreshAt = num(raw.refreshAt);
   if (typeof raw.runId === 'string' && RUN_ID_RE.test(raw.runId)) st.runId = raw.runId;
   if (idOf(raw.claim)) st.claim = raw.claim;
   return st;
@@ -3733,8 +3742,10 @@ function agentBody(ctx, key, st, state, extra) {
  * Records what the board confirmed (a 2xx) about a subagent: the state, and
  * the label and activity that went with it. Only a confirmed post counts, so a
  * 429 or a timeout leaves the next event of the same class — or the
- * task-notification after a lost stop — free to post it again. The record is
- * read afresh first, and a newer event's confirmation is never overwritten.
+ * task-notification after a lost stop — free to post it again. (A refused
+ * activity refresh is not retried that way: its attempt was put on record
+ * before it went out, see postRunning.) The record is read afresh first, and a
+ * newer event's confirmation is never overwritten.
  */
 function confirmAgent(dir, key, at, sent) {
   const st = readAgent(dir, key);
@@ -3766,18 +3777,19 @@ async function postAgent(ctx, sub, key, st, state, extra = {}) {
  * Whether a running event of a known subagent posts (§ flood control), and why:
  * 'start' when no post of it was ever confirmed, 'class' on a class change,
  * 'label' when a better label is known than the board was told and the label
- * budget is not spent, 'refresh' only with AGENT_REFRESH_MS on. '' otherwise —
- * which is most events: a subagent posts nothing within a class.
+ * budget is not spent, 'refresh' when what it is doing differs from what the
+ * board last confirmed and AGENT_REFRESH_MS has passed since its last
+ * confirmed post and its last refresh attempt. '' otherwise — which is most
+ * events: within a class a subagent posts at most once a minute.
  */
 function runningPostReason(st, state, activity, at) {
   if (!st.cls) return 'start';
   if (st.cls !== state) return 'class';
   if (!MINIMAL && st.label && st.label !== st.labelSent && st.labelPosts < LABEL_POSTS_MAX) return 'label';
   if (
-    AGENT_REFRESH_MS > 0 &&
     activity !== undefined &&
     activity !== st.activitySent &&
-    at - (st.lastPostAt || 0) >= AGENT_REFRESH_MS
+    at - Math.max(st.lastPostAt || 0, st.refreshAt || 0) >= AGENT_REFRESH_MS
   ) {
     return 'refresh';
   }
@@ -3787,9 +3799,12 @@ function runningPostReason(st, state, activity, at) {
 /**
  * A running event of a known subagent: posts `state` when runningPostReason
  * says so, and returns the post (or null). A post made for the label alone
- * spends one of LABEL_POSTS_MAX, recorded before it goes out. `relabeled`
- * says the record already changed (a label found, a try counted) and must be
- * written either way.
+ * spends one of LABEL_POSTS_MAX, recorded before it goes out. A refresh is
+ * recorded as tried before it goes out too: if the board refuses it, or never
+ * answers, the next refresh still waits AGENT_REFRESH_MS from this one —
+ * unlike a refused class change or stop, which the next event sends again.
+ * `relabeled` says the record already changed (a label found, a try counted)
+ * and must be written either way.
  *
  * `asking` posts whatever the record says: a human being asked — a claimed
  * permission prompt, a Codex escalation nobody approved — is news even for a
@@ -3801,7 +3816,8 @@ function runningPostReason(st, state, activity, at) {
 function postRunning(ctx, sub, key, st, state, extra, relabeled, asking = false) {
   const reason = asking ? 'asking' : runningPostReason(st, state, extra.activity, ctx.at);
   if (reason === 'label') st.labelPosts += 1;
-  if (relabeled || reason === 'label') writeAgent(sub.dir, key, st);
+  if (reason === 'refresh') st.refreshAt = ctx.at;
+  if (relabeled || reason === 'label' || reason === 'refresh') writeAgent(sub.dir, key, st);
   return reason ? postAgent(ctx, sub, key, st, state, extra) : null;
 }
 

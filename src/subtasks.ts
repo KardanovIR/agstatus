@@ -49,9 +49,10 @@ export const TOMB_TTL_MS = 2 * 60 * 60 * 1000;
 /**
  * How long a working row may go without a post before the sweep closes it. A
  * replay of the class-change rule over 3,093 subagent transcripts found 0.6%
- * with a silence over an hour; those close early and come back at their next
- * class change, or are counted at their stop. It is the price of bounding the
- * rows a lost stop would otherwise strand.
+ * with a silence over an hour (the hook's once-a-minute activity refresh only
+ * shortens silences); those close early and come back at their next post, or
+ * are counted at their stop. It is the price of bounding the rows a lost stop
+ * would otherwise strand.
  */
 export const LIVE_STALE_MS = 60 * 60 * 1000;
 /**

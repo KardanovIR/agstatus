@@ -723,10 +723,11 @@
       if (now) el.classList.add(now);
       el.dataset.status = shown;
     }
-    // Never dimmed while a subagent runs. Subagents post only when their
-    // status class changes, so one can be silent for many minutes and still
-    // be working; the server expires rows that really went quiet. Without
-    // data-active-since the 15s timer below leaves the card alone too.
+    // Never dimmed while a subagent runs. Subagents post when their status
+    // class changes, and otherwise at most once a minute when what they do
+    // changes, so one in a long command can be silent for many minutes and
+    // still be working; the server expires rows that really went quiet.
+    // Without data-active-since the 15s timer below leaves the card alone too.
     const active = ACTIVE_STATUSES.has(shown) && !(sub && sub.running > 0);
     if (active) el.dataset.activeSince = String(s.updatedAt);
     else delete el.dataset.activeSince;

@@ -702,34 +702,6 @@ describe('flood control and confirmation', () => {
     expect(agentPosts(bodies).map((b) => b.agent.state)).toEqual(['done']);
   });
 
-  it('with AGENT_REFRESH_MS on (tests only), posts a new activity within the class', () => {
-    const ws = workspace();
-    const refresh = { AGSTATUS_AGENT_REFRESH_MS: '1' };
-    post(ws, load(ws, 'a_parent_pre_agent_alpha'), refresh);
-    post(ws, load(ws, 'a_subagent_start_alpha'), refresh);
-    const edit = (file: string) => load(ws, 'a_pre_bash_alpha', { tool_name: 'Edit', tool_input: { file_path: file } });
-    expect(agentPosts(post(ws, edit('/x/a.ts'), refresh)).map((b) => b.agent.activity)).toEqual(['Editing a.ts']);
-    // Same class, new activity, and well over 1 ms since the last confirmed post.
-    expect(agentPosts(post(ws, edit('/x/b.ts'), refresh)).map((b) => b.agent)).toEqual([
-      expect.objectContaining({ state: 'coding', activity: 'Editing b.ts' }),
-    ]);
-    // The same activity again is not news.
-    expect(post(ws, edit('/x/b.ts'), refresh)).toEqual([]);
-    // Off (the default): the decided rule, nothing within a class.
-    expect(post(ws, edit('/x/c.ts'))).toEqual([]);
-  });
-
-  it('with AGENT_REFRESH_MS on, holds a new activity back until that long has passed', () => {
-    const ws = workspace();
-    const refresh = { AGSTATUS_AGENT_REFRESH_MS: '600000' };
-    post(ws, load(ws, 'a_parent_pre_agent_alpha'), refresh);
-    post(ws, load(ws, 'a_subagent_start_alpha'), refresh);
-    const edit = (file: string) => load(ws, 'a_pre_bash_alpha', { tool_name: 'Edit', tool_input: { file_path: file } });
-    expect(agentPosts(post(ws, edit('/x/a.ts'), refresh)).map((b) => b.agent.activity)).toEqual(['Editing a.ts']);
-    // A new activity in the same class, ten minutes short of the window.
-    expect(post(ws, edit('/x/b.ts'), refresh)).toEqual([]);
-  });
-
   it('keeps the last running class as the compat status of a failure after a confirmed done', () => {
     // A foreground subagent: coding, stopped, then its launch reported interrupted.
     const ws = workspace();
@@ -754,6 +726,148 @@ describe('flood control and confirmation', () => {
     expect(agentPosts(post(bg, { ...note, prompt: failed })).map((b) => [b.status, b.agent.state])).toEqual([
       ['testing', 'failed'],
     ]);
+  });
+});
+
+describe('activity refresh within a class (at most once a minute)', () => {
+  const SEC = 1000;
+
+  /**
+   * Fires one event as if `s` seconds had passed since the test began: a
+   * preload moves the hook's clock forward, so a minute takes no minute. Real
+   * time only adds to the shift, so every "within the minute" case keeps a
+   * wide margin under the 60 s.
+   */
+  function clock(ws: Ws) {
+    const preload = path.join(ws.root, 'clock.js');
+    fs.writeFileSync(
+      preload,
+      'const shift = Number(process.env.CLOCK_SHIFT_MS) || 0;\nconst now = Date.now;\nDate.now = () => now() + shift;\n',
+    );
+    return (payload: Json, s: number, env: Record<string, string> = {}): Captured[] =>
+      fire(ws, payload, { CLOCK_SHIFT_MS: String(s * SEC), ...env }, ['--require', preload]);
+  }
+
+  const edit = (ws: Ws, file: string, tool = 'Edit') =>
+    load(ws, 'a_pre_bash_alpha', { tool_name: tool, tool_input: { file_path: file } });
+  const bash = (ws: Ws, command: string, description: string) =>
+    load(ws, 'a_pre_bash_alpha', { tool_input: { command, description } });
+  const activities = (reqs: Captured[]) => agentPosts(posts(reqs)).map((b) => b.agent.activity);
+
+  /** Subagent alpha launched and started, its first Edit confirmed as coding, all at 0 s. */
+  function coding(ws: Ws, at: ReturnType<typeof clock>, env: Record<string, string> = {}): void {
+    at(load(ws, 'a_parent_pre_agent_alpha'), 0, env);
+    at(load(ws, 'a_subagent_start_alpha'), 0, env);
+    expect(agentPosts(posts(at(edit(ws, '/x/a.ts'), 0, env))).map((b) => b.agent.state)).toEqual(['coding']);
+  }
+
+  it('posts a new activity once a minute has passed since the last confirmed post', () => {
+    const ws = workspace();
+    const at = clock(ws);
+    coding(ws, at);
+    expect(posts(at(edit(ws, '/x/b.ts'), 61)).map(shape)).toEqual([{
+      session_id: A, status: 'coding', source: 'claude',
+      agent: { id: K(ALPHA, A), state: 'coding', kind: 'agent', label: 'Run echo alpha', activity: 'Editing b.ts' },
+    }]);
+    // The next minute runs from that refresh.
+    expect(at(edit(ws, '/x/c.ts'), 91)).toEqual([]);
+    expect(activities(at(edit(ws, '/x/d.ts'), 122))).toEqual(['Editing d.ts']);
+  });
+
+  it('posts nothing within the minute, whatever the subagent does in its class', () => {
+    const ws = workspace();
+    const at = clock(ws);
+    coding(ws, at);
+    expect(at(edit(ws, '/x/b.ts'), 1)).toEqual([]);
+    expect(at(edit(ws, '/x/c.ts', 'Write'), 10)).toEqual([]);
+    expect(at(bash(ws, 'ls -la', 'List files'), 30)).toEqual([]);
+  });
+
+  it('posts nothing when the activity is still what the board was told', () => {
+    const ws = workspace();
+    const at = clock(ws);
+    coding(ws, at);
+    expect(at(edit(ws, '/x/a.ts'), 61)).toEqual([]);
+    expect(at(edit(ws, '/x/a.ts'), 300)).toEqual([]);
+    // The window was open all along: a new activity goes straight out.
+    expect(activities(at(edit(ws, '/x/b.ts'), 301))).toEqual(['Editing b.ts']);
+  });
+
+  it('after a refused refresh, sends nothing more for that subagent for a minute, while a class change and a stop still post', () => {
+    const ws = workspace();
+    const at = clock(ws);
+    coding(ws, at);
+    queue({ status: 429 });
+    const refused = at(edit(ws, '/x/b.ts'), 61);
+    expect(refused.map((r) => r.status)).toEqual([429]);
+    expect(activities(refused)).toEqual(['Editing b.ts']);
+    // A burst of new activities inside the next minute: not one request.
+    for (const [file, s] of [['/x/c.ts', 62], ['/x/d.ts', 63], ['/x/e.ts', 70], ['/x/f.ts', 90]] as const) {
+      expect(at(edit(ws, file), s)).toEqual([]);
+    }
+    // A class change is not held back, and is still sent until the board takes it.
+    queue({ status: 429 });
+    const tests = bash(ws, 'npm test', 'Run the test suite');
+    expect(at(tests, 91).map((r) => r.status)).toEqual([429]);
+    expect(agentPosts(posts(at(tests, 92))).map((b) => [b.agent.state, b.agent.activity])).toEqual([
+      ['testing', 'Run the test suite'],
+    ]);
+    // Nor is the stop.
+    expect(agentPosts(posts(at(load(ws, 'a_subagent_stop_alpha'), 93))).map((b) => b.agent.state)).toEqual(['done']);
+  });
+
+  it('tries again a minute after a refresh that never reached the board', () => {
+    const ws = workspace();
+    const at = clock(ws);
+    coding(ws, at);
+    queue({ reset: true });
+    expect(at(edit(ws, '/x/b.ts'), 61).map((r) => r.outcome)).toEqual(['reset']);
+    expect(at(edit(ws, '/x/c.ts'), 100)).toEqual([]);
+    expect(activities(at(edit(ws, '/x/d.ts'), 122))).toEqual(['Editing d.ts']);
+  });
+
+  it('in minimal mode, carries only an allowlisted tool name', () => {
+    const ws = workspace();
+    const at = clock(ws);
+    const env = { AGSTATUS_DETAIL: 'off' };
+    at(load(ws, 'a_parent_pre_agent_alpha'), 0, env);
+    at(load(ws, 'a_subagent_start_alpha'), 0, env);
+    const all: Captured[] = [];
+    const run = (p: Json, s: number) => {
+      const reqs = at(p, s, env);
+      all.push(...reqs);
+      return activities(reqs);
+    };
+    expect(run(bash(ws, 'cat /srv/payroll/salaries.csv', 'Read the salary table'), 0)).toEqual(['Bash']);
+    expect(run(edit(ws, '/srv/payroll/secret-bonus.ts'), 61)).toEqual(['Edit']);
+    expect(run(edit(ws, '/srv/payroll/other.ts', 'Write'), 90)).toEqual([]);
+    expect(run(edit(ws, '/srv/payroll/notes.ts', 'MultiEdit'), 122)).toEqual(['MultiEdit']);
+    // Another file with the same tool: nothing new to say in minimal mode.
+    expect(run(edit(ws, '/srv/payroll/more.ts', 'MultiEdit'), 183)).toEqual([]);
+    expect(run(bash(ws, 'rm -rf /srv/payroll/tmp', 'Clear the payroll scratch dir'), 184)).toEqual(['Bash']);
+
+    const agents = agentPosts(posts(all));
+    expect(agents.length).toBe(4);
+    for (const b of agents) {
+      expect(b.agent).not.toHaveProperty('label');
+      expect(['Bash', 'Edit', 'MultiEdit']).toContain(b.agent.activity);
+    }
+    const wire = JSON.stringify(posts(all));
+    for (const needle of ['payroll', 'salar', 'secret-bonus', 'notes.ts', 'Clear the', 'Run echo alpha', ALPHA]) {
+      expect(wire, needle).not.toContain(needle);
+    }
+  });
+
+  it('keeps AGSTATUS_AGENT_REFRESH_MS as an internal knob for tests', () => {
+    const ws = workspace();
+    const knob = { AGSTATUS_AGENT_REFRESH_MS: '1' };
+    post(ws, load(ws, 'a_parent_pre_agent_alpha'), knob);
+    post(ws, load(ws, 'a_subagent_start_alpha'), knob);
+    expect(agentPosts(post(ws, edit(ws, '/x/a.ts'), knob)).map((b) => b.agent.activity)).toEqual(['Editing a.ts']);
+    // 1 ms instead of a minute: the next new activity goes straight out.
+    expect(agentPosts(post(ws, edit(ws, '/x/b.ts'), knob)).map((b) => b.agent.activity)).toEqual(['Editing b.ts']);
+    // Without it, the minute holds the next one back.
+    expect(post(ws, edit(ws, '/x/c.ts'))).toEqual([]);
   });
 });
 

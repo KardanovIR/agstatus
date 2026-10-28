@@ -155,8 +155,9 @@ data class Session(
     val displayStatus: DisplayStatus get() = DisplayStatus.of(status, subtasks)
 
     /**
-     * A card with a running subagent is never stale. Subagents post nothing
-     * while they stay in one status class, so one can be silent for many
+     * A card with a running subagent is never stale. Within one status
+     * class a subagent posts at most once a minute, and only when what it
+     * does changes, so one in a long command can be silent for many
      * minutes and still be working; the server expires the ones that really
      * died, and is the authority on that.
      */
