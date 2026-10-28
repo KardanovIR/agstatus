@@ -254,6 +254,25 @@ describe('static pages', () => {
     expect(decl('.dv-table .dv-swatch-mark', 'margin-left')).toBe(`max(0px, ${keyW}px - ${own})`);
   });
 
+  // A session screen's history, or why there is none, and the note under it
+  // were children of .detail, spaced by its gap. The subtasks section moved
+  // them into a part of their own; without the same gap there, every screen
+  // (with subagents or without) lost the air above its note. jsdom has no
+  // layout, so this asserts the contract.
+  it('spaces the session timeline as the detail spaced it', () => {
+    const css = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'shell.css'), 'utf8');
+    const rule = (selector: string) => {
+      const m = new RegExp(`\\n\\${selector} \\{([^}]*)\\}`).exec(css);
+      if (!m) throw new Error(`no rule for ${selector} in shell.css`);
+      return m[1];
+    };
+    const gap = (selector: string) => /\bgap:\s*([^;]+);/.exec(rule(selector))?.[1];
+    expect(rule('.dv-timeline')).toMatch(/display:\s*flex/);
+    expect(rule('.dv-timeline')).toMatch(/flex-direction:\s*column/);
+    expect(gap('.detail')).toBeTruthy();
+    expect(gap('.dv-timeline')).toBe(gap('.detail'));
+  });
+
   // The install one-liners are the documented way in, so both routes have to
   // work on a self-hosted board too — not only on the hosted instance.
   it('serves the install scripts in both modes', async () => {

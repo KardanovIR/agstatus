@@ -2060,7 +2060,7 @@
       <section class="dv-subs" id="dv-subs"></section>
       <section class="dv-tl">
         <h3 class="ss-label" id="dv-tl-head" hidden>Timeline</h3>
-        <div id="dv-timeline"><p class="dv-empty">Loading…</p></div>
+        <div class="dv-timeline" id="dv-timeline"><p class="dv-empty">Loading…</p></div>
       </section>`);
     if (fresh) document.getElementById('dv-back').addEventListener('click', () => { location.hash = ''; });
   }

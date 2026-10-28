@@ -711,12 +711,23 @@ body.detail-open > .footer { display: none; }
  * A screen without subtasks keeps today's spacing exactly. */
 .dv-subs:not(:empty) { margin-block: var(--space-2xs); }
 
+/* The history, or why there is none, and the note under it were children of
+ * the detail itself, spaced by its gap. Painted apart from the subtasks now,
+ * they sit in a part of their own, and the gap comes with them: without it
+ * the note closed up on the timeline, and on "No history yet" the two read
+ * as one paragraph. */
+.dv-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
 /* A section's name, set as a meter's label is. */
 .ss-label {
   display: flex;
   align-items: baseline;
   gap: var(--space-xs);
-  margin: 0 0 var(--space-2xs);
+  margin: 0 0 6px;
   font-family: var(--font-label);
   font-size: var(--t-xs);
   font-weight: 700;

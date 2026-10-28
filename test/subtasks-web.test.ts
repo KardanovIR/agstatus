@@ -746,6 +746,11 @@ describe('the session screen', () => {
     expect(head.hidden).toBe(false);
     expect(head.textContent).toBe('Timeline');
     expect(document.querySelectorAll('.tl-row')).toHaveLength(4);
+    // The history and its note share the timeline part, which spaces them
+    // with the detail's own gap (pages.test.ts pins the rule).
+    const part = document.getElementById('dv-timeline')!;
+    expect(part.className).toBe('dv-timeline');
+    expect([...part.children].map((c) => c.className)).toEqual(['tl', 'dv-note']);
     // Opened from the title, focus is on Back, as before subagents.
     expect(document.activeElement).toBe(document.getElementById('dv-back'));
   });
