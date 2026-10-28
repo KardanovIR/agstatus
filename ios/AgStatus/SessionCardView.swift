@@ -30,9 +30,15 @@ struct SessionCardView: View {
     /// no Stop, a machine gone to sleep — or one very long tool call. The
     /// board cannot tell which, but it knows exactly how long it has heard
     /// nothing, and the card says so (`card`).
+    /// Never a card with a subagent running: see `Session.isStaleExempt`.
     static let staleAfter: TimeInterval = 10 * 60
 
-    private var statusColor: Color { Theme.color(for: session.status) }
+    /// What the card wears. The status as sent, or WORKING while the turn is
+    /// over and its subagents still run — tint, edge, badge and staleness all
+    /// read this, never the bare status.
+    private var display: DisplayStatus { session.displayStatus }
+
+    private var statusColor: Color { Theme.color(for: display) }
 
     /// At an accessibility text size, a card narrower than one board column
     /// stacks: its status on a line of its own above the text, Focus under it.
@@ -138,6 +144,25 @@ struct SessionCardView: View {
                 }
             }
 
+            // The subagents, under the card's own line and across its full
+            // width — the rows' states stand under the badge, in the rail's
+            // column. Then the meta line, which moves down here whenever the
+            // block shows, the count-only "12 done" included: machine, time
+            // and spend close the card, under everything it says about its
+            // work. Moving it takes it out of the content column's tap, and
+            // VoiceOver still has every fact where it always does, as the
+            // column's More Content (`content`), so the line itself is hidden,
+            // not read twice. The rows' rule is the card's own edge, stale
+            // included.
+            //
+            // A card with no subagents has no block, and is today's card.
+            if let subtasks = session.subtasks {
+                SubtaskBlock(session: session, subtasks: subtasks, rule: Theme.cardEdge(for: display, stale: stale))
+                metaLine(now: now, stale: stale)
+                    .padding(.top, Theme.Space.xxs)
+                    .accessibilityHidden(true)
+            }
+
             // The outcome line: "Brought to front", or why the control is
             // disabled. Full width underneath rather than in the rail, because
             // it is prose — it changes length and would either squeeze the rail
@@ -160,12 +185,12 @@ struct SessionCardView: View {
         // tint would claim (Theme.cardSurface).
         .background(
             RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .fill(Theme.cardSurface(for: session.status, stale: stale))
+                .fill(Theme.cardSurface(for: display, stale: stale))
         )
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .strokeBorder(Theme.cardEdge(for: session.status, stale: stale))
+                .strokeBorder(Theme.cardEdge(for: display, stale: stale))
         )
         // No glow. A lit halo is the trading-terminal tell, and it is exactly
         // wrong in a dark room at 1am — which is when this board is read.
@@ -190,9 +215,11 @@ struct SessionCardView: View {
 
     /// The one stale rule, which the card and the history it opens both
     /// keep, so that the screen a stale card opens does not put back the
-    /// tint the card has taken off, and shows the same "?".
+    /// tint the card has taken off, and shows the same "?". Never while a
+    /// subagent runs (`Session.isStaleExempt`).
     static func isStale(_ session: Session, at now: Date) -> Bool {
-        session.status.isActive && now.timeIntervalSince(session.updatedDate) > staleAfter
+        session.status.isActive && !session.isStaleExempt
+            && now.timeIntervalSince(session.updatedDate) > staleAfter
     }
 
     /// Name, message and metadata — everything the card says, and the only part
@@ -212,8 +239,11 @@ struct SessionCardView: View {
                 // grows around them.
                 .fixedSize(horizontal: false, vertical: true)
 
-            // Machine, when, how much — see `metaLine`.
-            metaLine(now: now, stale: stale)
+            // Machine, when, how much — see `metaLine`. Under the subagents
+            // instead, while the card has any — see `card`.
+            if session.subtasks == nil {
+                metaLine(now: now, stale: stale)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // The tap covers this column and nothing else. It used to sit on a
@@ -222,7 +252,7 @@ struct SessionCardView: View {
         // harmless thing to do with a card; raising a window on another
         // machine is not, so only the harmless one is a whole-column gesture.
         .contentShape(Rectangle())
-        .onTapGesture { openSession(session.id) }
+        .onTapGesture { openSession(SessionRoute(sessionId: session.id)) }
         // One element, built rather than combined, and read in the order the
         // card is read by eye: whose session and which (the label), then its
         // state — the card's one reading — and what it last said (the value).
@@ -241,7 +271,7 @@ struct SessionCardView: View {
         .accessibilityAddTraits(.isButton)
         // The tap, stated, so a double-tap opens history wherever the
         // element's centre happens to fall.
-        .accessibilityAction { openSession(session.id) }
+        .accessibilityAction { openSession(SessionRoute(sessionId: session.id)) }
         .accessibilityHint("Opens this session's history")
         .accessibilityFocused(jumpFocus, equals: .card(session.id))
         .accessibilityCustomContent(.machine, machineFact.map { Text($0) })
@@ -632,6 +662,22 @@ struct SessionCardView: View {
         }
     }
 
+    /// The directory, whenever it says something the name does not.
+    ///
+    /// The name is the session's title when the agent has one (the Claude app
+    /// titles every session, `/rename` titles one in the CLI) and the folder it
+    /// started in otherwise, held for the session's life; `project` follows
+    /// the live directory, with a Claude worktree root reported as its
+    /// repository rather than the folder name the app made up. So a titled
+    /// card reads "in <repo>" — where that work is happening, which a title
+    /// does not say — a card at a worktree root reads "feature-x · in my-repo"
+    /// from its first event, and any other untitled card shows the directory
+    /// only once the session has moved. Either way it is context, never
+    /// identity.
+    private var place: String? {
+        !session.project.isEmpty && session.project != session.name ? "in \(session.project)" : nil
+    }
+
     /// Facts in a row, each followed by its separator.
     ///
     /// `.fixedSize()` here is what lets ViewThatFits measure a candidate at its
@@ -718,7 +764,7 @@ struct SessionCardView: View {
                     // edge the name starts at.
                     Image(systemName: "questionmark")
                 } else {
-                    Image(systemName: Theme.symbol(for: session.status))
+                    Image(systemName: Theme.symbol(for: display))
                         .opacity(stale ? 0 : 1)
                         .overlay(alignment: .trailing) {
                             if stale { Image(systemName: "questionmark") }
@@ -726,7 +772,7 @@ struct SessionCardView: View {
                 }
             }
             .font(.caption2.weight(.semibold))
-            Text(session.status.label.uppercased())
+            Text(display.label.uppercased())
                 .font(.caption2.weight(.semibold))
                 .kerning(0.5)
                 // Stacked, the word is offered the card's width rather than
@@ -839,7 +885,7 @@ struct SessionCardView: View {
     /// on a stale card, for how long nothing has been heard, in words, whether
     /// or not the words fitted on the face; then what the session last said.
     private func spokenState(stale: Bool, now: Date) -> String {
-        var reading = session.status.label
+        var reading = display.label
         if stale {
             reading += ", no update for \(Self.spokenAge(of: session.updatedDate, at: now))"
         }
@@ -1097,13 +1143,24 @@ private struct FocusButtonStyle: ButtonStyle {
     }
 }
 
+/// Where a card sends the board: a session's screen and, when a subagent's
+/// row was tapped rather than the card, the subagent to arrive at on it.
+///
+/// A value of its own for the same reason `UsageDetailRoute` is one: the
+/// navigation path holds both, and two routes that were both Strings could
+/// be mistaken for each other.
+struct SessionRoute: Hashable {
+    let sessionId: String
+    var subtaskId: String? = nil
+}
+
 /// How a card asks the board to open a session's detail.
 ///
 /// An action rather than a NavigationLink: a link inside a List draws its own
 /// disclosure chevron and tints with the app accent, and it has to cover the
 /// whole row — which is how it ended up swallowing taps meant for the control.
 private struct OpenSessionKey: EnvironmentKey {
-    static let defaultValue = BoardAction(name: "none") { _ in }
+    static let defaultValue = BoardAction<SessionRoute>(name: "none") { _ in }
 }
 
 /// Something a card, a head or the agent line asks the board to do with a key
@@ -1120,11 +1177,13 @@ private struct OpenSessionKey: EnvironmentKey {
 /// the board holds rather than from the pass that made it — its path, or the
 /// board as last drawn — so the one a view captured first does what the
 /// newest would.
-struct BoardAction: Equatable {
+///
+/// Keyed by whatever the action is for: a session's route, an agent's source.
+struct BoardAction<Key>: Equatable {
     let name: String
-    let run: (String) -> Void
+    let run: (Key) -> Void
 
-    func callAsFunction(_ key: String) { run(key) }
+    func callAsFunction(_ key: Key) { run(key) }
 
     static func == (lhs: BoardAction, rhs: BoardAction) -> Bool { lhs.name == rhs.name }
 }
@@ -1147,7 +1206,7 @@ private struct CardsSwipeToDismissKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    var openSession: BoardAction {
+    var openSession: BoardAction<SessionRoute> {
         get { self[OpenSessionKey.self] }
         set { self[OpenSessionKey.self] = newValue }
     }
@@ -1166,10 +1225,14 @@ extension EnvironmentValues {
 // MARK: - SessionHistoryView
 
 /// The timeline of one agent session: every status/message transition with
-/// its timestamp, newest first, in the board's color scheme.
+/// its timestamp, newest first, in the board's color scheme — and above it,
+/// while the session runs subagents, every one of them.
 struct SessionHistoryView: View {
     @Environment(SessionStore.self) private var store
     let sessionId: String
+    /// The subagent whose row on the card was tapped, when it was a row that
+    /// opened this screen: the screen arrives at it.
+    var subtaskId: String? = nil
 
     @State private var events: [HistoryEvent] = []
     @State private var loaded = false
@@ -1181,31 +1244,66 @@ struct SessionHistoryView: View {
     /// while it is open. The title used to fall back to the raw session id,
     /// which VoiceOver reads a character at a time.
     @State private var title: String?
+    /// The row lit on arrival, for its two seconds.
+    @State private var litSubtask: String?
+    /// Arrival happens once. Every frame redraws the Subtasks section, and a
+    /// redraw must neither light the row again nor move the reader.
+    @State private var arrived = false
+    /// VoiceOver lands on the arrived row, not on the Back button.
+    @AccessibilityFocusState private var focusedSubtask: String?
+    /// The list's own minimum row height, handed back to it whenever there is
+    /// no Subtasks section to space — see `timeline`.
+    @Environment(\.defaultMinListRowHeight) private var inheritedRowHeight
+    /// Where the subagents' state starts leading their rows, growing with the
+    /// reader's text size — see `SubtaskScreenRow.wideFrom`.
+    @ScaledMetric(relativeTo: .subheadline) private var wideFrom = SubtaskScreenRow.wideFrom
 
     /// The live session, if it is still on the board.
     private var session: Session? {
         store.sessions.first { $0.id == sessionId }
     }
 
+    /// What the server records history for: the status and the line.
+    private struct Reading: Equatable {
+        let status: AgentStatus
+        let message: String
+    }
+
+    private var reading: Reading? {
+        session.map { Reading(status: $0.status, message: $0.message) }
+    }
+
     var body: some View {
-        Group {
-            if events.isEmpty && loaded {
-                emptyState
-            } else {
-                timeline
+        // Measured, not a size class, as the board is: the state leads each
+        // subagent from 600pt of list, so an iPhone in landscape gets it and
+        // an iPad in Split View does not.
+        GeometryReader { geo in
+            Group {
+                // The full-screen empty state only where there is nothing else
+                // to show. With subagents running, an empty or failed history
+                // is the timeline's business alone, and the section above it
+                // is painted from the live session whatever the fetch did.
+                if events.isEmpty && loaded && session?.subtasks == nil {
+                    emptyState
+                } else {
+                    timeline(wide: geo.size.width - 2 * Theme.Space.md >= wideFrom)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background.ignoresSafeArea())
         .navigationTitle(session?.name ?? title ?? "Session history")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.background, for: .navigationBar)
-        // Loaded on appear, and again on every update to this session (a new
-        // SSE event). Once the first answer is in, an update waits 300 ms and
-        // the next one replaces it, so a burst of events is one request.
-        // Answers are put in order (`load`): each event used to start a task
-        // of its own, and two in flight could land in either order.
-        .task(id: session?.updatedAt) {
+        // Loaded on appear, and again whenever the session's reading changes:
+        // its status or its line, which are all history records. Not on every
+        // frame: subagents' posts move `updatedAt` all the time and change
+        // neither, and refetching on each fetched the same timeline dozens of
+        // times a minute. Once the first answer is in, a change waits 300 ms
+        // and the next one replaces it, so a burst is one request. Answers are
+        // put in order (`load`): each event used to start a task of its own,
+        // and two in flight could land in either order.
+        .task(id: reading) {
             if title == nil { title = session?.name }
             // Gone from the board, and its history with it on the server, by
             // design: what is on screen stays. Asked again, the server answers
@@ -1250,28 +1348,122 @@ struct SessionHistoryView: View {
 
     // MARK: Timeline
 
-    private var timeline: some View {
-        List {
-            if let session {
-                headerRow(session)
+    private func timeline(wide: Bool) -> some View {
+        ScrollViewReader { scroller in
+            List {
+                if let session {
+                    headerRow(session)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
+                }
+                if let subtasks = session?.subtasks {
+                    subtaskSection(subtasks, wide: wide)
+                }
+                ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                    HistoryRow(
+                        event: event,
+                        isFirst: index == 0,
+                        isLast: index == events.count - 1
+                    )
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                }
             }
-            ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
-                HistoryRow(
-                    event: event,
-                    isFirst: index == 0,
-                    isLast: index == events.count - 1
-                )
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            // The Subtasks section is spaced by its own rows' heights and
+            // insets, as the design draws it, so the list's minimum row height
+            // (52pt on iOS 26, read on 26.5 on a phone and an iPad alike) is
+            // taken off while it shows: otherwise every short row in it, and
+            // the header above it, is stood up to 52 and the section drifts
+            // apart by a different amount on every OS. Without the section the
+            // inherited value is passed straight back, and the screen is as it
+            // was.
+            .environment(\.defaultMinListRowHeight, session?.subtasks == nil ? inheritedRowHeight : 0)
+            .motion(.snappy, value: events)
+            .task { await arrive(using: scroller) }
+        }
+    }
+
+    /// Every subagent, above the timeline: the section's name with its counts,
+    /// a row for each, the done count, and then the timeline's own name —
+    /// without which the timeline would read as more of the same list.
+    ///
+    /// The done line and the timeline's name share a row: on their own, each
+    /// would be stood up to a list row's minimum height, and the gap between
+    /// the subagents and the timeline would be drawn by the list rather than
+    /// by this.
+    @ViewBuilder
+    private func subtaskSection(_ subtasks: Subtasks, wide: Bool) -> some View {
+        SubtaskSectionLabel(title: SubtaskCopy.section,
+                            detail: SubtaskCopy.counts(running: subtasks.running,
+                                                       blocked: subtasks.blocked,
+                                                       failed: subtasks.failed))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            // 22pt under the capsules, of which the row above brings its 4.
+            .listRowInsets(EdgeInsets(top: 18, leading: 16, bottom: 6, trailing: 16))
+        ForEach(SubtaskScreenRow.ordered(subtasks.items)) { item in
+            SubtaskScreenRow(item: item, wide: wide, lit: litSubtask == item.id)
+                .accessibilityFocused($focusedSubtask, equals: item.id)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-            }
+                // 8 in from the edge, and the row's own 8 inside: its text
+                // lines up with everything else, and its lit ground reaches
+                // past the text on either side.
+                .listRowInsets(EdgeInsets(top: 0, leading: Theme.Space.xs, bottom: 0, trailing: Theme.Space.xs))
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .motion(.snappy, value: events)
+        VStack(alignment: .leading, spacing: 0) {
+            if subtasks.done > 0 {
+                Text(SubtaskCopy.doneThisTurn(subtasks.done))
+                    .font(.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.top, Theme.Space.xxs)
+            }
+            SubtaskSectionLabel(title: SubtaskCopy.timeline)
+                .padding(.top, 22)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 6, trailing: 16))
+        if events.isEmpty && loaded {
+            emptyState
+                .frame(maxWidth: .infinity)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+    }
+
+    /// Opened from a card's row: the row is brought to the centre, VoiceOver
+    /// moves to it, and its ground is lit for two seconds, then goes out —
+    /// faded, or at once with Reduce Motion. A subagent that has gone by the
+    /// time the screen opens leaves it at the top, unlit.
+    private func arrive(using scroller: ScrollViewProxy) async {
+        guard !arrived else { return }
+        arrived = true
+        guard let subtaskId,
+              session?.subtasks?.items.contains(where: { $0.id == subtaskId }) == true else { return }
+        // A list asked to scroll before it has laid its rows out has nothing
+        // to scroll, and the push is still sliding the screen in.
+        try? await Task.sleep(for: .milliseconds(150))
+        guard !Task.isCancelled else { return }
+        scroller.scrollTo(subtaskId, anchor: .center)
+        litSubtask = subtaskId
+        focusedSubtask = subtaskId
+        #if DEBUG
+        // A frozen demo is being photographed, and a light that goes out on
+        // a timer turns the capture into a race — as `BoardView.fadeRing`.
+        if DemoData.isFrozen { return }
+        #endif
+        try? await Task.sleep(for: .seconds(2))
+        guard !Task.isCancelled else {
+            litSubtask = nil
+            return
+        }
+        withMotion(.easeOut(duration: 0.6)) { litSubtask = nil }
     }
 
     /// The state the session is in, drawn as the card that was tapped to get
@@ -1292,6 +1484,10 @@ struct SessionHistoryView: View {
     /// do not, the badge takes a line of its own above the box, as a stacked
     /// card puts its state first: squeezed beside the box its word broke in
     /// two, "COD-ING" at AX4 on an SE.
+    ///
+    /// What the session wears now, WORKING included, so the badge agrees
+    /// with the card even where the newest event, which records the wire,
+    /// still reads `testing · 2 subagents still running`.
     private func headerRow(_ session: Session) -> some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let stale = SessionCardView.isStale(session, at: context.date)
@@ -1343,26 +1539,26 @@ struct SessionHistoryView: View {
                 if stale && !keepsGlyphWidth {
                     Image(systemName: "questionmark")
                 } else {
-                    Image(systemName: Theme.symbol(for: session.status))
+                    Image(systemName: Theme.symbol(for: session.displayStatus))
                         .opacity(stale ? 0 : 1)
                         .overlay(alignment: .trailing) {
                             if stale { Image(systemName: "questionmark") }
                         }
                 }
             }
-            Text(session.status.label.uppercased())
+            Text(session.displayStatus.label.uppercased())
                 .kerning(0.5)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
         .font(.caption2.weight(.semibold))
-        .foregroundStyle(Theme.color(for: session.status))
+        .foregroundStyle(Theme.color(for: session.displayStatus))
     }
 
     /// "Directory acme-api. Coding", and on a stale session "Coding, no
     /// update for 14 minutes", as the card says it.
     private func headerLabel(_ session: Session, stale: Bool, now: Date) -> String {
-        var state = session.status.label
+        var state = session.displayStatus.label
         if stale {
             state += ", no update for \(SessionCardView.spokenAge(of: session.updatedDate, at: now))"
         }

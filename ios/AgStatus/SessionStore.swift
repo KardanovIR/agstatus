@@ -849,8 +849,10 @@ final class SessionStore {
         DemoData.verifyTokenDecoding()
         DemoData.verifyPairing()
         // Subagents: one bad item must never cost a card, let alone the
-        // snapshot that carries it.
+        // snapshot that carries it — and the words are the web's and
+        // Android's too, so they are pinned.
         DemoData.verifySubtaskDecoding()
+        SubtaskCopy.verify()
         // The forgiveness rule is the one part of the streak a screenshot
         // cannot show: a bar reading "14 days" looks the same whether the
         // window arithmetic is right or wrong. With no test target in this

@@ -109,7 +109,7 @@ struct AgentHead: View {
     let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
     /// Brings an agent's first blocked card into view, given its source. An
     /// action and not a closure, so that it compares (`==`).
-    let onJump: BoardAction
+    let onJump: BoardAction<String>
 
     private var form: HeadForm {
         HeadForm.resolve(outer: width, canStrip: canStrip, scale: scale)
@@ -462,11 +462,11 @@ extension AgentHead: Equatable {
 /// The board pushes a `UsageDetailRoute` onto its own path; the destination is
 /// declared at its root, beside the session one.
 private struct OpenUsageKey: EnvironmentKey {
-    static let defaultValue = BoardAction(name: "none") { _ in }
+    static let defaultValue = BoardAction<String>(name: "none") { _ in }
 }
 
 extension EnvironmentValues {
-    var openUsage: BoardAction {
+    var openUsage: BoardAction<String> {
         get { self[OpenUsageKey.self] }
         set { self[OpenUsageKey.self] = newValue }
     }
@@ -584,9 +584,9 @@ struct AgentLine: View, Equatable {
     let width: CGFloat
     var scale: CGFloat = 1
     /// Scrolls to an agent's section, given its source.
-    let onSection: BoardAction
+    let onSection: BoardAction<String>
     /// Brings an agent's first blocked card into view, given its source.
-    let onJump: BoardAction
+    let onJump: BoardAction<String>
 
     /// Wide enough for a mark, a name and an alarm. A further agent starts a
     /// second row sooner than any name is cut to a letter.

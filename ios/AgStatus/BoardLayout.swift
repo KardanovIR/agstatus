@@ -479,6 +479,143 @@ struct CardSides: Equatable {
     }
 }
 
+// MARK: - SubtaskSlots
+
+/// Which of a card's subagents stand in its row slots, and in which slot.
+///
+/// The owner's rule is "oldest, slot-stable": the rows that fit are the
+/// first to start, and a row keeps its slot until it finishes, whatever its
+/// state does meanwhile. A finished row leaves a hole in its own slot, and the
+/// next hidden row takes that slot in place — no other row moves. A blocked
+/// subagent always gets a slot: a free one, else the bottom-most slot whose
+/// row is not blocked, and the row it displaces comes back only into a slot a
+/// finish frees. A slot nothing can take closes. So the eye comes back to the
+/// same place, and a row that moves has news: it started, finished or is
+/// waiting on you.
+///
+/// Every frame replaces the session whole, so the order cannot live on the
+/// session: it is kept here, by the board, beside `CardSides` and for the same
+/// reasons — per device, never persisted, and resolved purely so the view can
+/// draw from the answer in the pass that stores it (`BoardView`).
+struct SubtaskSlots: Equatable {
+    /// One card's slots.
+    struct Ledger: Equatable {
+        /// The slot count it was drawn for. A different count is a card of a
+        /// different shape, which starts again from a first drawing.
+        let slots: Int
+        /// The subagents on show, top to bottom. Longer than `slots` only
+        /// while the card is open in place.
+        var shown: [String]
+    }
+
+    /// Three rows where a card stands in a column, two under the phone's
+    /// rules: by `BoardArrangement`, never by device — an iPad in Split View
+    /// is a phone, and an iPhone in landscape that fits two columns is not.
+    static func slots(for arrangement: BoardArrangement) -> Int {
+        arrangement == .narrow ? 2 : 3
+    }
+
+    private var ledgers: [String: Ledger] = [:]
+    /// What the ledgers were resolved for, so that a card the board has not
+    /// resolved yet still draws its first rows rather than none.
+    private(set) var slots = 3
+    private var open: Set<String> = []
+
+    /// The ledger with every card on the board resolved against its current
+    /// subagents.
+    ///
+    /// Idempotent: resolving the answer again with the same sessions gives
+    /// the same answer, which is what lets the view resolve in `body` and
+    /// store in `onChange` without the two ever chasing each other. A card
+    /// with no subtask block, or no longer on the board, loses its ledger;
+    /// one that comes back starts again.
+    ///
+    /// `expanded` is the cards open in place. The board passes none under the
+    /// phone's rules, where the footer opens the session screen instead.
+    func resolved(for sessions: [Session], slots: Int, expanded: Set<String>) -> SubtaskSlots {
+        var next = SubtaskSlots()
+        next.slots = slots
+        next.open = expanded
+        for session in sessions {
+            guard let items = session.subtasks?.items else { continue }
+            next.ledgers[session.id] = Self.pick(ledgers[session.id], items: items, slots: slots,
+                                                 open: expanded.contains(session.id)).ledger
+        }
+        return next
+    }
+
+    /// The rows a card shows, top to bottom.
+    func rows(for session: Session) -> [Subtask] {
+        guard let items = session.subtasks?.items else { return [] }
+        // Picking again is free of side effects and, on a resolved ledger,
+        // returns exactly what it holds — so one function answers both a card
+        // the board has resolved and one it has not.
+        return Self.pick(ledgers[session.id], items: items, slots: slots,
+                         open: open.contains(session.id)).rows
+    }
+
+    /// Whether the card's list is open in place.
+    func isOpen(_ sessionId: String) -> Bool {
+        open.contains(sessionId)
+    }
+
+    /// The spec's `pick`, step for step: one card's ledger, brought up to date
+    /// with its subagents in start order.
+    static func pick(_ ledger: Ledger?, items: [Subtask], slots: Int,
+                     open: Bool) -> (ledger: Ledger, rows: [Subtask]) {
+        let slots = max(1, slots)
+        let live = Dictionary(items.map { ($0.id, $0) }) { first, _ in first }
+        var ledger = ledger.flatMap { $0.slots == slots ? $0 : nil } ?? firstDrawing(items, slots: slots)
+
+        if open {
+            // Open in place: the rows on show stay where they are and the rest
+            // follow in start order. Nothing is pulled up into a gap, since
+            // every row is already showing.
+            let kept = ledger.shown.filter { live[$0] != nil }
+            let keptSet = Set(kept)
+            ledger.shown = kept + items.map(\.id).filter { !keptSet.contains($0) }
+            return (ledger, ledger.shown.compactMap { live[$0] })
+        }
+
+        // Folded: the first `slots` entries, and a finished row leaves a hole
+        // in ITS slot.
+        var at: [String?] = ledger.shown.prefix(slots).map { live[$0] == nil ? nil : $0 }
+        for item in items where item.state == .blocked && !at.contains(item.id) {
+            var index = at.firstIndex(of: nil)
+            if index == nil && at.count < slots {
+                index = at.count
+                at.append(nil)
+            }
+            if index == nil {
+                // The bottom-most slot whose row is not blocked. The row there
+                // goes hidden until a finish frees a slot for it.
+                index = at.indices.last { slot in at[slot].flatMap { live[$0] }?.state != .blocked }
+            }
+            if let index { at[index] = item.id }
+        }
+        // The next hidden row, in start order, takes a freed slot in place.
+        var hidden = items.filter { !at.contains($0.id) }
+        var slot = 0
+        while slot < slots && !hidden.isEmpty {
+            if slot == at.count { at.append(nil) }
+            if at[slot] == nil { at[slot] = hidden.removeFirst().id }
+            slot += 1
+        }
+        // A slot nothing could take closes.
+        ledger.shown = at.compactMap { $0 }
+        return (ledger, ledger.shown.compactMap { live[$0] })
+    }
+
+    /// The first drawing: blocked subagents first, up to the slot count, then
+    /// the first to start — listed in start order either way.
+    private static func firstDrawing(_ items: [Subtask], slots: Int) -> Ledger {
+        let blocked = items.filter { $0.state == .blocked }.prefix(slots)
+        let rest = items.filter { $0.state != .blocked }.prefix(slots - blocked.count)
+        let chosen = Set(blocked.map(\.id) + rest.map(\.id))
+        return Ledger(slots: slots, shown: items.map(\.id).filter(chosen.contains))
+    }
+}
+
 // MARK: - Rows
 
 extension Array {
@@ -753,6 +890,122 @@ extension BoardArrangement {
         let higherSides = CardSides().resolved(for: AgentGroup.make(sessions: higher, usage: []))
         assert(higherSides.firstBlocked(in: higher)?.id == "q2", "the higher card, whichever side")
         assert(higherSides.firstBlocked(in: [session("z", "claude")]) == nil, "nothing blocked")
+
+        verifySubtaskSlots()
+    }
+
+    /// The slot rule for a card's subagents — the other half of "a row keeps
+    /// its place", and like the side ledger, a thing no single capture can
+    /// show: it is about what happens to the rows that stay.
+    private static func verifySubtaskSlots() {
+        func item(_ n: Int, _ state: SubtaskState = .coding) -> Subtask {
+            Subtask(id: "r\(n)", n: n, label: "r\(n)", state: state, activity: "")
+        }
+        func card(_ items: [Subtask], done: Int = 0) -> Session {
+            Session(id: "card", name: "card", status: .coding, message: "", project: "",
+                    createdAt: 0, updatedAt: 0, subtasks: Subtasks(items: items, done: done))
+        }
+        func ids(_ rows: [Subtask]) -> [String] { rows.map(\.id) }
+        /// One resolution step, and the rows it draws.
+        func step(_ ledger: SubtaskSlots, _ items: [Subtask], slots: Int = 3,
+                  open: Bool = false) -> (SubtaskSlots, [String]) {
+            let next = ledger.resolved(for: [card(items)], slots: slots, expanded: open ? ["card"] : [])
+            return (next, ids(next.rows(for: card(items))))
+        }
+
+        // First fill: the first to start, and a blocked one first of all —
+        // listed in start order either way.
+        let five = (1...5).map { item($0) }
+        let (filled, firstRows) = step(SubtaskSlots(), five)
+        assert(firstRows == ["r1", "r2", "r3"], "oldest first")
+        let withBlocked = five.map { $0.n == 5 ? item(5, .blocked) : $0 }
+        assert(step(SubtaskSlots(), withBlocked).1 == ["r1", "r2", "r5"], "a blocked one takes a first slot")
+        let allBlocked = (1...4).map { item($0, .blocked) }
+        assert(step(SubtaskSlots(), allBlocked).1 == ["r1", "r2", "r3"], "more blocked than slots: the first")
+        assert(step(SubtaskSlots(), five, slots: 2).1 == ["r1", "r2"], "two under the phone's rules")
+        assert(step(SubtaskSlots(), [item(1)]).1 == ["r1"], "fewer than the slots")
+
+        // Resolving the answer again changes nothing — the property the view
+        // depends on to resolve in `body` and store in `onChange`.
+        assert(step(filled, five).0 == filled, "idempotent")
+
+        // A finish leaves a hole in ITS slot, and the next hidden row takes it
+        // in place: r4 lands between r1 and r3, and neither moves.
+        let (afterFinish, finishRows) = step(filled, five.filter { $0.n != 2 })
+        assert(finishRows == ["r1", "r4", "r3"], "a finish is filled in place")
+        assert(step(afterFinish, five.filter { $0.n != 2 }).0 == afterFinish, "idempotent after a finish")
+
+        // A blocked subagent takes the bottom-most slot whose row is not
+        // blocked; the row it displaces goes hidden.
+        let fiveBlocked = five.map { $0.n == 5 ? item(5, .blocked) : $0 }
+        let (afterBlock, blockRows) = step(filled, fiveBlocked)
+        assert(blockRows == ["r1", "r2", "r5"], "blocked takes the bottom-most slot")
+        // Approved, it keeps the slot, and the displaced row does not come back.
+        let (afterApproval, approvedRows) = step(afterBlock, five)
+        assert(approvedRows == ["r1", "r2", "r5"], "an approved row keeps its slot")
+        // That row returns only into a slot a finish frees.
+        assert(step(afterApproval, five.filter { $0.n != 1 }).1 == ["r3", "r2", "r5"],
+               "the displaced row returns into a freed slot")
+        // Blocked rows are never displaced by another blocked one: each takes
+        // the bottom-most slot still holding a row that is not.
+        let twoBlocked = five.map { $0.n == 4 || $0.n == 5 ? item($0.n, .blocked) : $0 }
+        let (pair, pairRows) = step(filled, twoBlocked)
+        assert(pairRows == ["r1", "r5", "r4"], "the second blocked row takes the next slot up")
+        let threeBlocked = twoBlocked + [item(6, .blocked)]
+        assert(step(pair, threeBlocked).1 == ["r6", "r5", "r4"], "and the third the last one left")
+        assert(step(step(pair, threeBlocked).0, threeBlocked + [item(7, .blocked)]).1 == ["r6", "r5", "r4"],
+               "with every slot blocked, a fourth waits")
+
+        // A slot nothing can take closes.
+        let three = (1...3).map { item($0) }
+        let (trio, _) = step(SubtaskSlots(), three)
+        assert(step(trio, [item(1), item(3)]).1 == ["r1", "r3"], "an untaken slot closes")
+        // And a new row then joins at the end, not in the closed slot's place.
+        assert(step(step(trio, [item(1), item(3)]).0, [item(1), item(3), item(4)]).1 == ["r1", "r3", "r4"],
+               "a new row joins at the end")
+
+        // A different slot count starts again from a first drawing.
+        let (narrow, _) = step(SubtaskSlots(), five, slots: 2)
+        let (shuffled, _) = step(narrow, five.filter { $0.n != 1 }, slots: 2)
+        assert(step(shuffled, five.filter { $0.n != 1 }, slots: 2).1 == ["r3", "r2"], "the phone's ledger")
+        assert(step(shuffled, five.filter { $0.n != 1 }, slots: 3).1 == ["r2", "r3", "r4"],
+               "two slots to three resets the ledger")
+
+        // Thirty at once: three rows, the rest counted.
+        let thirty = (1...30).map { item($0, $0 % 3 == 0 ? .testing : .coding) }
+        let (busy, busyRows) = step(SubtaskSlots(), thirty)
+        assert(busyRows == ["r1", "r2", "r3"], "thirty: the first three")
+        assert(step(busy, thirty).0 == busy, "thirty: idempotent")
+
+        // Opened in place: the rows on show stay where they are, and the rest
+        // follow in start order. Folded, the first slots keep their rows.
+        let (opened, openRows) = step(afterFinish, five.filter { $0.n != 2 }, open: true)
+        assert(openRows == ["r1", "r4", "r3", "r5"], "open keeps the slots and adds the rest")
+        assert(opened.isOpen("card"), "open")
+        assert(step(opened, five.filter { $0.n != 2 }, open: true).0 == opened, "idempotent while open")
+        assert(step(opened, five.filter { $0.n != 2 }).1 == ["r1", "r4", "r3"], "fold keeps the first slots")
+        // While open, a finished row's place closes and a new one joins the end.
+        assert(step(opened, [item(1), item(3), item(5), item(6)], open: true).1 == ["r1", "r3", "r5", "r6"],
+               "open: a finish closes, a start joins the end")
+        // A list open with fewer rows than slots, which then grows, is still open.
+        let (smallOpen, _) = step(SubtaskSlots(), [item(1), item(2)], open: true)
+        assert(step(smallOpen, five, open: true).1 == ["r1", "r2", "r3", "r4", "r5"],
+               "an open list that shrank and grew again is still open")
+
+        // A card without subagents has no ledger; one that comes back starts again.
+        let gone = filled.resolved(for: [Session(id: "card", name: "card", status: .done, message: "",
+                                                 project: "", createdAt: 0, updatedAt: 0)],
+                                   slots: 3, expanded: [])
+        assert(gone == SubtaskSlots().resolved(for: [], slots: 3, expanded: []), "no block, no ledger")
+        assert(step(gone, five.filter { $0.n != 2 }).1 == ["r1", "r3", "r4"], "a returning card starts again")
+        // Every row finished, the count still showing: no rows, and no crash.
+        assert(step(filled, []).1.isEmpty, "count only")
+
+        // The label's share of a row's text.
+        assert(SubtaskTextLayout.widths(total: 300, label: 80, spacing: 8) == (80, 212), "a short label is whole")
+        let capped = SubtaskTextLayout.widths(total: 300, label: 280, spacing: 8)
+        assert(abs(capped.label - 174) < 0.001 && abs(capped.activity - 118) < 0.001, "a long label stops at 58%")
+        assert(SubtaskTextLayout.widths(total: 0, label: 80, spacing: 8) == (0, 0), "no room at all")
     }
 }
 #endif

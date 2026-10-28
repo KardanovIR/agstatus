@@ -21,6 +21,14 @@ struct BoardView: View {
     /// board is rotated or an agent arrives, and a card's side has to outlive
     /// the swap.
     @State private var sides = CardSides()
+    /// Which subagents stand in which row slots of each card — see
+    /// `SubtaskSlots`. Here beside `sides` for the same reason: every frame
+    /// replaces a session whole, the containers are swapped on rotation, and
+    /// a row's slot has to outlive both.
+    @State private var subtaskSlots = SubtaskSlots()
+    /// The cards whose subagent lists the reader opened in place. A card stays
+    /// open until it is folded, or loses its subagents, or leaves the board.
+    @State private var expandedSubtasks: Set<String> = []
     /// The card an alarm last brought into view, for as long as its ring shows.
     @State private var jumped: String?
     /// Counts the jumps. The ring's two seconds run from the LAST press, and a
@@ -107,13 +115,13 @@ struct BoardView: View {
             // on a container that has just been swapped out is gone from under
             // the screen it pushed.
             //
-            // Two value types, so the two cannot collide: a session id is a
-            // String, an agent's usage is a UsageDetailRoute.
+            // Two value types, so the two cannot collide: a session's screen is
+            // a SessionRoute, an agent's usage is a UsageDetailRoute.
             .navigationDestination(for: UsageDetailRoute.self) { route in
                 UsageDetailView(source: route.source)
             }
-            .navigationDestination(for: String.self) { sessionId in
-                SessionHistoryView(sessionId: sessionId)
+            .navigationDestination(for: SessionRoute.self) { route in
+                SessionHistoryView(sessionId: route.sessionId, subtaskId: route.subtaskId)
             }
             // Actions, not bare closures, so that one hook event runs only its
             // own card, not every card and head under the board
@@ -121,6 +129,18 @@ struct BoardView: View {
             // to stay as it was (`AgentHead`'s `==`).
             .environment(\.openSession, BoardAction(name: "history") { path.append($0) })
             .environment(\.openUsage, BoardAction(name: "usage") { path.append(UsageDetailRoute(source: $0)) })
+            // The reader's own act, so it is the one change to a card's rows
+            // that is animated as a whole: the rows on show stay where they
+            // are, the rest come in below, and the cards under it move down.
+            .environment(\.toggleSubtasks, BoardAction(name: "subtasks") { id in
+                withMotion(.snappy) {
+                    if expandedSubtasks.contains(id) {
+                        expandedSubtasks.remove(id)
+                    } else {
+                        expandedSubtasks.insert(id)
+                    }
+                }
+            })
             .navigationTitle("AgStatus")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.background, for: .navigationBar)
@@ -178,16 +198,21 @@ struct BoardView: View {
             .onChange(of: store.sessions.map(\.id), initial: true) {
                 sides = sides.resolved(for: groups)
             }
+            // A card that loses its subagents, or leaves the board, is folded:
+            // its next subagents start a list of their own.
+            .onChange(of: store.sessions.filter { $0.subtasks != nil }.map(\.id)) { _, ids in
+                expandedSubtasks.formIntersection(ids)
+            }
             // A different board is different cards. Starting again is also
             // what stops the ledger growing without end across a day of
             // switching boards.
             .onChange(of: store.board) {
-                sides = CardSides().resolved(for: groups)
+                startOver()
                 // A different board's first connect is not a reconnection.
                 announcedDrop = false
                 dropWait?.cancel()
             }
-            .onChange(of: store.isDemo) { sides = CardSides().resolved(for: groups) }
+            .onChange(of: store.isDemo) { startOver() }
             // The ring says "this is the blocked card you asked for". Once the
             // card is no longer blocked it would be saying something untrue.
             // A card that has just become blocked is said aloud.
@@ -226,6 +251,15 @@ struct BoardView: View {
                         // the board has measured it, and a card cannot without
                         // a reader that would decide a frame late.
                         .environment(\.cardIsColumnWide, plan.cardsColumnWide)
+                        // Every card draws its subagent rows from the ledger
+                        // resolved for this pass, and under the phone's rules
+                        // — two rows, a footer that opens the session screen
+                        // — exactly where the board is one list. By measured
+                        // width, as everything here is: an iPad in Split View
+                        // gets the phone's rules, and an iPhone in landscape
+                        // that fits two columns does not.
+                        .environment(\.subtaskSlots, plan.subtasks)
+                        .environment(\.subtasksOpenScreen, plan.arrangement == .narrow)
                 }
             }
 
@@ -263,14 +297,36 @@ struct BoardView: View {
         #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await jumpForScreenshots() }
+        // The body draws from `subtaskSlots.resolved(…)` and this stores the
+        // same answer, as `sides` is stored: so the frame a row first appears
+        // in already has it in its slot. Resolving is idempotent, so storing
+        // it never asks for another pass that would change it again. Here and
+        // not at the root, because the slot count is the arrangement's, and
+        // only this side of the reader knows the width.
+        .onChange(of: plan.subtasks, initial: true) { _, resolved in
+            subtaskSlots = resolved
+        }
+    }
+
+    /// Forgets every card's side, slots and open list, for a board that is no
+    /// longer the one they were kept for.
+    private func startOver() {
+        sides = CardSides().resolved(for: groups)
+        subtaskSlots = SubtaskSlots()
+        expandedSubtasks = []
     }
 
     /// Debug-only deep links so screenshot automation can reach the pushed
-    /// screens, which have no launch argument and cannot be tapped by simctl.
+    /// screens and the states only a touch makes, none of which have a launch
+    /// argument, and simctl cannot tap.
     /// AGSTATUS_OPEN_SHEET=settings|pair presents that sheet;
     /// AGSTATUS_OPEN_HISTORY=1 opens the first session's timeline, and
     /// AGSTATUS_OPEN_HISTORY=<session id> that session's;
-    /// AGSTATUS_OPEN_USAGE=<source> opens that agent's usage history.
+    /// AGSTATUS_OPEN_USAGE=<source> opens that agent's usage history;
+    /// AGSTATUS_OPEN_SUBTASK=<n> opens the session screen at subagent number n
+    /// of the first card that has one, as tapping its row would;
+    /// AGSTATUS_EXPAND_SUBTASKS=1 opens every card's subagent list in place,
+    /// as its footer would (nothing opens in place under the phone's rules).
     private func openHistoryForScreenshots() async {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
@@ -290,17 +346,34 @@ struct BoardView: View {
             }
             return
         }
-        guard let which = environment["AGSTATUS_OPEN_HISTORY"], !which.isEmpty else { return }
+        let expands = environment["AGSTATUS_EXPAND_SUBTASKS"] == "1"
+        let subtask = environment["AGSTATUS_OPEN_SUBTASK"].flatMap { Int($0) }
+        let which = environment["AGSTATUS_OPEN_HISTORY"] ?? ""
+        guard expands || subtask != nil || !which.isEmpty else { return }
         // Demo sessions are seeded synchronously; a real board arrives over SSE.
         for _ in 0..<40 {
             if !store.sessions.isEmpty { break }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        if expands {
+            expandedSubtasks = Set(store.sessions.filter { $0.subtasks != nil }.map(\.id))
+        }
+        if let subtask {
+            for session in store.sessions {
+                guard let item = session.subtasks?.items.first(where: { $0.n == subtask }) else { continue }
+                if path.isEmpty {
+                    path.append(SessionRoute(sessionId: session.id, subtaskId: item.id))
+                }
+                return
+            }
+            return
+        }
+        guard !which.isEmpty else { return }
         // "1" is the first session; anything else names one, so a stale
         // session's history can be reached when a blocked one sorts first.
         let session = which == "1" ? store.sessions.first : store.sessions.first { $0.id == which }
         if let session, path.isEmpty {
-            path.append(session.id)
+            path.append(SessionRoute(sessionId: session.id))
         }
         #endif
     }
@@ -346,17 +419,24 @@ struct BoardView: View {
         #endif
         let groups = groups
         let compactHeight = verticalSizeClass == .compact
+        let arrangement = BoardArrangement.resolve(width: width, agents: groups.count, minColumn: minColumn,
+                                                   compactHeight: compactHeight)
         return BoardPlan(
             width: width,
             scale: minColumn / BoardArrangement.minColumn,
             groups: groups,
-            arrangement: BoardArrangement.resolve(width: width, agents: groups.count, minColumn: minColumn,
-                                                  compactHeight: compactHeight),
+            arrangement: arrangement,
             wide: BoardArrangement.fit(width: width, minColumn: minColumn) >= 2,
             idle: store.sessions.isEmpty,
             largeText: typeSize.isAccessibilitySize,
             compactHeight: compactHeight,
-            sides: sides.resolved(for: groups)
+            sides: sides.resolved(for: groups),
+            // Nothing opens in place under the phone's rules, whatever the
+            // reader opened before the board narrowed — the flag is kept, and
+            // a board that widens again finds the card still open.
+            subtasks: subtaskSlots.resolved(for: store.sessions,
+                                            slots: SubtaskSlots.slots(for: arrangement),
+                                            expanded: arrangement == .narrow ? [] : expandedSubtasks)
         )
     }
 
@@ -742,13 +822,13 @@ struct BoardView: View {
     /// plan carried in it would be as old: the blocked card it named gone,
     /// another blocked in its place, the count the same. It reads the board as
     /// last drawn instead (`drawn`).
-    private var jumpAction: BoardAction {
+    private var jumpAction: BoardAction<String> {
         BoardAction(name: "jump") { jump(to: $0) }
     }
 
     /// What a name on the agent line does: scrolls its agent's section to the
     /// top. Like `jumpAction`, from the board as last drawn.
-    private var sectionAction: BoardAction {
+    private var sectionAction: BoardAction<String> {
         BoardAction(name: "section") { source in
             guard let plan = drawn.plan, let scroller = drawn.scroller else { return }
             withAnimation(jumpAnimation) {
@@ -1643,7 +1723,7 @@ private struct HeadRows: View, Equatable {
     let scale: CGFloat
     let now: Date
     let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
-    let onJump: BoardAction
+    let onJump: BoardAction<String>
 
     var body: some View {
         let track = BoardArrangement.track(width: width, count: perRow, gap: gap)
@@ -1712,6 +1792,8 @@ private struct BoardPlan {
     /// A phone held sideways: the list, whatever the width.
     let compactHeight: Bool
     let sides: CardSides
+    /// Every card's subagent rows, resolved for this pass's slot count.
+    let subtasks: SubtaskSlots
 
     /// Whether the heads scroll with their sections under one pinned agent
     /// line. Never on an idle board: there are no sections for an agent line
