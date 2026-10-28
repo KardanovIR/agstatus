@@ -387,10 +387,15 @@ function upsertTomb(st: SubtaskState, tomb: SubtaskTomb): void {
 /**
  * The number an id gets back: its own from earlier this turn, unless another
  * row holds it now. A number from an earlier turn may have gone to someone else
- * since (a turn restarts the count), so it is never reused.
+ * since (a turn restarts the count), so it is never reused. Nor is one at or
+ * past nextN: every number this turn has handed out is below it, so such a
+ * number is not this turn's, and nextN would hand it out again.
  */
 function ordinalFor(st: SubtaskState, tomb: SubtaskTomb | undefined): number {
-  if (tomb && tomb.turn === st.turn && tomb.n >= 1 && !st.rows.some((r) => r.n === tomb.n)) return tomb.n;
+  if (
+    tomb && tomb.turn === st.turn && tomb.n >= 1 && tomb.n < st.nextN &&
+    !st.rows.some((r) => r.n === tomb.n)
+  ) return tomb.n;
   const n = st.nextN;
   st.nextN += 1;
   return n;
@@ -514,7 +519,11 @@ export function applyAgent(
     // A row, a tomb 'x' (closed while it really ran on), or nothing known at all.
     if (row) st.rows = st.rows.filter((r) => r !== row);
     if (!counted) st.done += 1; // once per id per turn
-    upsertTomb(st, { id: a.id, at: a.at, t: now, turn: st.turn, o: 'd', n: row?.n ?? tomb?.n ?? 0 });
+    // The tomb is this turn's from now on, so it keeps a number only if that
+    // number is this turn's too: one from before a turn start, a reset or a
+    // quiet end may have gone to another row since.
+    const n = row?.n ?? (tomb && tomb.turn === st.turn ? tomb.n : 0);
+    upsertTomb(st, { id: a.id, at: a.at, t: now, turn: st.turn, o: 'd', n });
     return 'applied';
   }
 

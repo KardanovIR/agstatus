@@ -305,6 +305,28 @@ describe('agent posts', () => {
     expect(rowsOf(st)).toEqual([{ id: B, n: 1, state: 'planning' }, { id: A, n: 2, state: 'failed' }]);
   });
 
+  it('a finish for an id closed in an earlier turn carries its old number into no later start', () => {
+    // A is 1 and B is 2; a SessionStart restarts the numbering. B's lost stop
+    // arrives, then B is re-tasked: its old 2 is not this turn's, and nextN is
+    // still to hand out 1 and 2.
+    const D = id(0xd);
+    const st = run(fresh(), [agent(A, 'planning', 1), agent(B, 'planning', 2)]);
+    run(st, [{ main: 'idle', message: 'Session started', turn: { phase: 'reset' } }]);
+    run(st, [agent(B, 'done', 10), agent(B, 'coding', 11), agent(C, 'coding', 12), agent(D, 'coding', 13)]);
+    expect(rowsOf(st)).toEqual([{ id: B, n: 1, state: 'coding' }, { id: C, n: 2, state: 'coding' }, { id: D, n: 3, state: 'coding' }]);
+    // A restart loads every row (the load keeps one row per number).
+    expect(normalizeSubtaskState(serializeSubtaskState(st, 7), 7)!.rows).toEqual(st.rows);
+
+    // Nor is a number past nextN taken back from a tomb that claims it for this
+    // turn, as a column edited by hand could.
+    const edited = normalizeSubtaskState(JSON.stringify({
+      v: 1, savedAt: 7, own: ['coding', 'm', null, null], turn: 1, done: 1, failed: 0, nextN: 1, await: 0, hold: 0,
+      rows: [], tombs: [[B, 10, T0, 1, 'd', 2]],
+    }), 7)!;
+    run(edited, [agent(B, 'coding', 11), agent(C, 'coding', 12), agent(D, 'coding', 13)]);
+    expect(rowsOf(edited).map((r) => r.n)).toEqual([1, 2, 3]);
+  });
+
   it('a re-tasked agent counted this turn is not counted again after its second run is closed', () => {
     const st = run(fresh(), [agent(A, 'planning', 1), agent(A, 'done', 2), agent(A, 'coding', 3)], T0);
     expect(st.done).toBe(1);
@@ -761,5 +783,95 @@ describe('persistence', () => {
       rows: [['bad id!', 1, 'a', 'c', null, '', 1, 1, 1]], tombs: [],
     });
     expect(normalizeSubtaskState(text, 7)).toBeNull();
+  });
+});
+
+describe('invariants under random posts', () => {
+  // Seeded, so a failure names the seed and step that replay it. The rules
+  // above are tabled case by case; this checks what must hold between any of
+  // them, in any order: posts out of order, finishes repeated, failures and
+  // resumes of the same agents, turns ending and restarting, the sweep.
+  const lcg = (seed: number) => {
+    let s = seed >>> 0;
+    return (): number => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+  };
+  const STATES: readonly AgentState[] = ['planning', 'coding', 'testing', 'blocked', 'done', 'failed'];
+  const SIX: readonly Status[] = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'];
+
+  /** Every bound and identity a state must keep, as a list of the ones it breaks. */
+  function broken(st: SubtaskState): string[] {
+    const out: string[] = [];
+    const ns = st.rows.map((r) => r.n);
+    if (new Set(ns).size !== ns.length) out.push(`a number held twice: ${ns.join(',')}`);
+    if (ns.some((n, i) => i > 0 && n < ns[i - 1])) out.push(`rows out of start order: ${ns.join(',')}`);
+    if (ns.some((n) => n < 1 || n >= st.nextN)) out.push(`a number outside 1..${st.nextN - 1}: ${ns.join(',')}`);
+    if (new Set(st.rows.map((r) => r.id)).size !== st.rows.length) out.push('two rows for one id');
+    if (liveCount(st) > MAX_LIVE_ROWS) out.push(`${liveCount(st)} live rows`);
+    const failedRows = st.rows.filter((r) => r.state === 'failed').length;
+    if (failedRows > MAX_FAILED_ROWS) out.push(`${failedRows} failed rows`);
+    if (st.failed < failedRows) out.push(`failed ${st.failed} under the ${failedRows} listed`);
+    if (st.done < 0) out.push(`done ${st.done}`);
+    if (st.tombs.length > MAX_TOMBS) out.push(`${st.tombs.length} tombs`);
+    const d = derive(st);
+    if (!SIX.includes(d.status)) out.push(`status ${d.status}`);
+    const wire = toWireSubtasks(st);
+    if (wire && Buffer.byteLength(JSON.stringify(wire)) > WIRE_SUBTASKS_MAX_BYTES) out.push('wire over 8 KB');
+    // A restart loads the same card.
+    const back = normalizeSubtaskState(serializeSubtaskState(st, 1), 1);
+    if (!back) out.push('loads as no state');
+    else if (JSON.stringify([derive(back), toWireSubtasks(back)]) !== JSON.stringify([d, wire])) out.push('loads as another card');
+    return out;
+  }
+
+  function fuzz(seed: number, steps: number, ids: number, mainShare: number): void {
+    const r = lcg(seed);
+    const pick = <T>(list: readonly T[]): T => list[Math.floor(r() * list.length)];
+    let st: SubtaskState | null = fresh();
+    let now = T0;
+    let at = T0;
+    for (let step = 0; step < steps; step++) {
+      st ??= fresh();
+      now += Math.floor(r() * 30_000);
+      const roll = r();
+      let what: string;
+      if (roll < 0.97 - mainShare) {
+        // Mostly newer than the last post, sometimes older (an overtaken update).
+        at += r() < 0.15 ? -Math.floor(r() * 5000) : 1 + Math.floor(r() * 1000);
+        const a: AgentUpdate = { id: id(Math.floor(r() * ids)), state: pick(STATES), at };
+        if (r() < 0.5) a.label = `job ${Math.floor(r() * 1000)}`;
+        if (r() < 0.5) a.activity = r() < 0.1 ? '' : `step ${Math.floor(r() * 1000)}`;
+        if (r() < 0.2) a.kind = pick(['agent', 'workflow', 'codex'] as const);
+        const wsLive = r() < 0.1 ? MAX_LIVE_ROWS_PER_WORKSPACE : 0;
+        const live = liveCount(st);
+        applyAgent(st, a, now, wsLive);
+        if (wsLive && liveCount(st) > live) expect.fail(`seed ${seed} step ${step}: a live row past the board's cap`);
+        what = `${a.state} for ${a.id.slice(-3)}`;
+      } else if (roll < 0.97) {
+        const p = r();
+        const turn: TurnHint | undefined =
+          p < 0.25 ? { phase: 'start' }
+          : p < 0.5 ? { phase: 'end', running: st.rows.filter(() => r() < 0.5).map((x) => x.id), workflows: r() < 0.7 ? 0 : 1 }
+          : p < 0.6 ? { phase: 'end' }
+          : p < 0.65 ? { phase: 'reset' }
+          : undefined;
+        applyMain(st, { status: pick(SIX), message: `m${step}`, unattributed: r() < 0.3, turn }, now);
+        what = `a main-thread post (${turn?.phase ?? 'no turn'})`;
+      } else {
+        now += Math.floor(r() * 8 * 60 * 60 * 1000);
+        st = sweepState(st, now).state;
+        what = 'the sweep';
+      }
+      if (what !== 'the sweep') st = afterApply(st, now);
+      const problems = st ? broken(st) : [];
+      if (problems.length > 0) expect(problems, `seed ${seed} step ${step}, after ${what}`).toEqual([]);
+    }
+  }
+
+  it('hold over a few agents, finishing, failing and resuming in any order', () => {
+    for (let seed = 1; seed <= 40; seed++) fuzz(seed, 300, 12, 0.2);
+  });
+
+  it('hold over many agents, at the live-row caps', () => {
+    for (let seed = 1; seed <= 40; seed++) fuzz(seed, 300, 200, 0.05);
   });
 });
