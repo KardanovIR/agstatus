@@ -621,6 +621,24 @@ describe('the wire projection', () => {
     // The state itself keeps every character.
     expect(st.rows[0].label).toBe(emoji.repeat(32));
   });
+
+  it('ids at the 64 characters the server accepts still fit: a last step cuts labels to 4, never to nothing', () => {
+    // The hook's ids are 24 characters; a poster of its own may send longer.
+    const long = (i: number): string => `${i}-`.padEnd(64, 'z');
+    const st = fresh();
+    st.nextN = 100_000; // six-digit numbers
+    const text = { label: '漢'.repeat(64), activity: '字'.repeat(80) };
+    for (let i = 0; i < MAX_LIVE_ROWS; i++) applyAgent(st, agent(long(i), 'planning', 1, text), T0, 0);
+    for (let i = MAX_LIVE_ROWS; i < 56; i++) applyAgent(st, agent(long(i), 'failed', 1, text), T0, 0);
+    st.rows[0].label = '\u{1F680}'.repeat(32);
+    st.done = 999_999;
+    const wire = toWireSubtasks(st)!;
+    expect(wire.items).toHaveLength(56);
+    expect(bytes(wire)).toBeLessThanOrEqual(WIRE_SUBTASKS_MAX_BYTES);
+    expect(wire.items[0].label).toBe('\u{1F680}'.repeat(2)); // 4 units, two whole characters
+    expect(wire.items.slice(1).every((i) => i.label === '漢'.repeat(4) && i.activity === '')).toBe(true);
+    expect([wire.running, wire.blocked, wire.failed, wire.done]).toEqual([48, 0, 8, 999_999]);
+  });
 });
 
 describe('the sweep', () => {

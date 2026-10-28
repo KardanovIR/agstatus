@@ -64,7 +64,7 @@ export const REPORT_HOLD_MS = 120_000;
 export const SUBTASK_SWEEP_MS = 60_000;
 /** The most often one session's agent posts produce a `session` frame (app.ts). */
 export const AGENT_FRAME_THROTTLE_MS = 250;
-/** UTF-8 bytes of one session's `subtasks` JSON, enforced by clipping text (toWireSubtasks). */
+/** UTF-8 bytes of one session's `subtasks` JSON, for any id the server accepts; enforced by clipping text (toWireSubtasks). */
 export const WIRE_SUBTASKS_MAX_BYTES = 8192;
 /** A stored `sessions.subtasks` longer than this loads as no state (and is never read at all). */
 export const SUBTASKS_COLUMN_MAX_CHARS = 65_536;
@@ -685,9 +685,15 @@ const wireBytes = (w: WireSubtasks): number => Buffer.byteLength(JSON.stringify(
  *
  * Bounded at WIRE_SUBTASKS_MAX_BYTES by clipping text, a step at a time and
  * only while still over: activities to 24, then labels to 24, then activities
- * cleared and labels at 12. It never drops an item or touches a count. With 24
- * character ids the last step always fits; typical payloads (30 items, ASCII)
- * are about 4.6 KB and never clipped.
+ * cleared and labels at 12, and last labels at 4. It never drops an item or
+ * touches a count. With the hook's 24-character ids the third step always
+ * fits (56 items of 3-byte text are under 7.7 KB even with 16-digit numbers),
+ * so only a poster with longer ids can reach the fourth, which fits 56 items
+ * with any id AGENT_ID_RE accepts: 64 characters each, 3-byte text and
+ * nine-digit numbers and counts come to about 8.1 KB, and a tenth digit takes
+ * a billion starts in one turn. Labels stay non-empty, since no clip cuts a
+ * label's first character. Typical payloads (30 items, ASCII) are about
+ * 4.6 KB and never clipped.
  */
 export function toWireSubtasks(st: SubtaskState): WireSubtasks | null {
   const d = derive(st);
@@ -718,6 +724,9 @@ export function toWireSubtasks(st: SubtaskState): WireSubtasks | null {
       i.activity = '';
       i.label = safeClip(i.label, 12);
     }
+  }
+  if (wireBytes(wire) > WIRE_SUBTASKS_MAX_BYTES) {
+    for (const i of items) i.label = safeClip(i.label, 4);
   }
   return wire;
 }
