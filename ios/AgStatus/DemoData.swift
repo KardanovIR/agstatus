@@ -431,6 +431,11 @@ enum DemoData {
 
     /// A believable timeline for a demo session, ending in its current state.
     static func history(for session: Session) -> [HistoryEvent] {
+        #if DEBUG
+        if let board = subtaskScenario, session.id == board.focus {
+            return subtaskTimeline(for: session)
+        }
+        #endif
         // A full session's worth of steps: enough to fill the timeline on the
         // largest iPhone, and to show a blocked stretch resolving.
         let steps: [(AgentStatus, String, Int64)] = [
@@ -475,9 +480,20 @@ enum DemoData {
     /// Debug builds only, like every other launch variable here. `demo` is the
     /// default and is the App Store demo board, untouched.
     ///
+    /// The subagent boards come from the 1.7 design instead,
+    /// `docs/design/prototypes/subtasks.html`: its `BASE` board around one
+    /// card, and that card in each of its `SCENARIOS` — the same subagents,
+    /// row for row, in the same order and with the same counts.
+    ///
     /// The launch variables that go with it, all read only in a debug build:
     ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three |
-    ///                           three-limits | long | empty
+    ///                           three-limits | long | empty, or a subagent
+    ///                           board: subtasks | subtasks-ten |
+    ///                           subtasks-thirty | subtasks-blocked |
+    ///                           subtasks-failed | subtasks-finished |
+    ///                           subtasks-background | subtasks-nested |
+    ///                           subtasks-minimal | subtasks-codex |
+    ///                           subtasks-long
     ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
     ///                           are working instead) | none (nobody is blocked)
     ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%) | many
@@ -510,6 +526,13 @@ enum DemoData {
     ///                           with AGSTATUS_OPEN_USAGE: scrolls to that
     ///                           part, which at the accessibility sizes is
     ///                           below a phone's first screen)
+    ///   AGSTATUS_OPEN_HISTORY   1 | <session id> (BoardView: opens the first
+    ///                           card's session screen, or that session's)
+    ///   AGSTATUS_OPEN_USAGE     <source> (BoardView: opens that agent's usage)
+    ///   AGSTATUS_OPEN_SUBTASK   <n> (BoardView: opens the session screen at
+    ///                           subagent number n, as tapping its row does)
+    ///   AGSTATUS_EXPAND_SUBTASKS 1 (BoardView: opens every card's subagent
+    ///                           list in place, as its footer does)
     enum Scenario: String {
         case demo
         /// Five and four: two full columns, something blocked in each.
@@ -531,6 +554,30 @@ enum DemoData {
         case long
         /// Nothing running. The heads are the limits and nothing else.
         case empty
+
+        // The subagent boards: the prototype's scenarios of the same names.
+        /// Two from the Agent tool.
+        case subtasks
+        /// A workflow, ten running and fifteen done: the footer.
+        case subtasksTen = "subtasks-ten"
+        /// Thirty at once, the most the owner's Mac has run.
+        case subtasksThirty = "subtasks-thirty"
+        /// The ten, one of them waiting on approval.
+        case subtasksBlocked = "subtasks-blocked"
+        /// One failed, still listed.
+        case subtasksFailed = "subtasks-failed"
+        /// Every one finished, the turn still going: only the count.
+        case subtasksFinished = "subtasks-finished"
+        /// The turn over and two still working: WORKING.
+        case subtasksBackground = "subtasks-background"
+        /// One started by another, listed flat.
+        case subtasksNested = "subtasks-nested"
+        /// Minimal mode: numbered, and tool names for activities.
+        case subtasksMinimal = "subtasks-minimal"
+        /// Codex sub-agents, by their nicknames.
+        case subtasksCodex = "subtasks-codex"
+        /// Agent-tool descriptions at their real lengths.
+        case subtasksLong = "subtasks-long"
     }
 
     static let scenario = Scenario(
@@ -671,6 +718,10 @@ enum DemoData {
         case .three, .threeLimits: ids = ["api", "pipe", "web", "land", "docs", "evals", "tf"]
         case .long: ids = ["wt1", "wt2", "wt3", "wt4", "docs"]
         case .empty: ids = []
+        // Their own board, not the pool's — see `subtaskBoard`.
+        case .subtasks, .subtasksTen, .subtasksThirty, .subtasksBlocked, .subtasksFailed,
+             .subtasksFinished, .subtasksBackground, .subtasksNested, .subtasksMinimal,
+             .subtasksCodex, .subtasksLong: ids = []
         }
         return ids.compactMap { id in pool.first { $0.id == id } }
     }
@@ -692,6 +743,7 @@ enum DemoData {
 
     private static func scenarioSessions() -> [Session] {
         let now = nowMillis()
+        if let board = subtaskScenario { return subtaskBoard(board, now: now) }
         let cards = scenarioCards
         return cards.map { card in
             let calm = isCalmed(card, among: cards) ? card.calm : nil
@@ -732,6 +784,315 @@ enum DemoData {
                                        since: now - 2 * 3_600_000))
         }
         return Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
+    }
+
+    // MARK: Subagent scenarios
+
+    /// One of the subagent prototype's `SCENARIOS`: the card it judges, what
+    /// that card's own session last said, and its subagents.
+    struct SubtaskBoard {
+        /// Whose subagents they are, which is what a tick starts more of.
+        enum Kind { case agent, workflow, minimal, codex }
+
+        /// The card that carries them: "F", or for Codex "X".
+        var focus = "F"
+        /// What the parent itself last said. The card's status and line are
+        /// the server's reading of this and the subagents — see `derived`.
+        let own: (status: AgentStatus, message: String)
+        let kind: Kind
+        var items: [(label: String, state: SubtaskState, activity: String)] = []
+        /// Finished this turn.
+        var done = 0
+
+        /// Minimal mode: a card named by its folder, and subagents numbered
+        /// from 3, two having finished before them.
+        var minimal: Bool { kind == .minimal }
+        var firstN: Int { minimal ? 3 : 1 }
+        /// The parent's turn is over: `done`, or `idle` for a card a subagent
+        /// made.
+        var ownEnded: Bool { own.status == .done || own.status == .idle }
+    }
+
+    /// The board the launch asked for, when it asked for a subagent one.
+    static var subtaskScenario: SubtaskBoard? {
+        switch scenario {
+        case .subtasks:
+            SubtaskBoard(own: (.coding, "Editing SessionCardView.swift"), kind: .agent, items: [
+                ("Run the migration tests", .testing, "Run the store migration tests"),
+                ("Draft release notes", .coding, "Writing RELEASE-1.6.4.md"),
+            ])
+        case .subtasksTen:
+            SubtaskBoard(own: (.planning, "Running the review-and-verify workflow"), kind: .workflow,
+                         items: review, done: 15)
+        case .subtasksThirty:
+            SubtaskBoard(own: (.coding, "Editing BoardLayout.swift"), kind: .workflow,
+                         items: thirty, done: 64 + 71 + 42 + 9)
+        case .subtasksBlocked:
+            SubtaskBoard(own: (.planning, "Running the review-and-verify workflow"), kind: .workflow,
+                         items: review.map {
+                             $0.label != "verify:hook" ? $0
+                                 : (label: $0.label, state: SubtaskState.blocked, activity: "Approve: npm test -- hook")
+                         },
+                         done: 15)
+        case .subtasksFailed:
+            SubtaskBoard(own: (.coding, "Editing RELEASE-1.6.4.md"), kind: .agent, items: [
+                ("Run the migration tests", .testing, "Run the store migration tests"),
+                ("Audit the Android strings", .failed, "Stopped: API error (overloaded)"),
+                ("Draft release notes", .coding, "Writing RELEASE-1.6.4.md"),
+            ], done: 4)
+        case .subtasksFinished:
+            SubtaskBoard(own: (.coding, "Editing BoardLayout.swift"), kind: .workflow, done: 12)
+        case .subtasksBackground:
+            SubtaskBoard(own: (.done, "Turn finished"), kind: .agent, items: [
+                ("Watch the Android CI build", .testing, "gh run watch 1841 — 6 of 9 jobs"),
+                ("Sweep docs for stale flags", .coding, "Editing docs.html"),
+            ], done: 3)
+        case .subtasksNested:
+            SubtaskBoard(own: (.planning, "Running the implement workflow"), kind: .workflow, items: [
+                ("implement:server", .coding, "Editing store.ts"),
+                ("implement:ios", .coding, "Editing SessionCardView.swift"),
+                // Started by implement:server, two levels down. Listed flat.
+                ("Find every Focus call site", .planning, "Search listener for focus calls"),
+                ("implement:web", .coding, "Editing app.js"),
+            ], done: 18 + 6)
+        case .subtasksMinimal:
+            SubtaskBoard(own: (.coding, "Edit"), kind: .minimal, items: [
+                ("Subagent 3", .testing, "Bash"),
+                ("Subagent 4", .coding, "Edit"),
+                ("Subagent 5", .planning, "WebFetch"),
+                ("Subagent 6", .coding, "Write"),
+            ], done: 2)
+        case .subtasksCodex:
+            SubtaskBoard(focus: "X", own: (.coding, "Editing merge.rs"), kind: .codex, items: [
+                ("Feynman", .testing, "cargo test -p indexer"),
+                ("Noether", .coding, "Editing shard.rs"),
+                ("Hypatia", .planning, "Reading docs.rs"),
+            ], done: 2)
+        case .subtasksLong:
+            // Agent-tool descriptions at their real lengths on the owner's
+            // Mac: 52 characters is the p90, 23 the median.
+            SubtaskBoard(own: (.coding, "Editing listener.ts"), kind: .agent, items: [
+                ("Find why the listener reinstall leaves Focus stopped", .planning,
+                 "Search listener.ts for reinstall paths"),
+                ("Run the migration tests", .testing, "Run the store migration tests"),
+                ("Check the Codex rollout schema for sub-agent ids", .planning,
+                 "Reading developers.openai.com"),
+            ], done: 2)
+        case .demo, .busy, .lopsided, .solo, .three, .threeLimits, .long, .empty:
+            nil
+        }
+    }
+
+    /// The prototype's `REVIEW`: a review-and-verify workflow, ten at once.
+    private static let review: [(label: String, state: SubtaskState, activity: String)] = [
+        ("review:hook", .testing, "Run hook tests with --no-file-parallelism"),
+        ("review:listener", .coding, "Editing listener.ts"),
+        ("review:product", .planning, "Searching: SubagentStop payload fields"),
+        ("review:server", .coding, "Editing store.ts"),
+        ("review:ios", .coding, "Editing SessionCardView.swift"),
+        ("review:android", .planning, "Reading developer.android.com"),
+        ("verify:hook", .testing, "Run the hook suite — 214 tests"),
+        ("verify:server", .testing, "npm test -- store"),
+        ("verify:web", .coding, "Editing card.css"),
+        ("verify:privacy", .planning, "Search payloads for prompt text"),
+    ]
+
+    /// The prototype's `THIRTY`: a session at its peak on the owner's Mac,
+    /// across four workflows and the Agent tool.
+    private static let thirty: [(label: String, state: SubtaskState, activity: String)] = [
+        ("implement:server", .coding, "Editing store.ts"),
+        ("implement:hook", .coding, "Editing agstatus-hook.js"),
+        ("implement:ios", .coding, "Editing SessionCardView.swift"),
+        ("implement:android", .coding, "Editing SessionCard.kt"),
+        ("implement:web", .coding, "Editing card.css"),
+        ("implement:docs", .coding, "Editing docs.html"),
+        ("test:server", .testing, "npm test -- store"),
+        ("test:hook", .testing, "Run hook tests — 214 passed"),
+        ("test:ios", .testing, "xcodebuild test -scheme AgStatus"),
+        ("test:android", .testing, "./gradlew testDebugUnitTest"),
+        ("review:server", .planning, "Search store.ts for agent_id"),
+        ("review:hook", .planning, "Reading code.claude.com"),
+        ("review:ios", .coding, "Editing BoardView.swift"),
+        ("review:android", .planning, "Search for SessionCard usages"),
+        ("review:web", .planning, "Search app.js for paint()"),
+        ("review:privacy", .planning, "Search payloads for prompt text"),
+        ("verify:server", .testing, "Run the e2e suite"),
+        ("verify:hook", .testing, "Run the payload fixtures"),
+        ("verify:ios", .testing, "Snapshot the card at three widths"),
+        ("verify:android", .testing, "Run the screenshot tests"),
+        ("verify:web", .testing, "Run the card fixtures"),
+        ("verify:migration", .testing, "Run the migration on a copy"),
+        ("Map the SubagentStart payload", .planning, "Searching: SubagentStart agent_type"),
+        ("Check the Codex rollout schema", .planning, "Reading github.com"),
+        ("Draft the 1.7 release notes", .coding, "Writing RELEASE-1.7.0.md"),
+        ("Audit push copy for subtasks", .coding, "Editing NotificationManager.swift"),
+        ("map:sizing", .planning, "Count subagents per session"),
+        ("map:limits", .planning, "Search for the webhook budget"),
+        ("map:minimal", .planning, "Search the hook for MINIMAL"),
+        ("map:codex", .planning, "Reading developers.openai.com"),
+    ]
+
+    /// The prototype's `BASE`: an ordinary board, so the eye goes to the one
+    /// card being judged. Claude sessions carry titles, as they do since
+    /// 1.6.1; Codex sessions are never titled and keep their folder names.
+    private static func subtaskBoard(_ board: SubtaskBoard, now: Int64) -> [Session] {
+        func host(_ machine: Host.Machine) -> Host {
+            Host(machine: machine, app: Host.App(slug: "agterm", name: "agterm", kind: "terminal"))
+        }
+        func card(_ id: String, _ source: String, _ name: String, _ status: AgentStatus, _ message: String,
+                  age: Int64, machine: Host.Machine, project: String? = nil, tokens: Int64) -> Session {
+            Session(id: id, name: name, status: status, message: message, project: project ?? name,
+                    source: source, createdAt: now - (age + 40 * 60) * 1000, updatedAt: now - age * 1000,
+                    host: host(machine), tokens: tokens)
+        }
+        let base = [
+            card("F", "claude", "Session organization by agent", .coding, "Editing BoardLayout.swift",
+                 age: 10, machine: laptopMachine, project: "claude-status", tokens: 1_100_000),
+            card("L", "claude", "Fix listener reinstall leaving Focus stopped", .testing,
+                 "Run the listener test suite", age: 70, machine: studioMachine, project: "claude-status",
+                 tokens: 912_400),
+            card("P", "claude", "Plan the push-token migration", .planning, "Searching: APNs token rotation",
+                 age: 300, machine: onlineMachine, project: "acme-ios", tokens: 88_100),
+            card("R", "claude", "Release notes for 1.6.3", .done, "Turn finished",
+                 age: 1860, machine: studioMachine, project: "claude-status", tokens: 220_500),
+            card("land", "codex", "landing", .coding, "Editing pricing.tsx",
+                 age: 20, machine: onlineMachine, tokens: 312_700),
+            card("sdk", "codex", "sdk-python", .testing, "pytest -k retry",
+                 age: 120, machine: studioMachine, tokens: 540_300),
+            card("X", "codex", "search-indexer", .testing, "cargo test — 212 passed",
+                 age: 200, machine: studioMachine, tokens: 2_100_000),
+        ]
+        let items = board.items.enumerated().map { index, item in
+            Subtask(id: "k\(board.firstN + index)", n: board.firstN + index, label: item.label,
+                    state: item.state, activity: item.activity)
+        }
+        return base.map { session in
+            guard session.id == board.focus else { return session }
+            var focus = session
+            // "just now", and so first in its agent's section.
+            focus.updatedAt = now - 5_000
+            if board.minimal {
+                // Minimal mode sends no titles: the card is its folder's name.
+                focus.name = "claude-status"
+                focus.project = "claude-status"
+            }
+            return withSubtasks(focus, items: items, done: board.done, on: board)
+        }
+    }
+
+    /// `session` carrying these subagents, read as the server reads them:
+    /// the card's status and line derived from its own reading and theirs,
+    /// and the block shown only where the server would show it.
+    private static func withSubtasks(_ session: Session, items: [Subtask], done: Int,
+                                     on board: SubtaskBoard) -> Session {
+        var next = session
+        let reading = derived(own: board.own, items: items)
+        next.status = reading.status
+        next.message = reading.message
+        let live = items.contains { $0.state != .failed }
+        let shown = !items.isEmpty || (done > 0 && !board.ownEnded)
+        next.subtasks = shown
+            ? Subtasks(items: items, done: done, turnEnded: board.ownEnded && live)
+            : nil
+        return next
+    }
+
+    /// The server's reading of a card with subagents (spec §4.5): a blocked
+    /// one turns the card blocked unless the parent is itself; after the
+    /// turn, the busiest state and "N subagents still running"; otherwise the
+    /// parent's own. The demo has no server, so it has to say this itself.
+    static func derived(own: (status: AgentStatus, message: String),
+                        items: [Subtask]) -> (status: AgentStatus, message: String) {
+        let live = items.filter { $0.state != .failed }
+        let blocked = live.filter { $0.state == .blocked }
+        let working = live.filter(\.state.isWorking)
+        if own.status != .blocked, let first = blocked.first {
+            return (.blocked, "Needs approval: \(first.label)" + (blocked.count > 1 ? " +\(blocked.count - 1)" : ""))
+        }
+        if own.status == .done || own.status == .idle, !working.isEmpty {
+            let busiest: AgentStatus = working.contains { $0.state == .testing } ? .testing
+                : working.contains { $0.state == .coding } ? .coding : .planning
+            let count = working.count
+            return (busiest, "\(count) subagent\(count == 1 ? "" : "s") still running")
+        }
+        return own
+    }
+
+    /// What a tick starts, by whose subagents they are — the prototype's
+    /// `STARTS`.
+    private static func starts(_ kind: SubtaskBoard.Kind) -> [(label: String, state: SubtaskState, activity: String)] {
+        switch kind {
+        case .agent:
+            [("Check the Android build", .testing, "Run ./gradlew assembleDebug"),
+             ("Summarize the hook diff", .planning, "Searching: SubagentStop")]
+        case .workflow:
+            [("verify:android", .testing, "Run ./gradlew lint"), ("verify:docs", .coding, "Editing docs.html")]
+        case .minimal:
+            [("", .testing, "Bash"), ("", .coding, "Edit")]
+        case .codex:
+            [("Lovelace", .coding, "Editing shard.rs"), ("Turing", .testing, "cargo test -p merge")]
+        }
+    }
+
+    /// The card with subagents, a tick on: one starts, one finishes, or one is
+    /// blocked — or let go, if one already is. Nothing else about them changes,
+    /// because nothing else would reach the board: a subagent posts only when
+    /// it starts, stops or changes state, and an activity changing within its
+    /// state is never sent. After its turn a parent starts nothing, and Codex
+    /// never runs more than three.
+    private static func advanceSubtasks(_ session: Session, on board: SubtaskBoard, at now: Int64) -> Session {
+        guard let subtasks = session.subtasks else { return session }
+        var items = subtasks.items
+        var done = subtasks.done
+        let canStart = !board.ownEnded && (board.kind != .codex || items.count < 3)
+        let working = items.indices.filter { items[$0].state.isWorking }
+        let blocked = items.firstIndex { $0.state == .blocked }
+
+        switch Int.random(in: canStart ? 0...2 : 1...2) {
+        case 0:
+            let n = (items.map(\.n).max() ?? done + board.firstN - 1) + 1
+            let start = starts(board.kind)[n % 2]
+            items.append(Subtask(id: "k\(n)", n: n, label: start.label.isEmpty ? "Subagent \(n)" : start.label,
+                                 state: start.state, activity: start.activity))
+        case 1 where !working.isEmpty:
+            if let index = working.randomElement() {
+                items.remove(at: index)
+                done += 1
+            }
+        default:
+            if let blocked {
+                items[blocked].state = .testing
+                items[blocked].activity = board.minimal ? "Bash" : "Run the suite — 214 passed"
+            } else if let index = working.last {
+                items[index].state = .blocked
+                items[index].activity = board.minimal ? "Needs approval"
+                    : board.kind == .codex ? "Approve: cargo publish --dry-run"
+                    : "Claude needs your permission to use Bash"
+            }
+        }
+        var next = withSubtasks(session, items: items, done: done, on: board)
+        next.updatedAt = now
+        return next
+    }
+
+    /// The prototype's `TIMELINE` for the card being judged: its own history,
+    /// newest first, after the reading it is in now — which is the wire's,
+    /// so it can read `testing · 2 subagents still running` under a WORKING
+    /// capsule, as a real timeline does.
+    private static func subtaskTimeline(for session: Session) -> [HistoryEvent] {
+        let steps: [(AgentStatus, String, Int64)] = [
+            (.idle, "Session started", 26),
+            (.planning, "Plan subtasks on session cards", 25),
+            (.testing, "Run the board layout tests — 46 passed", 8),
+            (.coding, "Editing BoardLayout.swift", 3),
+        ]
+        var events = steps.enumerated().map { index, step in
+            HistoryEvent(seq: Int64(index), status: step.0, message: step.1,
+                         at: session.updatedAt - step.2 * 60_000)
+        }
+        events.append(HistoryEvent(seq: Int64(steps.count), status: session.status, message: session.message,
+                                   at: session.updatedAt))
+        return events.reversed()
     }
     #endif
 
@@ -975,6 +1336,15 @@ enum DemoData {
                && Theme.symbol(for: DisplayStatus.blocked) == Theme.symbol(for: AgentStatus.blocked), "marks")
         assert(Theme.symbol(for: SubtaskState.failed) == "xmark.circle", "failed's mark")
 
+        // The demo's own derivation agrees with the server's rule.
+        let two = [Subtask(id: "k1", n: 1, label: "verify:hook", state: .blocked, activity: ""),
+                   Subtask(id: "k2", n: 2, label: "b", state: .blocked, activity: ""),
+                   Subtask(id: "k3", n: 3, label: "c", state: .testing, activity: "")]
+        assert(derived(own: (.coding, "x"), items: two) == (.blocked, "Needs approval: verify:hook +1"), "blocked")
+        assert(derived(own: (.blocked, "Needs input"), items: two) == (.blocked, "Needs input"), "own block kept")
+        assert(derived(own: (.done, "Turn finished"), items: [two[2]]) == (.testing, "1 subagent still running"),
+               "after the turn")
+        assert(derived(own: (.coding, "x"), items: [two[2]]) == (.coding, "x"), "own reading")
     }
 
     /// Pairing, checked alongside the decoders above when demo mode starts in
@@ -1074,6 +1444,13 @@ enum DemoData {
     // MARK: Internals
 
     private static func advance(_ session: Session, at now: Int64) -> Session {
+        #if DEBUG
+        // A card with subagents changes by them alone; its own session is
+        // held where the scenario put it.
+        if let board = subtaskScenario, session.id == board.focus, session.subtasks != nil {
+            return advanceSubtasks(session, on: board, at: now)
+        }
+        #endif
         var next = session
         let status = transitions[session.status]?.randomElement() ?? session.status
 
