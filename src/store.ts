@@ -841,10 +841,12 @@ export class Store {
 
     // Named columns, not *, so the subtasks column can be guarded in SQL: an
     // oversized value is never shipped to the process at all, for the reason
-    // given at the retired-device query below.
+    // given at the retired-device query below. had_subtasks tells such a value
+    // apart from no value, which the guard alone would not.
     const sessions = await pool.query(
       `SELECT workspace_id, id, name, status, message, project, source, host, created_at, updated_at,
-              CASE WHEN length(subtasks) <= $1 THEN subtasks END AS subtasks
+              CASE WHEN length(subtasks) <= $1 THEN subtasks END AS subtasks,
+              subtasks IS NOT NULL AS had_subtasks
        FROM sessions WHERE deleted_at IS NULL`,
       [SUBTASKS_COLUMN_MAX_CHARS]
     );
@@ -870,10 +872,17 @@ export class Store {
       const sub = typeof row.subtasks === 'string' ? normalizeSubtaskState(row.subtasks, updatedAt) : null;
       let status = row.status as Status;
       let message = row.message as string;
-      // The stored reading is the derived one clients saw. Without the state it
-      // was derived from, a "Needs approval: …" or "3 subagents still running"
-      // would pose as the parent's own line until the parent next posts.
-      if (!sub && isDerivedMessage(message)) {
+      if (sub) {
+        // The stored reading is the one derived from this state when it was
+        // saved. Derived again from the state as rebuilt, so that it agrees
+        // with what is listed when the rebuild dropped anything.
+        ({ status, message } = derive(sub));
+      } else if (row.had_subtasks === true && isDerivedMessage(message)) {
+        // A state was stored and did not load, so the stored line may be one
+        // derived from it: a "Needs approval: …" or "3 subagents still
+        // running" would pose as the parent's own until the parent next posts.
+        // With no state stored the line IS the parent's own, whatever it reads
+        // like — an old hook's, or the 1.7.0 hook's "Reading subagent results".
         status = 'idle';
         message = '';
       }

@@ -308,6 +308,52 @@ describe.skipIf(!TEST_PG_URL)('persistence: subtasks (PostgreSQL)', () => {
     }
   });
 
+  it('with no state stored, a line that only reads like a derived one loads as it was posted', async () => {
+    // An old hook's own lines, and the 1.7.0 hook's notification-only line on
+    // a card whose agents it never knew: nothing derived them, so a restart
+    // must not touch them, as origin/master does not.
+    const one = await first();
+    const lines = ['Needs approval: deploy to prod?', 'Reading subagent results', '2 subagents still running'];
+    for (const [i, message] of lines.entries()) await one.main(`own${i}`, 'planning', message);
+    await one.store.flush();
+    one.shutdown();
+    expect(await sql(dbUrl, `SELECT id FROM sessions WHERE subtasks IS NOT NULL`)).toEqual([]);
+
+    const two = await restart(one.token);
+    try {
+      for (const [i, message] of lines.entries()) {
+        expect(await two.card(`own${i}`)).toMatchObject({ status: 'planning', message });
+      }
+    } finally {
+      two.shutdown();
+    }
+  });
+
+  it('a state that loads with an entry dropped says what its rows now say', async () => {
+    const one = await first();
+    await one.main('trim', 'done', 'Turn finished');
+    for (const id of [A, B, C]) await one.sub('trim', id, 'coding');
+    await one.store.flush();
+    one.shutdown();
+    const [{ subtasks, message }] = await sql<{ subtasks: string; message: string }>(dbUrl,
+      `SELECT subtasks, message FROM sessions WHERE id = 'trim'`);
+    expect(message).toBe('3 subagents still running');
+    // One row unreadable, as a column edited by hand or by another version
+    // could leave it: the load drops that row alone.
+    const column = JSON.parse(subtasks) as { rows: unknown[][] };
+    column.rows[2][0] = 'not an id!';
+    await sql(dbUrl, `UPDATE sessions SET subtasks = $1 WHERE id = 'trim'`, [JSON.stringify(column)]);
+
+    const two = await restart(one.token);
+    try {
+      const trim = await two.card('trim');
+      expect(trim).toMatchObject({ status: 'coding', message: '2 subagents still running' });
+      expect(trim!.subtasks).toMatchObject({ running: 2, items: [{ id: A }, { id: B }] });
+    } finally {
+      two.shutdown();
+    }
+  });
+
   it('every soft delete keeps the column on the flagged row', async () => {
     const one = await first();
     for (const id of ['dismissed', 'cleared']) {
