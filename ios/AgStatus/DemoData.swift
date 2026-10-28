@@ -856,6 +856,127 @@ enum DemoData {
                        createdAt: 0, updatedAt: 0).tokensLabel == nil, "no figure, no label")
     }
 
+    /// The `subtasks` contract and the readings made from it, checked beside
+    /// the decoders above when demo mode starts in a debug build.
+    ///
+    /// The tolerance is what these guard. A snapshot is one array: a throw
+    /// from any card's subagents would drop the whole board, so a malformed
+    /// block is no block, a malformed item costs that item alone, and a state
+    /// or a count this build cannot read falls back rather than failing. The
+    /// Android client's ApiParsingTest carries the same cases.
+    static func verifySubtaskDecoding() {
+        let decoder = JSONDecoder()
+        func session(_ json: String) -> Session? {
+            try? decoder.decode(Session.self, from: Data(json.utf8))
+        }
+        let a = #"{"id":"3f9c1e07b2d4a85c6e1f0a92","n":3,"label":"review:hook","state":"testing","activity":"Run hook tests"}"#
+        let b = #"{"id":"a0d5b8e1c2f34a6b7d8e9f01","n":4,"label":"review:listener","state":"coding","activity":"Editing listener.ts"}"#
+        let c = #"{"id":"9b2e7c4d1a0f3e5b6c8d7a90","n":9,"label":"verify:hook","state":"blocked","activity":"Approve: Run the hook suite"}"#
+
+        // Absent, null, a string, a number, an array, or an empty block: no
+        // block, and the card itself still decodes as today's card.
+        for raw in [#"{"id":"s"}"#, #"{"id":"s","subtasks":null}"#, #"{"id":"s","subtasks":"x"}"#,
+                    #"{"id":"s","subtasks":7}"#, #"{"id":"s","subtasks":[]}"#,
+                    #"{"id":"s","subtasks":{"items":[],"done":0}}"#, #"{"id":"s","subtasks":{}}"#] {
+            assert(session(raw) != nil, "the card decodes: \(raw)")
+            assert(session(raw)?.subtasks == nil, "no block: \(raw)")
+        }
+
+        // The spec's example, whole.
+        let full = session(#"{"id":"s","status":"blocked","message":"Needs approval: verify:hook","subtasks":{"turnEnded":false,"running":9,"blocked":1,"failed":0,"done":15,"items":[\#(a),\#(b),\#(c)]}}"#)
+        assert(full?.subtasks?.items.map(\.n) == [3, 4, 9], "items in start order")
+        assert(full?.subtasks?.running == 9 && full?.subtasks?.blocked == 1 && full?.subtasks?.done == 15,
+               "counts are the server's, not the items'")
+        assert(full?.subtasks?.items.last == Subtask(id: "9b2e7c4d1a0f3e5b6c8d7a90", n: 9, label: "verify:hook",
+                                                     state: .blocked, activity: "Approve: Run the hook suite"),
+               "an item, field by field")
+
+        // A malformed item costs that item and no other: no id, a blank id, an
+        // id the server could not send, no ordinal, ordinal 0, a fractional
+        // one, not an object at all.
+        let bad = [#"{"n":2,"label":"x"}"#, #"{"id":"","n":2}"#, #"{"id":"has space","n":2}"#,
+                   #"{"id":"\#(String(repeating: "a", count: 65))","n":2}"#, #"{"id":"k1"}"#,
+                   #"{"id":"k2","n":0}"#, #"{"id":"k3","n":2.5}"#, #""string""#, "7", "null", "[]"]
+        let mixed = session(#"{"id":"s","subtasks":{"done":1,"items":[\#(a),\#(bad.joined(separator: ",")),\#(b)]}}"#)
+        assert(mixed?.subtasks?.items.map(\.n) == [3, 4], "bad items dropped, good ones kept")
+        // Missing counts are derived from what survived; `done` is the one
+        // the items cannot say, and falls back to nothing finished.
+        let derivedCounts = session(#"{"id":"s","subtasks":{"items":[\#(a),\#(b),\#(c)]}}"#)?.subtasks
+        assert(derivedCounts?.running == 2 && derivedCounts?.blocked == 1 && derivedCounts?.failed == 0
+               && derivedCounts?.done == 0 && derivedCounts?.turnEnded == false, "missing counts derived")
+        let malformedCounts = session(#"{"id":"s","subtasks":{"running":"9","blocked":-1,"failed":1.5,"done":"x","turnEnded":"yes","items":[\#(a),\#(c)]}}"#)?.subtasks
+        assert(malformedCounts?.running == 1 && malformedCounts?.blocked == 1 && malformedCounts?.failed == 0
+               && malformedCounts?.done == 0 && malformedCounts?.turnEnded == false, "malformed counts derived")
+        // Integral floats are counts like any other, as JavaScript sends them.
+        assert(session(#"{"id":"s","subtasks":{"done":12.0,"items":[]}}"#)?.subtasks?.done == 12, "float counts")
+
+        // An unknown state is planning, and the row is kept; a missing label
+        // is the server's own "Subagent N"; a missing activity is none.
+        let lenient = session(#"{"id":"s","subtasks":{"items":[{"id":"k7","n":7,"state":"researching"},{"id":"k8","n":8,"label":"","state":5}]}}"#)?.subtasks
+        assert(lenient?.items.map(\.state) == [.planning, .planning], "unknown states are planning")
+        assert(lenient?.items.map(\.label) == ["Subagent 7", "Subagent 8"], "no label is Subagent N")
+        assert(lenient?.items.allSatisfy { $0.activity.isEmpty } == true, "no activity is none")
+        assert(lenient?.running == 2, "and they count as running")
+        // The same subagent twice is one row.
+        assert(session(#"{"id":"s","subtasks":{"items":[\#(a),\#(a)]}}"#)?.subtasks?.items.count == 1, "duplicates")
+        // Only finished ones: the count-only block still shows.
+        assert(session(#"{"id":"s","subtasks":{"items":[],"done":12}}"#)?.subtasks?.done == 12, "count only")
+
+        // A snapshot whose cards carry one bad item each, and one card whose
+        // block is garbage, still yields every card.
+        let snapshot = try? decoder.decode([Session].self, from: Data(#"""
+            [{"id":"one","subtasks":{"items":[\#(a),{"n":1}]}},
+             {"id":"two","subtasks":"garbage"},
+             {"id":"three","subtasks":{"items":[7,\#(c)],"done":2}}]
+            """#.utf8))
+        assert(snapshot?.map(\.id) == ["one", "two", "three"], "the snapshot survives")
+        assert(snapshot?.map { $0.subtasks?.items.count ?? -1 } == [1, -1, 1], "each card keeps its good items")
+
+        // Round trip: what this client encodes decodes to the same session,
+        // and a card with no block encodes without the key.
+        if let full, let data = try? JSONEncoder().encode(full) {
+            assert((try? decoder.decode(Session.self, from: data)) == full, "subtasks round trip")
+        } else {
+            assertionFailure("session encode")
+        }
+        if let bare = session(#"{"id":"s"}"#), let data = try? JSONEncoder().encode(bare) {
+            assert(!String(decoding: data, as: UTF8.self).contains("subtasks"), "no block stays absent")
+        }
+
+        // The card's reading. WORKING only while the turn is over, a subagent
+        // works, and the card is not blocked — blocked outranks it.
+        func card(_ status: AgentStatus, turnEnded: Bool, items: [SubtaskState]) -> Session {
+            let subtasks = Subtasks(items: items.enumerated().map {
+                Subtask(id: "k\($0.offset + 1)", n: $0.offset + 1, label: "x", state: $0.element, activity: "")
+            }, done: 0, turnEnded: turnEnded)
+            return Session(id: "s", name: "s", status: status, message: "", project: "",
+                           createdAt: 0, updatedAt: 0, subtasks: subtasks)
+        }
+        let plain = Session(id: "s", name: "s", status: .coding, message: "", project: "", createdAt: 0, updatedAt: 0)
+        assert(plain.displayStatus == .coding && !plain.isStaleExempt, "no subagents: the status as sent")
+        let readings: [(Session, DisplayStatus, Bool)] = [
+            (card(.testing, turnEnded: true, items: [.testing, .coding]), .working, true),
+            (card(.coding, turnEnded: false, items: [.coding]), .coding, true),
+            (card(.blocked, turnEnded: true, items: [.blocked, .coding]), .blocked, true),
+            (card(.blocked, turnEnded: false, items: [.blocked]), .blocked, false),
+            (card(.done, turnEnded: false, items: [.failed]), .done, false),
+            (card(.planning, turnEnded: false, items: []), .planning, false),
+        ]
+        for (index, row) in readings.enumerated() {
+            assert(row.0.displayStatus == row.1, "display status, row \(index)")
+            // Stale is never applied while a subagent runs: it posts only on
+            // a change of state, and the server is the judge of its silence.
+            assert(row.0.isStaleExempt == row.2, "stale exemption, row \(index)")
+        }
+        assert(DisplayStatus.working.isActive && DisplayStatus.coding.isActive && !DisplayStatus.done.isActive,
+               "working is an active reading")
+        assert(DisplayStatus.allCases.compactMap(\.agentStatus) == AgentStatus.allCases, "six of seven are the wire's")
+        assert(Theme.symbol(for: DisplayStatus.working) == "arrow.triangle.branch"
+               && Theme.symbol(for: DisplayStatus.blocked) == Theme.symbol(for: AgentStatus.blocked), "marks")
+        assert(Theme.symbol(for: SubtaskState.failed) == "xmark.circle", "failed's mark")
+
+    }
+
     /// Pairing, checked alongside the decoders above when demo mode starts in
     /// a debug build. The pair command is the one string this app tells the
     /// user to paste into a terminal, and three things keep it to the words

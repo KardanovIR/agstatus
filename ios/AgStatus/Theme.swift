@@ -210,6 +210,79 @@ enum Theme {
         static let blocked = rgb(0xF75E51, increased: 0xF75E51, alpha: 0.42, increasedAlpha: 0.70)
     }
 
+    // MARK: - Working and failed
+    //
+    // The two readings that are not statuses on the wire (Models.swift says
+    // why they cannot be).
+    //
+    // WORKING wears coding's colour, surface and edge exactly. It belongs to
+    // the agent-is-working family, and a first cut at half coding's chroma
+    // left the card's word quieter than the coloured rows under it — the one
+    // thing a card's word may never be. Its mark and its word tell it from
+    // coding, as every state on this board is told: never by hue alone.
+    //
+    // The overloads below are disfavoured on purpose. All three enums share
+    // case names, so without it every `Theme.color(for: .blocked)` already in
+    // the app — some thirty of them, none about a card — would become
+    // ambiguous. Disfavoured, a bare `.blocked` still means the wire status,
+    // and a value whose type is known (`session.displayStatus`, `item.state`)
+    // reaches its own overload, the only one it fits.
+
+    @_disfavoredOverload
+    static func color(for status: DisplayStatus) -> Color {
+        color(for: status.agentStatus ?? .coding)
+    }
+
+    @_disfavoredOverload
+    static func cardSurface(for status: DisplayStatus, stale: Bool = false) -> Color {
+        cardSurface(for: status.agentStatus ?? .coding, stale: stale)
+    }
+
+    @_disfavoredOverload
+    static func cardEdge(for status: DisplayStatus, stale: Bool = false) -> Color {
+        cardEdge(for: status.agentStatus ?? .coding, stale: stale)
+    }
+
+    /// A branch for WORKING: one stem handing work on to two. The web draws
+    /// its own fork with a node at each arm's end, and this is SF Symbols'
+    /// nearest. It does not spin — nothing on this board does.
+    @_disfavoredOverload
+    static func symbol(for status: DisplayStatus) -> String {
+        status.agentStatus.map { symbol(for: $0) } ?? "arrow.triangle.branch"
+    }
+
+    /// A subagent row's mark, in its state's colour.
+    ///
+    /// Failed is blocked's hue with most of its chroma taken out. It has to be
+    /// findable on the lean-in without reading as an alarm: nobody is waiting
+    /// on you (the parent already has the error), and a second red word on a
+    /// card would compete with the one state that does mean you. At 0.06 it
+    /// sits under every working state's chroma.
+    @_disfavoredOverload
+    static func color(for state: SubtaskState) -> Color {
+        switch state {
+        case .planning: color(for: .planning)
+        case .coding: color(for: .coding)
+        case .testing: color(for: .testing)
+        case .blocked: color(for: .blocked)
+        case .failed: rgb(0xC89790)    // oklch(from blocked 72% 0.060 h) = oklch(72% 0.060 28)
+        }
+    }
+
+    /// The row's mark: the badge's own symbols, and for failed a crossed
+    /// circle — done's ring with the tick struck out, an outline, so it can
+    /// never be taken for blocked's solid disc.
+    @_disfavoredOverload
+    static func symbol(for state: SubtaskState) -> String {
+        switch state {
+        case .planning: symbol(for: .planning)
+        case .coding: symbol(for: .coding)
+        case .testing: symbol(for: .testing)
+        case .blocked: symbol(for: .blocked)
+        case .failed: "xmark.circle"
+        }
+    }
+
     // MARK: - Limits
     //
     // A plan meter is the one place a traffic light is right. It is not a
