@@ -2,7 +2,16 @@
   'use strict';
 
   const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'];
-  const ACTIVE_STATUSES = new Set(['planning', 'coding', 'testing']);
+  // What a card can wear, as against what the server sends. `working` is a
+  // reading this page works out from a card's subagents (display(), below):
+  // it never arrives as a status, in a frame or in history, because a shipped
+  // app would draw a seventh status as idle.
+  const DISPLAY_STATUSES = [...STATUSES, 'working'];
+  // A subagent row's states. `failed` exists only on a row: a subagent that
+  // finished without success stays listed until its parent's turn is over.
+  const ROW_STATES = ['planning', 'coding', 'testing', 'blocked', 'failed'];
+  const WORKING_STATES = new Set(['planning', 'coding', 'testing']);
+  const ACTIVE_STATUSES = new Set(['planning', 'coding', 'testing', 'working']);
   // A working card that has heard nothing for this long is stale: most likely
   // a dead agent — killed mid-turn, an interrupted turn (which fires no Stop
   // hook), a machine gone to sleep — and sometimes one very long tool call. The
@@ -10,6 +19,12 @@
   // nothing, and the card says so (card.css, "Stale"). The iOS and Android
   // cards keep the same rule.
   const STALE_MS = 10 * 60 * 1000;
+  // Phone rules for subagent rows: two of them, and a footer that opens the
+  // session screen instead of expanding in place. The one-column grid's own
+  // breakpoint (card.css), so the two change together.
+  const PHONE_QUERY = '(max-width: 560px)';
+  // How long a row you arrived at stays lit on the session screen.
+  const ARRIVAL_MS = 2000;
 
   // Workspace-aware base path: on /w/<token> (or a sub-path), all API calls
   // are prefixed with /w/<token>. Otherwise base is '' (legacy mode).
@@ -109,8 +124,10 @@
   // An unrecognised status keeps its card, shows its own word in the badge and
   // simply matches no rule, which is the fallback tokens.css already describes:
   // an unknown should sit quiet rather than claim a state it is not in.
-  const statusClass = (v) => (STATUSES.includes(v) ? `status-${v}` : '');
-  const stateMark = (v) => STATE_MARK[STATUSES.includes(v) ? v : 'idle'] || '';
+  //
+  // Both take a display status, so `working` is a class and a mark too.
+  const statusClass = (v) => (DISPLAY_STATUSES.includes(v) ? `status-${v}` : '');
+  const stateMark = (v) => STATE_MARK[DISPLAY_STATUSES.includes(v) ? v : 'idle'] || '';
 
   const sourceChip = (source) => {
     const key = String(source || 'claude').toLowerCase();
@@ -133,11 +150,19 @@
   // Values that are not plainly safe in a selector get no key, and focus is
   // simply not restored — never an unescaped interpolation.
   const SAFE = /^[A-Za-z][\w-]*$/;
+  // A subagent's key, as the server validates it, and a session id as the
+  // server accepts one (SESSION_ID_RE in src/app.ts). Not SAFE: a key is hex
+  // and can start with a digit. Every character either allows is safe inside
+  // a quoted attribute selector, and none of them is a quote.
+  const SUB_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+  const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
   function focusKey(node) {
     const d = node.dataset || {};
     if (SAFE.test(d.type || '')) return `[data-type="${d.type}"]`;
     if (d.dismiss !== undefined) return '[data-dismiss]';
     if (d.open !== undefined) return '[data-open]';
+    if (SUB_ID_RE.test(d.sub || '')) return `[data-sub="${d.sub}"]`;
+    if (SESSION_ID_RE.test(d.foot || '')) return `[data-foot="${d.foot}"]`;
     if (SAFE.test(d.source || '')) return `[data-source="${d.source}"]`;
     if (SAFE.test(node.id || '')) return `#${node.id}`;
     return null;
@@ -162,6 +187,7 @@
   /** A message in place of the grid; clears the reconciler with it. */
   function setGridMessage(html) {
     cards.clear();
+    gridEl.classList.remove('has-subs');
     paint(gridEl, html);
   }
 
@@ -256,19 +282,31 @@
     usageEl.hidden = blocks.length === 0;
   }
 
-  // All six always, even at zero. A legend that reflows every time a count
-  // changes is movement reporting nothing, and this board animates only when
-  // something actually happened — so the zeros recede instead of leaving.
+  // The six statuses always, even at zero. A legend that reflows every time a
+  // count changes is movement reporting nothing, and this board animates only
+  // when something actually happened — so the zeros recede instead of leaving.
+  //
+  // It counts what the cards WEAR, so one exception: `working`, a reading this
+  // page works out rather than a status the server sends, has a slot only
+  // while some card wears it. Without one the strip would stop summing to the
+  // board; with a permanent one it would carry a seventh zero that no frame
+  // can ever fill. It reshapes the row only when a card enters or leaves
+  // WORKING, which is news.
   //
   // It also has to be unhidden. The markup carries `hidden` for the moment
   // before the first frame, and the old stylesheet's `.stats { display: flex }`
   // quietly outranked the UA's [hidden] rule, so it showed anyway. board.css
   // makes [hidden] `!important`, which is correct and would have hidden this
   // row for good.
+  const STRIP = ['idle', 'planning', 'coding', 'testing', 'working', 'blocked', 'done'];
   function renderStats(list) {
-    const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
-    for (const s of list) counts[s.status] = (counts[s.status] || 0) + 1;
-    paint(statsEl, STATUSES
+    const counts = Object.fromEntries(DISPLAY_STATUSES.map((s) => [s, 0]));
+    for (const s of list) {
+      const shown = display(s);
+      counts[shown] = (counts[shown] || 0) + 1;
+    }
+    paint(statsEl, STRIP
+      .filter((st) => st !== 'working' || counts.working)
       .map((st) => `<span class="stat${counts[st] ? '' : ' zero'}">`
         + `<span class="dot status-${st}"></span><b>${counts[st]}</b> ${st}</span>`)
       .join(''));
@@ -283,6 +321,257 @@
         Send a POST to <code>${escape(example)}</code> with JSON:<br><br>
         <code>{ "session_id": "abc", "name": "My task", "status": "coding", "message": "editing server.ts", "project": "dashboard" }</code>
       </div>`);
+  }
+
+  // ---- Subagents ------------------------------------------------------------
+  //
+  // A session's running subagents, listed inside its card (`subtasks` in the
+  // session JSON, docs/api.md). The server keeps them and derives the card's
+  // status and line from them; this page draws the rows, picks which fit, and
+  // works out one reading of its own, WORKING.
+
+  // Read once per session object: every frame replaces the session whole, so
+  // the object is the cache key and an update can never be served stale.
+  const subtaskCache = new WeakMap();
+
+  /**
+   * The session's subagent block, or null for "draw today's card".
+   *
+   * Tolerant per element, as both native apps are: a snapshot decodes as one
+   * value, and a single bad item must never cost the board. A malformed item
+   * is dropped and the others kept; a state this page does not know reads as
+   * planning; a missing or malformed count falls back to the count of the
+   * items it describes (0 for done, which no list can show). Absent, null, a
+   * non-object, no item list, or an empty list with nothing done all mean
+   * there is nothing to show.
+   */
+  function subtasksOf(s) {
+    if (!s || typeof s !== 'object') return null;
+    if (subtaskCache.has(s)) return subtaskCache.get(s);
+    const raw = s.subtasks;
+    let sub = null;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && Array.isArray(raw.items)) {
+      const items = [];
+      const seen = new Set();
+      for (const x of raw.items) {
+        // The key goes into a selector and keys the slot ledger, so it must
+        // be well formed and unique; the label falls back as the server's own
+        // does, and an item with neither has nothing to say.
+        if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !SUB_ID_RE.test(x.id) || seen.has(x.id)) continue;
+        const n = Number.isInteger(x.n) && x.n >= 1 ? x.n : 0;
+        const label = typeof x.label === 'string' && x.label ? x.label : n ? `Subagent ${n}` : '';
+        if (!label) continue;
+        seen.add(x.id);
+        items.push({
+          id: x.id,
+          label,
+          state: ROW_STATES.includes(x.state) ? x.state : 'planning',
+          activity: typeof x.activity === 'string' ? x.activity : '',
+        });
+      }
+      const count = (v, derived) => (Number.isInteger(v) && v >= 0 ? v : derived);
+      const done = count(raw.done, 0);
+      if (items.length > 0 || done > 0) {
+        sub = {
+          turnEnded: raw.turnEnded === true,
+          running: count(raw.running, items.filter((x) => WORKING_STATES.has(x.state)).length),
+          blocked: count(raw.blocked, items.filter((x) => x.state === 'blocked').length),
+          failed: count(raw.failed, items.filter((x) => x.state === 'failed').length),
+          done,
+          items,
+        };
+      }
+    }
+    subtaskCache.set(s, sub);
+    return sub;
+  }
+
+  /**
+   * What the card wears. The server's status, except one reading it never
+   * sends: the parent's turn is over and its subagents still work, which is
+   * not DONE (your turn) and not the parent coding either. A blocked card
+   * stays blocked; the server already chose that over everything.
+   */
+  function display(s) {
+    const sub = subtasksOf(s);
+    return sub && sub.turnEnded && s.status !== 'blocked' && sub.running > 0 ? 'working' : s.status;
+  }
+
+  // Read through matchMedia, and wide when the browser has none to offer.
+  const phoneQuery = typeof window.matchMedia === 'function' ? window.matchMedia(PHONE_QUERY) : null;
+  const phoneRules = () => Boolean(phoneQuery && phoneQuery.matches);
+  if (phoneQuery) {
+    // Only a board with cards has rows to re-pick; before the first frame the
+    // grid holds the welcome or "Connecting…", which this must not replace.
+    const onPhone = () => { if (cards.size > 0) renderGrid(); };
+    if (typeof phoneQuery.addEventListener === 'function') phoneQuery.addEventListener('change', onPhone);
+    else if (typeof phoneQuery.addListener === 'function') phoneQuery.addListener(onPhone);
+  }
+
+  // Per card, outside the DOM because every frame replaces the session whole:
+  // which rows hold which slots, and the rows and counts last drawn, which is
+  // what tells a repaint what is news. Plus the cards opened in place.
+  const subs = new Map();       // session id → { ledger, rows: Map(id → state), counts }
+  const expanded = new Set();   // session ids
+
+  /** A card that lost its subagents, or left the board, forgets them. */
+  function forgetSubs(id) {
+    subs.delete(id);
+    expanded.delete(id);
+  }
+
+  /**
+   * The rows that fit, slot by slot: the oldest, and each keeps its slot
+   * until it finishes. "Keep their place" wins over exact start order, so a
+   * row that takes a freed slot can stand above one that started before it.
+   *
+   *   · First drawing: blocked rows, then the first to start, in start order.
+   *   · A slot freed by a finish is taken in place by the next hidden row.
+   *     No other row moves.
+   *   · A blocked subagent always takes a slot: a free one, else the
+   *     bottom-most slot whose row is not blocked. The row it displaces comes
+   *     back only into a slot freed by a finish; once approved, the row it
+   *     became keeps the slot until it finishes.
+   *   · Opened in place: the rows on show stay where they are and the rest
+   *     follow in start order. Folded again, the first `slots` keep theirs.
+   *
+   * `ledger` is { slots, shown: [id] }, and a new one is returned rather
+   * than the old one changed. It is idempotent — asked again with what it
+   * returned, it returns the same — so it can be asked on every repaint.
+   */
+  function pick(ledger, items, slots, open) {
+    const live = new Map(items.map((x) => [x.id, x]));
+    let shown;
+    if (!ledger || ledger.slots !== slots) {
+      const blocked = items.filter((x) => x.state === 'blocked').slice(0, slots);
+      const rest = items.filter((x) => x.state !== 'blocked').slice(0, slots - blocked.length);
+      const chosen = new Set([...blocked, ...rest].map((x) => x.id));
+      shown = items.filter((x) => chosen.has(x.id)).map((x) => x.id);
+    } else {
+      shown = ledger.shown;
+    }
+    if (open) {
+      const kept = shown.filter((id) => live.has(id));
+      const keep = new Set(kept);
+      shown = [...kept, ...items.filter((x) => !keep.has(x.id)).map((x) => x.id)];
+      return { ledger: { slots, shown }, rows: shown.map((id) => live.get(id)) };
+    }
+    // A finished row leaves a hole in ITS slot.
+    const at = shown.slice(0, slots).map((id) => (live.has(id) ? id : null));
+    for (const x of items) {
+      if (x.state !== 'blocked' || at.includes(x.id)) continue;
+      let i = at.indexOf(null);
+      if (i < 0 && at.length < slots) i = at.length;
+      if (i < 0) {
+        for (let j = at.length - 1; j >= 0; j -= 1) {
+          if (live.get(at[j]).state !== 'blocked') { i = j; break; }
+        }
+      }
+      if (i >= 0) at[i] = x.id;   // the displaced row goes hidden
+    }
+    const onShow = new Set(at.filter(Boolean));
+    const hidden = items.filter((x) => !onShow.has(x.id));
+    for (let i = 0; i < slots && hidden.length > 0; i += 1) {
+      if (i === at.length) at.push(null);
+      if (at[i] === null) at[i] = hidden.shift().id;   // in place
+    }
+    shown = at.filter(Boolean);   // a slot nothing could take closes
+    return { ledger: { slots, shown }, rows: shown.map((id) => live.get(id)) };
+  }
+
+  const rowMark = (state) => STATE_MARK[state] || '';
+  const rowName = (x) => (x.activity ? `${x.label}, ${x.state}: ${x.activity}` : `${x.label}, ${x.state}`);
+
+  // The row's inside, shared by the card and the session screen. A real
+  // button on the card; the state word is its mark's second channel.
+  const rowInner = (x) => `<span class="sub-text"><span class="sub-label">${escape(x.label)}</span>`
+    + `<span class="sub-act">${escape(x.activity)}</span></span>`
+    + `<span class="sub-st">${rowMark(x.state)}<span>${x.state}</span></span>`;
+
+  // Motion-free on purpose, like everything paint() compares: the classes
+  // that move a row are added after the paint, from the card's memory, so a
+  // repaint about something else replays nothing.
+  function subRowHTML(x, slot) {
+    return `<button class="sub st-${x.state}" type="button" data-sub="${escape(x.id)}" data-slot="${slot}"`
+      + ` aria-label="${escape(rowName(x))}">${rowInner(x)}</button>`;
+  }
+
+  /**
+   * "+7 more · 15 done": a control where it leads somewhere, else a count.
+   * Under phone rules it opens the session screen; elsewhere it opens the
+   * list in place, and folds it again as "Show less".
+   */
+  function footHTML(id, { hidden, done, open, canExpand, phone }) {
+    // The dot is hidden from a screen reader, the spaces around it are not:
+    // the name reads "+7 more 15 done", never "+7 more15 done".
+    const sep = ' <span class="foot-sep" aria-hidden="true">·</span> ';
+    const more = hidden > 0 ? `+<span class="n" data-count="more">${hidden}</span> more` : '';
+    const dn = done > 0 ? `<span class="n" data-count="done">${done}</span> done` : '';
+    // One span for the words: left loose in the flex row, "+" and the number
+    // would each become an item and take the row's gap between them.
+    const words = (html) => `<span class="foot-words">${html}</span>`;
+    const text = [more, dn].filter(Boolean).join(sep);
+    const key = `data-foot="${escape(id)}"`;
+    if (phone && hidden > 0) {
+      return `<button class="sub-foot is-control" type="button" ${key} title="Opens the session screen">`
+        + `${words(text)}${ICON.chevronRight || ''}</button>`;
+    }
+    if (!phone && open && canExpand) {
+      return `<button class="sub-foot is-control" type="button" ${key} aria-expanded="true">`
+        + `${words(`Show less${dn ? sep + dn : ''}`)}${ICON.chevronUp || ''}</button>`;
+    }
+    if (!phone && hidden > 0) {
+      return `<button class="sub-foot is-control" type="button" ${key} aria-expanded="false">`
+        + `${words(text)}${ICON.chevronDown || ''}</button>`;
+    }
+    return text ? `<div class="sub-foot">${words(text)}</div>` : '';
+  }
+
+  /** The card's block: its markup, and what a repaint compares to find news. */
+  function subsBlock(s, sub) {
+    const phone = phoneRules();
+    const slots = phone ? 2 : 3;
+    // Never in place under phone rules, where the footer opens the screen;
+    // the flag is kept, so a card opened on a wide window opens again there.
+    const open = !phone && expanded.has(s.id);
+    const mem = subs.get(s.id);
+    const { ledger, rows } = pick(mem ? mem.ledger : null, sub.items, slots, open);
+    const hidden = sub.items.length - rows.length;
+    const html = '<div class="subs" role="group" aria-label="Subagents">'
+      + rows.map((x, i) => subRowHTML(x, i)).join('')
+      + footHTML(s.id, { hidden, done: sub.done, open, canExpand: sub.items.length > slots, phone })
+      + '</div>';
+    return {
+      html,
+      ledger,
+      rows: new Map(rows.map((x) => [x.id, x.state])),
+      counts: { more: hidden, done: sub.done },
+    };
+  }
+
+  /**
+   * After a repaint, and only then: the rows and counts that are news get
+   * their motion on the nodes the paint just made. A row moves when it
+   * starts (a key not on show before), and its state cell when it becomes
+   * blocked, stops being blocked or fails. Activity, label and the ordinary
+   * planning ↔ coding ↔ testing changes are written in place.
+   */
+  function moveSubs(el, before, block) {
+    const was = before ? before.rows : new Map();
+    el.querySelectorAll('.sub[data-sub]').forEach((row) => {
+      const id = row.dataset.sub;
+      if (!was.has(id)) { row.classList.add('entering'); return; }
+      const then = was.get(id);
+      const now = block.rows.get(id);
+      if (then !== now && (then === 'blocked' || now === 'blocked' || now === 'failed')) row.classList.add('changed');
+    });
+    for (const key of ['more', 'done']) {
+      const then = before ? before.counts[key] : 0;
+      const now = block.counts[key];
+      if (!then || !now || then === now) continue;
+      const n = el.querySelector(`.n[data-count="${key}"]`);
+      if (n) n.classList.add('ticked');
+    }
   }
 
   // The facts under the title, in the order you would ask for them: which
@@ -362,7 +651,13 @@
   // so a stale card's age stays current without its markup changing every
   // minute. The row's last word is a hidden full stop, the pause between the
   // state and the message that the two elements would otherwise run together.
-  function cardInner(s) {
+  //
+  // `shown` is the display status; `rows` the subagent block, which sits
+  // between the card's own line and its meta, and is '' for a card without
+  // one — whose markup is then exactly what it was before subagents existed.
+  // The stale form is keyed on the session's own status, as it was: whether
+  // the card is stale is patchCard's call, and never while a subagent runs.
+  function cardInner(s, shown, rows) {
     const working = ACTIVE_STATUSES.has(s.status);
     const stateId = `card-${s.id}-state`;
     const msgId = `card-${s.id}-msg`;
@@ -375,17 +670,21 @@
             ><span class="name-more" aria-hidden="true">›</span></button>
           <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
         </div>
-        <div class="card-state-row" id="${escape(stateId)}">${stateMark(s.status)}${working ? STALE_MARK : ''}<span class="badge">${
-          escape(s.status)}</span>${working ? staleSaid(s) : ''}<span class="sr-only">.</span></div>
+        <div class="card-state-row" id="${escape(stateId)}">${stateMark(shown)}${working ? STALE_MARK : ''}<span class="badge">${
+          escape(shown)}</span>${working ? staleSaid(s) : ''}<span class="sr-only">.</span></div>
       </div>${
         s.message ? `<p class="message" id="${escape(msgId)}">${escape(s.message)}</p>` : ''
-      }${cardMeta(s)}${renderFocus(s)}`;
+      }${rows}${cardMeta(s)}${renderFocus(s)}`;
   }
 
   function patchCard(rec, s) {
     const { el } = rec;
+    const sub = subtasksOf(s);
+    // Class, edge lift, stale timer and data-status all follow what the card
+    // wears, so entering or leaving WORKING is a state change like any other.
+    const shown = display(s);
     const prev = el.dataset.status;
-    if (prev !== s.status) {
+    if (prev !== shown) {
       if (prev) {
         const gone = statusClass(prev);
         if (gone) el.classList.remove(gone);
@@ -395,19 +694,30 @@
         // re-trigger it without a forced reflow inside this loop.
         el.classList.add('changed');
       }
-      const now = statusClass(s.status);
+      const now = statusClass(shown);
       if (now) el.classList.add(now);
-      el.dataset.status = s.status;
+      el.dataset.status = shown;
     }
-    const active = ACTIVE_STATUSES.has(s.status);
+    // Never dimmed while a subagent runs. Subagents post only when their
+    // status class changes, so one can be silent for many minutes and still
+    // be working; the server expires rows that really went quiet. Without
+    // data-active-since the 15s timer below leaves the card alone too.
+    const active = ACTIVE_STATUSES.has(shown) && !(sub && sub.running > 0);
     if (active) el.dataset.activeSince = String(s.updatedAt);
     else delete el.dataset.activeSince;
     el.classList.toggle('stale', active && Date.now() - s.updatedAt > STALE_MS);
 
-    const inner = cardInner(s);
+    const before = subs.get(s.id);
+    const block = sub ? subsBlock(s, sub) : null;
+    if (block) subs.set(s.id, { ledger: block.ledger, rows: block.rows, counts: block.counts });
+    else forgetSubs(s.id);
+
+    const inner = cardInner(s, shown, block ? block.html : '');
     if (rec.inner === inner) return;
+    const news = rec.inner !== '';   // a card's first paint has no news to move
     rec.inner = inner;
     paint(el, inner);
+    if (block && news) moveSubs(el, before, block);
   }
 
   function renderGrid() {
@@ -420,7 +730,9 @@
     if (cards.size === 0 && gridEl.firstChild) paint(gridEl, '');
 
     let anchor = null;
+    let withSubs = false;
     for (const s of list) {
+      if (subtasksOf(s)) withSubs = true;
       let rec = cards.get(s.id);
       if (!rec) {
         const el = document.createElement('article');
@@ -452,6 +764,10 @@
       rec.el.remove();
       cards.delete(id);
     }
+
+    // Each card keeps its own height while any of them carries subagent rows
+    // (board.css), so a short card does not stretch beside a tall one.
+    gridEl.classList.toggle('has-subs', withSubs);
   }
 
   async function refreshSessions() {
@@ -476,7 +792,9 @@
     // backoff (up to 30s) while this DELETE succeeds anyway. Sessions are only
     // soft-deleted and resurrect on the next post, and the card that comes back
     // must not be wearing the status — or the Resume button — of a dead tap.
+    // Nor the slots, or the opened-in-place list, of its subagents.
     setFocus(id, null);
+    forgetSubs(id);
     renderGrid();
     try {
       const res = await fetch(`${BASE}/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -622,6 +940,15 @@
     }
   }
 
+  // The same for subagent memory: a snapshot can drop sessions without a
+  // `remove` for each. A card still on the board forgets its own when its
+  // block goes (patchCard).
+  function pruneSubs() {
+    for (const id of [...subs.keys(), ...expanded]) {
+      if (!state.has(id)) forgetSubs(id);
+    }
+  }
+
   /** A final outcome: successes fade after a while, failures stay until the next tap. */
   function showResult(id, st, kind, text, resume) {
     st.done = true;
@@ -736,6 +1063,48 @@
     sendCommand(focusBtn.dataset.focus, focusBtn.dataset.type === 'resume' ? 'resume' : 'focus');
   });
 
+  // The subagent rows and their footer. A row opens the session screen at
+  // that subtask. The footer opens the list in place (it carries
+  // aria-expanded then), or under phone rules goes to the screen. Whichever
+  // opened the screen is remembered, so closing it hands focus back there.
+  // The ids are not encoded, for the reason given on the title's handler.
+  gridEl.addEventListener('click', (e) => {
+    const foot = e.target.closest('[data-foot]');
+    const row = foot ? null : e.target.closest('[data-sub]');
+    if (!foot && !row) return;
+    e.preventDefault();
+    if (foot) {
+      const id = foot.dataset.foot;
+      if (foot.hasAttribute('aria-expanded')) {
+        if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+        renderGrid();
+        return;
+      }
+      opener = { id, foot: true };
+      location.hash = `session/${id}`;
+      return;
+    }
+    const card = row.closest('.card');
+    if (!card) return;
+    opener = { id: card.dataset.id, sub: row.dataset.sub };
+    location.hash = `session/${card.dataset.id}/${row.dataset.sub}`;
+  });
+
+  // Motion classes come off when their animation does, cancelled included,
+  // so the next change can put them back. Delegated, because a repaint makes
+  // new rows; the card's own `entering`/`changed` are handled on the card.
+  const settleSub = (e) => {
+    const el = e.target;
+    if (!el || !el.classList) return;
+    if (e.animationName === 'row-in') {
+      if (el.classList.contains('sub')) el.classList.remove('entering');
+      else if (el.classList.contains('sub-st') && el.parentElement) el.parentElement.classList.remove('changed');
+    }
+    if (e.animationName === 'tick') el.classList.remove('ticked');
+  };
+  gridEl.addEventListener('animationend', settleSub);
+  gridEl.addEventListener('animationcancel', settleSub);
+
   // Last, deliberately: the card's own controls are matched first, so a
   // control nested inside the title can never be swallowed by it.
   //
@@ -747,6 +1116,7 @@
     const open = e.target.closest('[data-open]');
     if (!open) return;
     e.preventDefault();
+    opener = { id: open.dataset.open };
     location.hash = `session/${open.dataset.open}`;
   });
 
@@ -764,6 +1134,8 @@
     state.clear();
     machines.clear();
     for (const id of focus.keys()) setFocus(id, null);
+    subs.clear();
+    expanded.clear();
     usage = [];
     renderUsage();
     webhookUrl = '';
@@ -800,12 +1172,16 @@
     const es = new EventSource(`${BASE}/events`);
     let retried = false;
 
+    // An open session screen follows the live session too, but only its
+    // subtasks section: the timeline is history, fetched once.
     es.addEventListener('snapshot', (e) => {
       const list = JSON.parse(e.data);
       state.clear();
       for (const s of list) state.set(s.id, s);
       pruneFocus();
+      pruneSubs();
       renderGrid();
+      paintScreenSubs();
     });
 
     es.addEventListener('session', (e) => {
@@ -813,13 +1189,16 @@
       state.set(s.id, s);
       pruneFocus();
       renderGrid();
+      if (screen && screen.id === s.id) paintScreenSubs();
     });
 
     es.addEventListener('remove', (e) => {
       const { id } = JSON.parse(e.data);
       state.delete(id);
       setFocus(id, null);
+      forgetSubs(id);
       renderGrid();
+      if (screen && screen.id === id) paintScreenSubs();
     });
 
     // Presence: the frame lists the machines online right now (src/app.ts
@@ -954,7 +1333,8 @@
     paintTimes();
     // Active cards cross the staleness threshold without any new event. The
     // class is the whole of it: everything a stale card shows is already in its
-    // markup, and painted just above.
+    // markup, and painted just above. A card with a subagent running carries no
+    // data-active-since (patchCard), so this never marks one stale.
     document.querySelectorAll('.card[data-active-since]').forEach((el) => {
       el.classList.toggle('stale', Date.now() - Number(el.dataset.activeSince) > STALE_MS);
     });
@@ -1612,6 +1992,10 @@
   // inventing a second design — a gutter line with a state-coloured dot, the
   // state's own word, when it happened, and what it said. The word is what
   // carries the state here; the dot is a second channel, not the only one.
+  //
+  // Above the timeline, the session's subtasks, while it has any: painted
+  // from the live session rather than from history, and kept current by the
+  // stream. `#session/<id>/<subtask>` opens the screen at one of them.
 
   /** "18:42" today, "26 Jul, 18:42" otherwise — the same split iOS makes. */
   function eventTime(at) {
@@ -1625,9 +2009,41 @@
     return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${hhmm}`;
   }
 
-  function renderSession(id, events) {
+  // The session screen while one is open: whose it is, the subtask it was
+  // opened at ('' for none), and whether that row is still lit.
+  let screen = null;   // { id, sub, lit, timer }
+
+  /**
+   * The frame of a session's screen: the way back, then the session's
+   * subtasks (painted from the live session by paintScreenSubs), then the
+   * timeline (painted by paintTimeline once history arrives). The subtasks do
+   * not wait for history: they show while it loads, when it is empty and when
+   * it failed — states that used to replace the whole screen, Back included.
+   */
+  function renderSession(id) {
     const s = state.get(id);
     const name = s ? s.name : id;
+    const fresh = paint(detailEl, `
+      <div class="dv-head">
+        <button class="dv-back" type="button" id="dv-back" aria-label="Back to the board">‹ Board</button>
+        <h2 class="dv-title" id="dv-title">${escape(name)}</h2>
+      </div>
+      <section class="dv-subs" id="dv-subs"></section>
+      <section class="dv-tl">
+        <h3 class="ss-label" id="dv-tl-head" hidden>Timeline</h3>
+        <div id="dv-timeline"><p class="dv-empty">Loading…</p></div>
+      </section>`);
+    if (fresh) document.getElementById('dv-back').addEventListener('click', () => { location.hash = ''; });
+  }
+
+  /** The timeline part: the history, or why there is none (`null`: it failed). */
+  function paintTimeline(events) {
+    const el = document.getElementById('dv-timeline');
+    if (!el) return;
+    if (!events) {
+      paint(el, '<p class="dv-empty">Could not load this session\'s history.</p>');
+      return;
+    }
     const rows = events.map((e, i) => `
       <li class="tl-row${i === 0 ? ' tl-first' : ''}${i === events.length - 1 ? ' tl-last' : ''} ${statusClass(e.status)}">
         <span class="tl-gutter" aria-hidden="true"><span class="tl-dot"></span></span>
@@ -1641,34 +2057,107 @@
         </span>
       </li>`).join('');
 
-    paint(detailEl, `
-      <div class="dv-head">
-        <button class="dv-back" type="button" id="dv-back" aria-label="Back to the board">‹ Board</button>
-        <h2 class="dv-title">${escape(name)}</h2>
-      </div>
-      ${events.length === 0
+    paint(el, `${events.length === 0
         ? '<p class="dv-empty">No history yet. Events appear here as the agent works.</p>'
         : `<ol class="tl">${rows}</ol>`}
       <p class="dv-note">Every status this session reported, newest first. A session's history
         is bounded and goes when its card does — a card stops being served 24 hours after its
         last update.</p>`);
-
-    const back = document.getElementById('dv-back');
-    back.addEventListener('click', () => { location.hash = ''; });
-    back.focus();   // same reasoning as the usage detail: the opener is now hidden
   }
 
-  async function openSession(id) {
+  /**
+   * The subtasks section, from the live session. Blocked first, so the one
+   * that needs you is on top — where a phone's footer lands — then the rest
+   * in start order, failed included. Plain list items, not controls: this is
+   * where a card's row leads. The row the screen was opened at is the one
+   * that can take focus (tabindex -1), so focus can land on it and stay on it
+   * through the repaints a live session brings.
+   */
+  function screenSubsHTML(s, at) {
+    const sub = subtasksOf(s);
+    if (!sub) return '';
+    // Each class counted apart: a blocked subagent is not running, it is
+    // waiting on you. The counts are the server's, not the list's length.
+    const count = [[sub.running, 'running'], [sub.blocked, 'blocked'], [sub.failed, 'failed']]
+      .filter(([k]) => k > 0).map(([k, word]) => `${k} ${word}`).join(' · ');
+    const list = [
+      ...sub.items.filter((x) => x.state === 'blocked'),
+      ...sub.items.filter((x) => x.state !== 'blocked'),
+    ];
+    const rows = list.map((x) => `<li class="sub is-roomy st-${x.state}" data-sub="${escape(x.id)}"${
+      x.id === at ? ' tabindex="-1"' : ''} aria-label="${escape(rowName(x))}">${rowInner(x)}</li>`).join('');
+    return `<h3 class="ss-label">Subtasks${count ? ` <span class="ss-count">${count}</span>` : ''}</h3>`
+      + (rows ? `<ul class="ss-list">${rows}</ul>` : '')
+      + (sub.done > 0 ? `<p class="ss-done"><span class="n">${sub.done}</span> done this turn</p>` : '');
+  }
+
+  /** Repaints the open screen's subtasks, and nothing else: not the timeline, not focus. */
+  function paintScreenSubs() {
+    if (!screen) return;
+    const el = document.getElementById('dv-subs');
+    if (!el) return;
+    const s = state.get(screen.id);
+    const html = screenSubsHTML(s, screen.sub);
+    paint(el, html);
+    // The timeline takes a heading only while a section above it needs
+    // telling apart from it.
+    const head = document.getElementById('dv-tl-head');
+    if (head) head.hidden = html === '';
+    // A screen opened before the first frame could only title itself by id.
+    const title = document.getElementById('dv-title');
+    if (title && s && title.textContent !== s.name) title.textContent = s.name;
+    // A repaint inside the lit two seconds made a new row: light that one.
+    if (screen.lit) {
+      const row = el.querySelector(`[data-sub="${screen.sub}"]`);
+      if (row) row.classList.add('is-arrived');
+    }
+  }
+
+  /**
+   * Arrived from a card's row: that row, scrolled to the middle and focused,
+   * its ground lit for two seconds and then let go — faded out, or at once
+   * with reduced motion (shell.css). A later repaint does not light it again.
+   */
+  function arrive(here, row) {
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' });
+    row.focus();
+    row.classList.add('is-arrived');
+    here.lit = true;
+    here.timer = setTimeout(() => {
+      here.lit = false;
+      if (screen !== here) return;
+      const now = document.querySelector(`#dv-subs [data-sub="${here.sub}"]`);
+      if (now) now.classList.add('is-settled');
+    }, ARRIVAL_MS);
+  }
+
+  function closeScreen() {
+    if (screen) clearTimeout(screen.timer);
+    screen = null;
+  }
+
+  async function openSession(id, sub) {
     detailEl.hidden = false;
-    paint(detailEl, '<p class="dv-empty">Loading…</p>');
+    closeScreen();
+    const here = { id, sub, lit: false, timer: 0 };
+    screen = here;
+    renderSession(id);
+    paintScreenSubs();
+    // A subtask that is gone by the time the screen opens gets no highlight,
+    // and the screen opens at the top, on Back — the same as the usage
+    // detail, since the control that opened it is hidden now.
+    const row = sub ? document.querySelector(`#dv-subs [data-sub="${sub}"]`) : null;
+    if (row) arrive(here, row);
+    else document.getElementById('dv-back').focus();
+    let events = null;
     try {
       const res = await fetch(`${BASE}/api/sessions/${encodeURIComponent(id)}/history`);
       if (!res.ok) throw new Error(String(res.status));
-      const events = await res.json();
-      renderSession(id, Array.isArray(events) ? events : []);
-    } catch {
-      paint(detailEl, '<p class="dv-empty">Could not load this session\'s history.</p>');
-    }
+      const list = await res.json();
+      events = Array.isArray(list) ? list : [];
+    } catch { /* painted as the timeline's own error, below */ }
+    if (screen !== here) return;   // a newer route took the surface meanwhile
+    paintTimeline(events);
   }
 
   async function openDetail(source) {
@@ -1688,12 +2177,30 @@
   // which is no longer on screen by the time the route changes.
   let lastSource = '';
   let lastSession = '';
+  // And for a session screen, which control on its card it was: { id } for
+  // the title, plus `foot` or `sub` for the subagent footer or one of the
+  // rows. Set by the click, so a screen reached any other way (a link, the
+  // browser's back button) returns to the title.
+  let opener = null;
 
-  // The server's own session-id charset (SESSION_ID_RE in src/app.ts). Every
-  // character in it is safe unescaped inside a quoted attribute selector, and
-  // none of them is a quote — which is what lets the focus-return below build
-  // one by interpolation.
-  const SESSION_HASH_RE = /^#session\/([A-Za-z0-9._:-]{1,128})$/;
+  // The server's own session-id charset (SESSION_ID_RE in src/app.ts), then
+  // optionally a subagent's key, for a screen opened at that subtask. Every
+  // character in either is safe unescaped inside a quoted attribute selector,
+  // and none of them is a quote — which is what lets the focus-return below
+  // build one by interpolation.
+  const SESSION_HASH_RE = /^#session\/([A-Za-z0-9._:-]{1,128})(?:\/([A-Za-z0-9._:-]{1,64}))?$/;
+
+  /** The control a closed session screen hands focus back to: its opener, else the title. */
+  function sessionOpener(id) {
+    const card = gridEl.querySelector(`.card[data-id="${id}"]`);
+    if (!card) return null;
+    const o = opener && opener.id === id ? opener : null;
+    const again = (o && o.foot && card.querySelector('[data-foot]'))
+      || (o && SUB_ID_RE.test(o.sub || '') && card.querySelector(`[data-sub="${o.sub}"]`));
+    // A row that finished while the screen was open, or a footer that is no
+    // longer a control, has gone: the title is always there.
+    return again || card.querySelector('[data-open]');
+  }
 
   function applyRoute() {
     const m = /^#usage\/([a-z][a-z0-9_-]*)$/.exec(location.hash);
@@ -1703,8 +2210,9 @@
     const showing = Boolean(m || sm);
     stopChart();   // whatever comes next, the chart on screen now is leaving
     document.body.classList.toggle('detail-open', showing);
+    if (!sm) closeScreen();
     if (m) openDetail(m[1]);
-    else if (sm) openSession(sm[1]);
+    else if (sm) openSession(sm[1], sm[2] || '');
     else { detailEl.hidden = true; paint(detailEl, ''); }
     // Opening the detail hides `.usage` — including the button that was just
     // pressed — so without this the keyboard user is dropped back to <body>
@@ -1717,12 +2225,13 @@
     // [a-z][a-z0-9_-]*, which is selector-safe by construction.
     if (!showing) {
       const land = lastSession
-        ? gridEl.querySelector(`[data-open="${lastSession}"]`)
+        ? sessionOpener(lastSession)
         : lastSource
           ? usageEl.querySelector(`[data-source="${lastSource}"] .usage-open`)
           : null;
       if (land) land.focus();
       lastSession = '';
+      opener = null;
     }
   }
 

@@ -139,6 +139,27 @@ describe('static pages', () => {
         expect(rule(sel), `${sel} needs a min-width floor`).toMatch(/min-width:\s*[1-9]/);
       }
     });
+
+    // The same trap one row down. A subagent's label is prompt text with a p90
+    // of 52 characters; uncapped, it takes the whole row and the activity —
+    // the live part, the reason the row exists — renders zero pixels wide.
+    it('a subagent label leaves the activity a share of its row', () => {
+      expect(rule('.sub-label')).toMatch(/max-width:\s*58%/);
+      expect(rule('.sub-act')).toMatch(/min-width:\s*0/);
+    });
+  });
+
+  // Cards keep their own height only while one of them shows subagent rows.
+  // That is the board's grid, and the landing page loads card.css without
+  // board.css precisely so it does not inherit the board's page: a rule in
+  // card.css would reach a page that never draws a subagent.
+  it('scopes the subagent grid alignment to the board', () => {
+    const read = (f: string) => fs.readFileSync(path.resolve(__dirname, '..', 'public', f), 'utf8');
+    expect(read('board.css')).toMatch(/\n#grid\.has-subs \{\s*align-items:\s*start;\s*\}/);
+    expect(read('card.css')).not.toContain('has-subs');
+    // And never unconditionally: a board with no subagents keeps its rows.
+    expect(read('card.css')).not.toMatch(/\n\.grid \{[^}]*align-items/);
+    expect(read('board.css')).not.toMatch(/\n(?:#grid|\.grid) \{[^}]*align-items/);
   });
 
   // A stale card was the whole card at 0.62 opacity: over the ground its

@@ -68,7 +68,12 @@ main {
  *
  * All six stay even at zero, because a row that reflows every time a count
  * changes is movement that reports nothing — and this board animates only when
- * something actually happened. Zeros recede instead. */
+ * something actually happened. Zeros recede instead.
+ *
+ * The one slot that comes and goes is `working`, a reading the client works
+ * out (a card whose turn is over while its subagents still run). It is there
+ * only while a card wears it, so the strip still sums to the board, and it
+ * reshapes the row only when a card enters or leaves it — which is news. */
 .stats {
   display: flex;
   flex-wrap: wrap;
@@ -118,6 +123,7 @@ main {
 .dot.status-testing { --state: var(--st-testing); }
 .dot.status-blocked { --state: var(--st-blocked); }
 .dot.status-done { --state: var(--st-done); }
+.dot.status-working { --state: var(--st-working); }
 
 /* ---- Plan limits --------------------------------------------------------
  * One block per agent, up to three across. A plan limit belongs to
@@ -691,6 +697,114 @@ body.detail-open > .footer { display: none; }
 
 /* The newest entry is the one you came to read. */
 .tl-first .tl-msg { color: var(--text-1); }
+
+/* ---- Session subtasks ---------------------------------------------------
+ * Above the timeline: every subagent still running, and the failed ones
+ * still listed, painted from the live session rather than from history — so
+ * it shows while the history loads, and when it is empty or failed to load.
+ * The rows are card.css's .sub with room to breathe, and they are not
+ * controls here: you are already where a card's row leads. */
+.dv-subs:empty { display: none; }
+
+/* A section between two others gets a step more air than the detail's own
+ * gap, so the list does not run into the head above or the timeline below.
+ * A screen without subtasks keeps today's spacing exactly. */
+.dv-subs:not(:empty) { margin-block: var(--space-2xs); }
+
+/* A section's name, set as a meter's label is. */
+.ss-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  margin: 0 0 var(--space-2xs);
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.ss-count {
+  font-family: var(--font-ui);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.ss-list {
+  container: sslist / inline-size;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Here there is room, so a subagent gets two lines on a phone — its activity
+ * whole on the second — and a 44px row on a wide screen. */
+.sub.is-roomy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'label st' 'act act';
+  align-content: center;
+  column-gap: var(--space-sm);
+  row-gap: 3px;
+  min-height: 52px;
+  padding: 7px 0;
+  cursor: default;
+}
+
+.sub.is-roomy .sub-text { display: contents; }
+
+.sub.is-roomy .sub-label {
+  grid-area: label;
+  max-width: none;
+  font-size: 0.875rem;
+  line-height: 19px;
+  color: var(--text-1);
+}
+
+.sub.is-roomy .sub-act { grid-area: act; }
+.sub.is-roomy .sub-st { grid-area: st; }
+
+.sub.is-roomy .sub-st svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* On a wide screen the state leads, in a column of its own, as each event's
+ * state leads it in the timeline below. Trailing, it stood most of 980px
+ * from its own label, and the eye could not join the two. */
+@container sslist (min-width: 600px) {
+  .sub.is-roomy {
+    grid-template-columns: 80px minmax(0, max-content) minmax(0, 1fr);
+    grid-template-areas: 'st label act';
+    min-height: 44px;
+  }
+}
+
+/* Arrived from a card's row: a lit ground for two seconds, then it goes out
+ * (at once, with reduced motion). Not a ring: an outline in the brightest ink
+ * was the brightest thing on the screen, and boxed the row like a card inside
+ * a card. The padding is given back by the margin, so the text does not move
+ * when the classes go. app.js adds both, after paint. */
+.sub.is-arrived {
+  width: calc(100% + 2 * var(--space-xs));
+  margin-inline: calc(-1 * var(--space-xs));
+  padding-inline: var(--space-xs);
+  border-radius: var(--r-md);
+  background: var(--ink-850);
+}
+
+.sub.is-arrived.is-settled {
+  background: transparent;
+  transition: background-color 600ms var(--ease);
+}
+
+.ss-done {
+  margin: var(--space-2xs) 0 0;
+  font-size: var(--t-sm);
+  color: var(--text-3);
+}
 
 /* ---- Footer -------------------------------------------------------------
  * The webhook URL, which is setup rather than triage. It used to be fixed to
