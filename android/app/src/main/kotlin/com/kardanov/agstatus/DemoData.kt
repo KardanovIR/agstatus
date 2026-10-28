@@ -18,6 +18,9 @@ object DemoData {
     private const val DEMO_MACBOOK_ID = "3f9a1c7e5b2d4086a9c1e3f5b7d90246"
     private const val DEMO_MAC_MINI_ID = "7c2e9b4d1f8a6035c4e2a8b6d0f13579"
 
+    /** The one demo session that runs subagents. */
+    private const val REVIEW_ID = "demo-review"
+
     /** The workflow session's own line, which a waiting subagent's takes over. */
     private const val REVIEW_MESSAGE = "Running the review-and-verify workflow"
 
@@ -28,8 +31,9 @@ object DemoData {
             // A workflow at full stretch — the prototype's ten subagents with
             // fifteen already done — so the board shows two rows, the footer
             // and the session screen's list. Newest, so it leads the board.
+            // Its tick takes it through the rest of the turn: see advanceReview.
             Session(
-                id = "demo-review",
+                id = REVIEW_ID,
                 name = "Review and verify the subtasks branch",
                 status = AgentStatus.PLANNING,
                 message = REVIEW_MESSAGE,
@@ -229,23 +233,24 @@ object DemoData {
     /**
      * Advances a random subset of sessions (at least one) along plausible
      * transitions, refreshing messages and updatedAt. An emptied demo board
-     * re-seeds itself so the demo never dead-ends.
+     * re-seeds itself so the demo never dead-ends. [random] is for the tests,
+     * which need a demo they can replay.
      */
-    fun tick(sessions: List<Session>): List<Session> {
+    fun tick(sessions: List<Session>, random: Random = Random): List<Session> {
         if (sessions.isEmpty()) return initialSessions()
         val now = System.currentTimeMillis()
         val updated = sessions.toMutableList()
         var changedAny = false
 
         for (index in updated.indices) {
-            if (Random.nextDouble() < 0.45) {
-                updated[index] = step(updated[index], now)
+            if (random.nextDouble() < 0.45) {
+                updated[index] = step(updated[index], now, random)
                 changedAny = true
             }
         }
         if (!changedAny) {
-            val index = updated.indices.random()
-            updated[index] = step(updated[index], now)
+            val index = updated.indices.random(random)
+            updated[index] = step(updated[index], now, random)
         }
         return updated
     }
@@ -367,71 +372,132 @@ object DemoData {
         "codex" to listOf("docs" to 0.58, "acme-web" to 0.31),
     )
 
-    private fun step(session: Session, now: Long): Session {
-        val subtasks = session.subtasks ?: return advance(session, now)
-        return advanceSubtasks(session, subtasks, now)
-    }
+    private fun step(session: Session, now: Long, random: Random): Session =
+        if (session.id == REVIEW_ID) advanceReview(session, now, random) else advance(session, now, random)
 
     // MARK: - Subagents
 
     /**
-     * One change to the workflow session's subagents, and only the kind that
-     * moves a row: one starts, one finishes, or one blocks or is approved.
-     * Activities are never rewritten in place, which is what the 1.7 hook
-     * sends too, and the status and line follow from the rows as the server
-     * derives them. The tally only climbs, like a turn that has not ended.
+     * One step of the workflow session, as its hook and the server would
+     * report it. While the parent's turn runs, one subagent starts, finishes,
+     * fails, or blocks or is approved: changes that move a row. An activity
+     * is never rewritten in place, which the 1.7 hook does not send either.
+     *
+     * Now and then the parent's own turn ends with its subagents still at
+     * work, and the card reads WORKING until the last of them finishes. Then
+     * "Reading subagent results" while the parent reads them, then done, the
+     * tally gone with the turn, and in time a new prompt starts the workflow
+     * over. So the demo shows every state a card with subagents can be in,
+     * the WORKING card and a failed row's mark among them — on Android the
+     * demo is the only place to see them before a real 1.7 board.
      */
-    private fun advanceSubtasks(session: Session, subtasks: Subtasks, now: Long): Session {
+    private fun advanceReview(session: Session, now: Long, random: Random): Session {
+        // The parent has read the results; its report turn ends with nothing left running.
+        if (session.message == READING_RESULTS) return turnOver(session, now)
+        val subtasks = session.subtasks
+            // Done, the tally gone with the turn: in time, a new prompt.
+            ?: return if (random.nextDouble() < 0.35) newPrompt(session, now) else session.copy(updatedAt = now)
         val items = subtasks.items.toMutableList()
+        // Every subagent finished while the turn ran: the turn ends quietly.
+        if (items.none { it.state != SubtaskState.FAILED }) return turnOver(session, now)
+
         var done = subtasks.done
+        // With something live, turnEnded is exactly "the parent's turn is over".
+        var ownEnded = subtasks.turnEnded
         val waiting = items.indexOfFirst { it.state == SubtaskState.BLOCKED }
         val working = items.indices.filter { items[it].state.isWorking }
-        val roll = Random.nextDouble()
+        val roll = random.nextDouble()
         when {
             // Approval comes before anything else blocks.
             waiting >= 0 && roll < 0.5 -> {
                 val row = items[waiting]
                 items[waiting] = row.copy(state = SubtaskState.CODING, activity = row.activity.removePrefix(APPROVE))
             }
-            waiting < 0 && roll < 0.2 && working.isNotEmpty() -> {
-                val index = working.random()
+            // Only rows waiting on you, or failed ones: nothing moves until you answer.
+            working.isEmpty() -> Unit
+            waiting < 0 && roll < 0.15 -> {
+                val index = working.random(random)
                 items[index] = items[index].copy(state = SubtaskState.BLOCKED, activity = APPROVE + items[index].activity)
             }
-            (roll < 0.65 || items.size >= MAX_DEMO_ROWS) && working.isNotEmpty() -> {
-                items.removeAt(working.random())
+            roll < 0.25 && items.count { it.state == SubtaskState.FAILED } < MAX_DEMO_FAILED -> {
+                // One of the two that have run longest, which the card
+                // usually shows: the crossed circle is then seen on the
+                // board, not only on the session screen.
+                val index = working.take(2).random(random)
+                items[index] = items[index].copy(state = SubtaskState.FAILED, activity = failures.random(random))
+            }
+            // The parent's own turn ends, its subagents still at work.
+            !ownEnded && roll < 0.37 -> ownEnded = true
+            // Once the turn is over nothing new starts, so the work runs down.
+            ownEnded || roll < 0.75 || items.size >= MAX_DEMO_ROWS -> {
+                items.removeAt(working.random(random))
                 done += 1
             }
             else -> {
-                val n = (items.maxOfOrNull { it.n } ?: done) + 1
+                val n = items.maxOf { it.n } + 1
                 val (label, state, activity) = startRows[n % startRows.size]
                 items += demoSubtask(n = n, label = label, state = state, activity = activity)
             }
         }
-        val next = if (items.isEmpty()) {
-            // A finished workflow starts over, so the demo never dead-ends.
-            demoSubtasks(reviewRows.mapIndexed { i, (l, s, a) -> demoSubtask(i + 3, l, s, a) }, done = 0)
-        } else {
-            demoSubtasks(items, done)
-        }
-        val blocked = next.items.filter { it.state == SubtaskState.BLOCKED }
-        return session.copy(
-            status = if (blocked.isEmpty()) AgentStatus.PLANNING else AgentStatus.BLOCKED,
-            message = if (blocked.isEmpty()) {
-                REVIEW_MESSAGE
-            } else {
+        return reported(session, ownEnded, items, done, now)
+    }
+
+    /**
+     * The workflow session as the server reports it, from the parent's own
+     * reading and its rows: a waiting subagent's approval first; then, once
+     * the parent's turn is over, the busiest subagent's state and "N
+     * subagents still running"; then, every one finished, "Reading subagent
+     * results" until the parent is back; otherwise the parent's own line.
+     */
+    private fun reported(session: Session, ownEnded: Boolean, items: List<Subtask>, done: Int, now: Long): Session {
+        val live = items.filter { it.state != SubtaskState.FAILED }
+        val blocked = live.filter { it.state == SubtaskState.BLOCKED }
+        val working = live.filter { it.state.isWorking }
+        val (status, message) = when {
+            blocked.isNotEmpty() -> AgentStatus.BLOCKED to
                 "Needs approval: ${blocked.first().label}" + if (blocked.size > 1) " +${blocked.size - 1}" else ""
+            ownEnded && working.isNotEmpty() -> busiest(working) to
+                if (working.size == 1) "1 subagent still running" else "${working.size} subagents still running"
+            ownEnded -> AgentStatus.PLANNING to READING_RESULTS
+            else -> AgentStatus.PLANNING to REVIEW_MESSAGE
+        }
+        return session.copy(
+            status = status,
+            message = message,
+            subtasks = if (items.isEmpty() && done == 0) {
+                null
+            } else {
+                demoSubtasks(items, done, turnEnded = ownEnded && live.isNotEmpty())
             },
-            subtasks = next,
             updatedAt = now,
         )
+    }
+
+    /** Testing over coding over planning: the state a card reads while its subagents outlast the turn. */
+    private fun busiest(working: List<Subtask>): AgentStatus = when {
+        working.any { it.state == SubtaskState.TESTING } -> AgentStatus.TESTING
+        working.any { it.state == SubtaskState.CODING } -> AgentStatus.CODING
+        else -> AgentStatus.PLANNING
+    }
+
+    /** The turn fully over: the parent's own line, and the tally and failed rows gone with the turn. */
+    private fun turnOver(session: Session, now: Long): Session =
+        session.copy(status = AgentStatus.DONE, message = TURN_FINISHED, subtasks = null, updatedAt = now)
+
+    /** A new prompt: the workflow starts over, numbered from 1, nothing done yet. */
+    private fun newPrompt(session: Session, now: Long): Session {
+        val items = reviewRows.mapIndexed { index, (label, state, activity) ->
+            demoSubtask(n = index + 1, label = label, state = state, activity = activity)
+        }
+        return reported(session, ownEnded = false, items = items, done = 0, now = now)
     }
 
     private fun demoSubtask(n: Int, label: String, state: SubtaskState, activity: String) =
         Subtask(id = "demo-agent-$n", n = n, label = label, state = state, activity = activity)
 
     /** Counts exactly as the server sends them: derived from the rows, plus the tally. */
-    private fun demoSubtasks(items: List<Subtask>, done: Int) = Subtasks(
-        turnEnded = false,
+    private fun demoSubtasks(items: List<Subtask>, done: Int, turnEnded: Boolean = false) = Subtasks(
+        turnEnded = turnEnded,
         running = items.count { it.state.isWorking },
         blocked = items.count { it.state == SubtaskState.BLOCKED },
         failed = items.count { it.state == SubtaskState.FAILED },
@@ -441,6 +507,21 @@ object DemoData {
 
     private const val APPROVE = "Approve: "
     private const val MAX_DEMO_ROWS = 12
+
+    /** Failed rows stay listed until the turn is over; two at most keeps the demo plausible. */
+    private const val MAX_DEMO_FAILED = 2
+
+    /** The hook's Stop line, and so the parent's own once its turn is over. */
+    private const val TURN_FINISHED = "Turn finished"
+
+    /** The server's line between the last subagent finishing and the parent reading the results. */
+    private const val READING_RESULTS = "Reading subagent results"
+
+    /** How a subagent fails, as the hook words it: "Failed: " and the first line of the error. */
+    private val failures = listOf(
+        "Failed: API error (overloaded)",
+        "Failed: Prompt is too long",
+    )
 
     /** The prototype's review-and-verify workflow, in start order. */
     private val reviewRows: List<Triple<String, SubtaskState, String>> = listOf(
@@ -465,10 +546,10 @@ object DemoData {
         Triple("Draft the 1.7 release notes", SubtaskState.CODING, "Writing v1.7.0.md"),
     )
 
-    private fun advance(session: Session, now: Long): Session {
-        val status = transitions[session.status]?.random() ?: session.status
-        val message = if (status != session.status || Random.nextBoolean()) {
-            messages[status]?.random() ?: session.message
+    private fun advance(session: Session, now: Long, random: Random): Session {
+        val status = transitions[session.status]?.random(random) ?: session.status
+        val message = if (status != session.status || random.nextBoolean()) {
+            messages[status]?.random(random) ?: session.message
         } else {
             session.message
         }

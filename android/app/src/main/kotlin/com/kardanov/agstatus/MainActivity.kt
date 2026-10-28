@@ -71,7 +71,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * The session screen can open at a subagent, by its ordinal (`n`), as the
  * iOS app's AGSTATUS_OPEN_SUBTASK does: the first card listing that subagent
- * opens, scrolled to it and lit. The demo's subagents are numbered 3 to 12:
+ * opens, scrolled to it and lit. The demo starts with subagents 3 to 12:
  *
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --ez agstatus_open_history true \
