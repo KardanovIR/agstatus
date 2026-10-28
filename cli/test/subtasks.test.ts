@@ -1180,6 +1180,51 @@ describe('task notifications', () => {
     });
   });
 
+  it('takes the failure reason from after the description, which may say failed too', () => {
+    const failing = (summary: string) => {
+      const ws = workspace();
+      for (const n of ['c_parent_pre_agent', 'c_subagent_start']) post(ws, load(ws, n));
+      const text = `<task-notification>\n<task-id>${BG}</task-id>\n<status>failed</status>\n<summary>${summary}</summary>\n</task-notification>`;
+      return agentPosts(post(ws, prompt(ws, text)))[0].agent;
+    };
+    expect(failing('Agent "retry failed: flaky tests" failed: model refused'))
+      .toMatchObject({ state: 'failed', activity: 'Failed: model refused' });
+    // A quoted word before "failed: " in the description; "failed: " in the error.
+    expect(failing('Agent "Find out why "lint" failed: and fix it" failed: request failed: 529'))
+      .toMatchObject({ state: 'failed', activity: 'Failed: request failed: 529' });
+  });
+
+  /** Two background subagents of run c's session, both running. */
+  function twoRunning(ws: Ws): void {
+    for (const id of [ALPHA, BETA]) {
+      post(ws, load(ws, 'c_subagent_start', { agent_id: id }));
+      post(ws, load(ws, 'c_pre_bash_bg', { agent_id: id }));
+    }
+  }
+
+  it('never reads a block quoted in a result as one of the prompt\'s own', () => {
+    const ws = workspace();
+    twoRunning(ws);
+    // alpha finished, and its result quotes a notification about beta, which is still running.
+    const bodies = post(ws, prompt(ws, block(ALPHA, 'completed', `A notification looks like this: ${block(BETA, 'killed')}`)));
+    expect(agentPosts(bodies).map((b) => [b.agent.id, b.agent.state])).toEqual([[K(ALPHA, C), 'done']]);
+  });
+
+  it('reads a real block that follows a result quoting eight of them', () => {
+    const ws = workspace();
+    twoRunning(ws);
+    const quoted = Array.from({ length: 8 }, (_, i) => block(`zz${i}`, 'completed')).join('\n');
+    const bodies = post(ws, prompt(ws, `${block(ALPHA, 'completed', quoted)}\n${block(BETA, 'completed')}`));
+    expect(agentPosts(bodies).map((b) => b.agent.id).sort()).toEqual([K(ALPHA, C), K(BETA, C)].sort());
+  });
+
+  it('keeps a result\'s words off the card when the user wrote some too', () => {
+    const ws = workspace();
+    const quoting = block(BG, 'completed', 'the tag is </task-notification> and then SECRET RESULT TAIL');
+    const [body] = post(ws, prompt(ws, `Merge it\n${quoting}`));
+    expect(body).toMatchObject({ status: 'planning', message: 'Merge it', turn: { phase: 'start' } });
+  });
+
   it('says nothing more about a subagent already confirmed done, or about a workflow', () => {
     const ws = workspace();
     for (const n of ['c_parent_pre_agent', 'c_subagent_start', 'c_subagent_stop']) post(ws, load(ws, n));

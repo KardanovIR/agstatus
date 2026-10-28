@@ -3488,6 +3488,7 @@ function failedActivity(error) {
 const NOTE_OPEN = '<task-notification>';
 const NOTE_CLOSE = '</task-notification>';
 const NOTE_RESULT = '<result>';
+const NOTE_RESULT_CLOSE = '</result>';
 
 /** The text between `<name>` and `</name>` in `head`, or ''. */
 function tagText(head, name) {
@@ -3498,17 +3499,67 @@ function tagText(head, name) {
   return close === -1 ? '' : head.slice(from, close);
 }
 
-/** The prompt with every <task-notification> block cut out, the way stripHostNotices cuts reminders. */
-function withoutNotifications(text) {
-  let out = '';
-  let from = 0;
+/**
+ * Calls `visit({open, body, headEnd, end})` for each <task-notification>
+ * block of `text`, in order, until it returns false. The block's head is
+ * text.slice(body, headEnd), from its open to its first <result> or close,
+ * whichever comes first; the block takes up text.slice(open, end), and a
+ * block never closed runs to the end of the text.
+ *
+ * A head that stops at <result> means the subagent's own final words follow.
+ * Claude Code escapes them (`<` arrives as `&lt;`), but a result that quotes a
+ * block — tags and all — must neither end this one early nor pass for another
+ * one: the result runs to its matching </result>, counting the <result>s
+ * quoted inside it, and only the first close after that ends the block. A
+ * result never closed takes the rest of the text with it.
+ *
+ * One pass, with indexOf rather than a regex (see stripHostNotices): each
+ * tag's next position is searched for again only once it has been passed, so
+ * a prompt made of nothing but tags costs no more than one read of it.
+ */
+function forEachNotification(text, visit) {
+  const tags = [NOTE_OPEN, NOTE_CLOSE, NOTE_RESULT, NOTE_RESULT_CLOSE];
+  const next = [-2, -2, -2, -2]; // -2: not looked for yet; -1: none left
+  const find = (i, pos) => {
+    if (next[i] !== -1 && next[i] < pos) next[i] = text.indexOf(tags[i], pos);
+    return next[i];
+  };
+  let pos = 0;
   for (;;) {
-    const open = text.indexOf(NOTE_OPEN, from);
-    if (open === -1) return out + text.slice(from);
-    out += `${text.slice(from, open)} `;
-    const close = text.indexOf(NOTE_CLOSE, open + NOTE_OPEN.length);
-    if (close === -1) return out;
-    from = close + NOTE_CLOSE.length;
+    const open = find(0, pos);
+    if (open === -1) return;
+    const body = open + NOTE_OPEN.length;
+    const close = find(1, body);
+    const result = find(2, body);
+    let headEnd;
+    let end;
+    if (result === -1 || (close !== -1 && close < result)) {
+      headEnd = close === -1 ? text.length : close;
+      end = close === -1 ? text.length : close + NOTE_CLOSE.length;
+    } else {
+      headEnd = result;
+      let depth = 1;
+      let p = result + NOTE_RESULT.length;
+      while (depth > 0) {
+        const nested = find(2, p);
+        const shut = find(3, p);
+        if (shut === -1) {
+          p = text.length;
+          break;
+        }
+        if (nested !== -1 && nested < shut) {
+          depth += 1;
+          p = nested + NOTE_RESULT.length;
+        } else {
+          depth -= 1;
+          p = shut + NOTE_RESULT_CLOSE.length;
+        }
+      }
+      const after = p < text.length ? find(1, p) : -1;
+      end = after === -1 ? text.length : after + NOTE_CLOSE.length;
+    }
+    if (visit({ open, body, headEnd, end }) === false || end >= text.length) return;
+    pos = end;
   }
 }
 
@@ -3518,45 +3569,45 @@ function withoutNotifications(text) {
  *   {notificationOnly, userText, notes: [{id, status, summary}]}
  *
  * Shown as-is, the block read on the card as though the user had typed it.
- * Each block's HEAD — from its open to the first <result> or close after it —
- * is all that is read, for <task-id>, <status> and <summary>; <result> is the
- * subagent's own final text and is never read or sent. At most
- * NOTIFICATIONS_PER_PROMPT_MAX blocks, searched in the first 64 KB, with
- * indexOf rather than a regex for the reason stripHostNotices gives.
+ * Each block's HEAD is all that is read, for <task-id>, <status> and
+ * <summary>; <result> is the subagent's own final text and is never read or
+ * sent, nor taken for blocks or user text of its own (forEachNotification).
+ * At most NOTIFICATIONS_PER_PROMPT_MAX blocks, opening in the first 64 KB.
  *
  * Notification-only means the user said nothing: the prompt opens with a
  * block (after any <system-reminder> opens), or blocks were found and nothing
- * else is left. The first rule matters when a result quotes the close tag,
- * which would otherwise turn the rest of its block into "user text".
+ * else is left. The first rule still matters for the one quote the parser
+ * cannot see past — a result quoting a lone </result> and then the close tag —
+ * which would turn the rest of its block into "user text".
  */
 function parseTaskNotifications(prompt) {
   const text = typeof prompt === 'string' ? prompt : '';
-  const scan = text.length > NOTIFICATION_SCAN_MAX_CHARS ? text.slice(0, NOTIFICATION_SCAN_MAX_CHARS) : text;
   const notes = [];
+  // The prompt with every block cut out, the way stripHostNotices cuts reminders.
+  let rest = '';
   let from = 0;
-  while (notes.length < NOTIFICATIONS_PER_PROMPT_MAX) {
-    const open = scan.indexOf(NOTE_OPEN, from);
-    if (open === -1) break;
-    const body = open + NOTE_OPEN.length;
-    const result = scan.indexOf(NOTE_RESULT, body);
-    const close = scan.indexOf(NOTE_CLOSE, body);
-    const ends = [result, close].filter((i) => i !== -1);
-    const end = ends.length > 0 ? Math.min(...ends) : scan.length;
-    const head = scan.slice(body, end);
-    notes.push({
-      id: str(tagText(head, 'task-id')),
-      status: str(tagText(head, 'status')),
-      summary: clip(tagText(head, 'summary'), SUMMARY_MAX),
-    });
-    from = end;
-  }
+  forEachNotification(text, (block) => {
+    rest += `${text.slice(from, block.open)} `;
+    from = block.end;
+    if (block.open < NOTIFICATION_SCAN_MAX_CHARS && notes.length < NOTIFICATIONS_PER_PROMPT_MAX) {
+      const head = text.slice(block.body, Math.min(block.headEnd, NOTIFICATION_SCAN_MAX_CHARS));
+      notes.push({
+        id: str(tagText(head, 'task-id')),
+        status: str(tagText(head, 'status')),
+        summary: clip(tagText(head, 'summary'), SUMMARY_MAX),
+      });
+    }
+    return true;
+  });
+  rest += text.slice(from);
+  const scan = text.length > NOTIFICATION_SCAN_MAX_CHARS ? text.slice(0, NOTIFICATION_SCAN_MAX_CHARS) : text;
   let i = 0;
   for (;;) {
     while (i < scan.length && /\s/.test(scan[i])) i += 1;
     if (!scan.startsWith(REMINDER_OPEN, i)) break;
     i += REMINDER_OPEN.length;
   }
-  const userText = str(stripHostNotices(withoutNotifications(text))).replace(/\s+/g, ' ');
+  const userText = str(stripHostNotices(rest)).replace(/\s+/g, ' ');
   return {
     notificationOnly: scan.startsWith(NOTE_OPEN, i) || (notes.length > 0 && userText === ''),
     userText,
@@ -3564,12 +3615,26 @@ function parseTaskNotifications(prompt) {
   };
 }
 
+/**
+ * Why a subagent failed, from its notification's summary, which Claude Code
+ * writes as `Agent "<description>" failed: <error>`. The description is the
+ * model's own wording and can say `failed: ` itself, quotes and all ("Find out
+ * why "lint" failed: …"), so the error is what follows the LAST closing quote
+ * before `failed: `; an error seldom holds one. A summary in any other shape
+ * gives what follows its first `failed: `, or ''.
+ */
+function failureReason(summary) {
+  const quoted = summary.lastIndexOf('" failed: ');
+  if (quoted !== -1) return str(summary.slice(quoted + '" failed: '.length));
+  const bare = summary.indexOf('failed: ');
+  return bare === -1 ? '' : str(summary.slice(bare + 'failed: '.length));
+}
+
 /** A finished task's status → the agent state and activity its post carries. */
 function notificationOutcome(note) {
   if (note.status === 'failed') {
-    const m = /failed: (.+)$/.exec(note.summary);
-    const reason = m ? str(m[1]) : '';
-    return { state: 'failed', activity: !MINIMAL && reason ? clip(`Failed: ${reason}`, ACTIVITY_MAX) : 'Failed' };
+    const reason = MINIMAL ? '' : failureReason(note.summary);
+    return { state: 'failed', activity: reason ? clip(`Failed: ${reason}`, ACTIVITY_MAX) : 'Failed' };
   }
   if (note.status === 'killed') return { state: 'failed', activity: 'Stopped' };
   // Meaning unknown; a finished worker is not running and must not raise the card.
