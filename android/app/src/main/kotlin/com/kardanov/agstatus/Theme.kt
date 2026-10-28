@@ -16,10 +16,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathBuilder
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.sqrt
 
@@ -116,6 +122,16 @@ object Theme {
     val done = Color(0xFF69C88E)
 
     /**
+     * oklch(72% 0.060 28) — `oklch(from var(--st-blocked) 72% 0.06 h)`.
+     *
+     * A subagent row only, never a session: one that finished without
+     * success. Blocked's hue, so it reads as gone wrong rather than fine,
+     * with most of the chroma taken out, so it never reads as a second
+     * alarm. It is finished; nothing is waiting on you.
+     */
+    val failed = Color(0xFFC89790)
+
+    /**
      * The application accent.
      *
      * It was `planning` blue in 27 places — buttons, switches, the FAB, links.
@@ -132,14 +148,33 @@ object Theme {
     /** What to draw on top of [accent]: 9.41:1, where white is 2.05:1. */
     val onAccent = background
 
-    fun colorFor(status: AgentStatus): Color = when (status) {
-        AgentStatus.IDLE -> idle
-        AgentStatus.PLANNING -> planning
-        AgentStatus.CODING -> coding
-        AgentStatus.TESTING -> testing
-        AgentStatus.BLOCKED -> blocked
-        AgentStatus.DONE -> done
+    fun colorFor(status: AgentStatus): Color = colorFor(DisplayStatus.of(status))
+
+    /**
+     * WORKING wears coding's colour exactly, and its surface and edge below.
+     * It is a reading of work in progress, which the board already draws in
+     * that colour; a new hue for it would be one more to learn, for a state
+     * that changes nothing about who is waiting. Its mark tells it apart.
+     */
+    fun colorFor(status: DisplayStatus): Color = when (status) {
+        DisplayStatus.IDLE -> idle
+        DisplayStatus.PLANNING -> planning
+        DisplayStatus.CODING, DisplayStatus.WORKING -> coding
+        DisplayStatus.TESTING -> testing
+        DisplayStatus.BLOCKED -> blocked
+        DisplayStatus.DONE -> done
     }
+
+    /** A subagent row's state colour: the running states' own, and [failed]. */
+    fun colorFor(state: SubtaskState): Color = when (state) {
+        SubtaskState.PLANNING -> planning
+        SubtaskState.CODING -> coding
+        SubtaskState.TESTING -> testing
+        SubtaskState.BLOCKED -> blocked
+        SubtaskState.FAILED -> failed
+    }
+
+    fun iconFor(status: AgentStatus): ImageVector = iconFor(DisplayStatus.of(status))
 
     /**
      * The glyph for a status.
@@ -153,13 +188,23 @@ object Theme {
      * Blocked is the filled one. It is the only alarm here, and a filled mark
      * reads as louder than an outline at a glance, before any colour arrives.
      */
-    fun iconFor(status: AgentStatus): ImageVector = when (status) {
-        AgentStatus.IDLE -> Icons.Outlined.Schedule
-        AgentStatus.PLANNING -> Icons.Outlined.FormatListBulleted
-        AgentStatus.CODING -> Icons.Outlined.Code
-        AgentStatus.TESTING -> Icons.Outlined.Science
-        AgentStatus.BLOCKED -> Icons.Filled.Error
-        AgentStatus.DONE -> Icons.Outlined.CheckCircle
+    fun iconFor(status: DisplayStatus): ImageVector = when (status) {
+        DisplayStatus.IDLE -> Icons.Outlined.Schedule
+        DisplayStatus.PLANNING -> Icons.Outlined.FormatListBulleted
+        DisplayStatus.CODING -> Icons.Outlined.Code
+        DisplayStatus.TESTING -> Icons.Outlined.Science
+        DisplayStatus.WORKING -> workingMark
+        DisplayStatus.BLOCKED -> Icons.Filled.Error
+        DisplayStatus.DONE -> Icons.Outlined.CheckCircle
+    }
+
+    /** A subagent row's mark: the card's own for the running states, a crossed circle for failed. */
+    fun iconFor(state: SubtaskState): ImageVector = when (state) {
+        SubtaskState.PLANNING -> iconFor(DisplayStatus.PLANNING)
+        SubtaskState.CODING -> iconFor(DisplayStatus.CODING)
+        SubtaskState.TESTING -> iconFor(DisplayStatus.TESTING)
+        SubtaskState.BLOCKED -> iconFor(DisplayStatus.BLOCKED)
+        SubtaskState.FAILED -> failedMark
     }
 
     /**
@@ -184,15 +229,15 @@ object Theme {
      * card is darker than every tinted one, which is what reads from across
      * the room. The web and iOS boards draw the same.
      */
-    fun cardSurface(status: AgentStatus, stale: Boolean = false): Color {
+    fun cardSurface(status: DisplayStatus, stale: Boolean = false): Color {
         if (stale) return card
         return when (status) {
-            AgentStatus.IDLE -> Color(0xFF1E231F)
-            AgentStatus.PLANNING -> Color(0xFF242426)
-            AgentStatus.CODING -> Color(0xFF1D2525)
-            AgentStatus.TESTING -> Color(0xFF1C2623)
-            AgentStatus.BLOCKED -> Color(0xFF30231D)
-            AgentStatus.DONE -> Color(0xFF1C271F)
+            DisplayStatus.IDLE -> Color(0xFF1E231F)
+            DisplayStatus.PLANNING -> Color(0xFF242426)
+            DisplayStatus.CODING, DisplayStatus.WORKING -> Color(0xFF1D2525)
+            DisplayStatus.TESTING -> Color(0xFF1C2623)
+            DisplayStatus.BLOCKED -> Color(0xFF30231D)
+            DisplayStatus.DONE -> Color(0xFF1C271F)
         }
     }
 
@@ -205,17 +250,92 @@ object Theme {
      *
      * A stale card's edge is [cardBorder] itself, for the reason its surface
      * is [card].
+     *
+     * The subagent rows' hairline is drawn in this too: a rule in the card's
+     * own edge colour, not a box or a fill — no card inside the card.
      */
-    fun cardEdge(status: AgentStatus, stale: Boolean = false): Color {
+    fun cardEdge(status: DisplayStatus, stale: Boolean = false): Color {
         if (stale) return cardBorder
         return when (status) {
-            AgentStatus.IDLE -> Color(0xFF4C544E)
-            AgentStatus.PLANNING -> Color(0xFF66596A)
-            AgentStatus.CODING -> Color(0xFF475E69)
-            AgentStatus.TESTING -> Color(0xFF43615F)
-            AgentStatus.DONE -> Color(0xFF43664F)
-            AgentStatus.BLOCKED -> blocked.copy(alpha = 0.42f)
+            DisplayStatus.IDLE -> Color(0xFF4C544E)
+            DisplayStatus.PLANNING -> Color(0xFF66596A)
+            DisplayStatus.CODING, DisplayStatus.WORKING -> Color(0xFF475E69)
+            DisplayStatus.TESTING -> Color(0xFF43615F)
+            DisplayStatus.DONE -> Color(0xFF43664F)
+            DisplayStatus.BLOCKED -> blocked.copy(alpha = 0.42f)
         }
+    }
+
+    // ---- Marks Material has no glyph for --------------------------------
+    // Ported path for path from the owner-approved subtasks prototype, as the
+    // web board draws them (public/marks.js, STATE_MARK.working and .failed):
+    // a 16-unit grid, a 1.5 stroke with round ends. iOS draws the nearest SF
+    // Symbol. Black, because Icon tints them.
+
+    /**
+     * WORKING: a branch. One stem forks into two arms, each ending in a node:
+     * the work handed on. The nodes are what keep it from reading as a letter
+     * at 14dp. Static, because nothing on this board spins.
+     */
+    private val workingMark: ImageVector by lazy {
+        mark("Working") {
+            // M2 8h4.2c2.4 0 2.8-3.9 5.4-3.9 M6.2 8c2.4 0 2.8 3.9 5.4 3.9
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.5f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(2f, 8f)
+                horizontalLineToRelative(4.2f)
+                curveToRelative(2.4f, 0f, 2.8f, -3.9f, 5.4f, -3.9f)
+                moveTo(6.2f, 8f)
+                curveToRelative(2.4f, 0f, 2.8f, 3.9f, 5.4f, 3.9f)
+            }
+            path(fill = SolidColor(Color.Black)) {
+                circle(12.9f, 4.1f, 1.5f)
+                circle(12.9f, 11.9f, 1.5f)
+            }
+        }
+    }
+
+    /**
+     * Failed: done's ring with the tick struck out. An outline, so it can
+     * never be taken for blocked's solid disc.
+     */
+    private val failedMark: ImageVector by lazy {
+        mark("Failed") {
+            // <circle cx="8" cy="8" r="6"/> M5.9 5.9l4.2 4.2 M10.1 5.9l-4.2 4.2
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.5f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                circle(8f, 8f, 6f)
+                moveTo(5.9f, 5.9f)
+                lineToRelative(4.2f, 4.2f)
+                moveTo(10.1f, 5.9f)
+                lineToRelative(-4.2f, 4.2f)
+            }
+        }
+    }
+
+    private fun mark(name: String, paths: ImageVector.Builder.() -> Unit): ImageVector =
+        ImageVector.Builder(
+            name = name,
+            defaultWidth = 16.dp,
+            defaultHeight = 16.dp,
+            viewportWidth = 16f,
+            viewportHeight = 16f,
+        ).apply(paths).build()
+
+    /** An SVG `<circle>` as two half-turn arcs, the way the Material icons draw one. */
+    private fun PathBuilder.circle(cx: Float, cy: Float, r: Float) {
+        moveTo(cx - r, cy)
+        arcToRelative(r, r, 0f, true, true, 2 * r, 0f)
+        arcToRelative(r, r, 0f, true, true, -2 * r, 0f)
+        close()
     }
 
     // ---- Limits ----------------------------------------------------------

@@ -81,12 +81,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-/** The live board: one glanceable card per agent session. */
+/**
+ * The live board: one glanceable card per agent session. [onOpenHistory]
+ * takes the session and, from a subagent's row, the subagent to arrive at.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BoardScreen(
     store: SessionStore,
-    onOpenHistory: (String) -> Unit,
+    onOpenHistory: (sessionId: String, subtaskId: String?) -> Unit,
     onOpenUsage: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPair: () -> Unit,
@@ -98,6 +101,7 @@ fun BoardScreen(
     val board by store.board.collectAsState()
     val machines by store.machines.collectAsState()
     val focus by store.focus.collectAsState()
+    val subtaskSlots by store.subtaskSlots.collectAsState()
 
     val isDemo = connection == SessionStore.Connection.DEMO
     val boardGone = connection == SessionStore.Connection.BOARD_GONE
@@ -262,9 +266,11 @@ fun BoardScreen(
                                         nowMillis = now,
                                         machines = machines,
                                         focus = focus[session.id],
+                                        subtaskLedger = subtaskSlots[session.id],
                                         onCommand = { type -> store.sendCommand(session.id, type) },
+                                        onOpenHistory = { subtaskId -> onOpenHistory(session.id, subtaskId) },
                                         modifier = Modifier.clickable {
-                                            onOpenHistory(session.id)
+                                            onOpenHistory(session.id, null)
                                         },
                                     )
                                 }

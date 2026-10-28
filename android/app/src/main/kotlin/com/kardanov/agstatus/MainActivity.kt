@@ -68,6 +68,14 @@ import kotlinx.coroutines.withTimeoutOrNull
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --es agstatus_open_usage codex \
  *         --ei agstatus_demo_limits 6 --es agstatus_demo_first_day all
+ *
+ * The session screen can open at a subagent, by its ordinal (`n`), as the
+ * iOS app's AGSTATUS_OPEN_SUBTASK does: the first card listing that subagent
+ * opens, scrolled to it and lit. The demo's subagents are numbered 3 to 12:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ez agstatus_open_history true \
+ *         --es agstatus_open_subtask 9
  */
 private const val EXTRA_DEMO = "agstatus_demo"
 private const val EXTRA_DEMO_STALE = "agstatus_demo_stale"
@@ -75,6 +83,7 @@ private const val EXTRA_DEMO_FREEZE = "agstatus_demo_freeze"
 private const val EXTRA_DEMO_LIMITS = "agstatus_demo_limits"
 private const val EXTRA_DEMO_FIRST_DAY = "agstatus_demo_first_day"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
+private const val EXTRA_OPEN_SUBTASK = "agstatus_open_subtask"
 private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
 
 /** How long the screenshot hook waits for a board to produce its first session. */
@@ -106,7 +115,10 @@ class MainActivity : ComponentActivity() {
                 frozen = intent.getBooleanExtra(EXTRA_DEMO_FREEZE, false),
             )
         }
-        val openHistory = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_HISTORY, false)
+        val openSubtask =
+            if (BuildConfig.DEBUG) intent.getStringExtra(EXTRA_OPEN_SUBTASK)?.trim()?.toIntOrNull() else null
+        val openHistory = BuildConfig.DEBUG &&
+            (intent.getBooleanExtra(EXTRA_OPEN_HISTORY, false) || openSubtask != null)
         val openUsage =
             if (BuildConfig.DEBUG) intent.getStringExtra(EXTRA_OPEN_USAGE)?.ifBlank { null } else null
 
@@ -116,6 +128,7 @@ class MainActivity : ComponentActivity() {
                     AgStatusApp(
                         store = store,
                         openFirstHistory = openHistory,
+                        openSubtaskOrdinal = openSubtask,
                         openUsageSource = openUsage,
                     )
                 }
@@ -155,11 +168,17 @@ private object Route {
     const val SETTINGS = "settings"
     const val SCANNER = "scanner"
     const val ARG_SESSION_ID = "sessionId"
-    const val HISTORY = "history/{$ARG_SESSION_ID}"
+
+    /** Optional: the subagent a card's row was tapped for, to arrive at. */
+    const val ARG_SUBTASK = "subtask"
+    const val HISTORY = "history/{$ARG_SESSION_ID}?$ARG_SUBTASK={$ARG_SUBTASK}"
     const val ARG_SOURCE = "source"
     const val USAGE = "usage/{$ARG_SOURCE}"
 
-    fun history(sessionId: String): String = "history/${Uri.encode(sessionId)}"
+    fun history(sessionId: String, subtaskId: String? = null): String {
+        val session = "history/${Uri.encode(sessionId)}"
+        return if (subtaskId == null) session else "$session?$ARG_SUBTASK=${Uri.encode(subtaskId)}"
+    }
 
     fun usage(source: String): String = "usage/${Uri.encode(source)}"
 }
@@ -168,6 +187,7 @@ private object Route {
 private fun AgStatusApp(
     store: SessionStore,
     openFirstHistory: Boolean,
+    openSubtaskOrdinal: Int? = null,
     openUsageSource: String? = null,
 ) {
     val navController = rememberNavController()
@@ -199,7 +219,7 @@ private fun AgStatusApp(
     }
 
     if (openFirstHistory) {
-        OpenFirstHistoryEffect(store, navController)
+        OpenFirstHistoryEffect(store, navController, openSubtaskOrdinal)
     }
 
     if (openUsageSource != null) {
@@ -216,7 +236,9 @@ private fun AgStatusApp(
             composable(Route.BOARD) {
                 BoardScreen(
                     store = store,
-                    onOpenHistory = { sessionId -> navController.navigate(Route.history(sessionId)) },
+                    onOpenHistory = { sessionId, subtaskId ->
+                        navController.navigate(Route.history(sessionId, subtaskId))
+                    },
                     onOpenUsage = { source -> navController.navigate(Route.usage(source)) },
                     onOpenSettings = { navController.navigate(Route.SETTINGS) },
                     onOpenPair = { showPairSheet = true },
@@ -224,11 +246,19 @@ private fun AgStatusApp(
             }
             composable(
                 route = Route.HISTORY,
-                arguments = listOf(navArgument(Route.ARG_SESSION_ID) { type = NavType.StringType }),
+                arguments = listOf(
+                    navArgument(Route.ARG_SESSION_ID) { type = NavType.StringType },
+                    navArgument(Route.ARG_SUBTASK) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
             ) { entry ->
                 HistoryScreen(
                     store = store,
                     sessionId = entry.arguments?.getString(Route.ARG_SESSION_ID).orEmpty(),
+                    subtaskId = entry.arguments?.getString(Route.ARG_SUBTASK),
                     onBack = { navController.popBackStack() },
                 )
             }
@@ -324,18 +354,29 @@ private fun OpenUsageDetailEffect(
 
 /**
  * Debug-only deep link so screenshot automation can reach the history screen,
- * which cannot be tapped from `adb shell am start`.
+ * which cannot be tapped from `adb shell am start`. With [subtaskOrdinal], it
+ * opens the first card listing that subagent at that subagent, as a tap on
+ * its row would; with no such card, the first card at the top.
  */
 @Composable
-private fun OpenFirstHistoryEffect(store: SessionStore, navController: NavHostController) {
+private fun OpenFirstHistoryEffect(
+    store: SessionStore,
+    navController: NavHostController,
+    subtaskOrdinal: Int?,
+) {
     LaunchedEffect(Unit) {
         // Demo sessions are seeded synchronously; a real board arrives over SSE.
         val sessions = withTimeoutOrNull(OPEN_HISTORY_TIMEOUT_MS) {
             store.sessions.first { it.isNotEmpty() }
+        } ?: return@LaunchedEffect
+        val first = sessions.firstOrNull() ?: return@LaunchedEffect
+        val arrival = subtaskOrdinal?.let { n ->
+            sessions.firstNotNullOfOrNull { session ->
+                session.subtasks?.items?.firstOrNull { it.n == n }?.let { Route.history(session.id, it.id) }
+            }
         }
-        val first = sessions?.firstOrNull() ?: return@LaunchedEffect
         if (navController.currentDestination?.route == Route.BOARD) {
-            navController.navigate(Route.history(first.id))
+            navController.navigate(arrival ?: Route.history(first.id))
         }
     }
 }

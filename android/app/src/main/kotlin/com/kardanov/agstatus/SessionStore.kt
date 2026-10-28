@@ -18,8 +18,9 @@ import kotlin.math.min
 /**
  * App state: the adopted board, the live session list (newest first when it
  * first fills; after that rows keep their position as events arrive and new
- * sessions join at the top), the SSE connection lifecycle with backoff,
- * Focus presence and commands, and demo mode. Mirrors the iOS SessionStore.
+ * sessions join at the top), each card's subtask row slots, the SSE
+ * connection lifecycle with backoff, Focus presence and commands, and demo
+ * mode. Mirrors the iOS SessionStore.
  */
 class SessionStore(app: Application) : AndroidViewModel(app) {
 
@@ -29,6 +30,15 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions.asStateFlow()
+
+    /**
+     * Which subagents hold each card's row slots, by session id. Here and not
+     * in the card because LazyColumn drops a card's `remember`ed state as soon
+     * as it scrolls off screen, and a row must not lose its slot to a scroll.
+     * Kept in step with [sessions] by [setSessions].
+     */
+    private val _subtaskSlots = MutableStateFlow<Map<String, SubtaskLedger>>(emptyMap())
+    val subtaskSlots: StateFlow<Map<String, SubtaskLedger>> = _subtaskSlots.asStateFlow()
 
     private val _usage = MutableStateFlow<List<UsageInfo>>(emptyList())
     val usage: StateFlow<List<UsageInfo>> = _usage.asStateFlow()
@@ -107,7 +117,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         stopDemoJob()
         _board.value = board
         BoardStorage.save(getApplication<Application>(), board)
-        _sessions.value = emptyList()
+        setSessions(emptyList())
         _usage.value = emptyList()
         clearFocus()
         cachedPairCode = null
@@ -120,7 +130,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         cancelStream()
         _board.value = null
         BoardStorage.clear(getApplication<Application>())
-        _sessions.value = emptyList()
+        setSessions(emptyList())
         _usage.value = emptyList()
         clearFocus()
         cachedPairCode = null
@@ -189,7 +199,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 sse.events(board).collect { event ->
                     when (event) {
                         is SseEvent.Snapshot -> {
-                            _sessions.value = stableOrder(_sessions.value, event.sessions)
+                            setSessions(stableOrder(_sessions.value, event.sessions))
                             _connection.value = Connection.LIVE
                             backoffMillis = INITIAL_BACKOFF_MILLIS
                             // A card that left while we were away takes its
@@ -206,15 +216,17 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                         is SseEvent.Upsert -> {
                             val current = _sessions.value
                             val index = current.indexOfFirst { it.id == event.session.id }
-                            _sessions.value = if (index >= 0) {
-                                current.toMutableList().also { it[index] = event.session }
-                            } else {
-                                listOf(event.session) + current
-                            }
+                            setSessions(
+                                if (index >= 0) {
+                                    current.toMutableList().also { it[index] = event.session }
+                                } else {
+                                    listOf(event.session) + current
+                                },
+                            )
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
                         is SseEvent.Remove -> {
-                            _sessions.value = _sessions.value.filter { it.id != event.id }
+                            setSessions(_sessions.value.filter { it.id != event.id })
                             setFocus(event.id, null)
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
@@ -313,7 +325,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 merged[local.id] = local // arrived via SSE mid-fetch
             }
         }
-        _sessions.value = stableOrder(_sessions.value, merged.values.toList())
+        setSessions(stableOrder(_sessions.value, merged.values.toList()))
     }
 
     /**
@@ -322,7 +334,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      */
     suspend fun dismiss(session: Session) {
         if (isDemo) {
-            _sessions.value = _sessions.value.filter { it.id != session.id }
+            setSessions(_sessions.value.filter { it.id != session.id })
             return
         }
         val current = _board.value ?: return
@@ -331,7 +343,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         // index, which SSE events arriving during the DELETE would shift.
         val index = _sessions.value.indexOfFirst { it.id == session.id }
         val successorId = if (index >= 0) _sessions.value.getOrNull(index + 1)?.id else null
-        _sessions.value = _sessions.value.filter { it.id != session.id }
+        setSessions(_sessions.value.filter { it.id != session.id })
         try {
             AgStatusApi.deleteSession(current, session.id)
         } catch (cancellation: CancellationException) {
@@ -351,7 +363,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                     else -> index.coerceIn(0, list.size)
                 }
                 list.add(at, session)
-                _sessions.value = list
+                setSessions(list)
             }
             refresh()
         }
@@ -627,7 +639,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         cancelStream()
         stopDemoJob()
         clearFocus()
-        _sessions.value = sortedByUpdate(DemoData.aged(DemoData.initialSessions(), agedMinutes))
+        setSessions(sortedByUpdate(DemoData.aged(DemoData.initialSessions(), agedMinutes)))
         _usage.value = DemoData.usage()
         _machines.value = DemoData.machines().associateBy { it.id }
         _connection.value = Connection.DEMO
@@ -636,7 +648,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 delay(DEMO_TICK_MILLIS)
                 if (_connection.value != Connection.DEMO) return@launch
-                _sessions.value = stableOrder(_sessions.value, DemoData.tick(_sessions.value))
+                setSessions(stableOrder(_sessions.value, DemoData.tick(_sessions.value)))
                 _lastActivityAt.value = System.currentTimeMillis()
             }
         }
@@ -645,7 +657,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     fun stopDemo() {
         stopDemoJob()
         if (_connection.value != Connection.DEMO) return
-        _sessions.value = emptyList()
+        setSessions(emptyList())
         _usage.value = emptyList()
         clearFocus()
         _connection.value = Connection.IDLE
@@ -653,6 +665,17 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     }
 
     // MARK: Helpers
+
+    /**
+     * The one way the session list changes, so each card's subtask slots
+     * move with it: resolved from the slots the card held a moment ago,
+     * dropped with its subtask block or with the card. Leaving a board or the
+     * demo empties the list, and so clears every card's slots.
+     */
+    private fun setSessions(sessions: List<Session>) {
+        _sessions.value = sessions
+        _subtaskSlots.value = SubtaskSlots.resolve(_subtaskSlots.value, sessions)
+    }
 
     private fun cancelStream() {
         streamJob?.cancel()

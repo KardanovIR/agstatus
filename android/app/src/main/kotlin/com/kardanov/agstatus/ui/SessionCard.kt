@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,11 +48,14 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kardanov.agstatus.CommandType
+import com.kardanov.agstatus.DisplayStatus
 import com.kardanov.agstatus.FocusCopy
 import com.kardanov.agstatus.FocusStatus
 import com.kardanov.agstatus.MachinePresence
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.SessionHost
+import com.kardanov.agstatus.SubtaskLedger
+import com.kardanov.agstatus.SubtaskSlots
 import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.TimeFormat
 
@@ -68,6 +72,12 @@ import com.kardanov.agstatus.TimeFormat
  * "no update for 14m" where its time was ([MetaLine]). TalkBack hears "Coding,
  * no update for 14 minutes".
  *
+ * A session running subagents lists them under its message: two rows, each
+ * opening the session screen at that subagent, and a footer that opens it at
+ * the top when more are running than fit. [subtaskLedger] is the store's
+ * record of which subagents hold the rows. A card without subagents is
+ * today's card, view for view.
+ *
  * A session that reports a host gets a Focus footer: an explicit control —
  * never the card's tap, which is history — enabled only while that machine's
  * listener is online, and the outcome of the last tap under it.
@@ -80,10 +90,20 @@ fun SessionCard(
     modifier: Modifier = Modifier,
     machines: Map<String, MachinePresence> = emptyMap(),
     focus: FocusStatus? = null,
+    subtaskLedger: SubtaskLedger? = null,
     onCommand: (CommandType) -> Unit = {},
+    onOpenHistory: (subtaskId: String?) -> Unit = {},
 ) {
+    // Everything that shows the state reads the display status, which is the
+    // wire status except for WORKING: the turn is over, subagents still work.
+    val display = session.displayStatus
     val stale = session.isStale(nowMillis)
     val shape = RoundedCornerShape(16.dp)
+    // Rows a card is first drawn with are not news; one that joins a card
+    // already on screen is. A plain holder, not state: setting it must not
+    // recompose the card.
+    val drawn = remember { DrawnOnce() }
+    SideEffect { drawn.value = true }
 
     Column(
         modifier = modifier
@@ -116,8 +136,8 @@ fun SessionCard(
             //
             // Except on a stale card, drawn on the plain card and its plain
             // edge: the board can no longer vouch for the state a tint claims.
-            .background(Theme.cardSurface(session.status, stale))
-            .border(1.dp, Theme.cardEdge(session.status, stale), shape)
+            .background(Theme.cardSurface(display, stale))
+            .border(1.dp, Theme.cardEdge(display, stale), shape)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -144,6 +164,22 @@ fun SessionCard(
                 color = Theme.textSecondary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        // After the message, before the facts: the message says what the
+        // card is doing, the rows say who is doing it.
+        session.subtasks?.let { subtasks ->
+            val rows = remember(subtaskLedger, subtasks.items) {
+                SubtaskSlots.pick(subtaskLedger, subtasks.items).rows
+            }
+            SubtaskBlock(
+                subtasks = subtasks,
+                rows = rows,
+                rule = Theme.cardEdge(display, stale),
+                drawnBefore = drawn.value,
+                onOpenSubtask = { subtaskId -> onOpenHistory(subtaskId) },
+                onOpenSession = { onOpenHistory(null) },
             )
         }
 
@@ -186,7 +222,8 @@ fun SessionCard(
  */
 @Composable
 internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
-    val status = session.status
+    // The display status: WORKING once the turn is over and subagents still work.
+    val status = session.displayStatus
     val color = Theme.colorFor(status)
     val said = if (stale) {
         "${status.label}, no update for ${TimeFormat.spokenAge(session.updatedAt, nowMillis)}"
@@ -232,6 +269,11 @@ internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
             maxLines = 1,
         )
     }
+}
+
+/** Whether a card has been composed before; flipped after its first composition. */
+private class DrawnOnce {
+    var value = false
 }
 
 // MARK: - Meta
