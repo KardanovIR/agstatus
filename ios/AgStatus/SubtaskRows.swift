@@ -32,6 +32,16 @@ enum SubtaskCopy {
             .joined(separator: separator)
     }
 
+    /// `counts` as it may wrap when it cannot keep to one line: after a dot,
+    /// and never inside a count — a "1" ending one line and "blocked" starting
+    /// the next would be two readings. The same words; the spaces that must
+    /// not break are made non-breaking, so it looks no different.
+    static func wrapping(_ counts: String) -> String {
+        counts.components(separatedBy: separator)
+            .map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }
+            .joined(separator: "\u{00A0}\u{00B7} ")
+    }
+
     static func doneThisTurn(_ done: Int) -> String { "\(done) done this turn" }
 
     static let section = "Subtasks"
@@ -439,21 +449,42 @@ struct SubtaskSectionLabel: View {
     var detail = ""
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
-            Text(title)
-                .font(.system(.caption2, design: .rounded).weight(.bold))
-                .kerning(0.6)
-                .textCase(.uppercase)
-            if !detail.isEmpty {
-                Text(detail)
-                    .font(.caption)
+        // The counts beside the name while they fit on its line, and under it
+        // when they do not. Cut to the one line instead, they lost their end
+        // first, and blocked is the second count: at the accessibility sizes
+        // "SUBTASKS 9 running · 1…" hid the one figure that needs you.
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+                name
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                name
+                if !detail.isEmpty {
+                    // Where even a line of their own is too short, they wrap
+                    // between one count and the next, never inside one.
+                    Text(SubtaskCopy.wrapping(detail))
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .foregroundStyle(Theme.textTertiary)
-        .lineLimit(1)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
+    }
+
+    private var name: some View {
+        Text(title)
+            .font(.system(.caption2, design: .rounded).weight(.bold))
+            .kerning(0.6)
+            .textCase(.uppercase)
+            .lineLimit(1)
     }
 }
 
@@ -600,6 +631,11 @@ extension SubtaskCopy {
         assert(counts(running: 10, blocked: 0, failed: 0) == "10 running", "zero parts drop out")
         assert(counts(running: 0, blocked: 1, failed: 2) == "1 blocked · 2 failed", "no running")
         assert(counts(running: 0, blocked: 0, failed: 0).isEmpty, "nothing to count")
+        // Wrapped at large text, the counts break after a dot and nowhere else.
+        assert(wrapping(counts(running: 9, blocked: 1, failed: 1))
+               == "9\u{00A0}running\u{00A0}\u{00B7} 1\u{00A0}blocked\u{00A0}\u{00B7} 1\u{00A0}failed",
+               "breaks only between counts")
+        assert(wrapping("10 running") == "10\u{00A0}running" && wrapping("").isEmpty, "one count never breaks")
         assert(doneThisTurn(15) == "15 done this turn", "done line")
         assert(section == "Subtasks" && timeline == "Timeline" && group == "Subagents", "headings")
         assert(SubtaskState.allCases.map(\.rawValue) == ["planning", "coding", "testing", "blocked", "failed"],
