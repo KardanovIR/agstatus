@@ -1414,12 +1414,17 @@ export class Store {
 
     map.set(session.id, session);
     // Timeline: record real transitions, not keep-alive re-posts of the same
-    // status+message (PreToolUse fires between every tool call). Compared by
-    // historyKey, which gives every "N subagents still running" one key: a
-    // drain of thirty subagents is one reading on the timeline, not thirty.
-    if (!prev || historyKey(prev.status, prev.message) !== historyKey(session.status, session.message)) {
-      this.recordEvent(wsId, session.id, session.status, session.message, now);
-    }
+    // status+message (PreToolUse fires between every tool call). A card with
+    // subtask state, before this post or after it, compares by historyKey,
+    // which gives every "N subagents still running" one key: a drain of thirty
+    // subagents is one reading on the timeline, not thirty. Only such a card
+    // ever derives that line, so any other compares status and message as
+    // 1.6.3 did, and an old hook's own message that merely reads like one is
+    // recorded exactly as before.
+    const moved = !prev || (prev.sub || st
+      ? historyKey(prev.status, prev.message) !== historyKey(session.status, session.message)
+      : prev.status !== session.status || prev.message !== session.message);
+    if (moved) this.recordEvent(wsId, session.id, session.status, session.message, now);
     this.persistSession(wsId, session);
     return { session: this.toWire(wsId, session), evictedId, prevStatus: prev?.status ?? null, newlyBlocked };
   }

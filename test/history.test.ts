@@ -111,6 +111,26 @@ describe('session history: subagents', () => {
       'planning · Fan out thirty reviews',
     ]);
   });
+
+  it('an old hook\'s own message that reads like an after-turn line is recorded as 1.6.3 recorded it', async () => {
+    // No agent posts, so no subtask state: nothing here was derived, and the
+    // timeline must be the one origin/master keeps for the same posts.
+    const { app } = makeApp();
+    const token = await createWorkspace(app);
+    const post = (status: string, message: string) =>
+      request(app).post(`/w/${token}/webhook`).send({ session_id: 'old', status, message }).expect(200);
+    await post('coding', '2 subagents still running');
+    await post('testing', '3 subagents still running');
+    await post('testing', '3 subagents still running'); // a keep-alive repeat
+    await post('testing', '1 subagent still running');
+
+    const res = await request(app).get(`/w/${token}/api/sessions/old/history`).expect(200);
+    expect(res.body.map((e: { status: string; message: string }) => `${e.status} · ${e.message}`)).toEqual([
+      'testing · 1 subagent still running',
+      'testing · 3 subagents still running',
+      'coding · 2 subagents still running',
+    ]);
+  });
 });
 
 describe.skipIf(!TEST_PG_URL)('session history (persistence)', () => {
