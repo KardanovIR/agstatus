@@ -11,6 +11,7 @@ import { runInit, runStatus, runUninstall, codexNeedsRetrust } from '../src/inde
 import {
   ourCommands,
   CODEX_EVENTS,
+  codexAddedEvents,
   codexConfigPath,
   codexHookCommand,
   codexHookConfig,
@@ -38,9 +39,12 @@ const withCommands = (...commands: string[]): Record<string, unknown> => ({
 });
 
 describe('mergeCodexHooks', () => {
-  it('registers all four events with matchers, timeout, and statusMessage', () => {
+  it('registers all seven events with matchers, timeout, and statusMessage', () => {
     const out = mergeCodexHooks({}, CMD);
     const hooks = out.hooks as Record<string, Array<{ matcher?: string; hooks: Array<Record<string, unknown>> }>>;
+    expect(Object.keys(hooks).sort()).toEqual([
+      'PermissionRequest', 'PreToolUse', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit',
+    ]);
     for (const { event, matcher } of CODEX_EVENTS) {
       expect(hooks[event]).toHaveLength(1);
       const h = hooks[event][0].hooks[0];
@@ -48,6 +52,7 @@ describe('mergeCodexHooks', () => {
       expect(h.type).toBe('command');
       expect(h.timeout).toBe(10);
       if (matcher) expect(hooks[event][0].matcher).toBe(matcher);
+      else expect(hooks[event][0]).not.toHaveProperty('matcher');
     }
     expect(hooks.PreToolUse[0].matcher).toBe('^(Bash|apply_patch|Edit|Write)$');
   });
@@ -87,6 +92,26 @@ describe('mergeCodexHooks', () => {
     expect(hooks).not.toHaveProperty('SessionStart');
     expect(removed).toContain('hooks.SessionStart');
     expect(removeCodexHooks(mergeCodexHooks({}, CMD)).hooks).toEqual({});
+  });
+});
+
+describe('codexAddedEvents', () => {
+  const NEW_IN_1_7 = ['UserPromptSubmit', 'SubagentStart', 'SubagentStop'];
+
+  it('names the events no AgStatus entry covers yet', () => {
+    expect(codexAddedEvents({})).toEqual(CODEX_EVENTS.map((e) => e.event));
+    expect(codexAddedEvents(mergeCodexHooks({}, CMD))).toEqual([]);
+    // What a 1.6.3 install registered: the same command on four events.
+    const old = mergeCodexHooks({}, CMD) as { hooks: Record<string, unknown> };
+    for (const event of NEW_IN_1_7) delete old.hooks[event];
+    expect(codexAddedEvents(old)).toEqual(NEW_IN_1_7);
+  });
+
+  it('counts only our entries, and never throws on a shape it cannot read', () => {
+    const foreign = { hooks: { SubagentStart: [{ hooks: [{ type: 'command', command: 'other-tool.sh' }] }] } };
+    expect(codexAddedEvents(foreign)).toContain('SubagentStart');
+    expect(codexAddedEvents({ hooks: 'nope' } as never)).toEqual(CODEX_EVENTS.map((e) => e.event));
+    expect(codexAddedEvents({ hooks: { Stop: 'nope' } } as never)).toContain('Stop');
   });
 });
 
@@ -648,6 +673,29 @@ describe('init/uninstall with a detected Codex install', () => {
     const upgraded: string[] = [];
     await runInit({ url: base, noQr: true, log: (l) => upgraded.push(l) });
     expect(upgraded.join('\n')).toMatch(/changed/);
+    // The re-trust warning already covers it: no second notice.
+    expect(upgraded.join('\n')).not.toContain('now also listens');
+  });
+
+  it('tells an upgrade which events it added, without claiming the command changed', async () => {
+    await runInit({ url: base, noQr: true, log: () => {} });
+    // A 1.6.3 registration: the same command, on four of the seven events.
+    const old = JSON.parse(fs.readFileSync(codexHooksPath(), 'utf8'));
+    for (const event of ['UserPromptSubmit', 'SubagentStart', 'SubagentStop']) delete old.hooks[event];
+    fs.writeFileSync(codexHooksPath(), JSON.stringify(old));
+
+    const upgraded: string[] = [];
+    await runInit({ url: base, noQr: true, log: (l) => upgraded.push(l) });
+    const out = upgraded.join('\n');
+    expect(out).toContain('Codex: AgStatus now also listens for UserPromptSubmit, SubagentStart and SubagentStop.');
+    expect(out).toContain('If `/hooks` in Codex lists an AgStatus entry as untrusted, trust it once.');
+    expect(out).not.toMatch(/changed/);
+    expect(readCodexHooks(codexHooksPath()).hooks).toHaveProperty('SubagentStart');
+
+    // Once they are registered there is nothing new to say.
+    const again: string[] = [];
+    await runInit({ url: base, noQr: true, log: (l) => again.push(l) });
+    expect(again.join('\n')).not.toContain('now also listens');
   });
 });
 
