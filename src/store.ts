@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { Pool } from 'pg';
+import { safeClip } from './subtasks';
 
 export const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -55,9 +56,13 @@ const isHostSlug = (s: unknown): s is HostSlug =>
 const isHostKind = (s: unknown): s is HostKind =>
   typeof s === 'string' && (HOST_KINDS as readonly string[]).includes(s);
 
-/** A host label: control characters stripped, trimmed, truncated; blank or non-string → fallback. */
+/**
+ * A host label: control characters stripped, trimmed, truncated without
+ * splitting a surrogate pair (as app.ts cleans every other string); blank or
+ * non-string → fallback.
+ */
 const hostName = (v: unknown, fallback: string): string => {
-  const s = typeof v === 'string' ? v.replace(CONTROL_CHARS_RE, '').trim().slice(0, HOST_NAME_MAX) : '';
+  const s = typeof v === 'string' ? safeClip(v.replace(CONTROL_CHARS_RE, '').trim(), HOST_NAME_MAX) : '';
   return s || fallback;
 };
 

@@ -32,6 +32,7 @@ import {
   UpsertInput,
   UsageWindow,
 } from './store';
+import { safeClip } from './subtasks';
 
 export type { AppConfig } from './config';
 export { Store, STATUSES } from './store';
@@ -116,9 +117,15 @@ const isOneOf = <T extends string>(list: readonly T[], v: unknown): v is T =>
 const frame = (event: string, data: unknown): string =>
   `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
-/** Strips control characters and truncates; non-strings become undefined (carry-forward). */
+/**
+ * Strips control characters and truncates; non-strings become undefined
+ * (carry-forward). The truncation never leaves half a surrogate pair, and an
+ * unpaired surrogate that arrived as such is dropped (safeClip): a plain slice
+ * could end in a lone \ud83d, which Swift's JSONDecoder rejects, and iOS
+ * decodes a snapshot as one array, so one cut emoji in one name cost the board.
+ */
 const clean = (v: unknown, max: number): string | undefined =>
-  typeof v === 'string' ? v.replace(CONTROL_CHARS_RE, '').slice(0, max) : undefined;
+  typeof v === 'string' ? safeClip(v.replace(CONTROL_CHARS_RE, ''), max) : undefined;
 
 /**
  * Validates the `host` field of a webhook. undefined = absent (carry forward),
