@@ -1,0 +1,13 @@
+[
+  {
+    "id": "seed-none",
+    "name": "Fix the iPad board layout",
+    "status": "coding",
+    "message": "Editing BoardLayout.swift",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331627,
+    "updatedAt": 1793209331630
+  }
+]

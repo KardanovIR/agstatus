@@ -1,0 +1,92 @@
+[
+  {
+    "id": "seed-ten",
+    "name": "Review and verify the subtasks branch",
+    "status": "planning",
+    "message": "Running workflow: review-and-verify",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331639,
+    "updatedAt": 1793209331670,
+    "subtasks": {
+      "turnEnded": false,
+      "running": 10,
+      "blocked": 0,
+      "failed": 0,
+      "done": 15,
+      "items": [
+        {
+          "id": "2c6fb5642df321bc8ae2919b",
+          "n": 13,
+          "label": "review:hook",
+          "state": "testing",
+          "activity": "Run hook tests with --no-file-parallelism"
+        },
+        {
+          "id": "2f438243b248645cd24f356c",
+          "n": 14,
+          "label": "review:listener",
+          "state": "coding",
+          "activity": "Editing listener.ts"
+        },
+        {
+          "id": "0fde93dbef73e5bbadd64051",
+          "n": 15,
+          "label": "review:product",
+          "state": "planning",
+          "activity": "Searching: SubagentStop payload fields"
+        },
+        {
+          "id": "f2a1bd024956b34ae8dca8db",
+          "n": 16,
+          "label": "review:server",
+          "state": "coding",
+          "activity": "Editing store.ts"
+        },
+        {
+          "id": "d0bc857c743573ba42f7591a",
+          "n": 17,
+          "label": "review:ios",
+          "state": "coding",
+          "activity": "Editing SessionCardView.swift"
+        },
+        {
+          "id": "ab7ded2567f5ac7ac905f077",
+          "n": 18,
+          "label": "review:android",
+          "state": "planning",
+          "activity": "Reading developer.android.com"
+        },
+        {
+          "id": "5d02973dc88279cb00964bd8",
+          "n": 19,
+          "label": "verify:hook",
+          "state": "testing",
+          "activity": "Run the hook suite — 214 tests"
+        },
+        {
+          "id": "4847f0afc440241b25eec65f",
+          "n": 20,
+          "label": "verify:server",
+          "state": "testing",
+          "activity": "npm test -- store"
+        },
+        {
+          "id": "90c2d294f975ed17708b8d34",
+          "n": 21,
+          "label": "verify:web",
+          "state": "coding",
+          "activity": "Editing card.css"
+        },
+        {
+          "id": "71d73939988e8fcf028e3eed",
+          "n": 22,
+          "label": "verify:privacy",
+          "state": "planning",
+          "activity": "Delegating: Search payloads for prompt text"
+        }
+      ]
+    }
+  }
+]

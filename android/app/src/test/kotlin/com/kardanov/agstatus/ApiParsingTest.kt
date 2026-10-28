@@ -2,6 +2,16 @@ package com.kardanov.agstatus
 
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -412,6 +422,130 @@ class ApiParsingTest {
         assertFalse(onlyCount.isStaleExempt)
         assertFalse(Session(id = "s", status = AgentStatus.CODING).isStaleExempt)
     }
+
+    // MARK: - Subtasks: a 1.7.0 server's own JSON
+    //
+    // Not written by hand: GET /api/sessions from a 1.7.0 server, seeded through
+    // its webhook with the bodies a 1.7.0 hook posts, one session per scenario
+    // (`seed-<scenario>`), re-indented with values and key order unchanged.
+    // sessions-all.json is the whole response, which is also the data of the
+    // SSE snapshot a board starts from; each sessions-<scenario>.json is one of
+    // its sessions.
+
+    @Test
+    fun aRealServersSnapshotDecodesCompletely() {
+        val snapshot = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))
+        // Every scenario, once: no card lost to a throw in another's subtasks.
+        assertEquals(SCENARIOS.map { "seed-$it" }.sorted(), snapshot.map { it.id }.sorted())
+
+        for (name in FIXTURES) {
+            val raw = fixture(name)
+            val sent = Json.parseToJsonElement(raw).jsonArray.map { sentSession(it.jsonObject) }
+            val decoded = AgStatusJson.decodeFromString<List<Session>>(raw)
+
+            assertEquals(name, sent.map { it.id }, decoded.map { it.id })
+            for ((expected, actual) in sent.zip(decoded)) {
+                val what = "${expected.id} in $name"
+                assertEquals(what, expected.copy(subtasks = null), actual.copy(subtasks = null))
+                // The counts as sent, and every row as sent, in start order:
+                // nothing dropped, defaulted or re-read as a fallback.
+                assertEquals(
+                    "counts of $what",
+                    expected.subtasks?.copy(items = emptyList()),
+                    actual.subtasks?.copy(items = emptyList()),
+                )
+                assertEquals("rows of $what", expected.subtasks?.items, actual.subtasks?.items)
+            }
+        }
+    }
+
+    @Test
+    fun aRealServerCountsTheRowsAsTheAppDoes() {
+        for (session in AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))) {
+            val subtasks = session.subtasks ?: continue
+            val states = subtasks.items.map { it.state }
+            // What the session screen's "9 running · 1 blocked" prints, and what
+            // the decoder derives when a count is missing.
+            assertEquals("running of ${session.id}", states.count { it.isWorking }, subtasks.running)
+            assertEquals("blocked of ${session.id}", states.count { it == SubtaskState.BLOCKED }, subtasks.blocked)
+            // At most eight failed rows are listed; the count stays exact.
+            assertTrue("failed of ${session.id}", subtasks.failed >= states.count { it == SubtaskState.FAILED })
+            // pick() takes the wire order as start order.
+            val ordinals = subtasks.items.map { it.n }
+            assertEquals("order of ${session.id}", ordinals.distinct().sorted(), ordinals)
+        }
+    }
+
+    @Test
+    fun onlyTheBackgroundScenarioReadsWorking() {
+        val snapshot = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))
+
+        assertEquals(
+            listOf("seed-background"),
+            snapshot.filter { it.displayStatus == DisplayStatus.WORKING }.map { it.id },
+        )
+        // The server sends the busiest subagent's state; WORKING is the app's reading.
+        val background = snapshot.single { it.id == "seed-background" }
+        assertEquals(AgentStatus.TESTING, background.status)
+        assertEquals("2 subagents still running", background.message)
+        assertTrue(background.subtasks!!.turnEnded)
+        // Every other card reads its wire status, the report hold included.
+        for (session in snapshot - background) {
+            assertEquals(session.id, DisplayStatus.of(session.status), session.displayStatus)
+        }
+    }
+
+    /** A capture under src/test/resources/fixtures/subtasks/, byte for byte. */
+    private fun fixture(name: String): String =
+        checkNotNull(javaClass.getResourceAsStream("/fixtures/subtasks/$name")) { "no fixture $name" }
+            .use { it.readBytes().decodeToString() }
+
+    /**
+     * A session as the server wrote it, read key by key without the app's
+     * decoder: a missing key, a value of the wrong type, or a status or state
+     * the app does not know fails here instead of reading as a fallback.
+     */
+    private fun sentSession(wire: JsonObject): Session {
+        assertEquals("host of ${wire["id"]}", JsonNull, wire["host"])
+        val status = wire.string("status")
+        return Session(
+            id = wire.string("id"),
+            name = wire.string("name"),
+            status = AgentStatus.entries.find { it.wire == status } ?: error("unknown status $status"),
+            message = wire.string("message"),
+            project = wire.string("project"),
+            source = wire.string("source"),
+            createdAt = wire.literal("createdAt").long,
+            updatedAt = wire.literal("updatedAt").long,
+            subtasks = wire["subtasks"]?.jsonObject?.let { subtasks ->
+                Subtasks(
+                    turnEnded = subtasks.literal("turnEnded").boolean,
+                    running = subtasks.literal("running").int,
+                    blocked = subtasks.literal("blocked").int,
+                    failed = subtasks.literal("failed").int,
+                    done = subtasks.literal("done").int,
+                    items = subtasks.getValue("items").jsonArray.map { element ->
+                        val item = element.jsonObject
+                        val state = item.string("state")
+                        Subtask(
+                            id = item.string("id"),
+                            n = item.literal("n").int,
+                            label = item.string("label"),
+                            state = SubtaskState.entries.find { it.wire == state } ?: error("unknown state $state"),
+                            activity = item.string("activity"),
+                        )
+                    },
+                )
+            },
+        )
+    }
+
+    private fun JsonObject.string(key: String): String =
+        getValue(key).jsonPrimitive.also { assertTrue("$key is a string", it.isString) }.content
+
+    /** A number or a boolean, never the same in quotes. */
+    private fun JsonObject.literal(key: String): JsonPrimitive =
+        getValue(key).jsonPrimitive.also { assertFalse("$key is not a string", it.isString) }
 
     // MARK: - Machines
 
@@ -930,5 +1064,12 @@ class ApiParsingTest {
         val OTHER_ID = "7c2e".padEnd(32, '1')
         const val COMMAND_ID = "6c1f0a2b-3d4e-4f50-8a6b-7c8d9e0f1a2b"
         const val SESSION_ID = "5cef7152-ef68-481f-8a4f-463f66702bf9"
+
+        /** The server captures' scenarios, one session each, `seed-<scenario>`. */
+        val SCENARIOS = listOf(
+            "none", "two", "ten", "thirty", "blocked", "two-blocked", "failed",
+            "finished", "background", "hold", "minimal", "codex", "long",
+        )
+        val FIXTURES = listOf("sessions-all.json") + SCENARIOS.map { "sessions-$it.json" }
     }
 }
