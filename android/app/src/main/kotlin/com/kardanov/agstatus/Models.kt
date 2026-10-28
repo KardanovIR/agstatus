@@ -9,7 +9,11 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.time.Instant
@@ -62,6 +66,58 @@ object AgentStatusSerializer : KSerializer<AgentStatus> {
         encoder.encodeString(value.wire)
 }
 
+// MARK: - DisplayStatus
+
+/**
+ * What a card says it is: one of the six wire statuses, or WORKING — a
+ * reading only a client makes (docs/api.md `subtasks`). WORKING is "the
+ * parent's turn is over and its subagents still work". It is never sent and
+ * never recorded: history and every older app see the server's six-status
+ * reading of the same moment, the busiest subagent's state with "2 subagents
+ * still running".
+ */
+enum class DisplayStatus(
+    /** Lower case, as the board prints a status word. */
+    val word: String,
+) {
+    IDLE("idle"),
+    PLANNING("planning"),
+    CODING("coding"),
+    TESTING("testing"),
+    WORKING("working"),
+    BLOCKED("blocked"),
+    DONE("done");
+
+    /** Capitalized English label, e.g. "Working". */
+    val label: String get() = word.replaceFirstChar { it.uppercase() }
+
+    /** Work in progress: the three active wire statuses, and WORKING. */
+    val isActive: Boolean get() = this == PLANNING || this == CODING || this == TESTING || this == WORKING
+
+    companion object {
+        fun of(status: AgentStatus): DisplayStatus = when (status) {
+            AgentStatus.IDLE -> IDLE
+            AgentStatus.PLANNING -> PLANNING
+            AgentStatus.CODING -> CODING
+            AgentStatus.TESTING -> TESTING
+            AgentStatus.BLOCKED -> BLOCKED
+            AgentStatus.DONE -> DONE
+        }
+
+        /**
+         * WORKING exactly when the server says the turn is over and a
+         * subagent is running, unless the card is blocked: a blocked card
+         * stays BLOCKED, because that is the one state that needs you.
+         */
+        fun of(status: AgentStatus, subtasks: Subtasks?): DisplayStatus =
+            if (subtasks != null && subtasks.turnEnded && status != AgentStatus.BLOCKED && subtasks.running > 0) {
+                WORKING
+            } else {
+                of(status)
+            }
+    }
+}
+
 // MARK: - Session
 
 @Serializable
@@ -84,17 +140,36 @@ data class Session(
      */
     @Serializable(with = SessionHostSerializer::class)
     val host: SessionHost? = null,
+    /**
+     * The session's running and failed subagents — only from a 1.7 hook on a
+     * 1.7 server. Null (absent, `null`, malformed, or nothing to show) means
+     * today's card, never an error state.
+     */
+    @Serializable(with = SubtasksSerializer::class)
+    val subtasks: Subtasks? = null,
 ) {
     /** Falls back to the id so a card is never nameless. */
     val displayName: String get() = name.ifBlank { id }
 
+    /** What the card shows: [status], or WORKING while subagents outlast the turn. */
+    val displayStatus: DisplayStatus get() = DisplayStatus.of(status, subtasks)
+
+    /**
+     * A card with a running subagent is never stale. Subagents post nothing
+     * while they stay in one status class, so one can be silent for many
+     * minutes and still be working; the server expires the ones that really
+     * died, and is the authority on that.
+     */
+    val isStaleExempt: Boolean get() = (subtasks?.running ?: 0) > 0
+
     /**
      * The one stale rule, kept by the card and the history it opens, so the
      * screen a stale card opens shows the same "?": a working session that
-     * has heard nothing for [STALE_AFTER_MILLIS].
+     * has heard nothing for [STALE_AFTER_MILLIS], with no subagent running
+     * ([isStaleExempt]).
      */
     fun isStale(nowMillis: Long): Boolean =
-        status.isActive && nowMillis - updatedAt > STALE_AFTER_MILLIS
+        status.isActive && !isStaleExempt && nowMillis - updatedAt > STALE_AFTER_MILLIS
 }
 
 /**
@@ -172,6 +247,164 @@ object SessionHostSerializer : KSerializer<SessionHost?> {
 
     override fun serialize(encoder: Encoder, value: SessionHost?) =
         delegate.serialize(encoder, value)
+}
+
+// MARK: - Subtasks
+
+/**
+ * A subagent row's state: the four running states, plus `failed`, which only
+ * a row can be — a session's status is always one of the six.
+ */
+@Serializable(with = SubtaskStateSerializer::class)
+enum class SubtaskState(val wire: String) {
+    PLANNING("planning"),
+    CODING("coding"),
+    TESTING("testing"),
+    BLOCKED("blocked"),
+    FAILED("failed");
+
+    /** Planning, coding or testing: what the `running` count counts. */
+    val isWorking: Boolean get() = this == PLANNING || this == CODING || this == TESTING
+
+    companion object {
+        /**
+         * Unknown states read as planning, not as a dropped row: a newer
+         * server's subagent is still a subagent, and still running.
+         */
+        fun fromWire(value: String?): SubtaskState =
+            entries.firstOrNull { it.wire == value } ?: PLANNING
+    }
+}
+
+object SubtaskStateSerializer : KSerializer<SubtaskState> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("SubtaskState", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): SubtaskState =
+        SubtaskState.fromWire(decoder.decodeString())
+
+    override fun serialize(encoder: Encoder, value: SubtaskState) =
+        encoder.encodeString(value.wire)
+}
+
+/** One running or failed subagent, as its parent's card lists it. */
+@Serializable
+data class Subtask(
+    /** The hook's opaque agent key; never a raw agent id. */
+    val id: String,
+    /** Start order within the session, unique and stable per subagent. */
+    val n: Int,
+    /** What it was asked to do; the server's "Subagent <n>" when nothing better is known. */
+    val label: String,
+    val state: SubtaskState = SubtaskState.PLANNING,
+    /** What it is doing now. May be empty. */
+    val activity: String = "",
+) {
+    companion object {
+        /**
+         * What the server accepts as an agent key (docs/api.md `agent.id`).
+         * Ids become LazyColumn keys and a navigation argument here, so one
+         * of any other shape is a malformed item.
+         */
+        val ID_REGEX = Regex("^[A-Za-z0-9._:-]{1,64}$")
+    }
+}
+
+/**
+ * `session.subtasks`: the session's live and failed subagents in start order,
+ * with exact counts. [running] and [blocked] count the live rows; [failed]
+ * and [done] count the turn so far, and [failed] can exceed the failed rows
+ * listed, because the server lists at most eight.
+ */
+@Serializable
+data class Subtasks(
+    /** The parent's own turn is over and a subagent is still live: what WORKING reads. */
+    val turnEnded: Boolean = false,
+    val running: Int = 0,
+    val blocked: Int = 0,
+    val failed: Int = 0,
+    /** Finished OK this turn; resets when the turn is over or a new prompt starts. */
+    val done: Int = 0,
+    val items: List<Subtask> = emptyList(),
+)
+
+/**
+ * Decodes `subtasks` leniently, element by element. Absent, `null`, a value
+ * that is not an object, or one with nothing to show (no items, nothing done)
+ * is null: today's card. Within an object a malformed item is dropped and the
+ * others kept, an unknown state reads as planning, a blank label as the
+ * server's own "Subagent <n>", and a missing or malformed count is derived
+ * from the items (0 for `done`).
+ *
+ * Every part of that matters because the snapshot is decoded as one array:
+ * a single throw here would cost the whole board, not one card. And it has to
+ * happen here, not in the decoder's configuration, because AgStatusJson has
+ * no coerceInputValues — an explicit `"subtasks": null` reaches this code.
+ */
+object SubtasksSerializer : KSerializer<Subtasks?> {
+    private val delegate = Subtasks.serializer().nullable
+
+    override val descriptor: SerialDescriptor = delegate.descriptor
+
+    override fun deserialize(decoder: Decoder): Subtasks? {
+        val json = decoder as? JsonDecoder ?: return delegate.deserialize(decoder)
+        return decode(json.decodeJsonElement())
+    }
+
+    override fun serialize(encoder: Encoder, value: Subtasks?) =
+        delegate.serialize(encoder, value)
+
+    fun decode(element: JsonElement): Subtasks? {
+        val wire = element as? JsonObject ?: return null
+        val items = (wire["items"] as? JsonArray).orEmpty()
+            .mapNotNull { decodeItem(it) }
+            // Ids key the card's slots and the screen's list; a repeat would
+            // take another row's place, and crash a LazyColumn outright.
+            .distinctBy { it.id }
+        val done = wire["done"].countOrNull() ?: 0
+        if (items.isEmpty() && done == 0) return null
+        return Subtasks(
+            turnEnded = wire["turnEnded"].flagOrNull() ?: false,
+            running = wire["running"].countOrNull() ?: items.count { it.state.isWorking },
+            blocked = wire["blocked"].countOrNull() ?: items.count { it.state == SubtaskState.BLOCKED },
+            failed = wire["failed"].countOrNull() ?: items.count { it.state == SubtaskState.FAILED },
+            done = done,
+            items = items,
+        )
+    }
+
+    /** An item needs an id of the agent-key shape and an ordinal; the rest has a fallback. */
+    private fun decodeItem(element: JsonElement): Subtask? {
+        val wire = element as? JsonObject ?: return null
+        val id = wire["id"].stringOrNull()?.takeIf { Subtask.ID_REGEX.matches(it) } ?: return null
+        val n = wire["n"].countOrNull()?.takeIf { it >= 1 } ?: return null
+        return Subtask(
+            id = id,
+            n = n,
+            label = wire["label"].stringOrNull()?.takeIf { it.isNotBlank() } ?: SubtaskCopy.fallbackLabel(n),
+            state = SubtaskState.fromWire(wire["state"].stringOrNull()),
+            activity = wire["activity"].stringOrNull().orEmpty(),
+        )
+    }
+
+    /** A JSON string's value; null for anything else, numbers included. */
+    private fun JsonElement?.stringOrNull(): String? =
+        (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    /** A whole JSON number from 0 up that fits an Int; null for anything else, "3" included. */
+    private fun JsonElement?.countOrNull(): Int? =
+        (this as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()?.takeIf { it >= 0 }
+
+    /** A JSON boolean; null for anything else, the string "true" included. */
+    private fun JsonElement?.flagOrNull(): Boolean? {
+        val primitive = this as? JsonPrimitive ?: return null
+        if (primitive.isString) return null
+        return when (primitive.content) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
+    }
 }
 
 // MARK: - Focus presence and commands
