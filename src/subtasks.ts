@@ -755,6 +755,12 @@ export function sweepState(st: SubtaskState, now: number): { state: SubtaskState
     }
   }
   st.rows = kept;
+  // A hold that began "after now" began before the clock stepped back. It
+  // restarts here instead of holding the card for the length of the step.
+  if (st.holdSince > now) {
+    st.holdSince = now;
+    changed = true;
+  }
   if (st.awaitReport && st.holdSince > 0 && now - st.holdSince > REPORT_HOLD_MS) {
     st.awaitReport = false;
     st.holdSince = 0;

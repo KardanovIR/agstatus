@@ -312,6 +312,14 @@ export function createApp(cfg: AppConfig): CreatedApp {
   // AGENT_FRAME_THROTTLE_MS matter, so the subtask sweep forgets older marks.
   const frameMarks = new Map<string, Map<string, { lastAt: number; trailing: NodeJS.Timeout | null }>>();
 
+  /**
+   * How long ago a session's last frame went, by the wall clock everything else
+   * here runs on. A clock stepped back past it (NTP, a VM restored) reads as a
+   * window long closed, not as one that stays open for the length of the step
+   * and holds back every frame of a card whose status does not change.
+   */
+  const sinceFrame = (lastAt: number, now: number): number => (now < lastAt ? Infinity : now - lastAt);
+
   /** A `session` frame, now. It supersedes a trailing agent frame the session had waiting. */
   function broadcastSession(wsId: string, session: Session): void {
     let marks = frameMarks.get(wsId);
@@ -337,8 +345,8 @@ export function createApp(cfg: AppConfig): CreatedApp {
    */
   function sendAgentFrame(wsId: string, session: Session, prevStatus: Status | null): void {
     const mark = frameMarks.get(wsId)?.get(session.id);
-    const now = Date.now();
-    if (!mark || session.status !== prevStatus || now - mark.lastAt >= AGENT_FRAME_THROTTLE_MS) {
+    const since = mark ? sinceFrame(mark.lastAt, Date.now()) : Infinity;
+    if (!mark || session.status !== prevStatus || since >= AGENT_FRAME_THROTTLE_MS) {
       broadcastSession(wsId, session);
       return;
     }
@@ -347,7 +355,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       mark.trailing = null;
       const current = store.getSession(wsId, session.id);
       if (current) broadcastSession(wsId, current);
-    }, AGENT_FRAME_THROTTLE_MS - (now - mark.lastAt));
+    }, AGENT_FRAME_THROTTLE_MS - since);
     mark.trailing.unref();
   }
 
@@ -1464,7 +1472,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
     }
     for (const [wsId, marks] of Array.from(frameMarks)) {
       for (const [id, mark] of Array.from(marks)) {
-        if (!mark.trailing && now - mark.lastAt >= AGENT_FRAME_THROTTLE_MS) marks.delete(id);
+        if (!mark.trailing && sinceFrame(mark.lastAt, now) >= AGENT_FRAME_THROTTLE_MS) marks.delete(id);
       }
       if (marks.size === 0) frameMarks.delete(wsId);
     }

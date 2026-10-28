@@ -672,6 +672,18 @@ describe('the sweep', () => {
     expect(derive(st)).toEqual({ status: 'done', message: 'Turn finished', turnEnded: false, show: false });
   });
 
+  it('a hold begun before the clock stepped back restarts, rather than lasting the length of the step', () => {
+    const hourLater = T0 + 60 * 60 * 1000;
+    const st = run(fresh(), [agent(A, 'coding', 1), { main: 'done', message: 'Turn finished', turn: { phase: 'end', running: [A], workflows: 0 } }, agent(A, 'done', 2)], hourLater);
+    expect(st.holdSince).toBe(hourLater);
+    // The clock steps back an hour.
+    expect(sweepState(st, T0).changed).toBe(true);
+    expect(st.holdSince).toBe(T0);
+    expect(derive(st)).toMatchObject({ status: 'planning', message: 'Reading subagent results' });
+    sweepState(st, T0 + REPORT_HOLD_MS + 1);
+    expect(derive(st)).toMatchObject({ status: 'done', message: 'Turn finished' });
+  });
+
   it('resets a tally idle for 6 hours, and lets the state go once nothing is left', () => {
     const st = run(fresh(), [agent(A, 'coding', 1), agent(A, 'done', 2)], T0);
     expect(st.done).toBe(1);

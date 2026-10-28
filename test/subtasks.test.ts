@@ -579,6 +579,39 @@ describe('subtasks: agent frames are throttled per session', () => {
       await closeServer(srv);
     }
   });
+
+  it('a wall clock stepped back does not hold frames back for the length of the step', async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    // The stream's own waits read Date.now(), which this test holds still.
+    const settled = async (fn: () => boolean, what: string): Promise<void> => {
+      const deadline = performance.now() + 3000;
+      while (!fn()) {
+        if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await sleep(5);
+      }
+    };
+    const { app } = makeApp();
+    const { srv, base } = await listen(app);
+    const ac = new AbortController();
+    try {
+      const token = (await (await fetch(`${base}/api/workspaces`, { method: 'POST' })).json()).token as string;
+      const post = (body: Body) => fetch(`${base}/w/${token}/webhook`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      }).then((r) => r.json());
+      await post({ session_id: 'ck', status: 'done', message: 'Turn finished' });
+      const stream = await openFrames(base, token, ac.signal);
+      await post({ session_id: 'ck', status: 'coding', agent: { id: A, state: 'coding', at: clock } }); // a status change: at once
+      clock -= 60 * 60 * 1000; // NTP steps the clock back an hour
+      await post({ session_id: 'ck', status: 'coding', agent: { id: B, state: 'coding', at: clock } });
+      await post({ session_id: 'ck', status: 'coding', agent: { id: X, state: 'coding', at: clock } });
+      // Inside a throttle window, not an hour.
+      await settled(() => stream.sessionFrames('ck').at(-1)?.message === '3 subagents still running', 'the frame with all three');
+    } finally {
+      ac.abort();
+      await closeServer(srv);
+    }
+  });
 });
 
 describe('subtasks: legacy mode', () => {
