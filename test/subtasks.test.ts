@@ -8,7 +8,14 @@ import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 import { makeApp, createWorkspace, sleep } from './helpers';
 import { MAX_SESSIONS_PER_WORKSPACE, STATUSES } from '../src/store';
-import { AGENT_FRAME_THROTTLE_MS, BLOCKED_STALE_MS, LIVE_STALE_MS, REPORT_HOLD_MS } from '../src/subtasks';
+import {
+  AGENT_FRAME_THROTTLE_MS,
+  BLOCKED_STALE_MS,
+  LIVE_STALE_MS,
+  MAX_LIVE_ROWS,
+  MAX_LIVE_ROWS_PER_WORKSPACE,
+  REPORT_HOLD_MS,
+} from '../src/subtasks';
 
 // Subtasks over HTTP: agent posts, turn hints and soft blocks through the real
 // webhook, read back the way clients read them (the session JSON, SSE frames,
@@ -284,6 +291,55 @@ describe('subtasks: the scenarios', () => {
       .toEqual([['h', 'planning', 'done', beforeH + 1]]);
     expect((await b.history('h')).slice(0, 2).map((e) => `${e.status} ${e.message}`))
       .toEqual(['done Turn finished', 'planning Reading subagent results']);
+  });
+});
+
+describe('subtasks: the live-row caps', () => {
+  /** Fills a board to its live-row cap: full cards of 48, then one with the rest. */
+  async function fillBoard(b: Awaited<ReturnType<typeof board>>): Promise<string[]> {
+    const ids: string[] = [];
+    let n = 0;
+    for (let c = 0; n < MAX_LIVE_ROWS_PER_WORKSPACE; c++) {
+      ids.push(`full${c}`);
+      await b.main(`full${c}`, 'coding', 'Working');
+      for (let i = 0; i < MAX_LIVE_ROWS && n < MAX_LIVE_ROWS_PER_WORKSPACE; i++, n++) await b.sub(`full${c}`, key(`row ${n}`), 'coding');
+    }
+    return ids;
+  }
+  const liveOnBoard = (cards: Card[]): number =>
+    cards.reduce((sum, c) => sum + (c.subtasks ? c.subtasks.running + c.subtasks.blocked : 0), 0);
+
+  it('a card whose subagents the cap turns away says so in the log once, and a failed one resuming counts as a start', async () => {
+    const b = await board();
+    await fillBoard(b);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // A card with no subtask state: each refused start leaves it none, which
+    // must not make each one news again.
+    await b.main('late', 'coding', 'Editing app.ts');
+    for (let i = 0; i < 5; i++) {
+      const s = await b.sub('late', key(`late ${i}`), 'coding');
+      expect(s).toMatchObject({ status: 'coding', message: 'Editing app.ts' });
+      expect(s).not.toHaveProperty('subtasks');
+    }
+    // A failure needs no live slot; its resume would take one.
+    await b.sub('late', key('flaky'), 'failed', { activity: 'Failed: boom' });
+    const resumed = await b.sub('late', key('flaky'), 'coding');
+    expect(resumed!.subtasks).toMatchObject({ running: 0, failed: 1, items: [expect.objectContaining({ state: 'failed' })] });
+    expect(liveOnBoard(await b.cards())).toBe(MAX_LIVE_ROWS_PER_WORKSPACE);
+    expect(warn.mock.calls.filter(([m]) => String(m).includes('live-row cap'))).toHaveLength(1);
+  });
+
+  it('a start turned away for a card not on the board makes no card, and evicts none at the card cap', async () => {
+    const b = await board();
+    const ids = await fillBoard(b);
+    for (let i = ids.length; i < MAX_SESSIONS_PER_WORKSPACE; i++) {
+      ids.push(`plain${i}`);
+      await b.main(`plain${i}`, 'coding', 'Working');
+    }
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await b.hook({ session_id: 'ghost', name: 'Ghost', status: 'coding', source: 'claude', agent: { id: key('ghost'), state: 'coding', at: Date.now() } }).expect(200);
+    expect(res.body).toEqual({ ok: true, session: null });
+    expect((await b.cards()).map((c) => c.id).sort()).toEqual([...ids].sort());
   });
 });
 

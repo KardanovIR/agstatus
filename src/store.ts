@@ -141,6 +141,13 @@ export interface Session {
    * serialized directly: toWire copies fields by name.
    */
   sub?: SubtaskState | null;
+  /**
+   * Internal: the log has said that a live-row cap turned one of this card's
+   * subagents away. On the card rather than on `sub`, which goes whenever it
+   * empties (a card with no state gets a fresh one per agent post), so it is
+   * said once per card, and it goes with the card.
+   */
+  subCapLogged?: true;
 }
 
 export interface UpsertInput {
@@ -673,9 +680,6 @@ export class Store {
   // read) or cancelled with their session — and has not yet handed to app.ts,
   // so each gets exactly one command_ack broadcast.
   private unannounced: Command[] = [];
-  // Subtask states that have already logged turning a subagent away at a
-  // live-row cap. Weak, so the entry goes with the state.
-  private untrackedWarned = new WeakSet<SubtaskState>();
   private pool: Pool | null = null;
   // Writes are fire-and-forget but strictly ordered: each is chained onto this
   // queue so an upsert can never overtake the delete that preceded it.
@@ -1292,7 +1296,8 @@ export class Store {
    * with no subagents is simply what the post said, exactly as before.
    *
    * `session` is null for a subagent's finish when the card is not on the
-   * board: nothing was stored. `newlyBlocked` is true when this post put a
+   * board, and for a start the live-row cap turned away for such a card:
+   * nothing was stored. `newlyBlocked` is true when this post put a
    * subagent (or the parent) into waiting on a card that ends up blocked —
    * including one that was blocked already, which a status transition alone
    * would miss: a row stays blocked until its agent's next class change, so a
@@ -1331,13 +1336,14 @@ export class Store {
     let st = prev?.sub ?? null;
     let status: Status = input.status;
     let message = '';
+    let untracked = false;
     if (agent) {
       // The post's own status is its compat reading, for older servers. A card
       // it creates starts idle, never in that status: a blocked agent then
       // reads "Needs approval: …", and the card goes back to idle when the
       // agent unblocks.
       st ??= prev ? materialize(prev.status, prev.message) : materialize('idle', '');
-      if (applyAgent(st, agent, now, this.liveRowsIn(wsId)) === 'untracked') this.warnUntracked(st);
+      untracked = applyAgent(st, agent, now, this.liveRowsIn(wsId)) === 'untracked';
     } else {
       message = input.message !== undefined ? input.message : st ? st.own.message : prev?.message ?? '';
       if (st) {
@@ -1352,6 +1358,14 @@ export class Store {
       ({ status, message } = derive(st));
       ownAfter = st.own.status;
       st = kept;
+    }
+    // A start the board's live-row cap turned away, for a card not on the
+    // board, left nothing to show. Like a finish for such a card it makes no
+    // card: one would read idle with nothing on it, and at the card cap it
+    // would evict a real one. Nor is it logged, having no card to say it once
+    // for; the next card the cap turns a subagent away from says it.
+    if (untracked && !prev) {
+      return { session: null, evictedId: null, prevStatus: null, newlyBlocked: false };
     }
     const blockedAfter = st ? blockedIds(st) : new Set<string>();
     const newlyBlocked =
@@ -1374,6 +1388,8 @@ export class Store {
       updatedAt: now,
     };
     if (st) session.sub = st;
+    if (untracked && !prev?.subCapLogged) this.warnUntracked();
+    if (untracked || prev?.subCapLogged) session.subCapLogged = true;
 
     let evictedId: string | null = null;
     if (!prev && map.size >= maxSessions) {
@@ -1446,10 +1462,8 @@ export class Store {
     return n;
   }
 
-  /** Says once per state that a live-row cap turned a subagent away. */
-  private warnUntracked(st: SubtaskState): void {
-    if (this.untrackedWarned.has(st)) return;
-    this.untrackedWarned.add(st);
+  /** Says that a live-row cap turned a subagent away: once per card (Session.subCapLogged). */
+  private warnUntracked(): void {
     console.warn(
       `Subtasks: a session reached a live-row cap (${MAX_LIVE_ROWS} per card, ` +
       `${MAX_LIVE_ROWS_PER_WORKSPACE} per board); its further subagents are not listed`
