@@ -249,8 +249,9 @@ body {
  * testing trade places without a word. A row that starts fades in where it
  * stands; one that becomes blocked, stops being blocked or fails re-enters
  * its state cell; a count that changed ticks. app.js adds these classes to
- * the nodes a repaint made, from what it remembers of the card, so a frame
- * about another card replays nothing — and removes them on animationend. */
+ * the nodes a repaint made, from what it remembers of the card (or of the
+ * open session screen, whose rows move for the same news), so a frame about
+ * another card replays nothing — and removes them on animationend. */
 @keyframes row-in {
   from {
     opacity: 0;

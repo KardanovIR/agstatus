@@ -645,6 +645,67 @@ describe('the session screen', () => {
     ]);
   });
 
+  it('hands focus to Back when the row it arrived at finishes', async () => {
+    vi.useFakeTimers();
+    const items = blockedTen();
+    const b = await boardWith(block(items), { status: 'blocked', message: 'Needs approval: verify:hook' });
+    b.click(rows(b)[2]);
+    await open(b);
+    expect((document.activeElement as HTMLElement).dataset.sub).toBe(key(7));
+
+    // Approved and finished. No other row here can hold focus, so it goes
+    // where a screen whose subtask had already gone opens: Back, not <body>.
+    const calls = focusCalls(b);
+    const after = items.filter((x) => x.n !== 7);
+    b.emit('session', session({ status: 'planning', message: 'Running the review-and-verify workflow', subtasks: block(after, { done: 16 }) }));
+    expect(screenRows()).toHaveLength(9);
+    const back = document.getElementById('dv-back');
+    expect(document.activeElement).toBe(back);
+    expect(calls().map((c) => [c.el, c.opts])).toEqual([[back, { preventScroll: true }]]);
+
+    // And stays there: the next frame is not about focus.
+    b.emit('session', session({ status: 'planning', message: 'Running the review-and-verify workflow', subtasks: block(set(after, 1, { activity: 'Rerun' }), { done: 16 }) }));
+    expect(document.activeElement).toBe(back);
+  });
+
+  // The news a card's rows move for moves the screen's rows too, as in the
+  // approved prototype: a row that starts, a state cell into or out of
+  // blocked or into failed, a done count that changed. Its first paint, like
+  // a card's, has no news.
+  it('moves what is news, as a card does', async () => {
+    vi.useFakeTimers();
+    const items = ten().slice(0, 3);
+    const b = await boardWith(block(items, { done: 2 }));
+    b.tap('s1', 'open');
+    await open(b);
+    const row = (n: number) => document.querySelector(`#dv-subs [data-sub="${key(n)}"]`) as HTMLElement;
+    const moving = () => screenRows().filter((r) => /\b(entering|changed)\b/.test(r.className)).map((r) => r.dataset.sub);
+    expect(moving()).toEqual([]);
+
+    // One starts, one is blocked, one goes planning → coding, one more is done.
+    let next = set(set(items, 2, { state: 'blocked', activity: 'Approve: Edit listener.ts' }), 3, { state: 'coding', activity: 'Editing hooks.json' });
+    next = [...next, item(4, 'review:server', 'coding', 'Editing store.ts')];
+    b.emit('session', session({ status: 'blocked', message: 'Needs approval: review:listener', subtasks: block(next, { done: 3 }) }));
+    expect(row(4).classList.contains('entering')).toBe(true);
+    expect(row(2).classList.contains('changed')).toBe(true);
+    expect(moving()).toEqual([key(2), key(4)]);
+    const done = document.querySelector('#dv-subs .ss-done .n')!;
+    expect(done.classList.contains('ticked')).toBe(true);
+
+    // Off again when the animation says it is over.
+    ended(row(4), 'row-in');
+    ended(row(2).querySelector('.sub-st')!, 'row-in');
+    ended(done, 'tick');
+    expect(moving()).toEqual([]);
+    expect(done.classList.contains('ticked')).toBe(false);
+
+    // A section that comes back while the screen is open brings its rows in.
+    b.emit('session', session({ status: 'done', message: 'Turn finished' }));
+    expect(screenRows()).toHaveLength(0);
+    b.emit('session', session({ status: 'planning', message: 'Plan the next step', subtasks: block(items.slice(0, 2), { done: 0 }) }));
+    expect(moving()).toEqual([key(1), key(2)]);
+  });
+
   it('opens at the top when the subtask has already gone', async () => {
     vi.useFakeTimers();
     const items = ten();

@@ -578,7 +578,8 @@
    * their motion on the nodes the paint just made. A row moves when it
    * starts (a key not on show before), and its state cell when it becomes
    * blocked, stops being blocked or fails. Activity, label and the ordinary
-   * planning ↔ coding ↔ testing changes are written in place.
+   * planning ↔ coding ↔ testing changes are written in place. A card's
+   * block and the session screen's subtasks both come through here.
    */
   function moveSubs(el, before, block) {
     const was = before ? before.rows : new Map();
@@ -1117,6 +1118,7 @@
   // Motion classes come off when their animation does, cancelled included,
   // so the next change can put them back. Delegated, because a repaint makes
   // new rows; the card's own `entering`/`changed` are handled on the card.
+  // The session screen's rows move for the same news, so it listens too.
   const settleSub = (e) => {
     const el = e.target;
     if (!el || !el.classList) return;
@@ -1126,8 +1128,10 @@
     }
     if (e.animationName === 'tick') el.classList.remove('ticked');
   };
-  gridEl.addEventListener('animationend', settleSub);
-  gridEl.addEventListener('animationcancel', settleSub);
+  for (const el of [gridEl, detailEl]) {
+    el.addEventListener('animationend', settleSub);
+    el.addEventListener('animationcancel', settleSub);
+  }
 
   // Last, deliberately: the card's own controls are matched first, so a
   // control nested inside the title can never be swallowed by it.
@@ -2034,8 +2038,9 @@
   }
 
   // The session screen while one is open: whose it is, the subtask it was
-  // opened at ('' for none), and whether that row is still lit.
-  let screen = null;   // { id, sub, lit, timer }
+  // opened at ('' for none), whether that row is still lit, and what its
+  // subtasks section last showed.
+  let screen = null;   // { id, sub, lit, timer, shown }
 
   /**
    * The frame of a session's screen: the way back, then the session's
@@ -2112,17 +2117,36 @@
       x.id === at ? ' tabindex="-1"' : ''} aria-label="${escape(rowName(x))}">${rowInner(x)}</li>`).join('');
     return `<h3 class="ss-label">Subtasks${count ? ` <span class="ss-count">${count}</span>` : ''}</h3>`
       + (rows ? `<ul class="ss-list">${rows}</ul>` : '')
-      + (sub.done > 0 ? `<p class="ss-done"><span class="n">${sub.done}</span> done this turn</p>` : '');
+      + (sub.done > 0 ? `<p class="ss-done"><span class="n" data-count="done">${sub.done}</span> done this turn</p>` : '');
   }
 
-  /** Repaints the open screen's subtasks, and nothing else: not the timeline, not focus. */
+  /** Repaints the open screen's subtasks, and nothing else: not the timeline. */
   function paintScreenSubs() {
     if (!screen) return;
     const el = document.getElementById('dv-subs');
     if (!el) return;
     const s = state.get(screen.id);
+    const sub = subtasksOf(s);
     const html = screenSubsHTML(s, screen.sub);
-    paint(el, html);
+    // What the section showed before, kept as a card keeps it, so a repaint
+    // moves the same news a card's does: undefined until its first paint,
+    // which has none, and null while there was no section.
+    const before = screen.shown;
+    screen.shown = sub
+      ? { rows: new Map(sub.items.map((x) => [x.id, x.state])), counts: { done: sub.done } }
+      : null;
+    const held = el.contains(document.activeElement);
+    if (paint(el, html)) {
+      // Focus was on the arrived row, and it has finished. No other row here
+      // can hold focus (only the arrived one is given tabindex), so it goes
+      // to Back, where a screen whose subtask had already gone opens, rather
+      // than dropping to <body> and the top of the document.
+      if (held && !el.contains(document.activeElement)) {
+        const back = document.getElementById('dv-back');
+        if (back) back.focus({ preventScroll: true });
+      }
+      if (before !== undefined && sub) moveSubs(el, before, screen.shown);
+    }
     // The timeline takes a heading only while a section above it needs
     // telling apart from it.
     const head = document.getElementById('dv-tl-head');
