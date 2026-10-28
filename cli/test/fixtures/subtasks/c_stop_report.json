@@ -1,0 +1,18 @@
+{
+ "source": "probe run c, events-c.jsonl line 15 (Stop, t_ms 1793138848864)",
+ "payload": {
+  "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+  "transcript_path": "{{projects}}/ce4d79fa-d133-4666-ac0b-be13150d339a.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "bf60e144-239e-4aa1-a9b9-4ebfd2bc33ff",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "The background agent finished and returned `bg`.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+}

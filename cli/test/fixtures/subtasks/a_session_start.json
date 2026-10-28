@@ -1,0 +1,10 @@
+{
+ "source": "probe run a, events-a.jsonl line 1 (SessionStart, t_ms 1793138681473)",
+ "payload": {
+  "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+  "transcript_path": "{{projects}}/5cef7152-ef68-481f-8a4f-463f66702bf9.jsonl",
+  "cwd": "{{cwd}}",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+ }
+}

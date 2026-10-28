@@ -1,0 +1,19 @@
+{
+ "source": "probe run e, events-e.jsonl line 3 (PreToolUse, t_ms 1793139061597)",
+ "payload": {
+  "session_id": "b10dc3bd-70ff-435e-a81d-bbd8e635c41e",
+  "transcript_path": "{{projects}}/b10dc3bd-70ff-435e-a81d-bbd8e635c41e.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "97aa754a-f47d-46ff-bd1d-b477ac548913",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Workflow",
+  "tool_input": {
+   "script": "export const meta = {\n  name: 'probe-two-echoes',\n  description: 'Hook probe: two tiny agents in one phase',\n  phases: [{ title: 'Echo', detail: 'two parallel echoes' }],\n}\nphase('Echo')\nconst out = await parallel([\n  () => agent('Run `echo wf-one` with the Bash tool and reply with only its output.', { label: 'echo:one', phase: 'Echo' }),\n  () => agent('Run `echo wf-two` with the Bash tool and reply with only its output.', { label: 'echo:two', phase: 'Echo' }),\n])\nreturn out"
+  },
+  "tool_use_id": "toolu_011euKqveh36tHUFSHtsatgW"
+ }
+}

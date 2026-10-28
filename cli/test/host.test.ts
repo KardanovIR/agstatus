@@ -277,7 +277,10 @@ describe('focus host summary', () => {
     const ws = workspace({});
     const posted = fireEvent({ hook_event_name: 'SessionStart' }, ws.env);
     expect(posted).toBeDefined();
-    expect(Object.keys(posted!)).toEqual(['session_id', 'name', 'status', 'message', 'project', 'source']);
+    // `turn` is the session-start hint every SessionStart carries since 1.7.0
+    // (the server drops subagent rows a restarted process cannot have); what
+    // Focus off must never add is `host`.
+    expect(Object.keys(posted!)).toEqual(['session_id', 'name', 'status', 'message', 'project', 'source', 'turn']);
     expect(stateFiles(ws.state)).toEqual(['machine.json']);
   });
 
@@ -474,6 +477,39 @@ describe('focus host summary', () => {
     expect(typeof after.record.ended_at).toBe('number');
     expect(after.record.summary).toEqual(before.record.summary);
     expect(fs.statSync(after.file).mode & 0o777).toBe(0o600);
+  });
+
+  it('never writes or alters a host record for an agent-tagged event', () => {
+    // On a Codex sub-agent's event transcript_path is the SUB-AGENT's own
+    // rollout, so detection there would file the root's record under the
+    // sub-agent's thread id. No subagent event may run it, known or not.
+    const ws = workspace({ focus: true });
+    const env = {
+      ...ws.env,
+      CLAUDE_PID: String(process.pid),
+      TERM_PROGRAM: 'ghostty',
+      TMPDIR: fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-subtmp-')),
+    };
+    expect(fireEvent({ hook_event_name: 'SessionStart' }, env)?.host).toBeTruthy();
+    const before = readRecord(ws.state);
+    const bytes = fs.readFileSync(before.file, 'utf8');
+
+    // An environment that would classify differently if detection ran again.
+    const elsewhere = { ...env, TERM_PROGRAM: 'iTerm.app' };
+    const tagged = { agent_id: 'a28b0e80d3d1190c2', agent_type: 'general-purpose' };
+    // An unknown subagent's tool call (the 1.6.3 path), its start, and then a
+    // known subagent's tool call.
+    for (const payload of [
+      { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, ...tagged },
+      { hook_event_name: 'SubagentStart', ...tagged },
+      { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: '/x/a.ts' }, ...tagged },
+    ]) {
+      const posted = fireEvent(payload, elsewhere);
+      expect(posted, payload.hook_event_name).toBeDefined();
+      expect(posted).not.toHaveProperty('host');
+    }
+    expect(stateFiles(ws.state)).toEqual(['machine.json', path.join('sessions', 'msg-test', `${process.pid}.json`)]);
+    expect(fs.readFileSync(before.file, 'utf8')).toBe(bytes);
   });
 
   it('reuses the record on later events instead of detecting again', () => {
@@ -757,13 +793,14 @@ describe('finished turns and pinned names', () => {
     expect(finished?.name).toBe('backend');
     expect(finished?.status).toBe('done');
 
-    // /compact fires a second SessionStart under the same id, from wherever
-    // the session is standing now. The card is not renamed by it.
-    const compacted = fireEvent(
-      { hook_event_name: 'SessionStart', session_id: 'pin-1', cwd: '/tmp/docs', source: 'compact' },
+    // /clear and --resume fire a second SessionStart under the same id, from
+    // wherever the session is standing now. The card is not renamed by it.
+    // (/compact fires one too, and since 1.7.0 posts nothing at all.)
+    const resumed = fireEvent(
+      { hook_event_name: 'SessionStart', session_id: 'pin-1', cwd: '/tmp/docs', source: 'resume' },
       env,
     );
-    expect(compacted?.name).toBe('backend');
+    expect(resumed?.name).toBe('backend');
 
     // A different session in the same map is named from its own directory —
     // the pin is per session, not per board.

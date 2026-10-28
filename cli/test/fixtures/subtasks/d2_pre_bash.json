@@ -1,0 +1,22 @@
+{
+ "source": "probe run d2, events-d2.jsonl line 8 (PreToolUse, t_ms 1793138926390)",
+ "payload": {
+  "session_id": "fdabcccc-3f36-4fed-9029-f326702a365b",
+  "transcript_path": "{{projects}}/fdabcccc-3f36-4fed-9029-f326702a365b.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "5852645c-8f8d-452a-bb31-7cdaa8cde89f",
+  "permission_mode": "default",
+  "agent_id": "a9f11cbaeca3764d9",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "touch denied-probe.txt",
+   "description": "Create empty file denied-probe.txt"
+  },
+  "tool_use_id": "toolu_018kLQ49vUk38dD6m8qtfiJT"
+ }
+}

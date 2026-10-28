@@ -1,0 +1,22 @@
+{
+ "source": "probe run b, events-b.jsonl line 3 (PreToolUse, t_ms 1793138780550)",
+ "payload": {
+  "session_id": "2f310006-25a7-4cd3-aaed-41d63f721448",
+  "transcript_path": "{{projects}}/2f310006-25a7-4cd3-aaed-41d63f721448.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "c44740b5-dbd2-4c90-93c1-e2c7c4b94455",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "outer",
+   "prompt": "Use the Agent tool yourself to launch one nested subagent (subagent_type general-purpose, description inner) that runs `echo nested` with Bash and returns the output. Then return that output.",
+   "subagent_type": "general-purpose",
+   "run_in_background": false
+  },
+  "tool_use_id": "toolu_01Sha125KBYLNNpDxCF3gzJ8"
+ }
+}

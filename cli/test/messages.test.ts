@@ -158,14 +158,25 @@ describe('hook status messages', () => {
   });
 
   it('describes research tools by what they are looking for', () => {
-    expect(fire('Task', { description: 'Audit the iOS project' })?.message)
+    // Agent is what Claude Code calls the subagent tool; the hook used to
+    // check for Task alone and dropped every launch on the floor.
+    expect(fire('Agent', { description: 'Audit the iOS project' })?.message)
       .toBe('Audit the iOS project');
     expect(fire('WebSearch', { query: 'APNs BadDeviceToken' })?.message)
       .toBe('Searching: APNs BadDeviceToken');
     expect(fire('WebFetch', { url: 'https://developer.apple.com/documentation/x' })?.message)
       .toBe('Reading developer.apple.com');
-    expect(fire('Task', {})?.message).toBe('Delegating a subtask');
+    expect(fire('Agent', {})?.message).toBe('Delegating a subtask');
     expect(fire('WebFetch', { url: 'not a url' })?.message).toBe('Fetching a page');
+    // Older Claude Code still names it Task.
+    expect(fire('Task', { description: 'Audit the Android project' })?.status).toBe('planning');
+  });
+
+  it('names a workflow by the description in its script', () => {
+    const script = "export const meta = {\n  name: 'triage',\n  description: 'Triage the open issues',\n}\nphase('Read')";
+    expect(fire('Workflow', { script })?.message).toBe('Running workflow: Triage the open issues');
+    expect(fire('Workflow', { script: 'await agent("x")' })?.message).toBe('Running a workflow');
+    expect(fire('Workflow', { script })?.status).toBe('planning');
   });
 
   it('sends tool names only in minimal mode, leaking no detail', () => {
@@ -174,7 +185,9 @@ describe('hook status messages', () => {
       .toBe('Bash');
     expect(fire('Edit', { file_path: '/secret/payroll.ts' }, detail)?.message).toBe('Edit');
     expect(fire('WebSearch', { query: 'confidential thing' }, detail)?.message).toBe('WebSearch');
-    expect(fire('Task', { description: 'Secret task' }, detail)?.message).toBe('Task');
+    expect(fire('Agent', { description: 'Secret task' }, detail)?.message).toBe('Agent');
+    expect(fire('Workflow', { script: "const meta = { description: 'Secret plan' }" }, detail)?.message)
+      .toBe('Workflow');
   });
 
   it('truncates long messages', () => {

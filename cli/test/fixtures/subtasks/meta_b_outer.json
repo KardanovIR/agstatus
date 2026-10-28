@@ -1,0 +1,11 @@
+{
+ "source": "payload-excerpts.json b_nested_PreToolUse_Agent_from_outer snap.meta (agent aeaab6e39b924707f)",
+ "meta": {
+  "agentType": "general-purpose",
+  "description": "outer",
+  "toolUseId": "toolu_01Sha125KBYLNNpDxCF3gzJ8",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "requestNonInteractive": true
+ }
+}

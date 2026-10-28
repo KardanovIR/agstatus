@@ -1,0 +1,21 @@
+{
+ "source": "probe run a, events-a.jsonl line 15 (SubagentStop, t_ms 1793138694920)",
+ "payload": {
+  "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+  "transcript_path": "{{projects}}/5cef7152-ef68-481f-8a4f-463f66702bf9.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "0a61928a-0d23-400f-b306-ce771865f1d0",
+  "permission_mode": "default",
+  "agent_id": "afbeec30e716aefa1",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "{{projects}}/5cef7152-ef68-481f-8a4f-463f66702bf9/subagents/agent-afbeec30e716aefa1.jsonl",
+  "last_assistant_message": "beta",
+  "background_tasks": [],
+  "session_crons": []
+ }
+}

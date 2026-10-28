@@ -1,0 +1,18 @@
+{
+ "source": "probe run a, events-a.jsonl line 19 (Stop, t_ms 1793138696296)",
+ "payload": {
+  "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+  "transcript_path": "{{projects}}/5cef7152-ef68-481f-8a4f-463f66702bf9.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "0a61928a-0d23-400f-b306-ce771865f1d0",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "alpha, beta — both subagents ran their `echo` commands and returned those outputs.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+}

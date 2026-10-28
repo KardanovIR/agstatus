@@ -1,0 +1,29 @@
+{
+ "source": "probe run e, events-e.jsonl line 14 (SubagentStop, t_ms 1793139064829)",
+ "payload": {
+  "session_id": "b10dc3bd-70ff-435e-a81d-bbd8e635c41e",
+  "transcript_path": "{{projects}}/b10dc3bd-70ff-435e-a81d-bbd8e635c41e.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "97aa754a-f47d-46ff-bd1d-b477ac548913",
+  "permission_mode": "default",
+  "agent_id": "aa1129b0cbabb25ea",
+  "agent_type": "workflow-subagent",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "{{projects}}/b10dc3bd-70ff-435e-a81d-bbd8e635c41e/subagents/workflows/wf_63757895-43f/agent-aa1129b0cbabb25ea.jsonl",
+  "last_assistant_message": "wf-one",
+  "background_tasks": [
+   {
+    "id": "wxtleurg3",
+    "type": "workflow",
+    "status": "running",
+    "description": "Hook probe: two tiny agents in one phase",
+    "name": "probe-two-echoes"
+   }
+  ],
+  "session_crons": []
+ }
+}

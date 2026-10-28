@@ -1,0 +1,88 @@
+{
+ "source": "probe run b, events-b.jsonl line 11 (PostToolUse, t_ms 1793138797307)",
+ "payload": {
+  "session_id": "2f310006-25a7-4cd3-aaed-41d63f721448",
+  "transcript_path": "{{projects}}/2f310006-25a7-4cd3-aaed-41d63f721448.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "c44740b5-dbd2-4c90-93c1-e2c7c4b94455",
+  "permission_mode": "default",
+  "agent_id": "aeaab6e39b924707f",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "inner",
+   "prompt": "Run `echo nested` with the Bash tool and return the exact output.",
+   "subagent_type": "general-purpose",
+   "run_in_background": false
+  },
+  "tool_response": {
+   "status": "completed",
+   "prompt": "Run `echo nested` with the Bash tool and return the exact output.",
+   "agentId": "a39fbd03275abc4b7",
+   "agentType": "general-purpose",
+   "harnessNoteCount": 0,
+   "harnessTailCount": 0,
+   "harnessSectionHash": "f8ebcbcda5ebf34f",
+   "content": [
+    {
+     "type": "text",
+     "text": "nested"
+    }
+   ],
+   "resolvedModel": "claude-sonnet-5-5",
+   "totalDurationMs": 11841,
+   "totalTokens": 14862,
+   "totalToolUseCount": 1,
+   "usage": {
+    "output_tokens_details": {
+     "thinking_tokens": 0
+    },
+    "input_tokens": 2,
+    "cache_creation_input_tokens": 1628,
+    "cache_read_input_tokens": 13228,
+    "output_tokens": 4,
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 0,
+     "ephemeral_5m_input_tokens": 1628
+    },
+    "inference_geo": "global",
+    "iterations": [
+     {
+      "input_tokens": 2,
+      "output_tokens": 4,
+      "cache_read_input_tokens": 13228,
+      "cache_creation_input_tokens": 1628,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 1628,
+       "ephemeral_1h_input_tokens": 0
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+   },
+   "toolStats": {
+    "readCount": 0,
+    "searchCount": 0,
+    "bashCount": 1,
+    "editFileCount": 0,
+    "linesAdded": 0,
+    "linesRemoved": 0,
+    "otherToolCount": 0
+   },
+   "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_01WkfjAZQExMv7Dt45z8UX82",
+  "duration_ms": 11842
+ }
+}

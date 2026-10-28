@@ -1,0 +1,11 @@
+{
+ "source": "payload-excerpts.json d2_PermissionRequest_inside_subagent snap.meta (agent a9f11cbaeca3764d9)",
+ "meta": {
+  "agentType": "general-purpose",
+  "description": "try touch",
+  "toolUseId": "toolu_01UGNVXKBGxkdsTXQSvJ17W1",
+  "spawnDepth": 1,
+  "requestShape": "foreground",
+  "requestNonInteractive": true
+ }
+}
