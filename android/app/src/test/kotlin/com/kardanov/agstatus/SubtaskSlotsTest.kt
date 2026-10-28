@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.roundToInt
 
 /**
  * The slot rule — oldest, slot-stable — is shared with the web board's pick()
@@ -236,6 +237,51 @@ class SubtaskSlotsTest {
         )
 
         assertEquals(listOf("c", "e", "a", "b", "d"), SubtaskSlots.screenOrder(items).map { it.id })
+    }
+
+    @Test
+    fun `an arrival scrolls the row to the middle from wherever the row is`() {
+        // At the top, where scrollToItem leaves a row with a screenful after
+        // it: back by half the screen, less half the row.
+        assertEquals(-319f, SubtaskSlots.arrivalScroll(rowOffset = 0, rowSize = 52, viewportStart = 0, viewportEnd = 690), 0f)
+        // Already in the middle: nowhere.
+        assertEquals(0f, SubtaskSlots.arrivalScroll(rowOffset = 319, rowSize = 52, viewportStart = 0, viewportEnd = 690), 0f)
+        // Where the list stopped short of the top: on, from there, which the
+        // list's end then clamps. Never back by half a screen from the top.
+        assertEquals(181f, SubtaskSlots.arrivalScroll(rowOffset = 500, rowSize = 52, viewportStart = 0, viewportEnd = 690), 0f)
+        // Top padding puts the viewport's start above the first row: the
+        // middle is the screen's, so the row lands 319 below its top edge.
+        assertEquals(-303f, SubtaskSlots.arrivalScroll(rowOffset = 0, rowSize = 52, viewportStart = -16, viewportEnd = 674), 0f)
+    }
+
+    @Test
+    fun `an arrived row is on screen wherever it is in the list, and centred where there is room`() {
+        // The session screen before its history arrives, on a 690-high phone:
+        // header, Subtasks label, twenty 52 rows, the done line, the Timeline
+        // heading, and 24 of bottom padding. 1,224 in all, so 534 of scroll.
+        val heights = listOf(56, 42) + List(20) { 52 } + listOf(20, 42)
+        val viewport = 690
+        val tops = heights.runningFold(0, Int::plus)
+        val maxScroll = tops.last() + 24 - viewport
+
+        for (index in 2..21) {
+            // scrollToItem asks for the row at the top, and the list stops at its end...
+            var scroll = minOf(tops[index], maxScroll)
+            // ...then the arrival's scroll, which the list clamps at both ends.
+            val arrival = SubtaskSlots.arrivalScroll(tops[index] - scroll, heights[index], 0, viewport)
+            scroll = (scroll + arrival.roundToInt()).coerceIn(0, maxScroll)
+            val offset = tops[index] - scroll
+
+            assertTrue("row $index at $offset", offset >= 0 && offset + heights[index] <= viewport)
+            if (tops[index] - 319 in 0..maxScroll) assertEquals("row $index", 319, offset)
+        }
+
+        // The nineteenth row, in the last screenful: the list stops with it at
+        // 500, and there it stays, on screen. Back by half a screen from the
+        // top, as if it were there, would have put it at 819, past the bottom.
+        val nineteenth = tops[20] - maxScroll
+        assertEquals(500, nineteenth)
+        assertEquals(181f, SubtaskSlots.arrivalScroll(nineteenth, 52, 0, viewport), 0f)
     }
 
     @Test

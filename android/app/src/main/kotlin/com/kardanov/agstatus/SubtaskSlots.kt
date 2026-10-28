@@ -149,6 +149,23 @@ object SubtaskSlots {
         items.filter { it.state == SubtaskState.BLOCKED } + items.filter { it.state != SubtaskState.BLOCKED }
 
     /**
+     * How far the session screen scrolls a row it arrived at so the row sits
+     * in the middle of the screen, from where the row is now: [rowOffset] and
+     * [rowSize] as the list lays the row out, the viewport from its start
+     * offset to its end offset, content padding included. Positive scrolls
+     * on, toward the end.
+     *
+     * From where the row is, not from the top: scrollToItem puts a row at the
+     * top only while a screenful follows it. In the list's last screenful the
+     * list stops short and the row sits lower, and a scroll back by half a
+     * screen from there would push it off the bottom, its focus and its lit
+     * ground with it. The list clamps the answer at either end, so the row
+     * stays on screen, and is centred whenever the list has room.
+     */
+    fun arrivalScroll(rowOffset: Int, rowSize: Int, viewportStart: Int, viewportEnd: Int): Float =
+        rowOffset - (viewportStart + viewportEnd - rowSize) / 2f
+
+    /**
      * Whether a row's state cell moves on this change. Only into or out of
      * blocked, and into failed: every agent post after a start is a class
      * change, so animating planning ↔ coding ↔ testing would keep rows moving

@@ -126,13 +126,28 @@ fun HistoryScreen(
             return@LaunchedEffect
         }
         listState.scrollToItem(index)
-        // scrollToItem puts the row at the top; the rest of the way to the middle.
         val layout = listState.layoutInfo
-        layout.visibleItemsInfo.firstOrNull { it.index == index }?.let { row ->
-            val viewport = layout.viewportEndOffset - layout.viewportStartOffset
-            listState.scrollBy(-(viewport - row.size) / 2f)
+        val row = layout.visibleItemsInfo.firstOrNull { it.index == index }
+        if (row == null) {
+            lit = null
+            return@LaunchedEffect
         }
+        // Focus first, while the row is on screen and so composed: a focused
+        // row stays composed whatever scroll follows, because the list pins it.
         runCatching { arrivalFocus.requestFocus() }
+        // Then the rest of the way to the middle, from where the row is.
+        // scrollToItem puts it at the top only while a screenful follows it;
+        // in the list's last screenful the list stops short and the row sits
+        // lower. The list clamps the scroll at either end, so the row stays on
+        // screen, centred when there is room.
+        listState.scrollBy(
+            SubtaskSlots.arrivalScroll(
+                rowOffset = row.offset,
+                rowSize = row.size,
+                viewportStart = layout.viewportStartOffset,
+                viewportEnd = layout.viewportEndOffset,
+            ),
+        )
         delay(ARRIVAL_HOLD_MILLIS)
         lit = null
     }

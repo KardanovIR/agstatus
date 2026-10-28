@@ -462,8 +462,11 @@ private fun RoomySubtaskRow(subtask: Subtask, lit: Boolean, focus: FocusRequeste
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .background(Theme.raised.copy(alpha = ground.value), RoundedCornerShape(6.dp))
-            // Only the arrived row can take focus, and only so the arrival can
-            // move TalkBack there; it is not a stop for anyone tabbing through.
+            // Only the arrived row can take focus, so the arrival can move
+            // TalkBack there. It is then a stop for a keyboard's Tab and arrow
+            // keys as well, the one row that is: Compose has no focus only
+            // code can give, like the web's tabindex="-1", and this is the
+            // nearest thing to it.
             .then(if (focus != null) Modifier.focusRequester(focus).focusable() else Modifier)
             .clearAndSetSemantics { contentDescription = SubtaskCopy.rowDescription(subtask) }
             .defaultMinSize(minHeight = 52.dp)
