@@ -718,6 +718,43 @@ describe('flood control and confirmation', () => {
     // Off (the default): the decided rule, nothing within a class.
     expect(post(ws, edit('/x/c.ts'))).toEqual([]);
   });
+
+  it('with AGENT_REFRESH_MS on, holds a new activity back until that long has passed', () => {
+    const ws = workspace();
+    const refresh = { AGSTATUS_AGENT_REFRESH_MS: '600000' };
+    post(ws, load(ws, 'a_parent_pre_agent_alpha'), refresh);
+    post(ws, load(ws, 'a_subagent_start_alpha'), refresh);
+    const edit = (file: string) => load(ws, 'a_pre_bash_alpha', { tool_name: 'Edit', tool_input: { file_path: file } });
+    expect(agentPosts(post(ws, edit('/x/a.ts'), refresh)).map((b) => b.agent.activity)).toEqual(['Editing a.ts']);
+    // A new activity in the same class, ten minutes short of the window.
+    expect(post(ws, edit('/x/b.ts'), refresh)).toEqual([]);
+  });
+
+  it('keeps the last running class as the compat status of a failure after a confirmed done', () => {
+    // A foreground subagent: coding, stopped, then its launch reported interrupted.
+    const ws = workspace();
+    post(ws, load(ws, 'a_parent_pre_agent_alpha'));
+    post(ws, load(ws, 'a_subagent_start_alpha'));
+    post(ws, load(ws, 'a_pre_bash_alpha', { tool_name: 'Edit', tool_input: { file_path: '/x/a.ts' } }));
+    expect(post(ws, load(ws, 'a_subagent_stop_alpha')).map((b) => [b.status, b.agent.state])).toEqual([['coding', 'done']]);
+    const [stopped] = post(ws, {
+      session_id: A, transcript_path: path.join(ws.projects, `${A}.jsonl`), cwd: ws.cwd,
+      hook_event_name: 'PostToolUseFailure', tool_name: 'Agent', tool_use_id: 'toolu_014ut2LA8noPaPhsYzMqEUE2',
+      error: 'Interrupted', is_interrupt: true,
+    });
+    expect([stopped.status, stopped.agent.state, stopped.agent.activity]).toEqual(['coding', 'failed', 'Stopped']);
+
+    // A background one: testing, stopped, then its notification says it failed.
+    const bg = workspace();
+    for (const n of ['c_parent_pre_agent', 'c_subagent_start']) post(bg, load(bg, n));
+    post(bg, load(bg, 'c_pre_bash_bg', { tool_input: { command: 'npm test' } }));
+    expect(post(bg, load(bg, 'c_subagent_stop')).map((b) => b.status)).toEqual(['testing']);
+    const note = load(bg, 'c_task_notification');
+    const failed = String(note.prompt).replace('<status>completed</status>', '<status>failed</status>');
+    expect(agentPosts(post(bg, { ...note, prompt: failed })).map((b) => [b.status, b.agent.state])).toEqual([
+      ['testing', 'failed'],
+    ]);
+  });
 });
 
 describe('unknown subagents and unusable ids', () => {
@@ -1073,6 +1110,36 @@ describe('permissions', () => {
       hook_event_name: 'PostToolUseFailure', tool_name: 'Agent', tool_use_id: 'toolu_014ut2LA8noPaPhsYzMqEUE2',
       error: 'boom', is_interrupt: false,
     })).toEqual([]);
+  });
+
+  it('posts a second prompt from a subagent whose row is still blocked from the first', () => {
+    const ws = workspace();
+    post(ws, load(ws, 'd2_subagent_start'));
+    fire(ws, load(ws, 'd2_permission_request'));
+    ageMarkers(ws, D2, K(TOUCH, D2), 3000);
+    expect(agentPosts(ask(ws, D2)).map((b) => b.agent.state)).toEqual(['blocked']);
+    // Approved, then it asks for a tool no PreToolUse matcher lists: no hooked
+    // call in between moved the row on, and an old server's card may have.
+    fire(ws, load(ws, 'd2_permission_request', { tool_name: 'mcp__db__query', tool_input: { sql: 'select 1' } }));
+    ageMarkers(ws, D2, K(TOUCH, D2), 3000);
+    expect(ask(ws, D2).map(shape)).toEqual([{
+      session_id: D2, status: 'blocked', message: 'Claude needs your permission', source: 'claude',
+      agent: { id: K(TOUCH, D2), state: 'blocked', kind: 'agent', activity: 'Approve: mcp__db__query' },
+    }]);
+  });
+
+  it('posts every Codex escalation a human is asked, even for a row still blocked', () => {
+    const ws = workspace();
+    const sub = codexRollout(ws, SUB_THREAD, subMeta(), [turnContext('turn-1', 'user')]);
+    const tagged = { agent_id: SUB_THREAD, agent_type: 'default' };
+    post(ws, codexEvent(ws, 'SubagentStart', sub, tagged), CODEX);
+    const escalate = (question: string) => post(ws, codexEvent(ws, 'PermissionRequest', sub, {
+      ...tagged, tool_name: 'Bash', tool_input: { description: question },
+    }), CODEX);
+    expect(escalate('May I run the migration?').map((b) => b.agent.activity)).toEqual(['May I run the migration?']);
+    expect(escalate('May I drop the scratch table?').map((b) => [b.status, b.message, b.agent.state, b.agent.activity])).toEqual([
+      ['blocked', 'May I drop the scratch table?', 'blocked', 'May I drop the scratch table?'],
+    ]);
   });
 
   it.skipIf(!POSIX)('never touches CODEX_HOME for a Claude PermissionRequest', () => {

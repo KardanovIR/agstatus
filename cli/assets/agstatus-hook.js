@@ -3091,9 +3091,11 @@ function writeStateFile(dir, kind, name, obj) {
 
 /**
  * A subagent's own record, re-validated field by field on the way in:
- *   {v, seen, kind, cls?, clsAt?, label?, labelSrc?, labelSent?, labelPosts,
- *    activitySent?, lastPostAt?, metaTries, runId?, claim?, at}
- * `cls` is the last state the board CONFIRMED (a 2xx), never one merely sent.
+ *   {v, seen, kind, cls?, clsAt?, runCls?, label?, labelSrc?, labelSent?,
+ *    labelPosts, activitySent?, lastPostAt?, metaTries, runId?, claim?, at}
+ * `cls` is the last state the board CONFIRMED (a 2xx), never one merely sent;
+ * `runCls` the last running one, which a finished subagent's posts still
+ * carry as their compat status (see compatStatus).
  */
 function readAgent(dir, key) {
   const raw = readStateFile(path.join(dir, 'agents', `${key}.json`));
@@ -3111,6 +3113,7 @@ function readAgent(dir, key) {
     st.cls = raw.cls;
     st.clsAt = num(raw.clsAt);
   }
+  if (RUNNING_STATES.has(raw.runCls)) st.runCls = raw.runCls;
   const label = clip(raw.label, LABEL_MAX);
   if (label) {
     st.label = label;
@@ -3683,10 +3686,16 @@ function stopTurn(payload, base, session) {
   return turn;
 }
 
-/** A terminal post's `status`, for servers that predate `agent`: the last class it had. */
-function compatStatus(state, cls) {
+/**
+ * A terminal post's `status`, for servers that predate `agent`: the last
+ * running class the board confirmed, `planning` when that was a block or is
+ * unknown. The last running one, not the last confirmed state: a failure
+ * reported after a confirmed done must not flip an old server's card to
+ * planning.
+ */
+function compatStatus(state, runCls) {
   if (state !== 'done' && state !== 'failed') return state;
-  return cls === 'planning' || cls === 'coding' || cls === 'testing' ? cls : 'planning';
+  return runCls === 'planning' || runCls === 'coding' || runCls === 'testing' ? runCls : 'planning';
 }
 
 /**
@@ -3702,7 +3711,7 @@ function agentBody(ctx, key, st, state, extra) {
   const body = {
     session_id: ctx.session,
     name: lookupPinnedName(ctx.base, ctx.session, ctx.folder),
-    status: compatStatus(state, st.cls),
+    status: compatStatus(state, st.runCls),
   };
   if (state === 'blocked' && typeof extra.message === 'string') body.message = extra.message;
   body.source = SOURCE;
@@ -3726,6 +3735,7 @@ function confirmAgent(dir, key, at, sent) {
   if (!st || (st.clsAt || 0) > at) return;
   st.cls = sent.state;
   st.clsAt = at;
+  if (RUNNING_STATES.has(sent.state)) st.runCls = sent.state;
   if (sent.label !== undefined) st.labelSent = sent.label;
   if (sent.activity !== undefined) st.activitySent = sent.activity;
   st.lastPostAt = at;
@@ -3774,9 +3784,16 @@ function runningPostReason(st, state, activity, at) {
  * spends one of LABEL_POSTS_MAX, recorded before it goes out. `relabeled`
  * says the record already changed (a label found, a try counted) and must be
  * written either way.
+ *
+ * `asking` posts whatever the record says: a human being asked — a claimed
+ * permission prompt, a Codex escalation nobody approved — is news even for a
+ * row that is still blocked from the last prompt. It is one post per prompt,
+ * not part of the tool-call flood the class rule holds back, and it carries
+ * 1.6.3's message, so an old server whose card the parent has moved on shows
+ * the block and pushes it, as 1.6.3 did.
  */
-function postRunning(ctx, sub, key, st, state, extra, relabeled) {
-  const reason = runningPostReason(st, state, extra.activity, ctx.at);
+function postRunning(ctx, sub, key, st, state, extra, relabeled, asking = false) {
+  const reason = asking ? 'asking' : runningPostReason(st, state, extra.activity, ctx.at);
   if (reason === 'label') st.labelPosts += 1;
   if (relabeled || reason === 'label') writeAgent(sub.dir, key, st);
   return reason ? postAgent(ctx, sub, key, st, state, extra) : null;
@@ -4057,7 +4074,10 @@ async function handleAgentEvent(ctx, sub, key, st) {
   }
 
   const relabeled = refreshLabel(ctx, sub, key, st);
-  const posted = postRunning(ctx, sub, key, st, state, { activity, message }, relabeled);
+  // A Codex escalation nobody approved asks a human, so it posts even for a
+  // row still blocked from the last one (see postRunning).
+  const asking = event === 'PermissionRequest';
+  const posted = postRunning(ctx, sub, key, st, state, { activity, message }, relabeled, asking);
   const posts = posted ? [posted] : [];
   await Promise.allSettled(reports ? [...posts, ...codexReports(ctx)] : posts);
 }
@@ -4430,13 +4450,14 @@ async function main() {
         const st = key ? readAgent(sub.dir, key) : null;
         if (st) {
           // A subagent is asking: its row goes blocked, the parent's line
-          // stays as it is.
+          // stays as it is. It posts even when the row is still blocked from
+          // an earlier prompt (see postRunning): this is a new one.
           status = '';
           const activity = MINIMAL
             ? minimalActivity(claimed.tool) || 'Needs approval'
             : clip(claimed.act ? `Approve: ${claimed.act}` : str(payload.message) || 'Needs approval', ACTIVITY_MAX);
           agentPosts = () => {
-            const posted = postRunning(ctx, sub, key, st, 'blocked', { activity, message }, false);
+            const posted = postRunning(ctx, sub, key, st, 'blocked', { activity, message }, false, true);
             return posted ? [posted] : [];
           };
         } else if (!claimed || claimed.who !== 'main') {
