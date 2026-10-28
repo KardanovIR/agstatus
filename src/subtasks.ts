@@ -444,9 +444,10 @@ export function applyMain(
 
 /**
  * One agent post. `wsLive` is the live rows across the whole board, for
- * MAX_LIVE_ROWS_PER_WORKSPACE. 'untracked' when a new row was refused by a cap
- * (the store logs that once); 'ignored' when the post changed nothing that
- * counts — older than what is held, or a finish already recorded.
+ * MAX_LIVE_ROWS_PER_WORKSPACE. 'untracked' when a cap refused a start, a new
+ * row or a failed one resuming (the store logs that once); 'ignored' when the
+ * post changed nothing that counts — older than what is held, or a finish
+ * already recorded.
  *
  * A finish for an id the server never saw running is counted: the 1.7.0 hook
  * posts a finish only for an agent whose start it recorded, so such a post
@@ -468,7 +469,13 @@ export function applyAgent(
 
   if (a.state !== 'done' && a.state !== 'failed') {
     if (row) {
-      if (row.state === 'failed') st.failed = Math.max(0, st.failed - 1); // resumed after failing
+      if (row.state === 'failed') {
+        // A resume is a start as far as the caps go. A failure needs no live
+        // slot, so otherwise failing new ids and then resuming them would add
+        // live rows past both caps, a cycle at a time.
+        if (liveCount(st) >= MAX_LIVE_ROWS || wsLive >= MAX_LIVE_ROWS_PER_WORKSPACE) return 'untracked';
+        st.failed = Math.max(0, st.failed - 1); // resumed after failing
+      }
       row.state = a.state;
       row.kind = a.kind ?? row.kind;
       if (a.label !== undefined) row.label = a.label;

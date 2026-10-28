@@ -12,6 +12,7 @@ import {
   historyKey,
   isDerivedMessage,
   LIVE_STALE_MS,
+  liveCount,
   materialize,
   MAX_FAILED_ROWS,
   MAX_LIVE_ROWS,
@@ -324,6 +325,32 @@ describe('agent posts', () => {
     const other = fresh();
     expect(applyAgent(other, agent(A, 'coding', 1), T0, MAX_LIVE_ROWS_PER_WORKSPACE - 1)).toBe('applied');
     expect(applyAgent(other, agent(B, 'coding', 1), T0, MAX_LIVE_ROWS_PER_WORKSPACE)).toBe('untracked');
+  });
+
+  it('a failed row that resumes is a start: at either cap it stays failed, so fail-and-resume adds no live row', () => {
+    const st = fresh();
+    for (let i = 0; i < MAX_LIVE_ROWS; i++) applyAgent(st, agent(id(100 + i), 'coding', 1), T0, 0);
+    // A failure needs no live slot, so a failed row for a new id lands at the cap...
+    expect(applyAgent(st, agent(A, 'failed', 2), T0, 0)).toBe('applied');
+    // ...but its resume would be a 49th live row.
+    expect(applyAgent(st, agent(A, 'blocked', 3), T0, 0)).toBe('untracked');
+    expect(st.rows.find((r) => r.id === A)).toMatchObject({ state: 'failed' });
+    expect(st.failed).toBe(1);
+    // Failing a batch of new ids and resuming them, over and over.
+    for (let cycle = 0; cycle < 5; cycle++) {
+      const ids = Array.from({ length: MAX_FAILED_ROWS }, (_, k) => id(5000 + cycle * 100 + k));
+      for (const x of ids) applyAgent(st, agent(x, 'failed', 10 + cycle), T0, 0);
+      for (const x of ids) expect(applyAgent(st, agent(x, 'coding', 20 + cycle), T0, 0)).toBe('untracked');
+      afterApply(st, T0);
+    }
+    expect(liveCount(st)).toBe(MAX_LIVE_ROWS);
+
+    // The board's cap the same way.
+    const other = run(fresh(), [agent(B, 'coding', 1), agent(B, 'failed', 2)]);
+    expect(applyAgent(other, agent(B, 'coding', 3), T0, MAX_LIVE_ROWS_PER_WORKSPACE)).toBe('untracked');
+    expect([liveCount(other), other.failed]).toEqual([0, 1]);
+    expect(applyAgent(other, agent(B, 'coding', 3), T0, MAX_LIVE_ROWS_PER_WORKSPACE - 1)).toBe('applied');
+    expect([liveCount(other), other.failed]).toEqual([1, 0]);
   });
 
   it('lists 8 failed rows, the newest, while the failed count stays exact', () => {
