@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -59,6 +60,7 @@ import com.kardanov.agstatus.SubtaskState
 import com.kardanov.agstatus.Subtasks
 import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.rememberReduceMotion
+import kotlinx.coroutines.launch
 
 /**
  * A session's subagents, twice: two rows and a footer on its card, and the
@@ -519,9 +521,16 @@ private fun rememberArrival(animate: Boolean, durationMillis: Int): State<Float>
  * 1 at rest, and 0 → 1 again each time [value] changes in a way [moves] calls
  * news. Never for the value the node was first drawn with, and never with
  * [enabled] false, which is reduced motion.
+ *
+ * The cue runs in the node's own scope, not in the effect that started it.
+ * The next change of [value] replaces that effect, and a change that is not
+ * news — a row approved, then testing a moment later — would otherwise stop
+ * the cue where it was and leave the node half faded, raised, until its next
+ * block or failure. Only news restarts a cue; any other change leaves it to
+ * finish.
  */
 @Composable
-private fun <T> rememberCue(
+internal fun <T> rememberCue(
     value: T,
     enabled: Boolean,
     durationMillis: Int,
@@ -529,12 +538,16 @@ private fun <T> rememberCue(
 ): State<Float> {
     val progress = remember { Animatable(1f) }
     val last = remember { LastDrawn(value) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(value) {
         val from = last.value
         last.value = value
         if (enabled && moves(from, value)) {
-            progress.snapTo(0f)
-            progress.animateTo(1f, tween(durationMillis, easing = BoardEase))
+            scope.launch {
+                // A cue still running is cancelled by the snap: this one replaces it.
+                progress.snapTo(0f)
+                progress.animateTo(1f, tween(durationMillis, easing = BoardEase))
+            }
         }
     }
     return progress.asState()
