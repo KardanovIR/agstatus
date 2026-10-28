@@ -1355,6 +1355,12 @@ export class Store {
       untracked = applyAgent(st, agent, now, this.liveRowsIn(wsId)) === 'untracked';
     } else {
       message = input.message !== undefined ? input.message : st ? st.own.message : prev?.message ?? '';
+      // A turn hint applies whether or not the card holds state yet. On a card
+      // without it only one hint leaves any behind: a Stop that announces a
+      // running workflow, whose report hold must start even when none of the
+      // workflow's agents has posted yet. Every other hint empties again at
+      // once (afterApply), leaving the post's own reading as before.
+      if (input.turn) st ??= materialize(input.status, message);
       if (st) {
         applyMain(st, { status: input.status, message, unattributed: input.unattributed, turn: input.turn }, now);
       }

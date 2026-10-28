@@ -292,6 +292,23 @@ describe('subtasks: the scenarios', () => {
     expect((await b.history('h')).slice(0, 2).map((e) => `${e.status} ${e.message}`))
       .toEqual(['done Turn finished', 'planning Reading subagent results']);
   });
+
+  it('S12 a Stop that announces a workflow holds even a card no subagent has posted to yet', async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const b = await board();
+    await b.main('wf', 'planning', 'Run the review workflow', { turn: { phase: 'start' } });
+    const held = await b.main('wf', 'done', 'Turn finished', stop([], 1));
+    expect(held).toMatchObject({ status: 'planning', message: 'Reading subagent results' });
+    expect(held).not.toHaveProperty('subtasks');
+    // With no workflow running the turn is simply over, as before.
+    await b.main('plain', 'planning', 'Go', { turn: { phase: 'start' } });
+    expect(await b.main('plain', 'done', 'Turn finished', stop([], 0))).toMatchObject({ status: 'done', message: 'Turn finished' });
+    // Nobody posts again: the sweep lets the hold go after 120 s.
+    clock += REPORT_HOLD_MS + 1;
+    expect(b.store.sweepSubtasks().map((m) => [m.session.id, m.prevStatus, m.session.status]))
+      .toEqual([['wf', 'planning', 'done']]);
+  });
 });
 
 describe('subtasks: the live-row caps', () => {
