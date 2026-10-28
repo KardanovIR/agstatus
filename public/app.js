@@ -168,15 +168,33 @@
     return null;
   }
 
+  // Where focus goes when its own control did not survive the repaint, in
+  // order. A subagent row is often gone — finished, or displaced by a blocked
+  // one — and focus left on a row nobody can see drops to <body>, which for a
+  // keyboard user means starting again from the top of the page. So a row
+  // falls back to whichever row holds its slot now, then the footer, then
+  // the title; a footer that stopped being a control falls back to the title.
+  function focusKeys(node) {
+    const key = focusKey(node);
+    if (!key) return [];
+    const d = node.dataset;
+    if (key === `[data-sub="${d.sub}"]`) {
+      const slot = /^\d{1,2}$/.test(d.slot || '') ? [`.sub[data-slot="${d.slot}"]`] : [];
+      return [key, ...slot, '[data-foot]', '[data-open]'];
+    }
+    if (key === `[data-foot="${d.foot}"]`) return [key, '[data-open]'];
+    return [key];
+  }
+
   function paint(el, html) {
     if (painted.get(el) === html) return false;
-    const key = el.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+    const keys = el.contains(document.activeElement) ? focusKeys(document.activeElement) : [];
     el.innerHTML = html;
     painted.set(el, html);
     paintTimes(el);
-    if (key) {
+    for (const key of keys) {
       const again = el.querySelector(key);
-      if (again) again.focus();
+      if (again) { again.focus(); break; }
     }
     return true;
   }

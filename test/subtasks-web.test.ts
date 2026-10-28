@@ -278,6 +278,42 @@ describe('rows on a card', () => {
   });
 });
 
+describe('focus on a row', () => {
+  it('survives a repaint, and moves to the row that takes the slot when its own finishes', async () => {
+    vi.useFakeTimers();
+    const items = ten();
+    const b = await boardWith(block(items));
+    rows(b)[1].focus();
+    b.emit('session', session({ subtasks: block(set(items, 2, { activity: 'Editing app.ts' })) }));
+    expect((document.activeElement as HTMLElement).dataset.sub).toBe(key(2));
+
+    // Subagent 2 finishes; 4 takes its slot, and focus with it rather than
+    // dropping to <body>.
+    b.emit('session', session({ subtasks: block(items.filter((x) => x.n !== 2), { done: 16 }) }));
+    expect((document.activeElement as HTMLElement).dataset.sub).toBe(key(4));
+    expect((document.activeElement as HTMLElement).dataset.slot).toBe('1');
+  });
+
+  it('falls back to the footer, then the title, when nothing takes the slot', async () => {
+    vi.useFakeTimers();
+    const items = ten();
+    const b = await boardWith(block(items));
+    b.click(foot(b));                     // opened in place: ten rows
+    rows(b)[9].focus();
+    b.emit('session', session({ subtasks: block(items.slice(0, 9), { done: 16 }) }));
+    expect(document.activeElement).toBe(foot(b));
+    expect(foot(b)!.getAttribute('aria-expanded')).toBe('true');
+
+    // Folded, with nothing hidden to take a closed slot and no footer
+    // control: the title is always there.
+    b.click(foot(b));
+    b.emit('session', session({ subtasks: block(items.slice(0, 3), { done: 0 }) }));
+    rows(b)[2].focus();
+    b.emit('session', session({ subtasks: block(items.slice(0, 2), { done: 0 }) }));
+    expect(document.activeElement).toBe(b.$('.card[data-id="s1"] [data-open]'));
+  });
+});
+
 describe('the footer', () => {
   it('opens the list in place, folds it, and keeps focus through the next frame', async () => {
     vi.useFakeTimers();
