@@ -3128,6 +3128,17 @@ function writeAgent(dir, key, st) {
   return writeStateFile(dir, 'agents', `${key}.json`, st);
 }
 
+/**
+ * The description a background launch's PostToolUse(async_launched) left in
+ * labels/<key> for a subagent it found no record of, or ''. That result and
+ * the subagent's SubagentStart fire in the same millisecond, so either hook
+ * process can get there first (see handleAgentStart and recordLaunchLabel).
+ */
+function launchedLabel(dir, key) {
+  const record = readStateFile(path.join(dir, 'labels', `${key}.json`));
+  return record ? clip(record.label, LABEL_MAX) : '';
+}
+
 /** launch/ and bind/ file name for a tool call: no tool_use_id becomes a path. */
 const toolUseFile = (toolUseId) => `${sha256(toolUseId).slice(0, 24)}.json`;
 
@@ -3633,7 +3644,7 @@ function agentBody(ctx, key, st, state, extra) {
   const agent = { id: key, state, kind: st.kind };
   if (!MINIMAL && st.label) agent.label = st.label;
   if (extra.activity !== undefined) agent.activity = extra.activity;
-  agent.at = ctx.at;
+  agent.at = extra.at || ctx.at;
   body.agent = agent;
   return body;
 }
@@ -3656,12 +3667,16 @@ function confirmAgent(dir, key, at, sent) {
   writeAgent(dir, key, st);
 }
 
-/** Posts one subagent's state and records it if the board took it. */
+/**
+ * Posts one subagent's state and records it if the board took it. `extra.at`
+ * stands in for the event's own clock where a post must be ordered after one
+ * it corrects (see recordLaunchLabel).
+ */
 async function postAgent(ctx, sub, key, st, state, extra = {}) {
   const body = agentBody(ctx, key, st, state, extra);
   const ok = await send('POST', `${ctx.base}/webhook`, body);
   if (ok) {
-    confirmAgent(sub.dir, key, ctx.at, { state, label: body.agent.label, activity: body.agent.activity });
+    confirmAgent(sub.dir, key, body.agent.at, { state, label: body.agent.label, activity: body.agent.activity });
   }
   return ok;
 }
@@ -3727,6 +3742,21 @@ function applyAgentMeta(dir, key, st, meta) {
 }
 
 /**
+ * A background launch's label its start missed, taken for an Agent-tool
+ * subagent whose own label is not firm yet: the launch result can write it a
+ * moment after the start last looked (see recordLaunchLabel). Returns whether
+ * the record changed.
+ */
+function adoptLaunchedLabel(dir, key, st) {
+  if (MINIMAL || st.kind !== 'agent' || st.labelSrc === 'firm') return false;
+  const label = launchedLabel(dir, key);
+  if (!label) return false;
+  st.label = label;
+  st.labelSrc = 'firm';
+  return true;
+}
+
+/**
  * Looks for a better label at one of a subagent's first META_TRIES events:
  * meta.json for a Claude subagent (the workflow run's copy for a workflow
  * agent, whose run may itself still need finding), the rollout's session_meta
@@ -3744,6 +3774,7 @@ function refreshLabel(ctx, sub, key, st) {
     if (st.labelSrc === 'firm') st.metaTries = META_TRIES;
     return true;
   }
+  adoptLaunchedLabel(sub.dir, key, st);
   if (st.kind === 'workflow' && !st.runId) {
     const found = findWorkflowAgent(ctx, sub, true);
     if (found) {
@@ -3788,6 +3819,7 @@ function codexReports(ctx) {
 async function handleAgentStart(ctx, sub, key, known) {
   if (!sub) return; // stateless: nothing can be recorded, so nothing is posted
   let st = known;
+  let lookAgain = false;
   if (!st) {
     st = { v: 1, seen: true, kind: 'agent', labelPosts: 0, metaTries: 0, at: ctx.at };
     if (SOURCE === 'codex') {
@@ -3813,8 +3845,7 @@ async function handleAgentStart(ctx, sub, key, known) {
       }
       if (st.kind === 'agent') {
         // A background launch's result may have landed first, with the label.
-        const early = MINIMAL ? null : readStateFile(path.join(sub.dir, 'labels', `${key}.json`));
-        const label = early ? clip(early.label, LABEL_MAX) : '';
+        const label = MINIMAL ? '' : launchedLabel(sub.dir, key);
         if (label) {
           st.label = label;
           st.labelSrc = 'firm';
@@ -3829,10 +3860,24 @@ async function handleAgentStart(ctx, sub, key, known) {
               st.labelSrc = 'tentative';
             }
           }
+          lookAgain = !MINIMAL;
         }
       }
     }
     if (!writeAgent(sub.dir, key, st)) return;
+    // The result fires in the same millisecond as this start: it may have put
+    // the label down since the first look, and consumed its launch record
+    // before the claim got there (or another launch's was taken instead). So
+    // the label is looked for again, AFTER the record is written: the result
+    // writes the label and then looks for the record, so one of the two
+    // always sees the other — this start finds the label, or the result
+    // finds the subagent and posts the label itself (recordLaunchLabel).
+    const late = lookAgain ? launchedLabel(sub.dir, key) : '';
+    if (late) {
+      st.label = late;
+      st.labelSrc = 'firm';
+      writeAgent(sub.dir, key, st);
+    }
   }
   await postAgent(ctx, sub, key, st, 'planning');
 }
@@ -3874,6 +3919,9 @@ async function handleAgentEvent(ctx, sub, key, st) {
         }
       }
     }
+    // A meta.json with no description (older Claude Code wrote none) leaves
+    // the label a background launch's result gave, if the start missed it.
+    if (adoptLaunchedLabel(sub.dir, key, st)) changed = true;
     if (changed) writeAgent(sub.dir, key, st);
     // Codex fires this at the end of every sub-agent turn; a re-tasked one
     // comes back with its next class change.
@@ -3887,6 +3935,13 @@ async function handleAgentEvent(ctx, sub, key, st) {
     // post. This fires at once, for prompts answered within a second and for
     // background subagents' prompts that are auto-denied unseen; the
     // Notification fires only for a prompt still waiting after ~6 s.
+    //
+    // It is one of the subagent's own events all the same, and meta.json is
+    // tried at those: a tool no PreToolUse matcher lists (Read, an MCP tool)
+    // can be the first thing a subagent does, and the Notification after it
+    // carries no agent_id to look with. A guessed label, and the launch it
+    // was guessed from, are put right here, before the prompt is posted.
+    if (refreshLabel(ctx, sub, key, st)) writeAgent(sub.dir, key, st);
     writePermMarker(sub.dir, key, clip(tool, 128), MINIMAL ? '' : clip(markerAct(tool, input), MARKER_ACT_MAX), ctx.at);
     return;
   }
@@ -3943,6 +3998,49 @@ async function handleAgentEvent(ctx, sub, key, st) {
 }
 
 /**
+ * Takes a background launch's description as its subagent's firm label, and
+ * returns the label post that calls for, if any, already under way. The
+ * result and the subagent's SubagentStart fire in the same millisecond:
+ *   - not recorded yet: the label goes to labels/<key>, where the start looks
+ *     for it, and the record is looked for once more in case the start
+ *     recorded the subagent meanwhile, after its last look;
+ *   - recorded with this label already (guessed from this launch's own
+ *     record): it is firm now, and that is all — the start's post carries
+ *     it, and if that post fails the next running event sends it again. A
+ *     second post here would repeat the start's, word for word, while it may
+ *     still be on its way;
+ *   - recorded with another label, or none: a label post, within the budget,
+ *     unless the subagent has already finished. It is stamped no earlier than
+ *     1 ms after the start (and anything since confirmed): this process can
+ *     read stdin before the start's does, and the server, which orders a
+ *     subagent's updates by that clock, would then keep the start's guess
+ *     over the correction.
+ */
+function recordLaunchLabel(ctx, sub, key, label) {
+  let st = readAgent(sub.dir, key);
+  if (!st) {
+    writeStateFile(sub.dir, 'labels', `${key}.json`, { v: 1, label });
+    st = readAgent(sub.dir, key);
+    if (!st) return null;
+  }
+  if (st.label === label) {
+    if (st.labelSrc !== 'firm') {
+      st.labelSrc = 'firm';
+      writeAgent(sub.dir, key, st);
+    }
+    return null;
+  }
+  st.label = label;
+  st.labelSrc = 'firm';
+  const post = (!st.cls || RUNNING_STATES.has(st.cls)) && label !== st.labelSent && st.labelPosts < LABEL_POSTS_MAX;
+  if (post) st.labelPosts += 1;
+  writeAgent(sub.dir, key, st);
+  if (!post) return null;
+  const at = Math.max(ctx.at, st.at + 1, (st.clsAt || 0) + 1);
+  return postAgent(ctx, sub, key, st, st.cls || 'planning', { at });
+}
+
+/**
  * PostToolUse and PostToolUseFailure of an Agent, Task or Workflow call — on
  * the parent's thread or a subagent's — which are about the subagent the call
  * LAUNCHED, not the thread that made it. Claude only.
@@ -3953,6 +4051,15 @@ async function handleAgentEvent(ctx, sub, key, st) {
  * posts `failed`; it binds the tool call to the subagent it started, takes a
  * background launch's description as a firm label, and consumes the launch
  * record so it cannot name a later start.
+ *
+ * In that order, and the record last: until a background launch's label is
+ * in labels/<key>, its record is the only label the subagent's start —
+ * running at this very moment — can find. A start that claims the record in
+ * between replaces this binding with its own tentative one, which costs
+ * nothing: a tool call ends in one PostToolUse or one PostToolUseFailure,
+ * never both, so nothing asks again which subagent this call launched (and
+ * meta.json undoes a wrong guess). A result of a kind this hook does not know
+ * leaves the record alone: its start may yet need it.
  */
 async function handleLaunchResult(ctx) {
   if (SOURCE === 'codex') return;
@@ -3987,37 +4094,23 @@ async function handleLaunchResult(ctx) {
   }
 
   if (!result) return;
-  if (toolUseId) consumeLaunch(sub.dir, toolUseId);
+  let labelPost = null;
   if (result.status === 'teammate_spawned') {
     const teammate = idOf(result.agent_id) || idOf(result.teammate_id);
     if (toolUseId && teammate) bindToolUse(sub.dir, toolUseId, agentKey(ctx.base, ctx.session, teammate), true);
+  } else if (result.status === 'completed' || result.status === 'async_launched') {
+    const agentId = idOf(result.agentId);
+    const key = agentId ? agentKey(ctx.base, ctx.session, agentId) : '';
+    if (key && toolUseId) bindToolUse(sub.dir, toolUseId, key, true);
+    const label = key && result.status === 'async_launched' && !MINIMAL ? clip(result.description, LABEL_MAX) : '';
+    if (label) labelPost = recordLaunchLabel(ctx, sub, key, label);
+  } else if (result.status !== 'remote_launched') {
     return;
   }
   // remote_launched: the subagent runs elsewhere and fires no hooks here; the
-  // consumed record was all there was to do.
-  if (result.status !== 'completed' && result.status !== 'async_launched') return;
-  const agentId = idOf(result.agentId);
-  if (!agentId) return;
-  const key = agentKey(ctx.base, ctx.session, agentId);
-  if (toolUseId) bindToolUse(sub.dir, toolUseId, key, true);
-  if (result.status !== 'async_launched' || MINIMAL) return;
-  const label = clip(result.description, LABEL_MAX);
-  if (!label) return;
-  const st = readAgent(sub.dir, key);
-  if (!st) {
-    // The result and the subagent's SubagentStart run in the same
-    // millisecond; when this lands first, the start picks the label up here.
-    writeStateFile(sub.dir, 'labels', `${key}.json`, { v: 1, label });
-    return;
-  }
-  if (st.label === label && st.labelSrc === 'firm') return;
-  st.label = label;
-  st.labelSrc = 'firm';
-  // A subagent that has already finished is not raised again for a label.
-  const post = (!st.cls || RUNNING_STATES.has(st.cls)) && label !== st.labelSent && st.labelPosts < LABEL_POSTS_MAX;
-  if (post) st.labelPosts += 1;
-  writeAgent(sub.dir, key, st);
-  if (post) await postAgent(ctx, sub, key, st, st.cls || 'planning');
+  // consumed record is all there is to do.
+  if (toolUseId) consumeLaunch(sub.dir, toolUseId);
+  if (labelPost) await labelPost;
 }
 
 /**

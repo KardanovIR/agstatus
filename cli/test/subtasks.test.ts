@@ -186,6 +186,30 @@ function fire(
   return captured().slice(before);
 }
 
+/** Starts the hook on one payload without waiting for it; settles when it exits. */
+function fireAsync(
+  ws: Ws,
+  payload: Json,
+  env: Record<string, string | undefined> = {},
+  nodeArgs: string[] = [],
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [...nodeArgs, HOOK], { env: hookEnv(ws, env), stdio: ['pipe', 'ignore', 'ignore'] });
+    child.on('error', reject);
+    child.on('exit', () => resolve());
+    child.stdin!.end(JSON.stringify(payload));
+  });
+}
+
+/** Waits for `check` to hold, for at most `ms`. */
+async function until(check: () => boolean, ms = 5000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > end) throw new Error('timed out waiting');
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 /** The webhook bodies among some requests. */
 const posts = (reqs: Captured[]): Json[] =>
   reqs.filter((r) => r.url === '/webhook' && r.method === 'POST').map((r) => JSON.parse(r.body));
@@ -768,6 +792,73 @@ describe('labels', () => {
     expect(agentPosts(post(ws, load(ws, 'c_subagent_start')))[0].agent.label).toBe('From the result');
   });
 
+  it('labels a background subagent once, whichever of its start and its launch result lands first', async () => {
+    // Claude Code fires the two in the same millisecond (probe c), so their
+    // hook processes race. Every order must give one start post, labelled.
+    for (let run = 0; run < 8; run += 1) {
+      const ws = workspace();
+      post(ws, load(ws, 'c_parent_pre_agent'));
+      const before = captured().length;
+      await Promise.all([fireAsync(ws, load(ws, 'c_subagent_start')), fireAsync(ws, load(ws, 'c_parent_post_agent_async'))]);
+      const sent = agentPosts(posts(captured().slice(before)));
+      expect(sent.map((b) => [b.agent.state, b.agent.label ?? null]), `run ${run}`).toEqual([['planning', 'bg echo']]);
+    }
+  }, 60_000);
+
+  it('looks for the launch result\'s label again when the result took the launch record first', () => {
+    const ws = workspace();
+    post(ws, load(ws, 'c_parent_pre_agent'));
+    // The race above, made to happen every time: just as the start goes to
+    // claim the launch record, the result lands — its label put down first,
+    // then the record consumed — so the claim finds nothing.
+    const preload = path.join(ws.root, 'result-lands.js');
+    fs.writeFileSync(preload, `
+      const fs = require('fs'), path = require('path');
+      const rename = fs.renameSync;
+      fs.renameSync = function (from, to, ...rest) {
+        if (path.basename(path.dirname(from)) === 'launch' && path.basename(path.dirname(to)) === 'bind') {
+          const dir = path.dirname(path.dirname(from));
+          fs.mkdirSync(path.join(dir, 'labels'), { recursive: true, mode: 0o700 });
+          const label = JSON.stringify({ v: 1, label: 'From the result' });
+          fs.writeFileSync(path.join(dir, 'labels', process.env.LANDED_KEY + '.json'), label, { mode: 0o600 });
+          fs.unlinkSync(from);
+        }
+        return rename.call(this, from, to, ...rest);
+      };
+    `);
+    const [start] = agentPosts(posts(fire(ws, load(ws, 'c_subagent_start'), { LANDED_KEY: K(BG, C) }, ['--require', preload])));
+    expect(start.agent).toMatchObject({ id: K(BG, C), state: 'planning', label: 'From the result' });
+  });
+
+  it('picks up a launch result\'s label its start missed, at the subagent\'s next event', () => {
+    const ws = workspace();
+    // No launch record to claim, so the start goes out without a label...
+    expect(agentPosts(post(ws, load(ws, 'c_subagent_start')))[0].agent).not.toHaveProperty('label');
+    // ...and the result's label lands just after it last looked.
+    const labels = path.join(sessionDir(ws, C), 'labels');
+    fs.mkdirSync(labels, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(labels, `${K(BG, C)}.json`), JSON.stringify({ v: 1, label: 'bg echo' }), { mode: 0o600 });
+    const search = load(ws, 'c_pre_bash_bg', { tool_name: 'WebSearch', tool_input: { query: 'echo' } });
+    expect(agentPosts(post(ws, search)).map((b) => b.agent)).toEqual([
+      expect.objectContaining({ state: 'planning', label: 'bg echo', activity: 'Searching: echo' }),
+    ]);
+  });
+
+  it('posts no second, identical start when the launch result lands while the start is on its way', async () => {
+    const ws = workspace();
+    post(ws, load(ws, 'c_parent_pre_agent'));
+    queue({ delay: 1500 }); // the board is slow to answer the start
+    const before = captured().length;
+    const start = fireAsync(ws, load(ws, 'c_subagent_start'));
+    const record = path.join(sessionDir(ws, C), 'agents', `${K(BG, C)}.json`);
+    await until(() => fs.existsSync(record));
+    // Recorded with the label it claimed, its post not yet answered: the
+    // result says the same, so there is nothing to add.
+    expect(fire(ws, load(ws, 'c_parent_post_agent_async'))).toEqual([]);
+    await start;
+    expect(agentPosts(posts(captured().slice(before))).map((b) => b.agent.label)).toEqual(['bg echo']);
+  });
+
   it('claims no launch on a repeated start; the pending one survives for its own start', () => {
     const ws = workspace();
     post(ws, load(ws, 'a_parent_pre_agent_alpha'));
@@ -831,6 +922,15 @@ describe('launch results', () => {
     const [start] = agentPosts(post(ws, load(ws, 'a_subagent_start_beta')));
     expect(start.agent).not.toHaveProperty('label');
     expect(fs.readdirSync(path.join(sessionDir(ws, A), 'launch'))).toEqual([]);
+  });
+
+  it('leaves the launch record for its start when the result is of a kind it does not know', () => {
+    const ws = workspace();
+    post(ws, load(ws, 'a_parent_pre_agent_alpha'));
+    const result = load(ws, 'a_parent_post_agent_alpha');
+    expect(fire(ws, { ...result, tool_response: { ...result.tool_response, status: 'something_new' } })).toEqual([]);
+    expect(fs.readdirSync(path.join(sessionDir(ws, A), 'launch'))).toHaveLength(1);
+    expect(agentPosts(post(ws, load(ws, 'a_subagent_start_alpha')))[0].agent.label).toBe('Run echo alpha');
   });
 });
 
@@ -948,6 +1048,31 @@ describe('permissions', () => {
     const ws = workspace();
     for (const n of ['c_parent_pre_agent', 'c_subagent_start']) post(ws, load(ws, n));
     expect(fire(ws, load(ws, 'd2_permission_request', { session_id: C, agent_id: BG }))).toEqual([]);
+  });
+
+  it('puts a guessed label right at a subagent\'s permission request, before its prompt is posted', () => {
+    const ws = workspace();
+    post(ws, load(ws, 'a_parent_pre_agent_alpha'));
+    post(ws, load(ws, 'a_parent_pre_agent_beta'));
+    // beta starts first and takes alpha's launch: a wrong guess.
+    expect(agentPosts(post(ws, load(ws, 'a_subagent_start_beta')))[0].agent.label).toBe('Run echo alpha');
+    writeMeta(ws, A, BETA, { description: 'Run echo beta', toolUseId: 'toolu_019V8xc7SfdJegte62WEvJyz' });
+    // Its first hooked event asks for a tool no PreToolUse matcher lists, and
+    // the Notification after it carries no agent_id to look meta.json up by.
+    expect(fire(ws, load(ws, 'a_pre_bash_beta', {
+      hook_event_name: 'PermissionRequest', tool_name: 'mcp__github__create_issue', tool_input: { title: 'x' },
+    }))).toEqual([]);
+    ageMarkers(ws, A, K(BETA, A), 3000);
+    const [blocked] = agentPosts(ask(ws, A));
+    expect(blocked.agent).toMatchObject({
+      id: K(BETA, A), state: 'blocked', label: 'Run echo beta', activity: 'Approve: mcp__github__create_issue',
+    });
+    // The wrong binding went with the wrong label: alpha's launch failing is not beta failing.
+    expect(post(ws, {
+      session_id: A, transcript_path: path.join(ws.projects, `${A}.jsonl`), cwd: ws.cwd,
+      hook_event_name: 'PostToolUseFailure', tool_name: 'Agent', tool_use_id: 'toolu_014ut2LA8noPaPhsYzMqEUE2',
+      error: 'boom', is_interrupt: false,
+    })).toEqual([]);
   });
 
   it.skipIf(!POSIX)('never touches CODEX_HOME for a Claude PermissionRequest', () => {
@@ -1145,12 +1270,8 @@ describe('concurrency', () => {
     const ws = workspace();
     const ids = Array.from({ length: 20 }, (_, i) => `a${String(i).padStart(2, '0')}${'0'.repeat(14)}`);
     const burst = (event: string) =>
-      Promise.all(ids.map((id) => new Promise<void>((resolve, reject) => {
-        const child = spawn(process.execPath, [HOOK], { env: hookEnv(ws, {}), stdio: ['pipe', 'ignore', 'ignore'] });
-        child.on('error', reject);
-        child.on('exit', () => resolve());
-        child.stdin!.end(JSON.stringify(load(ws, event === 'start' ? 'a_subagent_start_alpha' : 'a_subagent_stop_alpha', { agent_id: id })));
-      })));
+      Promise.all(ids.map((id) =>
+        fireAsync(ws, load(ws, event === 'start' ? 'a_subagent_start_alpha' : 'a_subagent_stop_alpha', { agent_id: id }))));
     const before = captured().length;
     await burst('start');
     await burst('stop');
