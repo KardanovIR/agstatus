@@ -3,36 +3,36 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"" }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"" }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|Task|WebSearch|WebFetch",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task|WebSearch|WebFetch|Workflow",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"" }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"" }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
         ]
       }
     ],
     "Notification": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"" }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
         ]
       }
     ],
@@ -40,6 +40,43 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"" }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent|Task|Workflow",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/agstatus-hook.js\"", "timeout": 10 }
         ]
       }
     ]
