@@ -1748,6 +1748,28 @@ same way: <code>docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus</code>.</
 use by default. The Dockerfile&#39;s build stage is
 <code>FROM --platform=$BUILDPLATFORM</code>, which the legacy builder
 (<code>DOCKER_BUILDKIT=0</code>) cannot parse.</p>
+<p>The stack&#39;s Docker network has a pinned subnet, <code>172.16.80.0/24</code>, which
+<code>AGSTATUS_SUBNET</code> in <code>.env</code> overrides. Left to choose, Docker hands out
+192.168.x.0/20 blocks once its 172.17–172.31 pools are used up. A network
+that overlaps the host&#39;s LAN routes every container&#39;s traffic for LAN
+addresses into that network instead of out to the LAN, so no container on
+the host can reach a LAN machine. Pick another private range only if the
+default clashes with something on your LAN or VPN, or another stack on the
+host already uses it.</p>
+<p>A network keeps the subnet it was created with. An install that predates the
+pin, or whose <code>AGSTATUS_SUBNET</code> changed, moves onto the configured subnet when
+its network is recreated. Do that with <code>down</code> and then <code>up</code>, passing the same
+<code>--profile</code> flags you start the stack with. A container from a profile you
+leave out keeps the old network alive.</p>
+<pre><code class="language-bash">docker compose --profile tunnel down
+docker compose --profile tunnel up -d
+</code></pre>
+<p>Never add <code>-v</code> to <code>down</code>: the <code>pg_data</code> volume is the database. And don&#39;t skip
+the <code>down</code>. Given a plain <code>up -d</code>, Compose 2.31 and later rebuilds the network
+in place and reattaches the old containers without their service names, so
+the app can no longer reach <code>postgres</code>. If that has already happened,
+<code>docker compose --profile tunnel up -d --force-recreate</code> creates the
+containers again and puts it right.</p>
 <h4 id="self-hosting-production-without-docker"><a class="anchor" href="#self-hosting-production-without-docker">Production without Docker</a></h4>
 <pre><code class="language-bash">npm ci --omit=dev &amp;&amp; npm run build
 PUBLIC_URL=https://status.example.com \
@@ -1823,6 +1845,11 @@ or set them in your deployment environment.</p>
 <td><code>POSTGRES_PASSWORD</code></td>
 <td><code>agstatus</code></td>
 <td>docker-compose only: password for the bundled <code>postgres</code> service (baked into the default <code>DATABASE_URL</code>). Not read by the app itself.</td>
+</tr>
+<tr>
+<td><code>AGSTATUS_SUBNET</code></td>
+<td><code>172.16.80.0/24</code></td>
+<td>docker-compose only: subnet of the stack&#39;s Docker network, pinned so it cannot overlap the host&#39;s LAN (see <a href="#self-hosting-docker-compose">Docker Compose</a>). Not read by the app itself.</td>
 </tr>
 <tr>
 <td><code>MAX_WORKSPACES</code></td>
@@ -1969,7 +1996,7 @@ self-hosted GitHub Actions runner (labels <code>self-hosted</code> and <code>ags
 the machine that serves it, a mini PC behind a Cloudflare Tunnel with no
 inbound SSH. The runner resets its checkout at <code>/apps/agstatus</code> (the
 workflow&#39;s <code>DEPLOY_PATH</code>) to <code>origin/master</code>, rebuilds the stack with
-<code>docker compose --profile tunnel up -d --build --remove-orphans</code>, then waits
+<a href="https://github.com/KardanovIR/agstatus/blob/master/scripts/deploy-compose-up.sh"><code>scripts/deploy-compose-up.sh</code></a>, then waits
 for <code>/healthz</code> on the machine and at the public URL. It does not wait for
 CI, so a push whose build is red still deploys.</p>
 <p>The production <code>.env</code> is therefore <code>/apps/agstatus/.env</code>. Compose reads
@@ -1979,6 +2006,23 @@ CI, so a push whose build is red still deploys.</p>
 leaves it alone. A change there takes effect at the next deploy (or re-run
 the latest Deploy run from the Actions tab), and the startup log,
 <code>docker logs claude-status</code>, shows the limit in force (<code>Limit:</code>).</p>
+<p>The script runs <code>docker compose --profile tunnel up -d --build --remove-orphans</code>.
+When the network is not on the subnet <code>docker-compose.yml</code> pins, the script
+first recreates it, as described under <a href="#self-hosting-docker-compose">Docker Compose</a>:</p>
+<ol>
+<li>It checks that nothing outside the stack is attached to the network and
+that Docker accepts the subnet.</li>
+<li>It builds the image.</li>
+<li>It takes the stack down, never with <code>-v</code>.</li>
+</ol>
+<p>That costs about half a minute of downtime, once. The deploy log records the
+network&#39;s subnet, and after a swap the database&#39;s row counts from before and
+after it.</p>
+<p>After every <code>up</code>, the script also checks that each container still answers to
+its service name on the network. If one doesn&#39;t, Compose has rebuilt the
+network in place, and the script recreates the containers. To move production
+off the pinned subnet, change <code>AGSTATUS_SUBNET</code> in <code>/apps/agstatus/.env</code>.
+Don&#39;t revert the pin: that brings back the bare <code>up</code> and the outage it causes.</p>
 <p>The runner is set up once, on the machine: repo Settings → Actions →
 Runners → New self-hosted runner, add the label <code>agstatus</code>, and install it as
 a service with the runner&#39;s <code>svc.sh</code> so it survives reboots. The tunnel is

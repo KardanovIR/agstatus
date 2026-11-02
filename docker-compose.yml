@@ -111,3 +111,16 @@ volumes:
   pg_data:
   caddy_data:
   caddy_config:
+
+networks:
+  # The subnet is pinned because Docker's own pick can swallow the host's LAN.
+  # Once its 172.17-172.31 pools are used up it hands out 192.168.x.0/20
+  # blocks, and a network over the LAN's range routes every container's
+  # traffic for LAN addresses into this bridge, so no container on the host
+  # can reach a LAN machine. Override AGSTATUS_SUBNET in .env (see
+  # .env.example). Services reach each other by name, so nothing depends on
+  # the addresses.
+  default:
+    ipam:
+      config:
+        - subnet: ${AGSTATUS_SUBNET:-172.16.80.0/24}

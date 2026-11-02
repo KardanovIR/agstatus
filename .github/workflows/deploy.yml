@@ -48,7 +48,12 @@ jobs:
           cd "$DEPLOY_PATH"
           git fetch origin master
           git reset --hard origin/master
-          docker compose --profile tunnel up -d --build --remove-orphans
+          # docker compose --profile tunnel up -d --build --remove-orphans.
+          # If the network is not on the subnet docker-compose.yml pins, the
+          # script recreates it first, by down and then up. A bare up would
+          # rebuild the network in place and leave the containers unable to
+          # find each other. The script's header explains why.
+          bash scripts/deploy-compose-up.sh
           docker image prune -f > /dev/null
 
       - name: Verify

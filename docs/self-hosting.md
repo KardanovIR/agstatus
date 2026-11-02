@@ -39,6 +39,33 @@ use by default. The Dockerfile's build stage is
 `FROM --platform=$BUILDPLATFORM`, which the legacy builder
 (`DOCKER_BUILDKIT=0`) cannot parse.
 
+The stack's Docker network has a pinned subnet, `172.16.80.0/24`, which
+`AGSTATUS_SUBNET` in `.env` overrides. Left to choose, Docker hands out
+192.168.x.0/20 blocks once its 172.17–172.31 pools are used up. A network
+that overlaps the host's LAN routes every container's traffic for LAN
+addresses into that network instead of out to the LAN, so no container on
+the host can reach a LAN machine. Pick another private range only if the
+default clashes with something on your LAN or VPN, or another stack on the
+host already uses it.
+
+A network keeps the subnet it was created with. An install that predates the
+pin, or whose `AGSTATUS_SUBNET` changed, moves onto the configured subnet when
+its network is recreated. Do that with `down` and then `up`, passing the same
+`--profile` flags you start the stack with. A container from a profile you
+leave out keeps the old network alive.
+
+```bash
+docker compose --profile tunnel down
+docker compose --profile tunnel up -d
+```
+
+Never add `-v` to `down`: the `pg_data` volume is the database. And don't skip
+the `down`. Given a plain `up -d`, Compose 2.31 and later rebuilds the network
+in place and reattaches the old containers without their service names, so
+the app can no longer reach `postgres`. If that has already happened,
+`docker compose --profile tunnel up -d --force-recreate` creates the
+containers again and puts it right.
+
 ### Production without Docker
 
 ```bash
@@ -87,6 +114,7 @@ or set them in your deployment environment.
 | `SESSION_TTL_MS` | `0` (legacy) / `86400000` (multi) | Auto-remove sessions not updated for this many ms. `0` disables expiry. |
 | `DATABASE_URL`   | _(empty — in-memory)_             | PostgreSQL connection string (`postgres://user:pass@host:5432/db`) for persistence across restarts. Empty keeps everything in memory. docker-compose defaults it to the bundled `postgres` service; set `DATABASE_URL=` (empty) in `.env` to opt out. (`DB_PATH`/SQLite is no longer supported — see the migration note below.) |
 | `POSTGRES_PASSWORD` | `agstatus`                     | docker-compose only: password for the bundled `postgres` service (baked into the default `DATABASE_URL`). Not read by the app itself. |
+| `AGSTATUS_SUBNET` | `172.16.80.0/24`                 | docker-compose only: subnet of the stack's Docker network, pinned so it cannot overlap the host's LAN (see [Docker Compose](#docker-compose)). Not read by the app itself. |
 | `MAX_WORKSPACES` | `10000`                           | Multi-tenant only: hard ceiling on live workspaces; creation returns `503` at the cap. |
 | `MAX_NEW_WORKSPACES_PER_HOUR` | `200`                | Multi-tenant only: new workspaces the whole server creates in any 60 minutes, on top of the 20 an hour each IP may create. Past it, creation returns `503` with `Retry-After`, the seconds until the oldest of those creations is an hour old. Boards deleted since still count, and with `DATABASE_URL` set the count carries across a restart. A whole number, at least 1. The server logs the value in force at startup (`Limit:`), since an unset or empty one falls back to 200 without a warning. |
 | `TRUST_PROXY`    | _(unset)_                         | Set to `1` behind a reverse proxy (Caddy, nginx, a load balancer) so client IPs come from `X-Forwarded-For`. Required for correct per-IP rate limiting on a public instance. |
@@ -215,7 +243,7 @@ self-hosted GitHub Actions runner (labels `self-hosted` and `agstatus`) on
 the machine that serves it, a mini PC behind a Cloudflare Tunnel with no
 inbound SSH. The runner resets its checkout at `/apps/agstatus` (the
 workflow's `DEPLOY_PATH`) to `origin/master`, rebuilds the stack with
-`docker compose --profile tunnel up -d --build --remove-orphans`, then waits
+[`scripts/deploy-compose-up.sh`](../scripts/deploy-compose-up.sh), then waits
 for `/healthz` on the machine and at the public URL. It does not wait for
 CI, so a push whose build is red still deploys.
 
@@ -226,6 +254,25 @@ The production `.env` is therefore `/apps/agstatus/.env`. Compose reads
 leaves it alone. A change there takes effect at the next deploy (or re-run
 the latest Deploy run from the Actions tab), and the startup log,
 `docker logs claude-status`, shows the limit in force (`Limit:`).
+
+The script runs `docker compose --profile tunnel up -d --build --remove-orphans`.
+When the network is not on the subnet `docker-compose.yml` pins, the script
+first recreates it, as described under [Docker Compose](#docker-compose):
+
+1. It checks that nothing outside the stack is attached to the network and
+   that Docker accepts the subnet.
+2. It builds the image.
+3. It takes the stack down, never with `-v`.
+
+That costs about half a minute of downtime, once. The deploy log records the
+network's subnet, and after a swap the database's row counts from before and
+after it.
+
+After every `up`, the script also checks that each container still answers to
+its service name on the network. If one doesn't, Compose has rebuilt the
+network in place, and the script recreates the containers. To move production
+off the pinned subnet, change `AGSTATUS_SUBNET` in `/apps/agstatus/.env`.
+Don't revert the pin: that brings back the bare `up` and the outage it causes.
 
 The runner is set up once, on the machine: repo Settings → Actions →
 Runners → New self-hosted runner, add the label `agstatus`, and install it as

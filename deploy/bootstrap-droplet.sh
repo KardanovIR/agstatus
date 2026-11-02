@@ -12,7 +12,12 @@
 #      Postgres password.
 #   5. Starts the full stack: app + PostgreSQL + Caddy TLS.
 #
-# Idempotent — safe to re-run. This is the setup for the earlier droplet:
+# Idempotent: safe to re-run, with one exception. A stack started before
+# docker-compose.yml pinned the network's subnet needs
+# `docker compose --profile tls down` (never with -v) in /opt/agstatus first.
+# Otherwise the re-run's `up` rebuilds the network in place and the
+# containers lose their names (see docs/self-hosting.md). This is the setup
+# for the earlier droplet:
 # .github/workflows/deploy.yml no longer deploys over SSH (it runs on a
 # self-hosted runner whose checkout is /apps/agstatus, see
 # docs/self-hosting.md), so a push does not redeploy a server set up here.
