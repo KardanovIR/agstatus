@@ -638,7 +638,10 @@ folder it <em>started</em> in, not the one it happens to be standing in.</li>
 unreadable — the hook was installed mid-session, the temp directory was
 swept, this is the first run — the next event pins the live directory name
 (and any title still in reach of the transcript read), which is no worse
-than what the hook posted before pinning existed.</li>
+than what the hook posted before pinning existed. The one exception is the
+mark the map keeps for a Codex side conversation (see
+<a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a>): without it, that
+conversation&#39;s events are dropped until it next asks for approval.</li>
 </ul>
 <p><code>project</code> is deliberately <strong>not</strong> pinned: it is still read from the live
 working directory on every event, so it says where the session is right now.
@@ -1061,6 +1064,19 @@ the installer say so when they finish setting Codex up.</li>
 <p>Events wired: <code>SessionStart</code>, <code>PreToolUse</code> (matcher
 <code>^(Bash|apply_patch|Edit|Write)$</code>), <code>PermissionRequest</code>, and <code>Stop</code>, each with
 a 10 s timeout (the script itself exits within ~4 s).</p>
+<p>Codex Desktop also starts short threads of its own and keeps no rollout for
+them. Examples are its suggestions (a run in the project folder, then a check
+in <code>/</code>), commit and PR messages, and inline edits. Their hook payloads carry
+<code>transcript_path: null</code>, and the hook ignores them, so they no longer show up
+as extra cards named after the project and left at done.</p>
+<p>Side conversations have no rollout either, but they stay on the board. That
+covers Desktop&#39;s side chats, the TUI&#39;s <code>/side</code> and <code>codex exec fork --ephemeral</code>. They fork a session, which their <code>SessionStart</code> says with
+<code>source: &quot;fork&quot;</code> (Codex 0.155 and later). A request for approval always
+posts, whichever thread it comes from, and keeps that thread on the board
+from then on. A side conversation the hook never saw start (an older Codex,
+or the hook installed partway through) therefore appears at its first
+approval request. A fresh <code>codex exec --ephemeral</code> run is ignored along with
+the helpers.</p>
 <h4 id="hooks-environment-variables-read-by-the-hooks"><a class="anchor" href="#hooks-environment-variables-read-by-the-hooks">Environment variables read by the hooks</a></h4>
 <div class="table-wrap"><table>
 <thead>

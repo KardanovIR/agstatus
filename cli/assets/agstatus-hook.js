@@ -2293,8 +2293,11 @@ async function endHostRecord(base, session) {
 // projectStateFile): one small JSON file in the system temp dir, keyed by
 // board and source, replaced whole through temp + rename, and read as empty
 // whenever it cannot be trusted. Losing the file costs a name carried over
-// from an earlier event — never an event, and never a throw. It is written
-// 0600: a title is the user's own words, and on Linux the temp dir is shared.
+// from an earlier event, and never a throw. The one exception is the `kept`
+// mark on a Codex thread with no rollout (keepsEphemeral): losing it drops
+// that thread's later events until it next asks for approval. The file is
+// written 0600: a title is the user's own words, and on Linux the temp dir is
+// shared.
 
 /** Whether a session title may name a card at all; see the block above. */
 const TITLES = SOURCE === 'claude' && !MINIMAL;
@@ -2446,13 +2449,16 @@ function sessionNameFile(base) {
 }
 
 /**
- * The map as { id: { name, title?, at } } — `name` the pinned folder, `title`
- * the pinned title when one has been seen — already pruned of entries the
- * server would have expired. Missing, oversized, unparseable or malformed all
- * read as an empty map: a lost pin degrades to the live cwd (or the agent's
- * name where there is none, or a title the transcript tail still shows), which
- * is no worse than what the hook sent before pinning existed. Null-prototype so a session id of "__proto__" is an
- * ordinary key and not a prototype write.
+ * The map as { id: { name, title?, kept?, at } }: `name` is the pinned folder,
+ * `title` the pinned title once one has been seen, and `kept` marks a Codex
+ * thread with no rollout that the board keeps (keepsEphemeral). Entries the
+ * server would have expired are already pruned. Missing, oversized,
+ * unparseable or malformed all read as an empty map: a lost pin degrades to
+ * the live cwd (or the agent's name where there is none, or a title the
+ * transcript tail still shows), which is no worse than what the hook sent
+ * before pinning existed. A lost `kept` mark drops that thread's later events
+ * instead. Null-prototype so a session id of "__proto__" is an ordinary key
+ * and not a prototype write.
  */
 function loadSessionNames(file) {
   const out = Object.create(null);
@@ -2470,11 +2476,16 @@ function loadSessionNames(file) {
       // have written to, and whatever is in it goes on the wire as a name.
       const title = cleanTitle(entry.title);
       const at = typeof entry.at === 'number' && isFinite(entry.at) ? entry.at : 0;
+      const kept = entry.kept === true;
       // Aged out on the way in, so every write prunes without a second pass.
       // A title with no folder is still a name (a session started at '/'; see
-      // pinnedName, which pins one only alongside a title).
-      if ((name !== '' || title !== '') && now - at < SESSION_NAME_MAX_AGE_MS) {
-        out[id] = title !== '' ? { name, title, at } : { name, at };
+      // pinnedName, which pins one only alongside a title). A `kept` mark with
+      // neither is still worth holding on to, because it is what lets the
+      // session's events through.
+      if ((name !== '' || title !== '' || kept) && now - at < SESSION_NAME_MAX_AGE_MS) {
+        const pin = title !== '' ? { name, title, at } : { name, at };
+        if (kept) pin.kept = true;
+        out[id] = pin;
       }
     }
   } catch {
@@ -2488,7 +2499,8 @@ function loadSessionNames(file) {
  * Temp + rename so a reader in another process sees one whole map or the
  * other, never a half-written one. Two events writing at once can still cost
  * the loser's entry — a read-modify-write, not a lock — and that costs at most
- * one name, which the next event of that session re-pins.
+ * one name, which the next event of that session re-pins. A lost `kept` mark
+ * is not re-pinned that way: see keepsEphemeral.
  */
 function writeSessionNames(file, names) {
   const ids = Object.keys(names);
@@ -2633,6 +2645,38 @@ function pinnedName(base, session, live, title) {
   return (TITLES && entry.title) || entry.name || agentLabel();
 }
 
+/**
+ * Whether a Codex event with no rollout (transcript_path null) belongs to a
+ * thread a person is in, which the board keeps, rather than to one of Codex
+ * Desktop's own helper runs, which main drops. Both are ephemeral threads, and
+ * most of their events look alike. Two kinds of event tell them apart:
+ *   - A SessionStart with source "fork". A side conversation (Desktop's side
+ *     chat, the TUI's /side, `codex exec fork --ephemeral`) forks a session,
+ *     while Desktop starts every helper fresh ("startup"). Codex reports
+ *     "fork" from 0.155 on; before that, a fork says "startup" too.
+ *   - A PermissionRequest. A request for a person's approval always posts,
+ *     because a missed one defeats the board. The helpers run with approvals
+ *     off, so they do not ask.
+ * Either one leaves a `kept` mark on the session's name-map entry, and the
+ * session's later events get through on it. A side conversation whose mark
+ * never came (an older Codex, or the hook installed partway through) or was
+ * lost (see writeSessionNames) stays off the board until it next asks for
+ * approval. A fresh `codex exec --ephemeral` run is dropped with the helpers.
+ */
+function keepsEphemeral(base, session, event, payload) {
+  const file = sessionNameFile(base);
+  const names = loadSessionNames(file);
+  const entry = names[session];
+  if ((event === 'SessionStart' && payload.source === 'fork') || event === 'PermissionRequest') {
+    if (!entry || !entry.kept) {
+      names[session] = { ...(entry || { name: '' }), kept: true, at: Date.now() };
+      writeSessionNames(file, names);
+    }
+    return true;
+  }
+  return Boolean(entry && entry.kept);
+}
+
 /** SessionEnd deletes the card, so its pin has nothing left to name. */
 function forgetSessionName(base, session) {
   const file = sessionNameFile(base);
@@ -2653,6 +2697,32 @@ async function main() {
   const event = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : '';
   const session = typeof payload.session_id === 'string' ? payload.session_id : '';
   if (!session) return;
+
+  // A Codex thread that keeps no rollout reports transcript_path as an explicit
+  // null. Every Codex hook input has carried the key since hooks shipped
+  // (0.114), and a thread with a rollout always names it there, so a missing
+  // key is never this case. Such threads are ephemeral, and Codex Desktop
+  // starts them for itself all day long:
+  //   - each suggestion run (one in the project folder, then a safety pass in
+  //     `/`);
+  //   - commit and PR messages;
+  //   - inline edits.
+  // Each one posted a Codex card of its own, named after the project and left
+  // at DONE: a twin of the session the user was actually in. On the machine
+  // this was found on, 85 of the 96 Codex sessions the hook had recorded were
+  // suggestion runs.
+  //
+  // Side conversations are ephemeral too, but they have a person in them.
+  // keepsEphemeral knows them by their SessionStart, and it keeps any thread
+  // that asks a person for approval. Every other event without a rollout is
+  // dropped here, before anything is written or sent. The drop works one event
+  // at a time and ignores agent_id: a sub-agent of a dropped run brings along
+  // the run's session_id and a null transcript_path, while a sub-agent of a
+  // saved session always names its own rollout.
+  if (SOURCE === 'codex' && payload.transcript_path === null && !keepsEphemeral(base, session, event, payload)) {
+    dbg(`${event || 'event'} from a Codex thread with no rollout (a Desktop helper run); not posted`);
+    return;
+  }
 
   if (event === 'SessionEnd') {
     // The card is about to be deleted, so keep the name map to sessions that

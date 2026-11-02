@@ -348,3 +348,161 @@ describe('Claude Code Notification is unaffected', () => {
     expect(card(posts)?.message).toBe('Claude needs your permission to use Bash');
   });
 });
+
+/**
+ * Codex Desktop starts ephemeral threads of its own all day. These include its
+ * suggestion runs (a pass in the project folder, then a safety pass in `/`)
+ * and commit and PR messages. Each one used to post as a card named after the
+ * project, left at DONE beside the real session. Codex keeps no rollout for
+ * them, so their payloads carry transcript_path as an explicit null.
+ *
+ * Two kinds of thread with no rollout stay on the board:
+ *   - side conversations, which fork a session and say so at SessionStart;
+ *   - any thread that asks a person for approval.
+ */
+describe('Codex threads with no rollout: helper runs stay off the board', () => {
+  const RUN = '019a4c2e-5a5a-7000-8000-00000000a001';
+  const ephemeral = (event: string, extra: Record<string, unknown> = {}) => ({
+    hook_event_name: event,
+    session_id: RUN,
+    transcript_path: null,
+    cwd: '/Users/x/jobsearch-saas',
+    model: 'gpt-5.6-terra',
+    ...extra,
+  });
+  const bash = { turn_id: 'turn-1', tool_name: 'Bash', tool_input: { command: ['bash', '-lc', 'rg TODO'] } };
+  const ask = { turn_id: 'turn-1', tool_input: { description: 'May I run it?' } };
+
+  /** One TMPDIR and state dir per test, with Focus on, so every file the hook could write lands in it. */
+  function machine(): { dir: string; env: Record<string, string> } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-eph-'));
+    const homeDir = path.join(dir, 'home');
+    fs.mkdirSync(homeDir);
+    fs.writeFileSync(path.join(homeDir, '.agstatus.json'), JSON.stringify({ focus: true }));
+    fs.writeFileSync(path.join(dir, 'machine.json'),
+      JSON.stringify({ machineId: '6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b', name: 'Test' }));
+    return { dir, env: { HOME: homeDir, TMPDIR: dir, AGSTATUS_STATE_DIR: dir } };
+  }
+  /** What the hook left behind: the names map, scan state, and sessions/ host records. */
+  const written = (dir: string) => fs.readdirSync(dir).filter((n) => n !== 'home' && n !== 'machine.json').sort();
+  const fresh = (payload: Record<string, unknown>, env: Record<string, string>) => {
+    fs.writeFileSync(capturePath, '');
+    return fire(payload, env);
+  };
+
+  it('posts nothing and writes nothing, for every event a helper run fires', () => {
+    const m = machine();
+    const events = [
+      ephemeral('SessionStart', { source: 'startup' }),
+      ephemeral('PreToolUse', bash),
+      ephemeral('PreToolUse', { turn_id: 'turn-1', tool_name: 'apply_patch', tool_input: {} }),
+      ephemeral('Stop', { turn_id: 'turn-1', stop_hook_active: false }),
+      // The safety pass that follows starts in `/`.
+      ephemeral('SessionStart', { source: 'startup', cwd: '/', model: 'gpt-5.6-luna' }),
+    ];
+    for (const p of events) expect(fresh(p, m.env), p.hook_event_name).toEqual([]);
+    expect(written(m.dir)).toEqual([]);
+  });
+
+  it('keeps only a SessionStart that says fork: every other source stays off', () => {
+    // Codex also reports compact, clear and resume. None of them means a person
+    // forked a conversation, so none of them keeps a thread with no rollout.
+    const m = machine();
+    for (const source of ['compact', 'clear', 'resume', undefined]) {
+      const p = ephemeral('SessionStart', source === undefined ? {} : { source });
+      expect(fresh(p, m.env), String(source)).toEqual([]);
+      expect(fresh(ephemeral('PreToolUse', bash), m.env), `after ${source}`).toEqual([]);
+    }
+    expect(written(m.dir)).toEqual([]);
+  });
+
+  it("drops a helper run's sub-agent too, which brings along the run's session_id", () => {
+    const m = machine();
+    const sub = ephemeral('PreToolUse', { ...bash, agent_id: '019a4c2e-0000-7000-8000-00000000c009', agent_type: 'default' });
+    expect(fresh(sub, m.env)).toEqual([]);
+    expect(written(m.dir)).toEqual([]);
+  });
+
+  it('keeps a side conversation, which forks a session, for all of its events', () => {
+    const m = machine();
+    const SIDE = '019a4c2e-5a5a-7000-8000-00000000d001';
+    const side = (event: string, extra: Record<string, unknown> = {}) =>
+      ephemeral(event, { session_id: SIDE, model: 'gpt-6-astra', ...extra });
+    expect(card(fresh(side('SessionStart', { source: 'fork' }), m.env))).toMatchObject({ session_id: SIDE, status: 'idle' });
+    expect(card(fresh(side('PreToolUse', bash), m.env))?.status).toBe('coding');
+    expect(card(fresh(side('PermissionRequest', ask), m.env)))
+      .toMatchObject({ status: 'blocked', message: 'May I run it?' });
+    // Its sub-agents land on its card, as a saved session's do.
+    expect(card(fresh(side('PreToolUse', { ...bash, agent_id: '019a4c2e-0000-7000-8000-00000000c010' }), m.env)))
+      .toMatchObject({ session_id: SIDE, status: 'coding' });
+    expect(card(fresh(side('Stop', { turn_id: 'turn-1' }), m.env))?.status).toBe('done');
+    // The mark belongs to that session alone: a helper run beside it still posts nothing.
+    expect(fresh(ephemeral('PreToolUse', bash), m.env)).toEqual([]);
+  });
+
+  it('keeps a side conversation that started in `/`, with no folder to pin', () => {
+    // A Desktop conversation can sit in `/`, where the name map pins no
+    // folder; the mark has to hold on its own.
+    const m = machine();
+    const SIDE = '019a4c2e-5a5a-7000-8000-00000000d002';
+    const side = (event: string, extra: Record<string, unknown> = {}) =>
+      ephemeral(event, { session_id: SIDE, cwd: '/', model: 'gpt-6-astra', ...extra });
+    expect(card(fresh(side('SessionStart', { source: 'fork' }), m.env))?.status).toBe('idle');
+    expect(card(fresh(side('PermissionRequest', ask), m.env))?.status).toBe('blocked');
+    expect(card(fresh(side('PreToolUse', bash), m.env))?.status).toBe('coding');
+    expect(card(fresh(side('Stop', { turn_id: 'turn-1' }), m.env))?.status).toBe('done');
+  });
+
+  it('always posts a request for approval, and keeps that thread from then on', () => {
+    // Not seen starting as a fork: an older Codex that says "startup" for one,
+    // or the hook installed partway through. Its approval prompt must still
+    // reach the board, and the rest of the thread with it.
+    const m = machine();
+    const LATE = '019a4c2e-5a5a-7000-8000-00000000e001';
+    const late = (event: string, extra: Record<string, unknown> = {}) => ephemeral(event, { session_id: LATE, ...extra });
+    expect(fresh(late('PreToolUse', bash), m.env)).toEqual([]);
+    expect(card(fresh(late('PermissionRequest', ask), m.env)))
+      .toMatchObject({ session_id: LATE, status: 'blocked', message: 'May I run it?' });
+    expect(card(fresh(late('PreToolUse', bash), m.env))?.status).toBe('coding');
+    expect(card(fresh(late('Stop', { turn_id: 'turn-1' }), m.env))?.status).toBe('done');
+    expect(fresh(ephemeral('PreToolUse', bash), m.env)).toEqual([]);
+  });
+
+  it('still posts a root thread whose payload names its rollout, and writes its records', () => {
+    const m = machine();
+    const file = writeRollout('019a4c2e-0000-7000-8000-00000000b001', [turnContext('turn-1', 'user')]);
+    const root = (event: string, extra: Record<string, unknown> = {}) =>
+      ephemeral(event, { session_id: 'root-1', transcript_path: file, model: 'gpt-6-astra', ...extra });
+    expect(card(fresh(root('SessionStart', { source: 'startup' }), m.env))?.status).toBe('idle');
+    expect(card(fresh(root('PermissionRequest', { turn_id: 'turn-1' }), m.env))?.status).toBe('blocked');
+    expect(written(m.dir)).toEqual(expect.arrayContaining(['sessions']));
+    expect(written(m.dir).some((n) => n.startsWith('agstatus-names-'))).toBe(true);
+  });
+
+  it("leaves a saved session's sub-agent on its root's card", () => {
+    // A sub-agent of a saved session names its own rollout, never null.
+    const own = writeRollout('019a4c2e-0000-7000-8000-00000000c001', [turnContext('turn-1', 'user')]);
+    const posts = fire(ephemeral('PreToolUse', {
+      ...bash, session_id: 'root-2', transcript_path: own,
+      agent_id: '019a4c2e-0000-7000-8000-00000000c001', agent_type: 'default',
+    }));
+    expect(card(posts)).toMatchObject({ session_id: 'root-2', status: 'coding' });
+  });
+
+  it('still posts a payload with no transcript_path at all, or an empty one', () => {
+    // Only an explicit null means no rollout; a key that is missing or empty is
+    // some other sender's payload, and it is posted as before.
+    const p = { hook_event_name: 'SessionStart', session_id: 'old-1', cwd: '/Users/x/old-proj' };
+    expect(card(fire(p))?.status).toBe('idle');
+    fs.writeFileSync(capturePath, '');
+    expect(card(fire({ ...p, hook_event_name: 'Stop', transcript_path: '' }))?.status).toBe('done');
+  });
+
+  it('never filters a Claude Code payload', () => {
+    const posts = fire(
+      { hook_event_name: 'SessionStart', session_id: 'cc-1', transcript_path: null },
+      { AGSTATUS_SOURCE: 'claude', AGSTATUS_USAGE: 'off' },
+    );
+    expect(card(posts)?.status).toBe('idle');
+  });
+});

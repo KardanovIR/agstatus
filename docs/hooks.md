@@ -364,7 +364,10 @@ Three consequences worth knowing:
   unreadable — the hook was installed mid-session, the temp directory was
   swept, this is the first run — the next event pins the live directory name
   (and any title still in reach of the transcript read), which is no worse
-  than what the hook posted before pinning existed.
+  than what the hook posted before pinning existed. The one exception is the
+  mark the map keeps for a Codex side conversation (see
+  [OpenAI Codex specifics](#openai-codex-specifics)): without it, that
+  conversation's events are dropped until it next asks for approval.
 
 `project` is deliberately **not** pinned: it is still read from the live
 working directory on every event, so it says where the session is right now.
@@ -823,6 +826,22 @@ commands print which switch is in force, where the launcher is, and
 Events wired: `SessionStart`, `PreToolUse` (matcher
 `^(Bash|apply_patch|Edit|Write)$`), `PermissionRequest`, and `Stop`, each with
 a 10 s timeout (the script itself exits within ~4 s).
+
+Codex Desktop also starts short threads of its own and keeps no rollout for
+them. Examples are its suggestions (a run in the project folder, then a check
+in `/`), commit and PR messages, and inline edits. Their hook payloads carry
+`transcript_path: null`, and the hook ignores them, so they no longer show up
+as extra cards named after the project and left at done.
+
+Side conversations have no rollout either, but they stay on the board. That
+covers Desktop's side chats, the TUI's `/side` and `codex exec fork
+--ephemeral`. They fork a session, which their `SessionStart` says with
+`source: "fork"` (Codex 0.155 and later). A request for approval always
+posts, whichever thread it comes from, and keeps that thread on the board
+from then on. A side conversation the hook never saw start (an older Codex,
+or the hook installed partway through) therefore appears at its first
+approval request. A fresh `codex exec --ephemeral` run is ignored along with
+the helpers.
 
 ### Environment variables read by the hooks
 
