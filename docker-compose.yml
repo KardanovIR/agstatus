@@ -106,7 +106,12 @@ services:
     restart: unless-stopped
     profiles:
       - tunnel
-    command: tunnel --no-autoupdate run
+    # --grace-period: how long cloudflared waits for requests in flight when
+    # it stops. An open event stream is always in flight, so the default,
+    # 30 s, ran into Docker's 10 s and ended every stop in SIGKILL. A flag of
+    # `tunnel`, so it goes before `run`: after it, cloudflared prints its
+    # usage and exits.
+    command: tunnel --no-autoupdate --grace-period 2s run
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     depends_on:
