@@ -4,6 +4,11 @@ services:
     image: claude-status-dashboard
     container_name: claude-status
     restart: unless-stopped
+    # Under Docker's init (tini), so the server is not PID 1: init passes
+    # SIGTERM on and reaps orphaned processes. As PID 1 with no handler, Node
+    # ignored SIGTERM, and every `docker stop` ended in SIGKILL after 10 s. The
+    # server now stops on SIGTERM by itself, within 4 s (src/server.ts).
+    init: true
     environment:
       PORT: 3000
       HOST: 0.0.0.0

@@ -47,14 +47,10 @@ afterEach(() => {
  */
 export function makeApp(overrides: Partial<AppConfig> = {}): TestApp {
   const created = createApp({ ...TEST_DEFAULTS, ...overrides });
-  let done = false;
-  const shutdown = (): void => {
-    if (done) return;
-    done = true;
-    created.shutdown();
-  };
+  let done: Promise<void> | null = null;
+  const shutdown = (): Promise<void> => (done ??= created.shutdown());
   cleanups.push(shutdown);
-  return { app: created.app, store: created.store, ready: created.ready, shutdown };
+  return { ...created, shutdown };
 }
 
 /**

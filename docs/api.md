@@ -639,7 +639,10 @@ data: { "id": "6c1f…", "session_id": "sess-abc", "machine_id": "9f2c…", "typ
 The server sets `Cache-Control: no-cache, no-transform` and
 `X-Accel-Buffering: no` so reverse proxies don't buffer the stream. When a
 workspace is deleted, its open streams receive a final empty `snapshot` and
-are closed.
+are closed. When the server shuts down (SIGTERM or SIGINT, which every restart
+sends), open streams end with no final event: the board is still there, so
+reconnect, backing off while the server is away. A stream requested while it
+shuts down gets `503`.
 
 ## Limits
 

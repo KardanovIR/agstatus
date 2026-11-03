@@ -206,7 +206,19 @@ export interface CreatedApp {
   store: Store;
   /** Resolves once persisted state (if any) is loaded; reject = DB unreachable. */
   ready: Promise<void>;
-  shutdown(): void;
+  /**
+   * Ends every event stream and answers new ones 503. The first half of
+   * stopping a server: its HTTP server cannot finish closing while a stream
+   * is open.
+   */
+  endStreams(): void;
+  /**
+   * Stops the sweeps and push, ends the streams, then writes what is still
+   * queued to Postgres and closes the pool; resolves once that is done. A
+   * request handled after this call updates memory only, so a server calls
+   * it once its HTTP server has closed (see server.ts).
+   */
+  shutdown(): Promise<void>;
 }
 
 export function createApp(cfg: AppConfig): CreatedApp {
@@ -217,6 +229,8 @@ export function createApp(cfg: AppConfig): CreatedApp {
   // replaces the old stream), counted apart from the viewer slots above.
   const listeners = new Map<string, Map<string, Listener>>();
   const timers: NodeJS.Timeout[] = [];
+  // Set by endStreams(): the server is on its way down.
+  let closing = false;
   // A caller that omits or misconfigures the TTL gets the default, never NaN — a NaN
   // sweep interval is a 1 ms hot loop and a NaN expiry is a command that never ends.
   const commandTtlMs =
@@ -304,6 +318,33 @@ export function createApp(cfg: AppConfig): CreatedApp {
         try { l.res.end(); } catch { /* already gone */ }
       }
       listeners.delete(wsId);
+    }
+  }
+
+  /**
+   * Ends every stream, for a server on its way down, and turns new ones away
+   * (handleEvents). No last frame: unlike a deleted board's empty snapshot,
+   * the board is still there, so a viewer keeps its cards while it
+   * reconnects, and every client retries a clean end exactly as it retries a
+   * dropped one. Each stream's connection is closed once its last chunk is
+   * out: kept alive, it would hold the HTTP server's close() open for
+   * keepAliveTimeout.
+   */
+  function endStreams(): void {
+    closing = true;
+    const streams = [
+      ...Array.from(sseClients.values()).flatMap((clients) => Array.from(clients)),
+      ...Array.from(listeners.values()).flatMap((group) => Array.from(group.values(), (l) => l.res)),
+    ];
+    // Forgotten first, so the close handlers find nothing to drop and tell no
+    // viewer a machine went offline.
+    sseClients.clear();
+    listeners.clear();
+    for (const res of streams) {
+      try {
+        res.end();
+        res.socket?.end();
+      } catch { /* already gone */ }
     }
   }
 
@@ -613,6 +654,13 @@ export function createApp(cfg: AppConfig): CreatedApp {
   }
 
   function handleEvents(wsId: string, req: Request, res: Response): void {
+    // A server on its way down opens no stream it would only end again. 503,
+    // never 404: the web board and both apps take a 404 to mean the board is
+    // gone, and stop reconnecting.
+    if (closing) {
+      res.status(503).json({ error: 'server is shutting down' });
+      return;
+    }
     // The key used to ride in `?key=`. A stale client must fail loudly rather
     // than fall through to a viewer stream and look connected while
     // unauthenticated. The value is never echoed back or logged: it is in an
@@ -1331,13 +1379,13 @@ export function createApp(cfg: AppConfig): CreatedApp {
     timers.push(pairSweep);
   }
 
-  function shutdown(): void {
+  function shutdown(): Promise<void> {
     for (const t of timers) clearInterval(t);
-    for (const wsId of new Set([...sseClients.keys(), ...listeners.keys()])) closeStreams(wsId);
+    endStreams();
     pusher.shutdown();
     // Drains queued writes then closes the pool; nothing left to surface here.
-    void store.close().catch(() => undefined);
+    return store.close().catch(() => undefined);
   }
 
-  return { app, store, ready: store.ready, shutdown };
+  return { app, store, ready: store.ready, endStreams, shutdown };
 }

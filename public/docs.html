@@ -1943,6 +1943,13 @@ request), purge flagged rows yourself:
 <code>devices</code>, <code>usage_limits</code>, <code>session_events</code>, <code>usage_history</code>,
 <code>usage_project_days</code> and <code>usage_session_totals</code> — miss one and a deleted board
 leaves data behind).</p>
+<p>A stop does not drop writes still queued. On SIGTERM (what <code>docker stop</code>,
+systemd and PaaS platforms send) or SIGINT (Ctrl-C), the server stops taking
+connections, ends the event streams (every client reconnects by itself), lets
+requests already running finish, writes what is still queued to Postgres and
+exits, normally within a fraction of a second. If that is not done 4 s after
+the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
+enough, and Docker&#39;s default is 10 s.</p>
 <h4 id="self-hosting-flagging-rows-written-before-162s-bounds"><a class="anchor" href="#self-hosting-flagging-rows-written-before-162s-bounds">Flagging rows written before 1.6.2&#39;s bounds</a></h4>
 <p>Servers before 1.6.2 stored project days with any date, and capped some
 tables by flagging old rows rather than refusing new ones, so their database
@@ -3032,7 +3039,10 @@ session&#39;s removal superseded it, or it expired
 <p>The server sets <code>Cache-Control: no-cache, no-transform</code> and
 <code>X-Accel-Buffering: no</code> so reverse proxies don&#39;t buffer the stream. When a
 workspace is deleted, its open streams receive a final empty <code>snapshot</code> and
-are closed.</p>
+are closed. When the server shuts down (SIGTERM or SIGINT, which every restart
+sends), open streams end with no final event: the board is still there, so
+reconnect, backing off while the server is away. A stream requested while it
+shuts down gets <code>503</code>.</p>
 <h3 id="api-limits"><a class="anchor" href="#api-limits">Limits</a></h3>
 <p>To keep a shared instance healthy, multi-tenant workspaces are capped:</p>
 <div class="table-wrap"><table>

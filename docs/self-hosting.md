@@ -161,6 +161,14 @@ request), purge flagged rows yourself:
 `usage_project_days` and `usage_session_totals` — miss one and a deleted board
 leaves data behind).
 
+A stop does not drop writes still queued. On SIGTERM (what `docker stop`,
+systemd and PaaS platforms send) or SIGINT (Ctrl-C), the server stops taking
+connections, ends the event streams (every client reconnects by itself), lets
+requests already running finish, writes what is still queued to Postgres and
+exits, normally within a fraction of a second. If that is not done 4 s after
+the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
+enough, and Docker's default is 10 s.
+
 ### Flagging rows written before 1.6.2's bounds
 
 Servers before 1.6.2 stored project days with any date, and capped some
