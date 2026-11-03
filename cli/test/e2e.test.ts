@@ -7,6 +7,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import { createApp } from '../../src/app';
 import { runInit, runUninstall } from '../src/index';
+import { readCodexHookConfig } from '../src/codex';
 import { hookInstallPath, settingsPath } from '../src/settings';
 
 const created = createApp({
@@ -45,9 +46,24 @@ afterAll(async () => {
 let codexDir: string;
 let prevCodexHome: string | undefined;
 let prevStatusUrl: string | undefined;
+let prevStatusSecret: string | undefined;
+let prevAgstatusUrl: string | undefined;
 let prevHome: string | undefined;
 
+// The upgrade tests run init without a url. One that regressed to the default
+// server would reach agstatus.online for real, so nothing here may leave
+// this machine.
+const realFetch = globalThis.fetch;
+const localFetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+    return Promise.reject(new Error(`e2e tests must not reach ${url.origin}`));
+  }
+  return realFetch(input, init);
+}) as typeof fetch;
+
 beforeEach(() => {
+  globalThis.fetch = localFetch;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agstatus-e2e-'));
   prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = dir;
@@ -63,18 +79,29 @@ beforeEach(() => {
   // a board exported gets different results from CI.
   prevStatusUrl = process.env.CLAUDE_STATUS_URL;
   delete process.env.CLAUDE_STATUS_URL;
+  prevStatusSecret = process.env.CLAUDE_STATUS_SECRET;
+  delete process.env.CLAUDE_STATUS_SECRET;
+  // AGSTATUS_URL outranks the server this machine reports to, so one exported
+  // in a developer's shell would send the upgrade tests (no `url`) elsewhere.
+  prevAgstatusUrl = process.env.AGSTATUS_URL;
+  delete process.env.AGSTATUS_URL;
   prevHome = process.env.HOME;
   process.env.HOME = dir;
   logs.length = 0;
 });
 
 afterEach(() => {
+  globalThis.fetch = realFetch;
   if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
   if (prevCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = prevCodexHome;
   if (prevStatusUrl === undefined) delete process.env.CLAUDE_STATUS_URL;
   else process.env.CLAUDE_STATUS_URL = prevStatusUrl;
+  if (prevStatusSecret === undefined) delete process.env.CLAUDE_STATUS_SECRET;
+  else process.env.CLAUDE_STATUS_SECRET = prevStatusSecret;
+  if (prevAgstatusUrl === undefined) delete process.env.AGSTATUS_URL;
+  else process.env.AGSTATUS_URL = prevAgstatusUrl;
   if (prevHome === undefined) delete process.env.HOME;
   else process.env.HOME = prevHome;
   fs.rmSync(dir, { recursive: true, force: true });
@@ -83,6 +110,10 @@ afterEach(() => {
 
 function readInstalledSettings(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')) as Record<string, unknown>;
+}
+
+function installedEnv(): Record<string, unknown> {
+  return (readInstalledSettings().env ?? {}) as Record<string, unknown>;
 }
 
 async function waitForServer(baseUrl: string, timeoutMs = 8000): Promise<void> {
@@ -240,10 +271,86 @@ describe('agstatus init against a real multi-tenant server', () => {
     expect(lines.join('\n')).toContain('Created a new private board.');
   });
 
+  // An upgrade is `init` with only the flags given this time, so everything
+  // chosen before has to survive one: above all the server, since a bare
+  // upgrade used to take a self-hosted machine to a new board on
+  // agstatus.online.
+  it('an upgrade without --url stays on the server and board this machine reports to', async () => {
+    await runInit({ url: base, noQr: true, log });
+    const first = installedEnv().CLAUDE_STATUS_URL;
+
+    const lines: string[] = [];
+    await runInit({ noQr: true, log: (l) => lines.push(l) });
+    expect(installedEnv().CLAUDE_STATUS_URL).toBe(first);
+    expect(lines[0]).toBe(`Connecting to ${base} (the server this machine already reports to) ...`);
+    expect(lines.join('\n')).toContain('Using the board this machine already reports to.');
+  });
+
+  it('keeps --minimal through an upgrade that does not repeat it, and --no-minimal turns it off', async () => {
+    await runInit({ url: base, noQr: true, minimal: true, log });
+    expect(installedEnv().AGSTATUS_DETAIL).toBe('off');
+
+    const lines: string[] = [];
+    await runInit({ noQr: true, log: (l) => lines.push(l) });
+    expect(installedEnv().AGSTATUS_DETAIL).toBe('off');
+    expect(lines.join('\n')).toContain("Keeping --minimal from this machine's setup");
+    expect(lines.join('\n')).not.toContain('Status messages include truncated command text');
+
+    await runInit({ noQr: true, minimal: false, log });
+    expect(installedEnv()).not.toHaveProperty('AGSTATUS_DETAIL');
+  });
+
+  it('reads --minimal from the Codex hook config as well, and writes it back to both', async () => {
+    fs.mkdirSync(codexDir, { recursive: true });
+    await runInit({ url: base, noQr: true, minimal: true, codex: true, log });
+    // Claude Code's side has lost the switch (a hand edit, say); Codex's has not.
+    const settings = readInstalledSettings();
+    delete (settings.env as Record<string, unknown>).AGSTATUS_DETAIL;
+    fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2));
+
+    await runInit({ noQr: true, codex: true, log });
+    expect(installedEnv().AGSTATUS_DETAIL).toBe('off');
+    expect(readCodexHookConfig()?.detail).toBe('off');
+  });
+
+  it('AGSTATUS_URL and --url still choose the server over the one this machine reports to', async () => {
+    await runInit({ url: base, noQr: true, log });
+    process.env.AGSTATUS_URL = 'http://127.0.0.1:9';
+    await expect(runInit({ noQr: true, log })).rejects.toThrow(
+      /^Could not reach http:\/\/127\.0\.0\.1:9 — check the URL/
+    );
+    delete process.env.AGSTATUS_URL;
+    await expect(runInit({ url: 'http://127.0.0.1:9', noQr: true, log })).rejects.toThrow(
+      /^Could not reach http:\/\/127\.0\.0\.1:9 — check the URL/
+    );
+    expect(installedEnv().CLAUDE_STATUS_URL).toMatch(/\/w\//);
+  });
+
+  it('says so when the server this machine reports to is the one that is down', async () => {
+    fs.writeFileSync(settingsPath(), JSON.stringify({ env: { CLAUDE_STATUS_URL: 'http://127.0.0.1:9/w/ags_gone' } }));
+    await expect(runInit({ noQr: true, log })).rejects.toThrow(
+      'Could not reach http://127.0.0.1:9, the server this machine already reports to'
+    );
+  });
+
+  // Unreadable is not the same as absent: guessing the server, or minting a
+  // board, from a setup that could not be seen is how a machine moves boards
+  // without anyone deciding it. Thrown before the network is touched, which
+  // the unreachable URL proves.
+  it('stops before reaching any server when ~/.agstatus.json cannot be read', async () => {
+    fs.writeFileSync(path.join(dir, '.agstatus.json'), '{ not json');
+    await expect(runInit({ url: 'http://127.0.0.1:9', noQr: true, log })).rejects.toThrow(
+      /\.agstatus\.json exists but is not valid JSON/
+    );
+    expect(fs.existsSync(settingsPath())).toBe(false);
+  });
+
   it('aborts without touching an invalid settings.json', async () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(settingsPath(), '{ definitely not json');
-    await expect(runInit({ url: base, noQr: true, log })).rejects.toThrow(/not valid JSON/);
+    // Unreachable on purpose: the error is the JSON one, so nothing reached a
+    // server, and no board was made for a setup that could not be read.
+    await expect(runInit({ url: 'http://127.0.0.1:9', noQr: true, log })).rejects.toThrow(/not valid JSON/);
     expect(fs.readFileSync(settingsPath(), 'utf8')).toBe('{ definitely not json');
   });
 
@@ -252,5 +359,80 @@ describe('agstatus init against a real multi-tenant server', () => {
       /Could not reach/
     );
     expect(fs.existsSync(settingsPath())).toBe(false);
+  });
+});
+
+describe('agstatus init against a real single-tenant server with a webhook secret', () => {
+  const singleTenant = (webhookSecret: string): ReturnType<typeof createApp> =>
+    createApp({
+      multiTenant: false,
+      webhookSecret,
+      publicUrl: 'http://misconfigured.example',
+      sessionTtlMs: 0,
+      databaseUrl: '',
+      trustProxy: false,
+      rateLimit: false,
+      maxWorkspaces: 10_000,
+      commandTtlMs: 120_000,
+      version: 'e2e',
+    });
+  const legacy = singleTenant('s3cr3t');
+  const other = singleTenant('another-secret');
+  let legacyServer: Server;
+  let otherServer: Server;
+  let legacyBase: string;
+  let otherBase: string;
+
+  beforeAll(async () => {
+    legacyServer = legacy.app.listen(0);
+    otherServer = other.app.listen(0);
+    await Promise.all([legacyServer, otherServer].map((s) => new Promise((resolve) => s.once('listening', resolve))));
+    legacyBase = `http://127.0.0.1:${(legacyServer.address() as AddressInfo).port}`;
+    otherBase = `http://127.0.0.1:${(otherServer.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await Promise.all([legacyServer, otherServer].map((s) => new Promise((resolve) => s.close(resolve))));
+    await Promise.all([legacy.shutdown(), other.shutdown()]);
+  });
+
+  it('an upgrade keeps the secret for the same server, and --no-secret drops it', async () => {
+    await runInit({ url: legacyBase, secret: 's3cr3t', noQr: true, log });
+    expect(installedEnv()).toMatchObject({ CLAUDE_STATUS_URL: legacyBase, CLAUDE_STATUS_SECRET: 's3cr3t' });
+
+    const kept: string[] = [];
+    await runInit({ noQr: true, log: (l) => kept.push(l) });
+    expect(installedEnv()).toMatchObject({ CLAUDE_STATUS_URL: legacyBase, CLAUDE_STATUS_SECRET: 's3cr3t' });
+    expect(kept.join('\n')).toContain("Keeping this machine's webhook secret");
+    expect(kept.join('\n')).not.toContain('requires a webhook secret');
+
+    const dropped: string[] = [];
+    await runInit({ noQr: true, noSecret: true, log: (l) => dropped.push(l) });
+    expect(installedEnv()).not.toHaveProperty('CLAUDE_STATUS_SECRET');
+    expect(dropped.join('\n')).toContain('This server requires a webhook secret');
+  });
+
+  // A secret belongs to its server: carried to another one, it would be sent
+  // there with every update.
+  it('a move to another single-tenant server leaves the secret behind', async () => {
+    await runInit({ url: legacyBase, secret: 's3cr3t', noQr: true, log });
+
+    const lines: string[] = [];
+    await runInit({ url: otherBase, noQr: true, log: (l) => lines.push(l) });
+    expect(installedEnv().CLAUDE_STATUS_URL).toBe(otherBase);
+    expect(installedEnv()).not.toHaveProperty('CLAUDE_STATUS_SECRET');
+    expect(lines.join('\n')).not.toContain("Keeping this machine's webhook secret");
+    expect(lines.join('\n')).toContain('This server requires a webhook secret');
+  });
+
+  // --minimal belongs to the machine, whichever server it reports to.
+  it('a move to a multi-tenant server leaves the secret behind and keeps --minimal', async () => {
+    await runInit({ url: legacyBase, secret: 's3cr3t', minimal: true, noQr: true, log });
+
+    await runInit({ url: base, noQr: true, log });
+    const env = installedEnv();
+    expect(String(env.CLAUDE_STATUS_URL)).toMatch(new RegExp(`^${base}/w/`));
+    expect(env).not.toHaveProperty('CLAUDE_STATUS_SECRET');
+    expect(env.AGSTATUS_DETAIL).toBe('off');
   });
 });

@@ -96,6 +96,14 @@ jobs:
           # `curl … | sh` actually lands on in the wild.
           bash -n public/install.sh
           echo "public/install.sh parses under sh, dash and bash"
+      # Whether a Mac gets the Focus listener is decided in install.sh itself,
+      # and a wrong answer turns Focus on against an opt-out.
+      - name: install.sh's Focus decision, under sh, dash and bash
+        run: |
+          set -eu
+          sh scripts/test-install-focus.sh
+          if command -v dash > /dev/null 2>&1; then dash scripts/test-install-focus.sh; fi
+          bash scripts/test-install-focus.sh
       - name: install.ps1 parses
         shell: pwsh
         run: |
@@ -240,6 +248,25 @@ jobs:
           # who never typed a POSIX flag. It gets the list of real parameters.
           Assert-Refusal @('-Bogus','x') 'Unrecognised argument(s)'
           Assert-Refusal @('-Cde','ABCD-1234') 'Unrecognised argument(s)'
+          # The switches that turn a kept option off must bind by name, so
+          # they are passed by name here: Assert-Refusal's string array
+          # splats positionally (-Code '-NoMinimal'). A switch missing from
+          # param() would land in $args and be refused as unrecognised; once
+          # both bind, this runner stops at the host check instead.
+          $threw = $false
+          try { & ([scriptblock]::Create($text)) -NoMinimal -NoSecret } catch {
+            $threw = $true
+            if ($_.Exception.Message -notlike '*install.ps1 is the Windows installer*') {
+              Write-Host "::error::install.ps1 -NoMinimal -NoSecret refused with the wrong message: $($_.Exception.Message)"
+              exit 1
+            }
+          }
+          if (-not $threw) {
+            Write-Host '::error::install.ps1 -NoMinimal -NoSecret ran on Linux; it must stop at the host check'
+            exit 1
+          }
+          Write-Host 'refused as expected: -NoMinimal -NoSecret, at the host check'
+          Assert-Refusal @('--no-minimal') 'That looks like a POSIX-style flag'
           # And on a non-Windows host it must say so rather than start work.
           Assert-Refusal @() 'install.ps1 is the Windows installer'
 

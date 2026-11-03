@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { serverOf } from '../api';
 import { HOOK_MARKER, readSettings, settingsPath } from '../settings';
 import { codexHasOurHooks, codexHooksPath, readCodexHookConfig, readCodexHooks } from '../codex';
 import { DEVICE_HASH_RE } from './device';
@@ -184,15 +185,18 @@ export function readAgstatusJson(file: string = agstatusJsonPath()): Record<stri
  * sidecar would otherwise point the listener at a board Codex no longer posts
  * to — and the listener would open its stream against that one.
  *
- * Given a registration, the URL comes from the agstatus-hook.json sidecar
- * beside the hook script, which is where current installs keep it. Older ones
- * carried it as a `CLAUDE_STATUS_URL="…"` / `CLAUDE_STATUS_SECRET='…'` env
- * prefix on the registered command — that form was dropped because it cannot
- * run on Windows (see cli/src/codex.ts), but scanning for it stays as a
- * fallback so `listener install` still finds the board on a machine that has
- * not re-run `agstatus init` since upgrading.
+ * Given a registration, each key is read the way the hook reads it. First
+ * comes the registered command's env prefix: older installs carried
+ * `CLAUDE_STATUS_URL="…"`, `CLAUDE_STATUS_SECRET='…'` and `AGSTATUS_DETAIL=off`
+ * there, and a prefix is the hook's own environment. Then comes the
+ * agstatus-hook.json sidecar beside the hook script, which is where current
+ * installs keep them. The prefix form was dropped because it cannot run on
+ * Windows (see cli/src/codex.ts), but reading it stays: `listener install`
+ * still finds the board on a machine that has not re-run `agstatus init`
+ * since upgrading, and a sidecar written beside a registration that was never
+ * rewritten does not hide what the hook actually uses.
  */
-function codexPrefix(): { url?: string; secret?: string } | null {
+function codexPrefix(): { url?: string; secret?: string; detail?: 'off' } | null {
   let hooks: Record<string, unknown>;
   try {
     hooks = readCodexHooks(codexHooksPath());
@@ -205,31 +209,42 @@ function codexPrefix(): { url?: string; secret?: string } | null {
   }
   if (!codexHasOurHooks(hooks)) return null;
 
-  const sidecar = readCodexHookConfig();
-  if (sidecar) {
-    const out: { url?: string; secret?: string } = { url: sidecar.url };
-    if (sidecar.secret) out.secret = sidecar.secret;
-    return out;
-  }
-
-  if (!isPlainObject(hooks.hooks)) return null;
-  for (const entries of Object.values(hooks.hooks)) {
+  const prefix: { url?: string; secret?: string; detail?: 'off' } = {};
+  scan: for (const entries of Object.values(isPlainObject(hooks.hooks) ? hooks.hooks : {})) {
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
       const list = isPlainObject(entry) && Array.isArray(entry.hooks) ? entry.hooks : [];
       for (const h of list) {
         const command = isPlainObject(h) && typeof h.command === 'string' ? h.command : '';
         if (!command.includes(HOOK_MARKER)) continue;
-        const out: { url?: string; secret?: string } = {};
         const url = /(?:^|\s)CLAUDE_STATUS_URL="([^"]*)"/.exec(command);
-        if (url && str(url[1])) out.url = url[1].trim();
+        if (url && str(url[1])) prefix.url = url[1].trim();
         const secret = /(?:^|\s)CLAUDE_STATUS_SECRET='((?:[^']|'\\'')*)'/.exec(command);
-        if (secret && secret[1]) out.secret = secret[1].replace(/'\\''/g, "'");
-        return out;
+        if (secret && secret[1]) prefix.secret = secret[1].replace(/'\\''/g, "'");
+        if (/(?:^|\s)AGSTATUS_DETAIL=off(?:\s|$)/.test(command)) prefix.detail = 'off';
+        break scan;
       }
     }
   }
-  return null;
+
+  // The URL and its secret go together, so a secret is only ever read for the
+  // server it was configured for: the prefix's URL with the prefix's secret,
+  // or with the sidecar's when that is for the same server; else the
+  // sidecar's own pair. The hook itself would send a sidecar secret to any
+  // prefix URL, key by key; reading it that way would carry the mismatch on.
+  const sidecar = readCodexHookConfig();
+  const out: { url?: string; secret?: string; detail?: 'off' } = {};
+  if (prefix.url) {
+    out.url = prefix.url;
+    const sameServer = sidecar?.secret && serverOf(sidecar.url) === serverOf(prefix.url);
+    const secret = prefix.secret ?? (sameServer ? sidecar?.secret : undefined);
+    if (secret) out.secret = secret;
+  } else if (sidecar) {
+    out.url = sidecar.url;
+    if (sidecar.secret) out.secret = sidecar.secret;
+  }
+  if (prefix.detail === 'off' || sidecar?.detail === 'off') out.detail = 'off';
+  return out;
 }
 
 function settingsEnv(): Record<string, unknown> {
@@ -237,39 +252,80 @@ function settingsEnv(): Record<string, unknown> {
   return isPlainObject(settings.env) ? settings.env : {};
 }
 
+/** A configured board with the secret configured beside it, if any. */
+type Candidate = ResolvedValue & { secret?: string };
+
 /**
- * Every place a board URL can be configured, in precedence order: the
- * process environment, ~/.claude/settings.json env, a registered Codex hook's
- * configuration, ~/.agstatus.json. Throws when a file exists but is unreadable.
+ * Every place a board URL can be configured, in precedence order, each URL
+ * with the secret written beside it: the process environment,
+ * ~/.claude/settings.json env, a registered Codex hook's configuration,
+ * ~/.agstatus.json. Throws when a file exists but is unreadable.
  */
-export function boardUrlCandidates(): ResolvedValue[] {
-  const out: ResolvedValue[] = [];
-  const env = str(process.env.CLAUDE_STATUS_URL);
-  if (env) out.push({ url: env, source: 'env' });
-  const fromSettings = str(settingsEnv().CLAUDE_STATUS_URL);
-  if (fromSettings) out.push({ url: fromSettings, source: 'settings' });
+function candidates(): Candidate[] {
+  const out: Candidate[] = [];
+  const add = (source: ConfigSource, url: string, secret: string): void => {
+    if (url) out.push(secret ? { url, source, secret } : { url, source });
+  };
+  add('env', str(process.env.CLAUDE_STATUS_URL), str(process.env.CLAUDE_STATUS_SECRET));
+  const env = settingsEnv();
+  add('settings', str(env.CLAUDE_STATUS_URL), str(env.CLAUDE_STATUS_SECRET));
   const codex = codexPrefix();
-  if (codex?.url) out.push({ url: codex.url, source: 'codex' });
-  const fromFile = str(readAgstatusJson().url);
-  if (fromFile) out.push({ url: fromFile, source: 'file' });
+  add('codex', codex?.url ?? '', codex?.secret ?? '');
+  const file = readAgstatusJson();
+  add('file', str(file.url), str(file.secret));
   return out;
+}
+
+/** The board URLs of candidates(), without their secrets. */
+export function boardUrlCandidates(): ResolvedValue[] {
+  return candidates().map(({ url, source }) => ({ url, source }));
 }
 
 export function resolveBoardUrl(): ResolvedValue | null {
   return boardUrlCandidates()[0] ?? null;
 }
 
-/** Same precedence as the URL. Legacy servers only; boards carry their auth in the URL. */
-export function resolveSecret(): { secret: string; source: ConfigSource } | null {
-  const env = str(process.env.CLAUDE_STATUS_SECRET);
-  if (env) return { secret: env, source: 'env' };
-  const fromSettings = str(settingsEnv().CLAUDE_STATUS_SECRET);
-  if (fromSettings) return { secret: fromSettings, source: 'settings' };
-  const codex = codexPrefix();
-  if (codex?.secret) return { secret: codex.secret, source: 'codex' };
-  const fromFile = str(readAgstatusJson().secret);
-  if (fromFile) return { secret: fromFile, source: 'file' };
-  return null;
+/**
+ * The webhook secret to send to `url`, by default the board resolveBoardUrl()
+ * picks: the first secret configured beside a board on the same server, in
+ * the same precedence order. Legacy servers only; boards carry their auth in
+ * the URL. A secret configured for another server is never returned: sent
+ * there, it would only give it away.
+ */
+export function resolveSecret(url?: string): { secret: string; source: ConfigSource } | null {
+  const all = candidates();
+  const target = url ?? all[0]?.url;
+  if (!target) return null;
+  const server = serverOf(target);
+  const match = all.find((c) => c.secret && serverOf(c.url) === server);
+  return match?.secret ? { secret: match.secret, source: match.source } : null;
+}
+
+/**
+ * The boards this machine is configured for, one entry per file, each with
+ * the secret configured beside it: Claude Code's settings env, then a
+ * registered Codex hook, then ~/.agstatus.json. The process environment is
+ * not a source: inside a Claude Code session it holds whatever the session
+ * started with, and a one-off override is not the machine's setup. Throws
+ * when settings.json or ~/.agstatus.json exists but cannot be read.
+ */
+export function configuredBoards(): Array<{ url: string; secret?: string; source: Exclude<ConfigSource, 'env'> }> {
+  const out: Array<{ url: string; secret?: string; source: Exclude<ConfigSource, 'env'> }> = [];
+  for (const c of candidates()) {
+    if (c.source !== 'env') out.push({ ...c, source: c.source });
+  }
+  return out;
+}
+
+/**
+ * Whether this machine was set up with `--minimal`, read from where `init`
+ * writes it: AGSTATUS_DETAIL=off in Claude Code's settings, or "detail": "off"
+ * for a registered Codex hook. Either one is enough. The switch only ever
+ * withholds, so when the two disagree the answer is the one that sends less.
+ */
+export function resolveMinimal(): boolean {
+  if (str(settingsEnv().AGSTATUS_DETAIL) === 'off') return true;
+  return codexPrefix()?.detail === 'off';
 }
 
 /**
@@ -390,7 +446,8 @@ export function resolveListenerConfig(opts: ResolveOptions = {}): ListenerConfig
   const key = machineKey(machine.machineId, base);
   let secret: string | undefined;
   try {
-    secret = resolveSecret()?.secret;
+    // For the URL this listener uses, which --url may have chosen.
+    secret = resolveSecret(url)?.secret;
   } catch (err) {
     return { error: (err as Error).message };
   }

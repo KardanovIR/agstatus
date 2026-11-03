@@ -56,7 +56,11 @@ appended to your shell profile on macOS and Linux, the persistent user `PATH`
 on Windows — so open a new terminal before typing `agstatus` yourself. Re-run
 the installer to upgrade: it is the same command for a first install and an
 update, and it replaces only `bin/` and `lib/`, leaving the state the hook
-keeps under the same prefix alone.
+keeps under the same prefix alone. From 1.6.4 an upgrade keeps four choices
+without being told: the server this machine's hooks report to, `--minimal`,
+the webhook secret, and Focus being off where it was turned off. Pass a flag
+only to change one of them. `--no-codex` is not kept: on a machine with
+`~/.codex`, give it again or Codex is set up.
 
 Self-hosting? Every board serves both scripts, so
 `curl -fsSL https://status.example.com/install.sh | sh -s -- --url https://status.example.com`
@@ -65,7 +69,11 @@ installs from your own instance — see
 
 `init` then runs, in order:
 
-1. Contacts the server (`GET /api/config`) — the hosted instance by default.
+1. Contacts the server (`GET /api/config`): the one this machine's Claude
+   Code settings or Codex hook already post to, or the hosted instance when
+   neither is set up. The environment and `~/.agstatus.json` never choose
+   it. Before that it reads the current setup, and stops if `settings.json`
+   or `~/.agstatus.json` cannot be read, with nothing changed.
 2. Acquires a board: claims your pairing code (`--code`), creates a new
    private board (multi-tenant servers), or targets the server's single board
    (legacy servers).
@@ -80,7 +88,11 @@ installs from your own instance — see
 On macOS the installer also sets up the [Focus listener](#focus-optional-opt-in)
 so a tap on a board card brings that session's terminal to the front. It is
 not a prompt — it prints the exact host summary your machines will start
-sending, and `--no-focus` skips it.
+sending. `--no-focus` turns it off, and it stays off on later runs, as it
+does after `agstatus listener uninstall`: both write `"focus": false` to
+`~/.agstatus.json`, and only `--focus` or `agstatus listener install` turns
+it back on. An upgrade over an install where Focus was not on keeps it off
+too, since `--no-focus` before 1.6.4 left no record.
 
 ### Passing flags to the installer
 
@@ -101,16 +113,18 @@ script into a script block and call that instead:
 `--no-focus` and `--focus` are the shell installer's own flags (last one
 wins) and are consumed before the rest is handed on. They are macOS-only, so
 `install.ps1` has no equivalent; its parameters are `-Code`, `-Url`,
-`-Secret` and `-Minimal`.
+`-Secret`, `-NoSecret`, `-Minimal` and `-NoMinimal`.
 
 ### Flags
 
 | Flag               | Purpose |
 | ------------------ | ------- |
-| `--url <base>`     | Server to use (default: `https://agstatus.online`; the `AGSTATUS_URL` env var also overrides it, with `--url` winning). |
-| `--code XXXX-XXXX` | Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don't matter. |
-| `--secret <s>`     | Webhook secret for self-hosted single-tenant servers that set `WEBHOOK_SECRET` (stored as `CLAUDE_STATUS_SECRET`). |
-| `--minimal`        | Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets `AGSTATUS_DETAIL=off`; re-running without the flag removes it). |
+| `--url <base>`     | Server to use (default: the server this machine already reports to, else `https://agstatus.online`; the `AGSTATUS_URL` env var also overrides it, with `--url` winning). |
+| `--code XXXX-XXXX` | Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don't matter. The code is claimed on `https://agstatus.online` unless `--url` (or `AGSTATUS_URL`) names the server that issued it, whatever server the machine reports to now. |
+| `--secret <s>`     | Webhook secret for self-hosted single-tenant servers that set `WEBHOOK_SECRET` (stored as `CLAUDE_STATUS_SECRET`; later runs against the same server keep it, and it is never carried to another one). |
+| `--no-secret`      | Drop the webhook secret this machine has. |
+| `--minimal`        | Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets `AGSTATUS_DETAIL=off`; later runs keep it until `--no-minimal`). |
+| `--no-minimal`     | Send command text, prompts and session titles again (removes `AGSTATUS_DETAIL=off`). |
 | `--codex`          | Also set up OpenAI Codex even when `~/.codex` isn't detected (creates it). |
 | `--no-codex`       | Skip Codex setup. Default: auto-configure when `~/.codex` exists. |
 | `--no-qr`          | Skip the QR code (narrow terminals, scripts). |

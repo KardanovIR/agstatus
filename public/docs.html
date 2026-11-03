@@ -244,14 +244,22 @@ appended to your shell profile on macOS and Linux, the persistent user <code>PAT
 on Windows — so open a new terminal before typing <code>agstatus</code> yourself. Re-run
 the installer to upgrade: it is the same command for a first install and an
 update, and it replaces only <code>bin/</code> and <code>lib/</code>, leaving the state the hook
-keeps under the same prefix alone.</p>
+keeps under the same prefix alone. From 1.6.4 an upgrade keeps four choices
+without being told: the server this machine&#39;s hooks report to, <code>--minimal</code>,
+the webhook secret, and Focus being off where it was turned off. Pass a flag
+only to change one of them. <code>--no-codex</code> is not kept: on a machine with
+<code>~/.codex</code>, give it again or Codex is set up.</p>
 <p>Self-hosting? Every board serves both scripts, so
 <code>curl -fsSL https://status.example.com/install.sh | sh -s -- --url https://status.example.com</code>
 installs from your own instance — see
 <a href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a>.</p>
 <p><code>init</code> then runs, in order:</p>
 <ol>
-<li>Contacts the server (<code>GET /api/config</code>) — the hosted instance by default.</li>
+<li>Contacts the server (<code>GET /api/config</code>): the one this machine&#39;s Claude
+Code settings or Codex hook already post to, or the hosted instance when
+neither is set up. The environment and <code>~/.agstatus.json</code> never choose
+it. Before that it reads the current setup, and stops if <code>settings.json</code>
+or <code>~/.agstatus.json</code> cannot be read, with nothing changed.</li>
 <li>Acquires a board: claims your pairing code (<code>--code</code>), creates a new
 private board (multi-tenant servers), or targets the server&#39;s single board
 (legacy servers).</li>
@@ -266,7 +274,11 @@ AgStatus entries.</li>
 <p>On macOS the installer also sets up the <a href="#hooks-focus-optional-opt-in">Focus listener</a>
 so a tap on a board card brings that session&#39;s terminal to the front. It is
 not a prompt — it prints the exact host summary your machines will start
-sending, and <code>--no-focus</code> skips it.</p>
+sending. <code>--no-focus</code> turns it off, and it stays off on later runs, as it
+does after <code>agstatus listener uninstall</code>: both write <code>&quot;focus&quot;: false</code> to
+<code>~/.agstatus.json</code>, and only <code>--focus</code> or <code>agstatus listener install</code> turns
+it back on. An upgrade over an install where Focus was not on keeps it off
+too, since <code>--no-focus</code> before 1.6.4 left no record.</p>
 <h4 id="hooks-passing-flags-to-the-installer"><a class="anchor" href="#hooks-passing-flags-to-the-installer">Passing flags to the installer</a></h4>
 <p>Everything after <code>--</code> goes to <code>agstatus init</code>, so the flags in the next table
 work through the one-liner:</p>
@@ -279,7 +291,7 @@ script into a script block and call that instead:</p>
 <p><code>--no-focus</code> and <code>--focus</code> are the shell installer&#39;s own flags (last one
 wins) and are consumed before the rest is handed on. They are macOS-only, so
 <code>install.ps1</code> has no equivalent; its parameters are <code>-Code</code>, <code>-Url</code>,
-<code>-Secret</code> and <code>-Minimal</code>.</p>
+<code>-Secret</code>, <code>-NoSecret</code>, <code>-Minimal</code> and <code>-NoMinimal</code>.</p>
 <h4 id="hooks-flags"><a class="anchor" href="#hooks-flags">Flags</a></h4>
 <div class="table-wrap"><table>
 <thead>
@@ -290,19 +302,27 @@ wins) and are consumed before the rest is handed on. They are macOS-only, so
 </thead>
 <tbody><tr>
 <td><code>--url &lt;base&gt;</code></td>
-<td>Server to use (default: <code>https://agstatus.online</code>; the <code>AGSTATUS_URL</code> env var also overrides it, with <code>--url</code> winning).</td>
+<td>Server to use (default: the server this machine already reports to, else <code>https://agstatus.online</code>; the <code>AGSTATUS_URL</code> env var also overrides it, with <code>--url</code> winning).</td>
 </tr>
 <tr>
 <td><code>--code XXXX-XXXX</code></td>
-<td>Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don&#39;t matter.</td>
+<td>Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don&#39;t matter. The code is claimed on <code>https://agstatus.online</code> unless <code>--url</code> (or <code>AGSTATUS_URL</code>) names the server that issued it, whatever server the machine reports to now.</td>
 </tr>
 <tr>
 <td><code>--secret &lt;s&gt;</code></td>
-<td>Webhook secret for self-hosted single-tenant servers that set <code>WEBHOOK_SECRET</code> (stored as <code>CLAUDE_STATUS_SECRET</code>).</td>
+<td>Webhook secret for self-hosted single-tenant servers that set <code>WEBHOOK_SECRET</code> (stored as <code>CLAUDE_STATUS_SECRET</code>; later runs against the same server keep it, and it is never carried to another one).</td>
+</tr>
+<tr>
+<td><code>--no-secret</code></td>
+<td>Drop the webhook secret this machine has.</td>
 </tr>
 <tr>
 <td><code>--minimal</code></td>
-<td>Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets <code>AGSTATUS_DETAIL=off</code>; re-running without the flag removes it).</td>
+<td>Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets <code>AGSTATUS_DETAIL=off</code>; later runs keep it until <code>--no-minimal</code>).</td>
+</tr>
+<tr>
+<td><code>--no-minimal</code></td>
+<td>Send command text, prompts and session titles again (removes <code>AGSTATUS_DETAIL=off</code>).</td>
 </tr>
 <tr>
 <td><code>--codex</code></td>
@@ -2154,7 +2174,9 @@ see <a href="#api-device-push-endpoints">docs/api.md</a>.</p>
 that can reach your board can install from it without going near the hosted
 one. (On Windows:
 <code>&amp; ([scriptblock]::Create((irm https://status.example.com/install.ps1))) -Url https://status.example.com</code>.)
-An already-installed CLI just needs <code>agstatus init --url https://status.example.com</code>.</li>
+An already-installed CLI just needs <code>agstatus init --url https://status.example.com</code>.
+From then on, re-running the installer to upgrade keeps the machine on your
+server, with its secret; <code>--url</code> is needed again only to move it.</li>
 <li>iOS app: on the welcome screen, expand &quot;Self-hosting?&quot; and enter your
 server URL, or paste/scan your board URL directly.</li>
 <li>Manual hooks: see <a href="#hooks">docs/hooks.md</a>.</li>

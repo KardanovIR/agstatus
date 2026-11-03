@@ -7,7 +7,7 @@
 > "Children" and "Changes" sections and the `Timestamps` row — so if you change
 > one, change both, and keep the dates equal.
 
-_Last updated: October 21, 2026_
+_Last updated: November 4, 2026_
 
 AgStatus is an open-source status board for coding agents such as Claude Code
 and OpenAI Codex. This policy covers the AgStatus iOS app and the hosted server
@@ -61,7 +61,8 @@ names, session ids and dates they are filed under.
 If you would rather not send command text or titles, run the installer with
 `--minimal` — messages then contain only tool names, such as "Bash", and every
 card is named after its folder instead of its title. It is the same switch as
-`AGSTATUS_DETAIL=off`, and re-running the installer without the flag removes it.
+`AGSTATUS_DETAIL=off`. It stays on when the installer is re-run to upgrade,
+until you run it with `--no-minimal`.
 
 A board is identified only by an unguessable random token in its URL. Anyone who
 has that URL can view the board, so treat it like a password.
@@ -102,7 +103,8 @@ repository instead. `AGSTATUS_USAGE=off` disables this too.
 
 Focus — tapping a session on the board to bring its terminal to the front on the
 machine running it — is **installed by default on macOS** by the install command
-above; `--no-focus` skips it, and it is never installed on Linux or Windows. If
+above; `--no-focus` or `agstatus listener uninstall` turns it off, a later run
+of the installer keeps it off, and it is never installed on Linux or Windows. If
 Focus is on for a machine (the installer, `agstatus listener install`, or
 `"focus": true` in `~/.agstatus.json`), status
 updates from coding agents on that machine additionally include: a short label

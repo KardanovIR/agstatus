@@ -12,13 +12,33 @@ export interface Board {
   webhookUrl: string;
 }
 
-/** --url flag > AGSTATUS_URL env > built-in default; normalized (no trailing / or /webhook). */
-export function resolveBaseUrl(flagUrl?: string): string {
-  const raw = flagUrl || process.env.AGSTATUS_URL || DEFAULT_URL;
+/** No trailing / or /webhook, and a scheme (https when none is given). */
+export function normalizeBaseUrl(raw: string): string {
   let base = raw.trim().replace(/\/+$/, '');
   base = base.replace(/\/webhook$/, '');
   if (!/^https?:\/\//.test(base)) base = `https://${base}`;
   return base;
+}
+
+/**
+ * --url flag > AGSTATUS_URL env > `current`, the server this machine already
+ * reports to > built-in default; normalized. `current` is what keeps an
+ * upgrade on a self-hosted server: the installer re-runs `init` with only
+ * the flags given this time, and the default alone would move the machine
+ * to a new board on agstatus.online.
+ */
+export function resolveBaseUrl(flagUrl?: string, current?: string): string {
+  return normalizeBaseUrl(flagUrl || process.env.AGSTATUS_URL || current || DEFAULT_URL);
+}
+
+/**
+ * The server a board URL lives on, normalized: `<base>/w/<token>` is a board
+ * on `<base>`, and a legacy single-tenant server's URL is the server itself.
+ */
+export function serverOf(boardUrl: string): string {
+  const url = normalizeBaseUrl(boardUrl);
+  const board = /^(.+)\/w\/[^/]+$/.exec(url);
+  return board ? board[1] : url;
 }
 
 async function fetchJson(
@@ -79,7 +99,11 @@ export async function claimCode(base: string, code: string): Promise<Board> {
     body: JSON.stringify({ code }),
   });
   if (status === 404) {
-    throw new Error('That pairing code is invalid or has expired. Generate a fresh one and retry.');
+    // Named, because a code is only good on the server that issued it.
+    throw new Error(
+      `${base} does not know that pairing code: it is wrong, has expired, or was issued by another server ` +
+        '(pass --url with that one). Generate a fresh one and retry.'
+    );
   }
   if (status === 429) {
     throw new Error('Too many pairing attempts from your address. Wait a minute and retry.');

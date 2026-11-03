@@ -62,7 +62,7 @@
 
 <main class="prose">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: October 21, 2026</p>
+  <p class="updated">Last updated: November 4, 2026</p>
 
   <p class="lede">
     AgStatus is an open-source status board for coding agents such as Claude Code and OpenAI Codex.
@@ -110,7 +110,8 @@
   <p>If you would rather not send command text or titles, run the installer with
     <code>--minimal</code> — messages then contain only tool names, such as "Bash", and every card
     is named after its folder instead of its title. It is the same switch as
-    <code>AGSTATUS_DETAIL=off</code>, and re-running the installer without the flag removes it.</p>
+    <code>AGSTATUS_DETAIL=off</code>. It stays on when the installer is re-run to upgrade, until
+    you run it with <code>--no-minimal</code>.</p>
   <p>A board is identified only by an unguessable random token in its URL. Anyone who has that URL
     can view the board, so treat it like a password.</p>
 
@@ -140,7 +141,8 @@
   <h2>Focus (optional)</h2>
   <p>Focus — tapping a session on the board to bring its terminal to the front on the machine
     running it — is <strong>installed by default on macOS</strong> by the install command above;
-    <code>--no-focus</code> skips it, and it is never installed on Linux or Windows. If Focus is
+    <code>--no-focus</code> or <code>agstatus listener uninstall</code> turns it off, a later run of
+    the installer keeps it off, and it is never installed on Linux or Windows. If Focus is
     on for a machine (the installer, <code>agstatus listener install</code>, or
     <code>"focus": true</code> in <code>~/.agstatus.json</code>), status updates from coding agents on that machine
     additionally include: a short label you chose for the machine (default "Mac"), a random

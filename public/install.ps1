@@ -13,7 +13,7 @@
 # parameters; piped with no arguments they simply come through empty.
 #
 # param() below is a *simple* parameter block, so anything PowerShell cannot
-# bind to one of those four parameters is dropped into $args rather than
+# bind to one of those parameters is dropped into $args rather than
 # refused. Step 0 of the installer rejects whatever ends up there, because the
 # alternative is installing happily with a mistyped flag silently ignored.
 #
@@ -64,7 +64,12 @@ param(
     # Webhook secret, for self-hosted single-tenant servers.
     [string] $Secret,
     # Send tool and folder names, never command text, prompts or session titles.
-    [switch] $Minimal
+    [switch] $Minimal,
+    # Send command text, prompts and session titles again. A re-run keeps
+    # -Minimal without being told, so this is how to turn it off.
+    [switch] $NoMinimal,
+    # Drop the webhook secret this machine has; a re-run keeps it otherwise.
+    [switch] $NoSecret
 )
 
 function Get-AgStatusRedirectTarget {
@@ -437,6 +442,8 @@ function Invoke-AgStatusInstall {
         [string] $Url,
         [string] $Secret,
         [switch] $Minimal,
+        [switch] $NoMinimal,
+        [switch] $NoSecret,
         # Whatever the param() block at the top of the file could not bind, i.e.
         # the caller's $args. Always a mistake - see step 0.
         [object[]] $ExtraArgs
@@ -522,7 +529,9 @@ That looks like a POSIX-style flag: $($dashed -join ', ')
     -Code XXXX-XXXX   (not --code)
     -Url <base>       (not --url)
     -Secret <s>       (not --secret)
+    -NoSecret         (not --no-secret)
     -Minimal          (not --minimal)
+    -NoMinimal        (not --no-minimal)
 
   Options need the script-block form; a bare 'irm ... | iex' cannot carry any:
     & ([scriptblock]::Create((irm https://agstatus.online/install.ps1))) -Code XXXX-XXXX
@@ -535,12 +544,15 @@ That looks like a POSIX-style flag: $($dashed -join ', ')
         throw @"
 Unrecognised argument(s): $($unknownArgs -join ' ')
 
-  This installer takes only these, and all of them are optional:
+  This installer takes only these, and all of them are optional. A re-run
+  keeps this machine's server, -Minimal and secret without being told:
     -Code XXXX-XXXX   Pair with a board created elsewhere, e.g. in the mobile app
     -Url <base>       Server to use, for a self-hosted board
     -Secret <s>       Webhook secret, for self-hosted single-tenant servers
+    -NoSecret         Drop the webhook secret this machine has
     -Minimal          Send tool and folder names, never command text, prompts
                       or session titles
+    -NoMinimal        Send command text, prompts and session titles again
 
   Options need the script-block form; a bare 'irm ... | iex' cannot carry any:
     & ([scriptblock]::Create((irm https://agstatus.online/install.ps1))) -Code XXXX-XXXX
@@ -893,6 +905,8 @@ Node $nodeVersionText is too old; AgStatus needs 18 or newer ($nodeExe).
     if (-not [string]::IsNullOrWhiteSpace($Url))    { $initArgs += @('--url', $Url) }
     if (-not [string]::IsNullOrWhiteSpace($Secret)) { $initArgs += @('--secret', $Secret) }
     if ($Minimal) { $initArgs += '--minimal' }
+    if ($NoMinimal) { $initArgs += '--no-minimal' }
+    if ($NoSecret) { $initArgs += '--no-secret' }
 
     Write-Host ''
     # Invoke node directly rather than through the shim we just wrote. Calling a
@@ -981,4 +995,4 @@ Node $nodeVersionText is too old; AgStatus needs 18 or newer ($nodeExe).
     Write-Host ''
 }
 
-Invoke-AgStatusInstall -Code $Code -Url $Url -Secret $Secret -Minimal:$Minimal -ExtraArgs $args
+Invoke-AgStatusInstall -Code $Code -Url $Url -Secret $Secret -Minimal:$Minimal -NoMinimal:$NoMinimal -NoSecret:$NoSecret -ExtraArgs $args

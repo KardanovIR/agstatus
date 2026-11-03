@@ -1438,6 +1438,20 @@ describe('uninstall', () => {
     expect(fs.existsSync(path.join(ws.state, 'machine.json'))).toBe(true);
   });
 
+  // install.sh reads "focus": false as "Focus was turned off on this Mac" and
+  // keeps it off on every later run, so the opt-out has to be on disk even
+  // when nothing was installed before (`--no-focus` on a first install).
+  it('records "focus": false with no ~/.agstatus.json yet, mode 0600', async () => {
+    const file = path.join(ws.home, '.agstatus.json');
+    expect(fs.existsSync(file)).toBe(false);
+    const { exec } = recorder();
+    const { log, out } = quiet();
+    expect(await uninstall(darwin({ exec, log }))).toBe(0);
+    expect(readJson(file)).toEqual({ focus: false });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(out()).toContain(`Wrote "focus": false to ${file}, so a later install keeps Focus off.`);
+  });
+
   it('refuses a malformed ~/.agstatus.json before the agent comes down, and `agstatus uninstall` says so', async () => {
     withSettingsUrl(ws.home, BOARD);
     process.env.CLAUDE_CONFIG_DIR = path.join(ws.home, '.claude');

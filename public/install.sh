@@ -14,9 +14,15 @@
 # verifies it against that release's SHA256SUMS, unpacks it under
 # ${AGSTATUS_HOME:-$HOME/.agstatus}, renders the launcher shim, puts it on
 # PATH and then runs `agstatus init`. On macOS it also installs the Focus
-# listener (docs/design/focus-protocol.md §5.4) unless --no-focus: it prints
+# listener (docs/design/focus-protocol.md §5.4) unless --no-focus, or Focus was
+# turned off on this Mac before ("focus": false in ~/.agstatus.json): it prints
 # what Focus puts on the wire (§8) rather than asking, because a script on the
 # end of a pipe has no stdin to ask with.
+#
+# Re-running it is the upgrade, so it keeps what the user chose before. From
+# 1.6.4 `agstatus init` keeps this machine's server, --minimal and webhook
+# secret; Focus stays off where it was turned off; --no-codex is the one
+# choice that has to be given again.
 #
 # Rules this file lives by:
 #
@@ -61,17 +67,23 @@ AgStatus installer — live status board for your coding agents.
   curl -fsSL https://agstatus.online/install.sh | sh
   curl -fsSL https://agstatus.online/install.sh | sh -s -- [options]
 
-Options (everything but --focus/--no-focus is passed to `agstatus init`):
+Options (everything but --focus/--no-focus is passed to `agstatus init`).
+A re-run keeps the Focus choice and, from 1.6.4, this machine's server,
+--minimal and secret, so an upgrade to 1.6.4 or later needs none of them
+again; --no-codex has to be given again:
   --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app)
   --url <base>      Server to use (for a self-hosted board)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
+  --no-secret       Drop the webhook secret this machine has
   --minimal         Send tool and folder names, never command text, prompts
                     or session titles
+  --no-minimal      Send command text, prompts and session titles again
   --no-qr           Skip the QR code
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)
-  --no-focus        Don't install the macOS Focus listener (it installs by default)
-  --focus           Install it even after an earlier --no-focus (last flag wins)
+  --no-focus        Turn the macOS Focus listener off, and keep it off on later
+                    runs (it installs by default)
+  --focus           Turn it back on (last flag wins)
   --help            This text
 
 Environment:
@@ -214,6 +226,22 @@ valid_version() {
     *) return 1 ;;
   esac
   [ "${#1}" -le 32 ]
+}
+
+# Whether version $1 is at least $2. Both have passed valid_version, so each
+# component is digits and compares as a number.
+version_at_least() {
+  vl_a=$1
+  vl_b=$2
+  while [ -n "$vl_a" ] || [ -n "$vl_b" ]; do
+    vl_x=${vl_a%%.*}
+    vl_y=${vl_b%%.*}
+    if [ "${vl_x:-0}" -gt "${vl_y:-0}" ]; then return 0; fi
+    if [ "${vl_x:-0}" -lt "${vl_y:-0}" ]; then return 1; fi
+    case $vl_a in *.*) vl_a=${vl_a#*.} ;; *) vl_a='' ;; esac
+    case $vl_b in *.*) vl_b=${vl_b#*.} ;; *) vl_b='' ;; esac
+  done
+  return 0
 }
 
 require_https() {
@@ -927,6 +955,22 @@ focus_disclosure() {
   say 'acknowledgement of one. Turn it off any time with `agstatus listener uninstall`.'
 }
 
+# What ~/.agstatus.json records about Focus on this Mac. Prints "off" for
+# "focus": false, which `agstatus listener uninstall` writes (and --no-focus,
+# through it); "on" for "focus": true, which `listener install` writes; and
+# nothing otherwise. A missing or unreadable file prints nothing: `listener
+# install` reads it next, and says what is wrong with it.
+focus_recorded() {
+  "$NODE" -e '
+    const fs = require("fs");
+    let raw; try { raw = fs.readFileSync(process.argv[1], "utf8"); } catch { process.exit(0); }
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    let d; try { d = JSON.parse(raw); } catch { process.exit(0); }
+    if (d && d.focus === false) process.stdout.write("off");
+    else if (d && d.focus === true) process.stdout.write("on");
+  ' "$HOME/.agstatus.json" 2>/dev/null || true
+}
+
 setup_focus() {
   if [ "$OS" != darwin ]; then
     step 'Focus listener'
@@ -939,8 +983,43 @@ setup_focus() {
   fi
   if [ "$FOCUS" != yes ]; then
     step 'Focus listener'
-    note 'Skipped (--no-focus). Turn it on later with `agstatus listener install`.'
+    # Off, and on record as off: `listener uninstall` stops a listener that is
+    # running and writes "focus": false to ~/.agstatus.json, which is what
+    # keeps the next run without --no-focus from turning Focus back on. A CLI
+    # before 1.6.4 writes it only into a file that already exists, so the
+    # record is read back rather than assumed.
+    sf_rc=0
+    sf_out=$("$BIN" listener uninstall 2>&1) || sf_rc=$?
+    if [ "$sf_rc" -ne 0 ]; then
+      printf '%s\n' "$sf_out" >&2
+      warn "agstatus listener uninstall exited with $sf_rc, so Focus may still be on. Retry with:"
+      note "  $PREFIX/bin/agstatus listener uninstall"
+    elif [ "$(focus_recorded)" = off ]; then
+      note 'Off (--no-focus), and later runs keep it off. Turn it on with --focus.'
+    else
+      note "Off (--no-focus), but agstatus $VERSION did not record that: give --no-focus on later runs too."
+    fi
     return 0
+  fi
+  if [ "$FOCUS_EXPLICIT" = no ]; then
+    sf_state=$(focus_recorded)
+    if [ "$sf_state" = off ]; then
+      step 'Focus listener'
+      note 'Skipped: Focus was turned off on this Mac ("focus": false in ~/.agstatus.json).'
+      note 'Turn it on with --focus, or `agstatus listener install`.'
+      return 0
+    fi
+    # An upgrade over an install where Focus was not on. Before 1.6.4,
+    # --no-focus left no record, so this is how that opt-out is kept. A Mac
+    # whose earlier `listener install` failed lands here too, and stays off
+    # until asked: the safe way round.
+    if [ -n "${PREVIOUS:-}" ] && [ "$sf_state" != on ] &&
+      [ ! -f "$HOME/Library/LaunchAgents/com.agstatus.listener.plist" ]; then
+      step 'Focus listener'
+      note 'Skipped: Focus was not on in the install this upgrades.'
+      note 'Turn it on with --focus, or `agstatus listener install`.'
+      return 0
+    fi
   fi
 
   step 'Focus listener'
@@ -968,6 +1047,8 @@ main() {
   PATH_MARKER='# >>> agstatus >>>'
   FOCUS=yes
   FOCUS_EXPLICIT=no
+  # --no-minimal / --no-secret given: they need a CLI from 1.6.4 on.
+  UNKEEP_FLAGS=no
   TMP=''
   SWAP_NEW=''
   SWAP_OLD=''
@@ -990,6 +1071,9 @@ main() {
       --no-focus) FOCUS=no; FOCUS_EXPLICIT=yes ;;
       --focus) FOCUS=yes; FOCUS_EXPLICIT=yes ;;
       -h|--help) usage; return 0 ;;
+      --no-minimal|--no-secret)
+        UNKEEP_FLAGS=yes
+        set -- "$@" "$ma_arg" ;;
       --minimal|--no-qr|--codex|--no-codex)
         set -- "$@" "$ma_arg" ;;
       --url=*|--code=*|--secret=*)
@@ -1028,6 +1112,12 @@ main() {
   note "node       $NODE ($NODE_VERSION)"
   resolve_version
   note "version    $VERSION"
+  # Refused before the download: an older CLI would install and then reject
+  # the flag, leaving the machine installed but not connected.
+  if [ "$UNKEEP_FLAGS" = yes ] && ! version_at_least "$VERSION" 1.6.4; then
+    die "--no-minimal and --no-secret need AgStatus 1.6.4 or later, and this would install $VERSION." \
+      'Leave them out, or install a later version. Nothing was installed.'
+  fi
   note "prefix     $PREFIX"
 
   fetch_release
@@ -1041,7 +1131,9 @@ main() {
   CODEX_CMDS_BEFORE=$(codex_registered_commands)
   ma_rc=0
   run_init "$@" || ma_rc=$?
-  if [ "$ma_rc" -eq 0 ]; then setup_focus; fi
+  # Turning Focus off needs no board, so --no-focus is honoured even when init
+  # could not finish. Turning it on waits for one.
+  if [ "$ma_rc" -eq 0 ] || [ "$FOCUS" != yes ]; then setup_focus; fi
 
   if [ "$ma_rc" -eq 0 ]; then step 'Done'; else step 'Installed, but not connected yet'; fi
   note "agstatus $VERSION  ->  $PREFIX"
@@ -1056,7 +1148,13 @@ main() {
       say ''
     fi
   fi
-  say 'Re-run this installer any time to upgrade; `agstatus uninstall` removes the hooks.'
+  if [ "$ma_rc" -eq 0 ] && version_at_least "$VERSION" 1.6.4; then
+    say "Re-run this installer any time to upgrade: it keeps this machine's server,"
+    say '--minimal, secret and Focus choice. --no-codex has to be given again.'
+  else
+    say 'Re-run this installer any time to upgrade.'
+  fi
+  say '`agstatus uninstall` removes the hooks.'
   return "$ma_rc"
 }
 

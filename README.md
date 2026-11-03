@@ -48,9 +48,11 @@ so you step away from the keyboard without losing the thread.
    prints your board URL plus a QR code to open it on your phone. (Codex asks
    you to trust the hook: run `/hooks` inside Codex — and again after an
    upgrade that changes the hook command, or Codex silently stops firing it.)
-   Re-run the same command to upgrade. On macOS it also sets up
-   [Focus](docs/design/focus-protocol.md) — it prints exactly what that sends,
-   and `--no-focus` skips it.
+   Re-run the same command to upgrade: it keeps this machine's server,
+   `--minimal` and webhook secret (only `--no-codex` has to be given again).
+   On macOS it also sets up [Focus](docs/design/focus-protocol.md) — it
+   prints exactly what that sends, and `--no-focus` turns it off, for later
+   runs too.
 
    Claude Code-only machines can skip the CLI entirely and use the
    [plugin](docs/hooks.md#claude-code-plugin): `/plugin marketplace add

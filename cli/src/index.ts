@@ -2,11 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import qrcode from 'qrcode-terminal';
 import {
+  DEFAULT_URL,
   claimCode,
   createWorkspace,
   getConfig,
   probeSessions,
   resolveBaseUrl,
+  serverOf,
 } from './api';
 import {
   hookCommand,
@@ -17,7 +19,7 @@ import {
   settingsPath,
   writeSettingsWithBackup,
 } from './settings';
-import { resolveBoardUrl, resolveListenerConfig } from './listener/config';
+import { agstatusJsonPath, configuredBoards, resolveListenerConfig, resolveMinimal } from './listener/config';
 import {
   doctor as listenerDoctor,
   install as listenerInstall,
@@ -52,6 +54,12 @@ export interface InitOptions {
   url?: string;
   code?: string;
   secret?: string;
+  /** Drop the webhook secret this machine has (`--no-secret`). */
+  noSecret?: boolean;
+  /**
+   * true = `--minimal`, false = `--no-minimal`, undefined = keep what this
+   * machine has now (off on a first install).
+   */
   minimal?: boolean;
   /** true = force Codex setup, false = skip it, undefined = auto-detect. */
   codex?: boolean;
@@ -159,21 +167,63 @@ function renderQr(url: string, log: (line: string) => void): void {
   });
 }
 
+/** What this machine is set up with now; see currentSetup(). */
+interface CurrentSetup {
+  /**
+   * The board the hooks post to, Claude Code's or else a registered Codex
+   * hook's. Undefined when no hook is configured.
+   */
+  hooked?: { url: string; server: string };
+  /**
+   * The secrets configured beside the hooks' boards, each with the server it
+   * is for. ~/.agstatus.json's is left out: init never wrote it, and its url
+   * and secret are each written only when absent (mergeAgstatusJson), so they
+   * need not belong together.
+   */
+  secrets: Array<{ server: string; secret: string }>;
+  /**
+   * A board named only in ~/.agstatus.json, with no hook configured: what the
+   * Claude Code plugin's setup writes, and what `listener install` leaves
+   * behind after `agstatus uninstall`. It may pick the board on the server a
+   * run uses, as it always has, but never the server itself.
+   */
+  fileUrl?: string;
+  minimal: boolean;
+}
+
 /**
- * The board this machine is already configured with, if it is a board on
- * `base`. Anything else — no configuration at all, a single-tenant server's
- * bare origin, or a board on a different host — returns undefined so the
- * caller mints a new one.
+ * This machine's setup, read before `init` decides anything. `init` is also
+ * the upgrade command: the installers run it on every re-run, with only the
+ * flags given this time. Whatever was chosen before therefore has to come
+ * from here, or a bare upgrade undoes it: the server (without it, a machine
+ * on a self-hosted server got a new board on agstatus.online and its hooks
+ * pointed there), `--minimal`, and the webhook secret.
+ *
+ * Read from the files the hooks are configured with, never from the process
+ * environment, and each secret with the server of the board it was written
+ * beside (see configuredBoards()). Throws when settings.json or
+ * ~/.agstatus.json exists but cannot be read: a setup that cannot be seen is
+ * no basis for choosing a server or minting a board, and the error says what
+ * to fix before anything has changed.
  */
-function existingBoard(base: string): string | undefined {
-  let current: string | undefined;
-  try {
-    current = resolveBoardUrl()?.url;
-  } catch {
-    // An unreadable settings.json or ~/.agstatus.json is the existing setup's
-    // problem to report, not a reason to silently mint a second board here.
-    return undefined;
-  }
+function currentSetup(): CurrentSetup {
+  const boards = configuredBoards();
+  const hookBoards = boards.filter((b) => b.source !== 'file');
+  const file = boards.find((b) => b.source === 'file');
+  const secrets = hookBoards.flatMap((b) => (b.secret ? [{ server: serverOf(b.url), secret: b.secret }] : []));
+  const minimal = resolveMinimal();
+  const hooked = hookBoards[0];
+  if (hooked) return { hooked: { url: hooked.url, server: serverOf(hooked.url) }, secrets, minimal };
+  return file ? { fileUrl: file.url, secrets, minimal } : { secrets, minimal };
+}
+
+/**
+ * `current`, the board this machine reports to, if it is a board on `base`.
+ * Anything else — no configuration at all, a single-tenant server's bare
+ * origin, or a board on a different host — returns undefined so the caller
+ * mints a new one.
+ */
+function existingBoard(base: string, current: string | undefined): string | undefined {
   if (!current) return undefined;
   const trimmed = current.replace(/\/$/, '').replace(/\/webhook$/, '');
   // `<base>/w/<token>` and nothing else: a bare origin is a legacy server, and
@@ -186,14 +236,40 @@ function existingBoard(base: string): string | undefined {
 
 export async function runInit(opts: InitOptions = {}): Promise<void> {
   const log = opts.log ?? console.log;
-  const base = resolveBaseUrl(opts.url);
+  const current = currentSetup();
+  // A pairing code comes from a phone app, which adds --url for every server
+  // but the default one. Claimed on this machine's server instead, it would
+  // fail, and it would reach a server that never issued it.
+  const kept = opts.code ? undefined : current.hooked;
+  const base = resolveBaseUrl(opts.url, kept?.server);
+  // Said on the first line when the server came from this machine's setup, so
+  // an upgrade shows where it is going before it goes there.
+  const keptServer = !opts.url && !process.env.AGSTATUS_URL && kept !== undefined;
 
-  log(`Connecting to ${base} ...`);
+  log(`Connecting to ${base}${keptServer ? ' (the server this machine already reports to)' : ''} ...`);
   const cfg = await getConfig(base);
   if (!cfg) {
     throw new Error(
-      `Could not reach ${base} — check the URL (pass --url <your-server> for a self-hosted instance).`
+      keptServer
+        ? `Could not reach ${base}, the server this machine already reports to — check that it is up, or pass --url <server> to use another one.`
+        : `Could not reach ${base} — check the URL (pass --url <your-server> for a self-hosted instance).`
     );
+  }
+
+  // An option this run does not repeat stays as it is; --minimal and --secret
+  // always win, and --no-minimal and --no-secret turn them off. The secret
+  // kept is one configured for this very server, and only a legacy one:
+  // boards carry their auth in the URL, and carried to another server a
+  // secret would be sent there with every update.
+  const minimal = opts.minimal ?? current.minimal;
+  const keepSecret = !opts.noSecret && cfg.mode !== 'multi';
+  const keptSecret = current.secrets.find((s) => s.server === base)?.secret;
+  const secret = opts.secret ?? (keepSecret ? keptSecret : undefined);
+  if (opts.minimal === undefined && minimal) {
+    log("Keeping --minimal from this machine's setup (--no-minimal sends command text and prompts again).");
+  }
+  if (opts.secret === undefined && secret) {
+    log("Keeping this machine's webhook secret (--no-secret drops it).");
   }
 
   // Acquire a board and decide what URL the hook should target.
@@ -211,11 +287,15 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     // re-run — and a second board would silently strand the sessions, the
     // history and the phone pairing on the first one. Only a board on the same
     // server counts: pointing `--url` somewhere else is a deliberate move.
-    const existing = existingBoard(base);
+    const existing = existingBoard(base, current.hooked?.url ?? current.fileUrl);
     if (existing && !opts.newBoard) {
       hookUrl = existing;
       dashboardUrl = existing;
-      log('Using the board this machine already reports to.');
+      log(
+        current.hooked
+          ? 'Using the board this machine already reports to.'
+          : `Using the board named in ${agstatusJsonPath()}.`
+      );
       log('  Wanted a separate one? Re-run with --new-board.');
     } else {
       const board = await createWorkspace(base);
@@ -226,7 +306,7 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   } else {
     hookUrl = base;
     dashboardUrl = base;
-    if (cfg.requiresSecret && !opts.secret) {
+    if (cfg.requiresSecret && !secret) {
       log('⚠ This server requires a webhook secret; pass --secret <value> or updates will be rejected.');
     }
   }
@@ -237,8 +317,8 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   const settings = readSettings(file);
   const merged = mergeSettings(settings, {
     url: hookUrl,
-    secret: opts.secret,
-    minimal: opts.minimal,
+    secret,
+    minimal,
     hookCommand: hookCommand(),
   });
   writeSettingsWithBackup(file, merged);
@@ -253,7 +333,7 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   // Claude Code setup that already succeeded above — degrade to a warning.
   if (opts.codex ?? codexDetected()) {
     try {
-      setupCodex(hookUrl, opts.minimal, opts.secret, log);
+      setupCodex(hookUrl, minimal, secret, log);
     } catch (err) {
       log('');
       log(`⚠ Skipped Codex setup: ${(err as Error).message}`);
@@ -268,7 +348,7 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
   // What is sent by default, said at the moment it is decided. A Claude
   // session's title is generated from its prompts, so it is named here beside
   // them rather than left for the privacy page to disclose.
-  if (!opts.minimal) {
+  if (!minimal) {
     log('ℹ Status messages include truncated command text and prompts, and Claude');
     log('  cards are named after their session titles.');
     log('  Re-run with --minimal to send tool and folder names instead.');
@@ -501,12 +581,17 @@ Usage:
   agstatus version          Print the version of this install
   agstatus help             This help
 
-init options:
-  --url <base>      Server to use (default: ${resolveBaseUrl()})
-  --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app)
+init options (a re-run keeps this machine's server, --minimal and secret):
+  --url <base>      Server to use (default: $AGSTATUS_URL if set, else the one
+                    this machine already reports to, else ${DEFAULT_URL})
+  --code XXXX-XXXX  Pair with a board created elsewhere (e.g. the mobile app),
+                    on ${DEFAULT_URL} unless --url or $AGSTATUS_URL names
+                    its server
   --secret <s>      Webhook secret for self-hosted single-tenant servers
+  --no-secret       Drop the webhook secret this machine has
   --minimal         Send tool and folder names, never command text, prompts
                     or session titles
+  --no-minimal      Send command text, prompts and session titles again
   --new-board       Create a second board instead of reusing this machine's
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)
@@ -544,7 +629,7 @@ listener commands (macOS; see docs/hooks.md "Focus"):
 `;
 
 const VALUE_FLAGS = new Set(['url', 'code', 'secret', 'name', 'slots']);
-const BOOL_FLAGS = new Set(['minimal', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume', 'new-board', 'list', 'skhd', 'karabiner', 'write']);
+const BOOL_FLAGS = new Set(['minimal', 'no-minimal', 'no-secret', 'no-qr', 'help', 'codex', 'no-codex', 'purge', 'no-resume', 'resume', 'new-board', 'list', 'skhd', 'karabiner', 'write']);
 
 export async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -602,7 +687,8 @@ export async function main(argv: string[]): Promise<number> {
           url: typeof flags.get('url') === 'string' ? (flags.get('url') as string) : undefined,
           code: typeof flags.get('code') === 'string' ? (flags.get('code') as string) : undefined,
           secret: typeof flags.get('secret') === 'string' ? (flags.get('secret') as string) : undefined,
-          minimal: flags.get('minimal') === true,
+          noSecret: flags.get('no-secret') === true,
+          minimal: flags.get('minimal') === true ? true : flags.get('no-minimal') === true ? false : undefined,
           codex: flags.get('codex') === true ? true : flags.get('no-codex') === true ? false : undefined,
           noQr: flags.get('no-qr') === true,
           newBoard: flags.get('new-board') === true,

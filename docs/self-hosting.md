@@ -405,6 +405,8 @@ see [docs/api.md](api.md#device-push-endpoints).
   one. (On Windows:
   `& ([scriptblock]::Create((irm https://status.example.com/install.ps1))) -Url https://status.example.com`.)
   An already-installed CLI just needs `agstatus init --url https://status.example.com`.
+  From then on, re-running the installer to upgrade keeps the machine on your
+  server, with its secret; `--url` is needed again only to move it.
 - iOS app: on the welcome screen, expand "Self-hosting?" and enter your
   server URL, or paste/scan your board URL directly.
 - Manual hooks: see [docs/hooks.md](hooks.md).

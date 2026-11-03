@@ -792,11 +792,15 @@ export async function uninstall(opts: ListenerCommandOptions = {}): Promise<numb
     log(`Nothing to remove at ${plist}.`);
   }
 
-  if (fs.existsSync(file)) {
-    mergeAgstatusJson({ focus: false });
+  // Written even when there is no file yet: "focus": false is also how a later
+  // install knows Focus was turned off here, and public/install.sh keeps it
+  // off until --focus or `agstatus listener install` turns it back on.
+  const hadFile = fs.existsSync(file);
+  mergeAgstatusJson({ focus: false });
+  if (hadFile) {
     log(`✔ Set "focus": false in ${file} (other keys kept) — live cards clear on their next update.`);
   } else {
-    log(`No ${file} — Focus was already off.`);
+    log(`✔ Wrote "focus": false to ${file}, so a later install keeps Focus off.`);
   }
 
   // The launcher goes with the agent, purge or no purge: nothing may be left
