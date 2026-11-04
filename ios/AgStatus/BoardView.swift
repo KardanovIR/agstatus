@@ -180,7 +180,7 @@ struct BoardView: View {
     /// The board itself: what is pinned, what scrolls, and the streak beneath.
     private func board(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
         VStack(spacing: 0) {
-            if !plan.groups.isEmpty && store.connection != .boardGone {
+            if !plan.groups.isEmpty && store.connection != .boardGone && !plan.idleHeadsScroll {
                 pinned(plan, scroller: scroller)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -191,9 +191,9 @@ struct BoardView: View {
                     // "No agents yet" is only true when we're actually live —
                     // while (re)connecting, an empty list just means "unknown".
                     if store.isDemo || store.connection == .live {
-                        emptyState(hasAgents: !plan.groups.isEmpty)
+                        emptyState(plan)
                     } else {
-                        connectingState
+                        connectingState(plan)
                     }
                 } else {
                     sessionBoard(plan, scroller: scroller)
@@ -890,8 +890,8 @@ struct BoardView: View {
 
     /// No sessions on the board — in one of two quite different situations.
     ///
-    /// `hasAgents` is whether any agent has a head above this, which with no
-    /// sessions means it reports plan limits. Limits on the board prove it is
+    /// Which one is whether any agent has a head (`hasAgents`, in
+    /// `emptyMessage`), which with no sessions means it reports plan limits. Limits on the board prove it is
     /// paired and that an agent has reported, so "No agents yet" and a
     /// prominent "Pair your computer" under two named heads with live bars
     /// contradicted the screen they were on. It is a common state, too: the
@@ -900,16 +900,42 @@ struct BoardView: View {
     /// the toolbar, and the webhook in Settings, where they always were.
     ///
     /// A board with no heads at all keeps the first-run copy and the button.
-    private func emptyState(hasAgents: Bool) -> some View {
+    ///
+    /// On a phone held sideways the moon and the 64pt above it go. Where the
+    /// idle heads stay pinned there — a sideways board wide enough for two
+    /// columns — they leave this a strip, about 150pt on a 6.9" phone: the
+    /// moon filled it, and the sentence that says nothing is running sat
+    /// below the fold. Without them the title comes first, and the rest
+    /// scrolls. On a narrower sideways board, an SE or a 6.1" phone, and at an
+    /// accessibility size, the heads scroll in here instead (`idleHeads`),
+    /// and the sentence follows them.
+    private func emptyState(_ plan: BoardPlan) -> some View {
         ScrollView {
-            VStack(spacing: 16) {
-                Image(systemName: "moon.zzz.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(Theme.textSecondary)
-                    .accessibilityHidden(true)
+            VStack(spacing: 0) {
+                idleHeads(plan)
+                emptyMessage(hasAgents: !plan.groups.isEmpty,
+                             compact: verticalSizeClass == .compact,
+                             underHeads: plan.idleHeadsScroll && !plan.groups.isEmpty)
+            }
+        }
+        .refreshable { await store.refresh() }
+    }
+
+    /// `compact` is the sideways strip, where even the title steps down;
+    /// `underHeads`, heads scrolling above it. Either way the moon and the
+    /// 64pt above it go.
+    private func emptyMessage(hasAgents: Bool, compact: Bool, underHeads: Bool) -> some View {
+        let plain = compact || underHeads
+        return VStack(spacing: compact ? Theme.Space.xs : 16) {
+                if !plain {
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.system(size: 44))
+                        .foregroundStyle(Theme.textSecondary)
+                        .accessibilityHidden(true)
+                }
                 if hasAgents {
                     Text("Nothing running")
-                        .font(.system(.title2, design: .rounded).weight(.semibold))
+                        .font(.system(compact ? .headline : .title2, design: .rounded).weight(.semibold))
                         .foregroundStyle(Theme.textPrimary)
                     Text("Sessions appear here when an agent starts.")
                         .font(.subheadline)
@@ -918,12 +944,30 @@ struct BoardView: View {
                 } else {
                     firstRun
                 }
-            }
-            .padding(24)
-            .padding(.top, 64)
-            .frame(maxWidth: .infinity)
         }
-        .refreshable { await store.refresh() }
+        .padding(.horizontal, 24)
+        .padding(.vertical, compact ? Theme.Space.sm : 24)
+        .padding(.top, plain ? 0 : 64)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// An idle board's heads where they cannot be pinned (`idleHeadsScroll`):
+    /// at the top of what scrolls, each the whole width, as the list's own
+    /// scrolling heads are, so a name has its line to itself. With nothing
+    /// running nothing is blocked, so there is no alarm to jump from.
+    @ViewBuilder
+    private func idleHeads(_ plan: BoardPlan) -> some View {
+        if plan.idleHeadsScroll && !plan.groups.isEmpty {
+            VStack(alignment: .leading, spacing: BoardArrangement.headGap) {
+                ForEach(plan.groups) { group in
+                    AgentHead(group: group, width: plan.width, canStrip: true,
+                              scale: plan.scale, now: now, jumpFocus: $jumpFocus, onJump: {})
+                }
+            }
+            .padding(.horizontal, Theme.Space.md)
+            .padding(.top, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// A board nothing has reported to: how to get something onto it.
@@ -999,28 +1043,49 @@ struct BoardView: View {
 
     // MARK: - Connecting
 
-    private var connectingState: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(Theme.textSecondary)
-                Text("Connecting to your board…")
-                    .font(.system(.headline, design: .rounded))
-                    .foregroundStyle(Theme.textSecondary)
-                Text("Pull down to retry.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textSecondary.opacity(0.7))
+    /// While the board reconnects with nothing running. The store keeps the
+    /// limits through a reconnect, so the heads are here too: pinned above, or
+    /// at the top of this where pinned ones would not fit (`idleHeads`). The
+    /// 160pt that set the spinner down an empty screen drops to 24 under heads
+    /// that scroll in here and on a phone held sideways, where it pushed the
+    /// spinner off the screen; under pinned heads in portrait it stays 160.
+    private func connectingState(_ plan: BoardPlan) -> some View {
+        let short = verticalSizeClass == .compact || (plan.idleHeadsScroll && !plan.groups.isEmpty)
+        return ScrollView {
+            VStack(spacing: 0) {
+                idleHeads(plan)
+                VStack(spacing: 14) {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(Theme.textSecondary)
+                    Text("Connecting to your board…")
+                        .font(.system(.headline, design: .rounded))
+                        .foregroundStyle(Theme.textSecondary)
+                    Text("Pull down to retry.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.textSecondary.opacity(0.7))
+                }
+                .padding(.top, short ? Theme.Space.lg : 160)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.top, 160)
-            .frame(maxWidth: .infinity)
         }
         .refreshable { await store.refresh() }
     }
 
     // MARK: - Board gone
 
+    /// Scrolls only where it does not fit — AX4 on an SE, AX5 on most
+    /// phones, the larger sizes on a phone held sideways. It is the whole
+    /// screen in this state, and unscrollable its explanation was cut to
+    /// whatever fitted. Where it fits it is the page it always was.
     private var boardGoneView: some View {
+        ViewThatFits(in: .vertical) {
+            boardGoneContent
+            ScrollView { boardGoneContent.frame(maxWidth: .infinity) }
+        }
+    }
+
+    private var boardGoneContent: some View {
         VStack(spacing: 16) {
             Image(systemName: "questionmark.folder")
                 .font(.system(size: 44))
@@ -1265,6 +1330,27 @@ private struct BoardPlan {
         !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count,
                                               largeText: largeText, compactHeight: compactHeight)
     }
+
+    /// An idle board whose pinned heads would not fit: its heads leave the
+    /// pinned area and open the empty state instead, each the whole width,
+    /// scrolling with it.
+    ///
+    /// At an accessibility text size, the one place a phone still pinned
+    /// narrow heads: two across they cut a name to its first letters, and
+    /// with every limit in each the row outgrew a small phone's board —
+    /// three windows at AX4 on an SE, six from AX2 — where nothing could
+    /// scroll it back into view.
+    ///
+    /// And on a phone held sideways that is too narrow for two columns, an
+    /// SE or a 6.1" phone, where the heads go two across in their narrow
+    /// form, 54pt a window: on an SE's board of about 261pt between the
+    /// navigation bar and the streak, four windows already ran past its
+    /// bottom edge. Wider sideways boards, a 6.3" phone and up, lay the heads
+    /// across in one row of their regular form, which fits.
+    ///
+    /// No agent line: an idle board has no sections for its names to send
+    /// you to, and nothing blocked.
+    var idleHeadsScroll: Bool { idle && (largeText || (compactHeight && !wide)) }
 
     /// One agent's column, and the head over it.
     var track: CGFloat { BoardArrangement.track(width: width, count: groups.count) }
