@@ -40,6 +40,11 @@ struct BoardView: View {
     /// countdowns on one screen disagree for most of a minute.
     private static let clock = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
     @State private var now = Date()
+    /// A dropped connection that has been said aloud, so that its return is
+    /// said too — and only then (`announceConnection`).
+    @State private var announcedDrop = false
+    /// The wait before a drop is said aloud.
+    @State private var dropWait: Task<Void, Never>?
 
     /// The narrowest a column may be, growing with the reader's text size.
     ///
@@ -105,8 +110,8 @@ struct BoardView: View {
                         .font(.system(.headline, design: .rounded).weight(.bold))
                         .foregroundStyle(Theme.textPrimary)
                 }
-                ToolbarItem(placement: .topBarLeading) {
-                    if store.isDemo {
+                BoardStatusItem {
+                    if store.isDemo && !lampForScreenshots {
                         demoBadge
                     } else {
                         connectionDot
@@ -146,6 +151,7 @@ struct BoardView: View {
                 }
             }
             .onReceive(Self.clock) { now = $0 }
+            .onChange(of: store.connection) { old, new in announceConnection(from: old, to: new) }
             // The body draws from `sides.resolved(for:)`, and this stores the
             // same answer — so the first frame a card appears in already has
             // it on its side, and every later frame finds it there.
@@ -155,7 +161,12 @@ struct BoardView: View {
             // A different board is different cards. Starting again is also
             // what stops the ledger growing without end across a day of
             // switching boards.
-            .onChange(of: store.board) { sides = CardSides().resolved(for: groups) }
+            .onChange(of: store.board) {
+                sides = CardSides().resolved(for: groups)
+                // A different board's first connect is not a reconnection.
+                announcedDrop = false
+                dropWait?.cancel()
+            }
             .onChange(of: store.isDemo) { sides = CardSides().resolved(for: groups) }
             // The ring says "this is the blocked card you asked for". Once the
             // card is no longer blocked it would be saying something untrue.
@@ -1031,16 +1042,79 @@ struct BoardView: View {
 
     // MARK: - Toolbar bits
 
+    /// The state the lamp shows: the store's, unless a debug launch asked for
+    /// another (`connectionForScreenshots`).
+    private var lampState: SessionStore.Connection {
+        #if DEBUG
+        if let state = Self.connectionForScreenshots { return state }
+        #endif
+        return store.connection
+    }
+
+    /// Whether a debug launch put the lamp where demo mode shows its badge.
+    private var lampForScreenshots: Bool {
+        #if DEBUG
+        return Self.connectionForScreenshots != nil
+        #else
+        return false
+        #endif
+    }
+
+    #if DEBUG
+    /// AGSTATUS_DEMO_CONNECTION=live|connecting|idle|gone shows the
+    /// connection lamp, in that state, where demo mode shows its badge —
+    /// `connecting` drawn and spoken as reconnecting, which looks the same. The
+    /// lamp is otherwise only drawn on a paired board, which simctl cannot
+    /// make, so its four shapes could not be captured.
+    private static let connectionForScreenshots: SessionStore.Connection? = {
+        switch ProcessInfo.processInfo.environment["AGSTATUS_DEMO_CONNECTION"] {
+        case "live": .live
+        case "connecting": .reconnecting
+        case "idle": .idle
+        case "gone": .boardGone
+        default: nil
+        }
+    }()
+    #endif
+
+    /// Where the live connection stands, told by shape as well as colour, as
+    /// a panel lamp is: lit while live, a ring while it connects or
+    /// reconnects, a broken ring when nothing is connected, a cross for a
+    /// board that is gone.
+    ///
+    /// It used to be one dot in four colours. Live green and reconnecting
+    /// teal are close, and with cards on screen a dropped connection changed
+    /// nothing else — state carried by hue alone, on the one board read from
+    /// the corner of an eye. It also glowed, the only lit thing on a board
+    /// where nothing glows.
     private var connectionDot: some View {
-        Circle()
-            .fill(dotColor)
-            .frame(width: 9, height: 9)
-            .shadow(color: dotColor.opacity(0.6), radius: 3)
-            .accessibilityLabel(dotDescription)
+        Group {
+            switch lampState {
+            case .live:
+                Circle().fill(dotColor)
+            case .connecting, .reconnecting:
+                Circle().strokeBorder(dotColor, lineWidth: 2)
+            case .boardGone:
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .heavy))
+                    .foregroundStyle(dotColor)
+            case .idle, .demo:
+                Circle().strokeBorder(dotColor, style: StrokeStyle(lineWidth: 1.5, dash: [2, 2]))
+            }
+        }
+        .frame(width: 9, height: 9)
+        // One element: what it is, then where it stands. A bare
+        // "Reconnecting" named nothing. Not .updatesFrequently, which only
+        // has VoiceOver poll the element its cursor is on: a dropped
+        // connection matters while the cursor is somewhere else, so the
+        // board says it aloud instead (`announceConnection`).
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Board connection")
+        .accessibilityValue(dotDescription)
     }
 
     private var dotColor: Color {
-        switch store.connection {
+        switch lampState {
         case .live:
             Theme.color(for: .done)
         case .connecting, .reconnecting:
@@ -1053,13 +1127,59 @@ struct BoardView: View {
     }
 
     private var dotDescription: String {
-        switch store.connection {
+        switch lampState {
         case .live: "Connected"
         case .connecting: "Connecting"
         case .reconnecting: "Reconnecting"
         case .boardGone: "Board not found"
         case .idle: "Not connected"
         case .demo: "Demo"
+        }
+    }
+
+    /// Says a lasting change of connection aloud, for a reader whose cursor
+    /// is on the cards. The lamp is the only other place it shows, and the
+    /// cards go on drawing a board that has stopped updating.
+    ///
+    /// A drop is said once it has lasted five seconds: a stream drops and
+    /// comes back within a breath often enough that saying each one would
+    /// make the board chatter. So is a reconnect that fails on coming back to
+    /// the foreground with cards still on screen — they are the cards from
+    /// before, and they read as live. A cold launch with no cards says
+    /// nothing; its screen already says it is connecting. A return is said
+    /// only if the drop was, even across a stay in the background, so the
+    /// last thing said about a board is never that it is lost when it is not.
+    /// The app's own reconnect on coming to the foreground — idle, connecting,
+    /// live — says nothing, and nor does going to the background. A board
+    /// that is gone is said at once: it does not come back.
+    private func announceConnection(from old: SessionStore.Connection, to new: SessionStore.Connection) {
+        switch (old, new) {
+        case (_, .reconnecting):
+            let wasLive = old == .live
+            dropWait?.cancel()
+            dropWait = Task {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, store.connection == .reconnecting,
+                      wasLive || !store.sessions.isEmpty else { return }
+                announcedDrop = true
+                AccessibilityNotification.Announcement(
+                    wasLive ? "Board connection lost. Reconnecting." : "Can't reach the board. Retrying."
+                ).post()
+            }
+        case (_, .live):
+            dropWait?.cancel()
+            if announcedDrop {
+                announcedDrop = false
+                AccessibilityNotification.Announcement("Board reconnected.").post()
+            }
+        case (_, .boardGone):
+            dropWait?.cancel()
+            announcedDrop = false
+            AccessibilityNotification.Announcement("This board no longer exists.").post()
+        default:
+            // To the background, or a first connect: nothing to say, and a
+            // drop not yet said never will be.
+            dropWait?.cancel()
         }
     }
 
@@ -1081,6 +1201,26 @@ struct BoardView: View {
             .padding(.vertical, 3)
             .overlay(Capsule().strokeBorder(Theme.cardBorder))
             .accessibilityLabel("Demo mode")
+    }
+}
+
+/// The toolbar's leading item: the DEMO badge, or the connection lamp.
+///
+/// Both are labels, not controls, so on iOS 26 the item gives up the glass
+/// capsule the toolbar draws behind each item. Under the glass the badge was
+/// a capsule inside a capsule, two outlines round one word, and a status
+/// light in a glass bubble reads as a button to press. Before 26 there is no
+/// glass, and nothing to give up.
+private struct BoardStatusItem<Content: View>: ToolbarContent {
+    @ViewBuilder let content: Content
+
+    var body: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .topBarLeading) { content }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarLeading) { content }
+        }
     }
 }
 
