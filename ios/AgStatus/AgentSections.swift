@@ -124,7 +124,7 @@ struct AgentHead: View {
     var body: some View {
         content
             .padding(.horizontal, HeadForm.padding)
-            .padding(.vertical, 12)
+            .padding(.vertical, Theme.Space.sm)
             // A head with no limits is its name line and padding, 40pt on a
             // phone: under the 44pt a control needs, and the head is one. The
             // extra goes underneath, so its name stays level with the name of
@@ -435,7 +435,7 @@ private struct HeadSurfaceStyle: ButtonStyle {
     let edge: Color
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Theme.Radius.head, style: .continuous)
         configuration.label
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(shape.fill(configuration.isPressed ? Theme.raised : Theme.card))
@@ -660,6 +660,7 @@ struct GroupLabel: View {
 /// resets. A percentage of a quota nobody has told us — never a token count,
 /// and nothing here converts one into the other.
 private struct LimitMeter: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let sourceName: String
     let window: UsageWindow
     let now: Date
@@ -686,22 +687,41 @@ private struct LimitMeter: View {
         "\(Int(window.usedPct.rounded()))%"
     }
 
-    /// "resets in 2h 15m" — nil once the reset time is unknown or passed.
-    private var resetText: String? {
+    /// When the window resets: "resets in 2h 15m", and the bare span, "2h 15m",
+    /// for a line with no room for the words. Nil once the reset time is
+    /// unknown or passed; inside the last minute "resets soon", with no span.
+    private var reset: (phrase: String, span: String?)? {
+        guard let date = window.resetsDate else { return nil }
+        let seconds = Int(date.timeIntervalSince(now))
+        guard seconds > 60 else { return seconds > 0 ? ("resets soon", nil) : nil }
+        // Derive units from one rounded minute total so 7199s is "2h", never "1h 60m".
+        let span = Self.span(minutes: (seconds + 30) / 60)
+        return ("resets in \(span)", span)
+    }
+
+    /// The reset said in words — "resets in 2 hours, 17 minutes" — for
+    /// VoiceOver, which may read the face's "2h 17m" as a length.
+    private var spokenReset: String? {
         guard let date = window.resetsDate else { return nil }
         let seconds = Int(date.timeIntervalSince(now))
         guard seconds > 60 else { return seconds > 0 ? "resets soon" : nil }
-        // Derive units from one rounded minute total so 7199s is "2h", never "1h 60m".
-        let totalMinutes = (seconds + 30) / 60
-        if totalMinutes < 60 { return "resets in \(totalMinutes)m" }
+        let minutes = (seconds + 30) / 60
+        let parts = minutes < 60 ? DateComponents(minute: minutes)
+            : minutes < 1440 ? DateComponents(hour: minutes / 60, minute: minutes % 60)
+            : DateComponents(day: minutes / 1440, hour: (minutes / 60) % 24)
+        return SessionCardView.spokenUnits.string(from: parts).map { "resets in \($0)" } ?? reset?.phrase
+    }
+
+    private static func span(minutes totalMinutes: Int) -> String {
+        if totalMinutes < 60 { return "\(totalMinutes)m" }
         let totalHours = totalMinutes / 60
         if totalHours < 24 {
             let minutes = totalMinutes % 60
-            return minutes > 0 ? "resets in \(totalHours)h \(minutes)m" : "resets in \(totalHours)h"
+            return minutes > 0 ? "\(totalHours)h \(minutes)m" : "\(totalHours)h"
         }
         let days = totalHours / 24
         let hours = totalHours % 24
-        return hours > 0 ? "resets in \(days)d \(hours)h" : "resets in \(days)d"
+        return hours > 0 ? "\(days)d \(hours)h" : "\(days)d"
     }
 
     private var label: some View {
@@ -710,7 +730,13 @@ private struct LimitMeter: View {
             .kerning(0.4)
             .textCase(.uppercase)
             .foregroundStyle(Theme.textSecondary)
-            .lineLimit(1)
+            // Two lines at an accessibility text size. On one, at AX4, both of
+            // Claude's weekly windows read "WEEKLY…" and which limit was which
+            // could not be told. A phone's heads scroll with their sections at
+            // those sizes, so the line costs no pinned height there. At the
+            // standard sizes a pinned head keeps one line a label: its height
+            // comes out of the room left for the cards.
+            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
     }
 
     private var value: some View {
@@ -719,13 +745,47 @@ private struct LimitMeter: View {
                 .font(.system(.caption, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(Theme.textPrimary)
-            if let resetText {
-                Text("· \(resetText)")
+                // The number never gives way: neither the label beside it
+                // nor its own reset squeezes it.
+                .fixedSize()
+            if let reset {
+                resetLine(reset)
                     .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1)
-                    // Truncating this to a bare "·" helps nobody: drop it whole.
-                    .layoutPriority(stacked ? 0 : -1)
+            }
+        }
+    }
+
+    /// The reset whole, as the bare span, or not at all — never cut.
+    ///
+    /// It used to truncate: at the largest standard text size a 2h 17m reset
+    /// read "resets in 2h 1…", which is a different number. The span alone is
+    /// still a countdown beside a meter, and the words stay in the VoiceOver
+    /// label. Where even the span does not fit, the reset is drawn nowhere —
+    /// the usage screen does not show resets — which at these widths is
+    /// rare. The last option is FitsAsNothing, not EmptyView, which
+    /// ViewThatFits does not count (see its note); and the two cases are
+    /// spelled out rather than an `if` inside the cascade, as the card's meta
+    /// line does.
+    ///
+    /// Each meter decides for itself, from its own string: one head can show
+    /// "34% · 2h 17m" over "62% · resets in 2d 5h", and a row can gain or
+    /// lose its words as its countdown's digits change. Deciding once per
+    /// head from a template would hold the form still, at the price of
+    /// showing the bare span where the words fit; every form is whole either
+    /// way.
+    @ViewBuilder
+    private func resetLine(_ reset: (phrase: String, span: String?)) -> some View {
+        if let span = reset.span {
+            ViewThatFits(in: .horizontal) {
+                Text("· \(reset.phrase)").fixedSize()
+                Text("· \(span)").fixedSize()
+                FitsAsNothing()
+            }
+        } else {
+            ViewThatFits(in: .horizontal) {
+                Text("· \(reset.phrase)").fixedSize()
+                FitsAsNothing()
             }
         }
     }
@@ -741,6 +801,13 @@ private struct LimitMeter: View {
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     label
+                        // Beside its value, the label is offered the width
+                        // first: it says which limit this is, and the reset
+                        // steps down to its span, or goes, to make room.
+                        // Ranked level with the value, the row split the
+                        // width between them and cut the label while the
+                        // whole "resets in …" phrase was drawn.
+                        .layoutPriority(1)
                     Spacer(minLength: 8)
                     value
                 }
@@ -748,7 +815,7 @@ private struct LimitMeter: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Theme.meterTrack)
                     Capsule()
                         .fill(barColor)
                         // A hairline of progress stays visible even at ~0%.
@@ -760,7 +827,7 @@ private struct LimitMeter: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "\(sourceName) \(window.label): \(pctText) used\(resetText.map { ", \($0)" } ?? "")"
+            "\(sourceName) \(window.label): \(pctText) used\(spokenReset.map { ", \($0)" } ?? "")"
         )
     }
 }
