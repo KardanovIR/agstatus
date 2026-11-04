@@ -543,6 +543,12 @@ jobs:
   ios:
     name: iOS app (build)
     runs-on: macos-15
+    # The board calls two iOS 26 SwiftUI modifiers (listSectionMargins,
+    # scrollEdgeEffectStyle) behind `if #available`, which is decided at run
+    # time, so compiling them takes the iOS 26 SDK. The image's default Xcode
+    # is 16.4, with the iOS 18.5 SDK; it carries 26.3 as well.
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - run: >

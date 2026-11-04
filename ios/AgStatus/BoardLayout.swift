@@ -83,17 +83,31 @@ struct AgentGroup: Identifiable, Equatable {
 /// Which arrangement a width allows. This is the whole rule:
 ///
 ///     fit = how many `minColumn` columns the board holds
-///     fit < 2             → narrow: sessions in one list under named groups,
-///                           the heads pinned two across — or, from a third
-///                           agent, scrolling with their groups (`headsScroll`)
+///     fit < 2, or a short
+///     screen              → narrow: sessions in one list under named groups,
+///                           the heads pinned two across — or scrolling with
+///                           their groups (`headsScroll`) from a third agent,
+///                           and from the first on a short screen or at an
+///                           accessibility text size
 ///     2 ≤ agents ≤ fit    → columns: one column per agent
 ///     one agent           → stackedOne: its head full width, cards two across
 ///     otherwise           → stackedMany: agents stacked full width, cards two
 ///                           across, the heads scrolling with them
 ///
-/// It is decided by MEASURED width and never by size class. An iPad in Split
-/// View or Slide Over is a regular-width device showing a phone-width board,
-/// and a size class would give it two 150pt columns.
+/// The arrangement is decided by MEASURED width and never by horizontal size
+/// class. An iPad in Split View or Slide Over is a regular-width device
+/// showing a phone-width board, and a size class would give it two 150pt
+/// columns.
+///
+/// Height is the one thing a size class is asked: a compact vertical size
+/// class is a phone held sideways. Most iPhones are wide enough on their side
+/// for two columns, but a 6.9" one leaves the board about 300pt of height
+/// between the navigation bar and the streak, and two pinned heads with their
+/// limits took half of that, over a card and a third. Columns are not the
+/// phone's anyway: only the list can be swiped, and the swipe is how a phone
+/// has always dismissed a card. So a short screen keeps the list, as 1.5.0
+/// did in every orientation, with only the agent line pinned. An iPad's
+/// vertical size class is regular in every orientation and every split.
 enum BoardArrangement: Equatable {
     case narrow
     case columns
@@ -118,16 +132,21 @@ enum BoardArrangement: Equatable {
     static let narrowPinnedHeads = 2
 
     /// Whether the heads scroll with their sections, one pinned `AgentLine`
-    /// standing in for them. Columns and a lone agent always pin their heads.
+    /// standing in for them. Columns, and a lone agent's strip, always pin
+    /// their heads.
     ///
     /// `largeText` is an accessibility text size. There a phone's two pinned
     /// heads, with every limit in each, took most of the screen: on a 6.9"
     /// phone at AX4 they and the group label left the cards about 90pt. So
     /// the narrow board pins the agent line from the first agent, as it does
     /// from the third at other sizes, and the heads scroll with their groups.
-    static func headsScroll(_ arrangement: BoardArrangement, agents: Int, largeText: Bool = false) -> Bool {
+    ///
+    /// `compactHeight` is a phone held sideways, short of height in the same
+    /// way at every text size: the same answer, for the same reason.
+    static func headsScroll(_ arrangement: BoardArrangement, agents: Int,
+                            largeText: Bool = false, compactHeight: Bool = false) -> Bool {
         switch arrangement {
-        case .narrow: agents > narrowPinnedHeads || (largeText && agents > 0)
+        case .narrow: agents > narrowPinnedHeads || ((largeText || compactHeight) && agents > 0)
         case .stackedMany: true
         case .columns, .stackedOne: false
         }
@@ -154,9 +173,13 @@ enum BoardArrangement: Equatable {
     /// `minColumn` is a parameter because the caller scales it with Dynamic
     /// Type: at a large text size an iPad steps down to the list instead of
     /// squeezing two columns of clipped names onto the screen.
-    static func resolve(width: CGFloat, agents: Int, minColumn: CGFloat = minColumn) -> BoardArrangement {
+    ///
+    /// `compactHeight` is a compact vertical size class, a phone held
+    /// sideways, and it keeps the list whatever the width (see above).
+    static func resolve(width: CGFloat, agents: Int, minColumn: CGFloat = minColumn,
+                        compactHeight: Bool = false) -> BoardArrangement {
         let fit = fit(width: width, minColumn: minColumn)
-        if fit < 2 { return .narrow }
+        if fit < 2 || compactHeight { return .narrow }
         if agents >= 2 && agents <= fit { return .columns }
         return agents <= 1 ? .stackedOne : .stackedMany
     }
@@ -420,6 +443,21 @@ extension BoardArrangement {
         assert(headsScroll(.narrow, agents: 2, largeText: true), "large text, two agents")
         assert(!headsScroll(.columns, agents: 2, largeText: true), "large text, columns")
         assert(!headsScroll(.stackedOne, agents: 1, largeText: true), "large text, one strip")
+
+        // A phone held sideways keeps the list, at the widths a phone has on
+        // its side — a 6.1" phone (702), a 6.3" one (718), a 6.9" one (800) —
+        // where the width alone would give it columns. And it pins the agent
+        // line from the first agent, as large text does.
+        for width: CGFloat in [702, 718, 800] {
+            for agents in 0...4 {
+                assert(resolve(width: width, agents: agents, compactHeight: true) == .narrow,
+                       "\(agents) agents held sideways at \(width)")
+            }
+        }
+        assert(resolve(width: 800, agents: 2) == .columns, "by its width alone, columns")
+        assert(!headsScroll(.narrow, agents: 0, compactHeight: true), "sideways, no agents")
+        assert(headsScroll(.narrow, agents: 1, compactHeight: true), "sideways, one agent")
+        assert(headsScroll(.narrow, agents: 2, compactHeight: true), "sideways, two agents")
 
         // The threshold itself: two 340pt columns and one gutter.
         assert(fit(width: 703) == 1 && fit(width: 704) == 2, "two columns from 704")

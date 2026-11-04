@@ -47,6 +47,11 @@ struct BoardView: View {
     /// `BoardArrangement.headsScroll`.
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    /// Compact on a phone held sideways, and only there: it keeps the list,
+    /// with the agent line pinned. The one size class the board reads, and it
+    /// is never asked about width (`BoardArrangement`).
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+
     var body: some View {
         NavigationStack(path: $path) {
             // The board is arranged from its MEASURED width, read here, once,
@@ -275,13 +280,17 @@ struct BoardView: View {
         if let clamp = Self.widthForScreenshots { width = min(width, clamp) }
         #endif
         let groups = groups
+        let compactHeight = verticalSizeClass == .compact
         return BoardPlan(
             width: width,
             scale: minColumn / BoardArrangement.minColumn,
             groups: groups,
-            arrangement: BoardArrangement.resolve(width: width, agents: groups.count, minColumn: minColumn),
+            arrangement: BoardArrangement.resolve(width: width, agents: groups.count, minColumn: minColumn,
+                                                  compactHeight: compactHeight),
+            wide: BoardArrangement.fit(width: width, minColumn: minColumn) >= 2,
             idle: store.sessions.isEmpty,
             largeText: typeSize.isAccessibilitySize,
+            compactHeight: compactHeight,
             sides: sides.resolved(for: groups)
         )
     }
@@ -304,8 +313,9 @@ struct BoardView: View {
                 .padding(.bottom, 2)
         } else if plan.headsScroll {
             // More agents than this board pins heads for: on a wide board more
-            // than fit, on a phone more than two. Their heads scroll with
-            // their sections; this one line is what stays.
+            // than fit, on a phone more than two — or, on a phone held
+            // sideways or at an accessibility text size, any at all. Their
+            // heads scroll with their sections; this one line is what stays.
             agentLine(plan, scroller: scroller)
         } else {
             switch plan.arrangement {
@@ -434,17 +444,20 @@ struct BoardView: View {
             }
     }
 
-    /// Where two columns do not fit — a phone, or an iPad in Split View — the
-    /// sessions stay one list, because the list is the only container that can
-    /// be swiped, and the swipe is how a phone has always dismissed a card.
+    /// Where two columns do not fit — a phone, or an iPad in Split View — and
+    /// on a phone held sideways, the sessions stay one list, because the list
+    /// is the only container that can be swiped, and the swipe is how a phone
+    /// has always dismissed a card.
     private func groupedList(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
         List {
             if plan.headsScroll {
-                // Three agents or more: the agent line is pinned above, and
-                // each agent's full head opens its group and scrolls with it,
-                // as the sections of a wide board do. No pinned group name as
-                // well — it would stand directly over a head saying the same
-                // name, which is the repetition one agent already avoids.
+                // Three agents or more, or any number on a phone held sideways
+                // or at an accessibility text size: the agent line is pinned
+                // above, and each agent's full head opens its group and
+                // scrolls with it, as the sections of a wide board do. No
+                // pinned group name as well — it would stand directly over a
+                // head saying the same name, which is the repetition one agent
+                // already avoids.
                 ForEach(plan.groups, id: \.section) { group in
                     AgentHead(group: group,
                               width: plan.width,
@@ -710,8 +723,9 @@ struct BoardView: View {
     /// a jump must not have, since the name is what you jumped to read. So
     /// before 26, with several agents, the row goes to the centre, which no
     /// version can put under anything. With one agent there is no label, nor
-    /// with three or more, whose heads scroll and leave nothing pinned inside
-    /// the list — and there the top is simply the top.
+    /// wherever the heads scroll (three agents or more, a phone held sideways,
+    /// an accessibility text size), which leaves nothing pinned inside the
+    /// list — and there the top is simply the top.
     private func listAnchor(_ plan: BoardPlan) -> UnitPoint {
         if plan.groups.count < 2 || plan.headsScroll { return .top }
         if #available(iOS 26.0, *) { return .top }
@@ -1022,20 +1036,25 @@ private struct BoardPlan {
     let scale: CGFloat
     let groups: [AgentGroup]
     let arrangement: BoardArrangement
+    /// Whether two columns fit the width. An idle board asks it to choose
+    /// between two heads across and three. It is the width's answer and not
+    /// the arrangement's: a phone held sideways keeps its sessions in a list,
+    /// but its idle heads take the one row its width allows, which is the row
+    /// a short screen wants.
+    let wide: Bool
     /// No sessions: the heads are the limits and nothing else.
     let idle: Bool
     /// An accessibility text size.
     let largeText: Bool
+    /// A phone held sideways: the list, whatever the width.
+    let compactHeight: Bool
     let sides: CardSides
-
-    /// Whether two columns fit: every arrangement but the narrow one. An idle
-    /// board asks it too, to choose between two heads across and three.
-    var wide: Bool { arrangement != .narrow }
 
     /// Whether the heads scroll with their sections under one pinned agent
     /// line. Never on an idle board, where the heads are all there is.
     var headsScroll: Bool {
-        !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count, largeText: largeText)
+        !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count,
+                                              largeText: largeText, compactHeight: compactHeight)
     }
 
     /// One agent's column, and the head over it.
@@ -1047,7 +1066,7 @@ private struct BoardPlan {
     /// `settles(on:)`.
     var shape: Shape {
         Shape(arrangement: arrangement, tracks: arrangement == .columns ? groups.count : 0, idle: idle,
-              agents: groups.map(\.source))
+              headsScroll: headsScroll, agents: groups.map(\.source))
     }
 
     struct Shape: Hashable {
@@ -1056,6 +1075,10 @@ private struct BoardPlan {
         /// keeps the arrangement and still re-cuts every track on the board.
         let tracks: Int
         let idle: Bool
+        /// Pinned heads or the agent line. A phone turned on its side keeps
+        /// its list, but trades the one for the other, and its list's groups
+        /// go from named sections to heads among the rows.
+        let headsScroll: Bool
         /// Which agents are on the board. One arriving or leaving changes
         /// every head and every group even where the arrangement and the
         /// track count stay as they were — two agents becoming two different
@@ -1174,6 +1197,12 @@ private struct StreakBar: View {
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(Theme.textTertiary)
+                    // Offered the width before the forecast. Both can fall
+                    // back to something smaller, so without this the row
+                    // halves the room between them, and "19 days active" went
+                    // to "19d" beside a forecast it had room for. The day
+                    // count is the fact; the forecast is the one to go first.
+                    .layoutPriority(1)
 
                     Spacer(minLength: Theme.Space.xs)
 

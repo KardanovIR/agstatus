@@ -121,8 +121,10 @@ struct AgentHead: View {
             .padding(.horizontal, HeadForm.padding)
             .padding(.vertical, 12)
             // A head with no limits is its name line and padding, 40pt on a
-            // phone: under the 44pt a control needs, and the head is one.
-            .frame(minHeight: 44)
+            // phone: under the 44pt a control needs, and the head is one. The
+            // extra goes underneath, so its name stays level with the name of
+            // the head beside it, 12pt from the top as every head's is.
+            .frame(minHeight: 44, alignment: .top)
             .frame(width: width, alignment: .leading)
             .frame(maxHeight: fillsHeight ? .infinity : nil, alignment: .top)
             // The head's tap and its alarm are two controls, and they are
@@ -536,7 +538,9 @@ struct AgentLine: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(groups.rows(of: perRow), id: \.first?.source) { row in
-                HStack(spacing: BoardArrangement.agentGutter) {
+                // Top, so that a cell whose alarm went under its name keeps
+                // that name level with its neighbours'.
+                HStack(alignment: .top, spacing: BoardArrangement.agentGutter) {
                     ForEach(row) { group in
                         cell(group)
                     }
@@ -551,30 +555,52 @@ struct AgentLine: View {
         .accessibilityLabel("Agents")
     }
 
+    /// An agent's name and, while something of its is blocked, its alarm.
+    ///
+    /// On one line where they fit. Where they do not — at the largest text
+    /// sizes, where this line is a phone's only pinned row — the alarm goes
+    /// under the name, as it does in the head (`AgentHead.line`), instead of
+    /// the name being cut to "C" beside it: the agent that needs you is the
+    /// one whose name must survive.
     private func cell(_ group: AgentGroup) -> some View {
-        HStack(spacing: Theme.Space.xs) {
-            Button {
-                onSection(group.source)
-            } label: {
-                AgentIdentity(group: group)
-                    .padding(.horizontal, 2)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.Space.xs) {
+                nameButton(group)
+                alarm(group)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(group.name), show its sessions")
-            if group.blocked > 0 {
-                AlarmButton(agent: group.name,
-                            count: group.blocked,
-                            // The same cut-off the head uses, measured on the
-                            // cell: narrower than this and the word goes.
-                            showsWord: cellWidth > HeadForm.narrowMax * scale,
-                            action: { onJump(group.source) })
+            VStack(alignment: .leading, spacing: 6) {
+                nameButton(group)
+                alarm(group)
             }
-            Spacer(minLength: 0)
         }
         .frame(width: cellWidth, alignment: .leading)
         .frame(minHeight: 44)
+    }
+
+    private func nameButton(_ group: AgentGroup) -> some View {
+        Button {
+            onSection(group.source)
+        } label: {
+            AgentIdentity(group: group)
+                .padding(.horizontal, 2)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(group.name), show its sessions")
+    }
+
+    @ViewBuilder
+    private func alarm(_ group: AgentGroup) -> some View {
+        if group.blocked > 0 {
+            AlarmButton(agent: group.name,
+                        count: group.blocked,
+                        // The same cut-off the head uses, measured on the
+                        // cell: narrower than this and the word goes.
+                        showsWord: cellWidth > HeadForm.narrowMax * scale,
+                        action: { onJump(group.source) })
+        }
     }
 }
 

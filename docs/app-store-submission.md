@@ -9,7 +9,7 @@ the Apple Developer portal.
 | Step | Status |
 | --- | --- |
 | `DEVELOPMENT_TEAM` set so `xcodebuild archive` succeeds | **done** |
-| Version 1.6.2 (build 7) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.6.2.md](appstore/listing-1.6.2.md) | **done** |
+| Version 1.6.5 (build 7) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.6.5.md](appstore/listing-1.6.5.md) | **done** |
 | `aps-environment` driven by `APS_ENVIRONMENT` (production in Release) | **done** |
 | In-app privacy link → https://agstatus.online/privacy | **done** |
 | APNs configured on the hosted server (`/api/config` reports `push: true`) | **done** |
@@ -72,7 +72,7 @@ ai,monitor,dashboard,session,developer,terminal,cli,devtool,tracker,remote,usage
 
 > Agents run for minutes, then quietly wait for you. See every session, what it is doing, and how much of your plan is left — without walking back to the desk.
 
-**Description** (3573/4000)
+**Description** (3581/4000)
 
 ```
 AgStatus turns your phone into a live status board for the AI coding agents running on your computer.
@@ -92,7 +92,7 @@ ON THE BOARD
 • Keep-screen-awake option for when the board lives on a desk or a shelf
 
 PLAN LIMITS AT A GLANCE
-Each agent's section opens with its plan limits: the current session window, the weekly cap, and per-model weekly caps, each with a percentage and a “resets in 2h 15m” countdown that stays current. Bars run green, then amber, then red as a limit approaches, and only the agents actually running on your board take up space.
+Each agent on the board has a head with its plan limits: the current session window, the weekly cap, and per-model weekly caps, each with a percentage and a “resets in 2h 15m” countdown that stays current. Bars run green, then amber, then red as a limit approaches, and only the agents actually running on your board take up space.
 
 SESSION HISTORY
 Tap any card to open its timeline: every status change and message that session reported, newest first, with timestamps.
