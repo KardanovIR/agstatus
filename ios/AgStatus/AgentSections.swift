@@ -120,6 +120,9 @@ struct AgentHead: View {
         content
             .padding(.horizontal, HeadForm.padding)
             .padding(.vertical, 12)
+            // A head with no limits is its name line and padding, 40pt on a
+            // phone: under the 44pt a control needs, and the head is one.
+            .frame(minHeight: 44)
             .frame(width: width, alignment: .leading)
             .frame(maxHeight: fillsHeight ? .infinity : nil, alignment: .top)
             // The head's tap and its alarm are two controls, and they are
@@ -153,7 +156,7 @@ struct AgentHead: View {
                 .buttonStyle(HeadSurfaceStyle(edge: edge))
                 .accessibilityLabel(summary)
                 .accessibilityAddTraits(.isHeader)
-                .accessibilityHint("Shows the last 30 days")
+                .accessibilityHint("Shows 30 days of usage")
             }
             // Read as one agent: the head, its alarm, then its limits.
             .accessibilityElement(children: .contain)

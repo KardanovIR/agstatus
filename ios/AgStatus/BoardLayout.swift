@@ -119,9 +119,15 @@ enum BoardArrangement: Equatable {
 
     /// Whether the heads scroll with their sections, one pinned `AgentLine`
     /// standing in for them. Columns and a lone agent always pin their heads.
-    static func headsScroll(_ arrangement: BoardArrangement, agents: Int) -> Bool {
+    ///
+    /// `largeText` is an accessibility text size. There a phone's two pinned
+    /// heads, with every limit in each, took most of the screen: on a 6.9"
+    /// phone at AX4 they and the group label left the cards about 90pt. So
+    /// the narrow board pins the agent line from the first agent, as it does
+    /// from the third at other sizes, and the heads scroll with their groups.
+    static func headsScroll(_ arrangement: BoardArrangement, agents: Int, largeText: Bool = false) -> Bool {
         switch arrangement {
-        case .narrow: agents > narrowPinnedHeads
+        case .narrow: agents > narrowPinnedHeads || (largeText && agents > 0)
         case .stackedMany: true
         case .columns, .stackedOne: false
         }
@@ -407,6 +413,13 @@ extension BoardArrangement {
                        "heads scroll with \(agents) agents at \(row.width)")
             }
         }
+        // At an accessibility text size the phone pins the agent line from
+        // the first agent; columns, and a lone agent's strip, keep their heads.
+        assert(!headsScroll(.narrow, agents: 0, largeText: true), "large text, no agents")
+        assert(headsScroll(.narrow, agents: 1, largeText: true), "large text, one agent")
+        assert(headsScroll(.narrow, agents: 2, largeText: true), "large text, two agents")
+        assert(!headsScroll(.columns, agents: 2, largeText: true), "large text, columns")
+        assert(!headsScroll(.stackedOne, agents: 1, largeText: true), "large text, one strip")
 
         // The threshold itself: two 340pt columns and one gutter.
         assert(fit(width: 703) == 1 && fit(width: 704) == 2, "two columns from 704")

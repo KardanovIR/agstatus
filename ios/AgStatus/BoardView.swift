@@ -43,6 +43,10 @@ struct BoardView: View {
     /// by the same factor (`BoardPlan.scale`).
     @ScaledMetric(relativeTo: .title3) private var minColumn = BoardArrangement.minColumn
 
+    /// At an accessibility size a phone pins the agent line, not its heads:
+    /// `BoardArrangement.headsScroll`.
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         NavigationStack(path: $path) {
             // The board is arranged from its MEASURED width, read here, once,
@@ -277,6 +281,7 @@ struct BoardView: View {
             groups: groups,
             arrangement: BoardArrangement.resolve(width: width, agents: groups.count, minColumn: minColumn),
             idle: store.sessions.isEmpty,
+            largeText: typeSize.isAccessibilitySize,
             sides: sides.resolved(for: groups)
         )
     }
@@ -1019,6 +1024,8 @@ private struct BoardPlan {
     let arrangement: BoardArrangement
     /// No sessions: the heads are the limits and nothing else.
     let idle: Bool
+    /// An accessibility text size.
+    let largeText: Bool
     let sides: CardSides
 
     /// Whether two columns fit: every arrangement but the narrow one. An idle
@@ -1028,7 +1035,7 @@ private struct BoardPlan {
     /// Whether the heads scroll with their sections under one pinned agent
     /// line. Never on an idle board, where the heads are all there is.
     var headsScroll: Bool {
-        !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count)
+        !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count, largeText: largeText)
     }
 
     /// One agent's column, and the head over it.
@@ -1133,6 +1140,8 @@ private struct StreakBar: View {
                         Text(tier.name)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(metal)
+                            .lineLimit(1)
+                            .fixedSize()
                         // Countable, not decorative. As 10x3 capsules these
                         // read as a dashed rule — a shape that looks like data
                         // and carries none. Dots at 5pt with real gaps can
@@ -1154,10 +1163,17 @@ private struct StreakBar: View {
                         }
                         .accessibilityHidden(true)
                     }
-                    Text("\(streak.days) day\(streak.days == 1 ? "" : "s") active")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.textTertiary)
+                    // Whole words or the short form, never "19 day" over "s".
+                    // VoiceOver reads the bar's own label, not these.
+                    ViewThatFits(in: .horizontal) {
+                        Text("\(streak.days) day\(streak.days == 1 ? "" : "s") active")
+                            .fixedSize()
+                        Text("\(streak.days)d")
+                            .fixedSize()
+                    }
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textTertiary)
 
                     Spacer(minLength: Theme.Space.xs)
 
@@ -1172,7 +1188,11 @@ private struct StreakBar: View {
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.textTertiary)
                                 .fixedSize()
-                            EmptyView()
+                            // Not EmptyView, which ViewThatFits does not count:
+                            // with it the forecast never dropped out, and at
+                            // accessibility sizes the tier broke a few letters
+                            // to a line beside it.
+                            FitsAsNothing()
                         }
                     }
                 }
