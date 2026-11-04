@@ -1128,6 +1128,10 @@ struct SessionHistoryView: View {
 
     @State private var events: [HistoryEvent] = []
     @State private var loaded = false
+    /// The name the screen opened with, kept if the session leaves the board
+    /// while it is open. The title used to fall back to the raw session id,
+    /// which VoiceOver reads a character at a time.
+    @State private var title: String?
 
     /// The live session, if it is still on the board.
     private var session: Session? {
@@ -1144,10 +1148,14 @@ struct SessionHistoryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.background.ignoresSafeArea())
-        .navigationTitle(session?.name ?? sessionId)
+        .navigationTitle(session?.name ?? title ?? "Session history")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.background, for: .navigationBar)
-        .task { await load() }
+        .task {
+            title = session?.name
+            await load()
+        }
+        .onChange(of: session?.name) { _, name in if let name { title = name } }
         // Live: any update to this session (new SSE event) refreshes the list.
         .onChange(of: session?.updatedAt) {
             Task { await load() }
@@ -1240,6 +1248,11 @@ struct SessionHistoryView: View {
 // MARK: - HistoryRow
 
 private struct HistoryRow: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// The line above the dot, grown with the status beside it so the dot
+    /// stays level with its word: fixed at 10pt it floated above the word at
+    /// the accessibility sizes, in the gap between two rows.
+    @ScaledMetric(relativeTo: .subheadline) private var dotLead: CGFloat = 10
     let event: HistoryEvent
     let isFirst: Bool
     let isLast: Bool
@@ -1261,11 +1274,12 @@ private struct HistoryRow: View {
             VStack(spacing: 0) {
                 Rectangle()
                     .fill(isFirst ? Color.clear : Theme.cardBorder)
-                    .frame(width: 2, height: 10)
+                    .frame(width: 2, height: dotLead)
+                // No glow: the latest event is the top row, its message in
+                // the primary ink, which says it without light.
                 Circle()
                     .fill(color)
                     .frame(width: 9, height: 9)
-                    .shadow(color: color.opacity(isFirst ? 0.6 : 0), radius: 3)
                 Rectangle()
                     .fill(isLast ? Color.clear : Theme.cardBorder)
                     .frame(width: 2)
@@ -1274,30 +1288,58 @@ private struct HistoryRow: View {
             .frame(width: 12)
 
             VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(event.status.label)
-                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
-                        .foregroundStyle(color)
-                    Spacer(minLength: 8)
-                    Text(timeText)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(Theme.textSecondary)
-                    TimelineView(.periodic(from: .now, by: 30)) { context in
-                        Text(SessionCardView.relativeTime(from: event.date, to: context.date))
-                            .font(.caption2)
-                            .foregroundStyle(Theme.textSecondary.opacity(0.6))
+                // One line while the three fit. Where they do not, the times
+                // go under the status instead of every word being squeezed
+                // into a third of the row: at AX4 on a 375pt phone "Planning"
+                // broke as "Plan|ning", and "5:49 PM" as "5:4|9".
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        statusText
+                        Spacer(minLength: 8)
+                        clockText
+                        agoText
                     }
+                    VStack(alignment: .leading, spacing: 2) {
+                        statusText
+                        HStack(alignment: .firstTextBaseline, spacing: 8) { clockText; agoText }
+                    }
+                    VStack(alignment: .leading, spacing: 2) { statusText; clockText; agoText }
                 }
                 if !event.message.isEmpty {
                     Text(event.message)
                         .font(.subheadline)
                         .foregroundStyle(isFirst ? Theme.textPrimary : Theme.textSecondary)
-                        .lineLimit(3)
+                        // The history is where a message is read whole:
+                        // three lines hold most at the standard sizes, and at
+                        // the accessibility sizes it takes the lines it needs.
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 3)
                 }
             }
             .padding(.vertical, 10)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(event.status.label), \(event.message), \(timeText)")
+        .accessibilityLabel([event.status.label, event.message, timeText].filter { !$0.isEmpty }.joined(separator: ", "))
+    }
+
+    private var statusText: some View {
+        Text(event.status.label)
+            .font(.system(.subheadline, design: .rounded).weight(.semibold))
+            .foregroundStyle(color)
+    }
+
+    private var clockText: some View {
+        Text(timeText)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(Theme.textSecondary)
+    }
+
+    /// One step under the clock time beside it, as a token: 5.88:1. It was
+    /// the secondary ink at 60%, 3.68:1, under AA.
+    private var agoText: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            Text(SessionCardView.relativeTime(from: event.date, to: context.date))
+                .font(.caption2)
+                .foregroundStyle(Theme.textTertiary)
+        }
     }
 }
