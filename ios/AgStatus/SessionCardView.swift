@@ -405,9 +405,13 @@ struct SessionCardView: View {
 
     /// The dot between two facts, with the 4pt either side that the line's
     /// own spacing used to supply. Punctuation, so it is not read out.
+    ///
+    /// textTertiary, the meta line's own ink, as the web board's `.meta-sep`
+    /// has it. The hairline is a line colour, not a text one: on a tinted
+    /// card it falls to about 1.5:1, and the line reads as one run of words.
     private var metaSeparator: some View {
         Text("·")
-            .foregroundStyle(Theme.hairlineStrong)
+            .foregroundStyle(Theme.textTertiary)
             .padding(.horizontal, Theme.Space.xxs)
             .accessibilityHidden(true)
     }

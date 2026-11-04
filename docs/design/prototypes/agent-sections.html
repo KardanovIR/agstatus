@@ -852,7 +852,10 @@ button.alarm::before { content: ''; position: absolute; inset: -15px -8px; }
 }
 
 .meta > * { flex: none; }
-.meta .sep { color: var(--ink-700); }
+/* The meta line's own ink, as the board's .meta-sep has it. --ink-700 is a
+   line colour: on a tinted card it fell to about 1.5:1, and the 1.6.5 app
+   copied it before the 1.6.5 audit put it back. */
+.meta .sep { color: var(--text-3); }
 
 .source {
   display: inline-flex;
