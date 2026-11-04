@@ -78,6 +78,16 @@ struct AgentGroup: Identifiable, Equatable {
     }
 }
 
+// MARK: - Windows
+
+extension Array where Element == AgentGroup {
+    /// The most limit windows any one of these agents reports: what the
+    /// tallest of their heads has to hold. A phone's pinned row is as tall as
+    /// its tallest head, so this is the count `BoardArrangement.headsScroll`
+    /// is given — not a sum over the agents.
+    var mostWindows: Int { map(\.windows.count).max() ?? 0 }
+}
+
 // MARK: - BoardArrangement
 
 /// Which arrangement a width allows. This is the whole rule:
@@ -87,8 +97,9 @@ struct AgentGroup: Identifiable, Equatable {
 ///     screen              → narrow: sessions in one list under named groups,
 ///                           the heads pinned two across — or scrolling with
 ///                           their groups (`headsScroll`) from a third agent,
-///                           and from the first on a short screen or at an
-///                           accessibility text size
+///                           and from the first on a short screen, at an
+///                           accessibility text size, or when a head would
+///                           hold a fifth limit window
 ///     2 ≤ agents ≤ fit    → columns: one column per agent
 ///     one agent           → stackedOne: its head full width, cards two across
 ///     otherwise           → stackedMany: agents stacked full width, cards two
@@ -131,6 +142,33 @@ enum BoardArrangement: Equatable {
     /// agent's name and alarm, and each full head scrolls with its group.
     static let narrowPinnedHeads = 2
 
+    /// The most limit windows the phone pins in one head.
+    ///
+    /// Half a phone stacks a window's label over its value: 53pt a window at
+    /// the default text size. Four is the most either agent reports in
+    /// ordinary use — Claude's session, its week and two models' weeks;
+    /// Codex's general pair and one model's pair — and four two across make a
+    /// pinned row of 266pt: a third of a 6.9" board, under half of an SE's,
+    /// with two cards beneath. One report may carry six (MAX_USAGE_WINDOWS in
+    /// src/store.ts), and Codex reaches it with a second model: six made the
+    /// row 373pt, 63% of an SE's board with a card and a fifth under it.
+    ///
+    /// So from a fifth window in any head the phone does what it does from a
+    /// third agent: the agent line keeps every agent's name and alarm pinned,
+    /// and each full head opens its group in the list. Nothing is left out —
+    /// every window is in that head, a row each across the whole width.
+    ///
+    /// Not four of them pinned and "+2 more". Which four would be the
+    /// report's first, leaving out a model's week that can be the one about
+    /// to run out, or the fullest, which would move bars in and out of the
+    /// head as the percentages pass each other.
+    ///
+    /// A count, not a measured height. A head's height is the text's to
+    /// decide — Dynamic Type, an alarm going under its name — and a board that
+    /// measured its heads would draw them before it could decide not to, at
+    /// every launch: the frame late that the root reader exists to avoid.
+    static let narrowPinnedWindows = 4
+
     /// Whether the heads scroll with their sections, one pinned `AgentLine`
     /// standing in for them. Columns, and a lone agent's strip, always pin
     /// their heads.
@@ -143,10 +181,24 @@ enum BoardArrangement: Equatable {
     ///
     /// `compactHeight` is a phone held sideways, short of height in the same
     /// way at every text size: the same answer, for the same reason.
-    static func headsScroll(_ arrangement: BoardArrangement, agents: Int,
+    ///
+    /// `windows` is the most limit windows any one of the agents reports
+    /// (`mostWindows`). Past `narrowPinnedWindows` the narrow board pins the
+    /// agent line from the first agent, as large text does, and for the same
+    /// reason: the heads would take the room the cards are for.
+    ///
+    /// Columns and a lone agent's strip keep their heads whatever the count.
+    /// There a head has a column or the whole width to itself: it gives a
+    /// window one row beside its value, or lays them three to five across, so
+    /// six come to 264pt at the default size: 41% of an iPad mini's board held
+    /// sideways, the shortest full-screen one. Larger text, and a short Stage
+    /// Manager window, take more.
+    static func headsScroll(_ arrangement: BoardArrangement, agents: Int, windows: Int = 0,
                             largeText: Bool = false, compactHeight: Bool = false) -> Bool {
         switch arrangement {
-        case .narrow: agents > narrowPinnedHeads || ((largeText || compactHeight) && agents > 0)
+        case .narrow:
+            agents > narrowPinnedHeads
+                || (agents > 0 && (largeText || compactHeight || windows > narrowPinnedWindows))
         case .stackedMany: true
         case .columns, .stackedOne: false
         }
@@ -475,6 +527,30 @@ extension BoardArrangement {
         assert(headsScroll(.narrow, agents: 1, compactHeight: true), "sideways, one agent")
         assert(headsScroll(.narrow, agents: 2, compactHeight: true), "sideways, two agents")
 
+        // A head with more limit windows than a phone pins. From a fifth
+        // window in any head the narrow board pins the agent line, as it does
+        // from a third agent; four stay pinned, and so do the demo's three
+        // (the App Store's). Six is the most one report carries
+        // (MAX_USAGE_WINDOWS in src/store.ts). At an SE or a mini (343), a
+        // 6.1" phone (361), a 6.9" one (408) and a 320pt Slide Over window
+        // (288), for one agent and for two.
+        for width: CGFloat in [343, 361, 408, 288] {
+            for agents in 1...2 {
+                let arrangement = resolve(width: width, agents: agents)
+                assert(arrangement == .narrow, "\(agents) agents at \(width) are a list")
+                for windows in 0...6 {
+                    assert(headsScroll(arrangement, agents: agents, windows: windows) == (windows > 4),
+                           "\(windows) windows, \(agents) agents at \(width)")
+                }
+            }
+        }
+        assert(!headsScroll(.narrow, agents: 0, windows: 6), "no agents, nothing pinned")
+        assert(headsScroll(.narrow, agents: 3, windows: 0), "a third agent, whatever its windows")
+        // A wide board keeps its heads whatever the count: a column's head
+        // gives a window one row or lays three across, a strip three to five.
+        assert(!headsScroll(.columns, agents: 2, windows: 6), "columns, six windows")
+        assert(!headsScroll(.stackedOne, agents: 1, windows: 6), "one strip, six windows")
+
         // The threshold itself: two 340pt columns and one gutter.
         assert(fit(width: 703) == 1 && fit(width: 704) == 2, "two columns from 704")
         assert(fit(width: 0) == 1 && fit(width: -20) == 1, "never less than one")
@@ -551,6 +627,15 @@ extension BoardArrangement {
                                                          report("gemini", windows: 0)])
         assert(idle.map(\.source) == ["claude", "codex"], "no sessions: every agent that reports limits")
         assert(AgentGroup.make(sessions: [], usage: []).isEmpty, "nothing at all")
+
+        // What the window rule is given: the most windows any one agent
+        // reports, not a sum.
+        assert(groups.mostWindows == 1, "one window each, and an empty report is none")
+        let tall = AgentGroup.make(sessions: board,
+                                   usage: [report("codex", windows: 6), report("claude", windows: 3)])
+        assert(tall.mostWindows == 6, "the tallest head")
+        assert(AgentGroup.make(sessions: [session("g", "gemini")], usage: []).mostWindows == 0,
+               "no limits, no windows")
 
         // Rows.
         assert([1, 2, 3].rows(of: 2) == [[1, 2], [3]], "a short last row")
