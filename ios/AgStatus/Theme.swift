@@ -167,6 +167,15 @@ enum Theme {
     /// oklch(78% 0.150 80)
     static let limitWarn = rgb(0xE9AB2B)
 
+    /// A limit meter's empty track: the text ink at 6%.
+    ///
+    /// It was a hand-typed white at 6%, from the prototype, and the one colour
+    /// on the board not built from a token. The ink keeps the neutrals' tint
+    /// toward 155, and it lands within a step of the old value on a card. Not
+    /// `raised`, which the web's meter uses: a head lifts to `raised` under a
+    /// finger, and a track of the same colour would vanish for the press.
+    static let meterTrack = textPrimary.opacity(0.06)
+
     // MARK: - Tiers
     //
     // The streak ladder's five metals. They are the ONLY colour on this board
@@ -289,6 +298,9 @@ enum Theme {
         static let sm: CGFloat = 4
         static let md: CGFloat = 8
         static let lg: CGFloat = 12
+        /// An agent's head: the prototype's 14, a little rounder than the
+        /// cards standing under it.
+        static let head: CGFloat = 14
     }
 
     // MARK: - Conversion
