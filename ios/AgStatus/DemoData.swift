@@ -29,6 +29,14 @@ enum DemoData {
     /// than a zero or a dash.
     static func initialSessions() -> [Session] {
         #if DEBUG
+        return agedForScreenshots(seededSessions())
+        #else
+        return seededSessions()
+        #endif
+    }
+
+    private static func seededSessions() -> [Session] {
+        #if DEBUG
         if usesPool { return scenarioSessions() }
         #endif
         let now = nowMillis()
@@ -112,11 +120,67 @@ enum DemoData {
         // where a limit is drawn in the alarm's red. That is the capture the
         // head's blocked edge was designed against: a head with a red bar and
         // nothing blocked must not read like a head that needs you.
-        if ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"] == "hi" { claudeWeek = 91 }
-        if scenario == .threeLimits { return claudeAndCodex(now: now, claudeWeek: claudeWeek) + [geminiUsage(now: now)] }
-        #endif
+        let limits = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"]
+        if limits == "hi" { claudeWeek = 91 }
+        var all = claudeAndCodex(now: now, claudeWeek: claudeWeek)
+        if scenario == .threeLimits { all.append(geminiUsage(now: now)) }
+        // AGSTATUS_DEMO_LIMITS=many gives Codex six windows, the most one
+        // report may carry (MAX_USAGE_WINDOWS in src/store.ts): the head a
+        // phone must not pin whole. A number, 1 to 6, gives it the first that
+        // many, so either side of BoardArrangement.narrowPinnedWindows can be
+        // captured.
+        if let count = limits == "many" ? 6 : limits.flatMap(Int.init), (1...6).contains(count) {
+            let six = codexSixWindows(now: now)
+            let windows = Array(six.windows.prefix(count))
+            all = all.map { $0.source == "codex" ? UsageInfo(source: "codex", windows: windows, updatedAt: now) : $0 }
+        }
+        return all
+        #else
         return claudeAndCodex(now: now, claudeWeek: claudeWeek)
+        #endif
     }
+
+    #if DEBUG
+    /// Codex at the six windows a report may carry: the all-models week, a
+    /// session and a week for each of two models, and a code-review week.
+    private static func codexSixWindows(now: Int64) -> UsageInfo {
+        let week = now + 4 * 86_400_000 + 2 * 3_600_000
+        return UsageInfo(source: "codex",
+                         windows: [
+                             UsageWindow(id: "week", label: "Weekly (all models)", usedPct: 47, resetsAt: week),
+                             UsageWindow(id: "session_gpt_6_astra", label: "Session (GPT-6-Astra)",
+                                         usedPct: 22, resetsAt: now + 96 * 60_000),
+                             UsageWindow(id: "week_gpt_6_astra", label: "Weekly (GPT-6-Astra)",
+                                         usedPct: 38, resetsAt: week),
+                             UsageWindow(id: "session_gpt_6_mini", label: "Session (GPT-6-Mini)",
+                                         usedPct: 9, resetsAt: now + 41 * 60_000),
+                             UsageWindow(id: "week_gpt_6_mini", label: "Weekly (GPT-6-Mini)",
+                                         usedPct: 64, resetsAt: week),
+                             UsageWindow(id: "week_review", label: "Weekly (code review)",
+                                         usedPct: 12, resetsAt: week),
+                         ],
+                         updatedAt: now)
+    }
+
+    /// AGSTATUS_DEMO_STALE=<minutes> — every working session (planning,
+    /// coding, testing) last reported that long ago. Past
+    /// `SessionCardView.staleAfter`, ten minutes, that is a stale card, which
+    /// the demo never shows otherwise: its sessions are seconds to a few
+    /// minutes old. Pair it with AGSTATUS_DEMO_FREEZE, or the first tick
+    /// brings a session back to life.
+    private static func agedForScreenshots(_ sessions: [Session]) -> [Session] {
+        guard let minutes = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_STALE"].flatMap(Int.init),
+              minutes > 0 else { return sessions }
+        let at = nowMillis() - Int64(minutes) * 60_000
+        return sessions.map { session in
+            guard session.status.isActive else { return session }
+            var aged = session
+            aged.updatedAt = min(session.updatedAt, at)
+            aged.createdAt = min(session.createdAt, aged.updatedAt)
+            return aged
+        }
+    }
+    #endif
 
     private static func claudeAndCodex(now: Int64, claudeWeek: Double) -> [UsageInfo] {
         [
@@ -369,7 +433,11 @@ enum DemoData {
     ///                           three-limits | long | empty
     ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
     ///                           are working instead) | none (nobody is blocked)
-    ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%)
+    ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%) | many
+    ///                           (Codex reports six windows) | 1…6 (that
+    ///                           many of the six)
+    ///   AGSTATUS_DEMO_STALE     <minutes> (every working session last
+    ///                           reported that long ago: past 10, stale)
     ///   AGSTATUS_DEMO_TITLES    1 (Claude's cards carry session titles, as
     ///                           the Claude app names them, with the folder
     ///                           as the "in <repo>" — any scenario)
@@ -377,6 +445,10 @@ enum DemoData {
     ///                           cannot race a status change)
     ///   AGSTATUS_BOARD_WIDTH    <points> (BoardView: clamps the board, so a
     ///                           full-screen iPad can stand in for Split View)
+    ///   AGSTATUS_DEMO_CONNECTION live | connecting | idle | gone (BoardView:
+    ///                           the toolbar's connection lamp, in that
+    ///                           state, where the DEMO badge would be;
+    ///                           connecting is drawn as reconnecting)
     ///   AGSTATUS_JUMP           <source> (BoardView: presses that agent's
     ///                           alarm once the board is laid out)
     enum Scenario: String {
