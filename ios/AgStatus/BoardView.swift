@@ -24,9 +24,16 @@ struct BoardView: View {
     /// second press on the same alarm leaves `jumped` holding an equal id,
     /// which would restart nothing.
     @State private var jumpStamp = 0
-    /// The same card, for VoiceOver: an alarm that scrolled the board and left
-    /// the cursor on the head would have moved nothing for that reader.
-    @AccessibilityFocusState private var focusedCard: String?
+    /// Where VoiceOver goes after a jump: the card an alarm brought into view,
+    /// or the head a name on the agent line did. A scroll that left the cursor
+    /// on the alarm or the name would have moved nothing for that reader. One
+    /// state for both, keyed as the scroll targets are, so a card and an agent
+    /// cannot be taken for each other. Never read in a body: VoiceOver writes
+    /// it on every swipe across a card or a head.
+    @AccessibilityFocusState private var jumpFocus: JumpTarget?
+    /// Which of the phone's List rows exist, and the one a jump is waiting
+    /// for (`JumpLanding`).
+    @State private var landing = JumpLanding()
     /// Redraws every minute so the "resets in …" countdowns stay honest. One
     /// clock for the whole board, handed to every head: heads now live both
     /// above the scroll view and inside it, and a clock apiece would let two
@@ -179,6 +186,10 @@ struct BoardView: View {
                     }
                 } else {
                     sessionBoard(plan, scroller: scroller)
+                        // Whether each card has a column at this text size:
+                        // the board has measured it, and a card cannot without
+                        // a reader that would decide a frame late.
+                        .environment(\.cardIsColumnWide, plan.cardsColumnWide)
                 }
             }
 
@@ -359,9 +370,12 @@ struct BoardView: View {
                   width: plan.width,
                   scale: plan.scale,
                   onSection: { source in
-                      withMotion(.snappy) {
+                      withAnimation(jumpAnimation) {
                           scroller.scrollTo(JumpTarget.section(source), anchor: .top)
                       }
+                      // "Codex, show its sessions" moves the reader as well as
+                      // the board: to the head, which names the section.
+                      moveVoiceOver(to: .section(source), in: plan)
                   },
                   onJump: { jump(to: $0, in: plan, scroller: scroller) })
             .padding(.horizontal, Theme.Space.md)
@@ -390,6 +404,7 @@ struct BoardView: View {
                                   alone: !level && row.count == 1,
                                   peers: row.filter { $0.blocked > 0 && $0.id != group.id },
                                   now: now,
+                                  jumpFocus: $jumpFocus,
                                   onJump: { jump(to: group.source, in: plan, scroller: scroller) })
                     }
                 }
@@ -459,12 +474,14 @@ struct BoardView: View {
                 // head saying the same name, which is the repetition one agent
                 // already avoids.
                 ForEach(plan.groups, id: \.section) { group in
-                    AgentHead(group: group,
-                              width: plan.width,
-                              canStrip: true,
-                              scale: plan.scale,
-                              now: now,
-                              onJump: { jump(to: group.source, in: plan, scroller: scroller) })
+                    reportsLanding(AgentHead(group: group,
+                                             width: plan.width,
+                                             canStrip: true,
+                                             scale: plan.scale,
+                                             now: now,
+                                             jumpFocus: $jumpFocus,
+                                             onJump: { jump(to: group.source, in: plan, scroller: scroller) }),
+                                   as: group.section)
                         // Where the agent line's names send the list. A row
                         // is the one thing in a List that can be scrolled to.
                         .id(JumpTarget.section(group.source))
@@ -526,14 +543,14 @@ struct BoardView: View {
     }
 
     private func row(_ session: Session, in group: AgentGroup) -> some View {
-        card(session, in: group)
+        reportsLanding(card(session, in: group), as: .card(session.id))
             // No invisible full-card NavigationLink any more. It was
             // an overlay across the whole card, which meant it sat on
             // top of the Focus and Resume controls and could swallow
             // the tap meant for them — a card that opens history when
             // you asked it to raise a window. A tap on the card's content
             // column opens history instead, and the Focus control sits in
-            // the rail, outside that gesture.
+            // the rail or on its own line, outside that gesture.
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
@@ -593,6 +610,7 @@ struct BoardView: View {
                                       canStrip: true,
                                       scale: plan.scale,
                                       now: now,
+                                      jumpFocus: $jumpFocus,
                                       onJump: { jump(to: group.source, in: plan, scroller: scroller) })
                                 .padding(.top, Self.sectionLead)
                                 .id(JumpTarget.section(group.source))
@@ -660,7 +678,7 @@ struct BoardView: View {
     }
 
     private func card(_ session: Session, in group: AgentGroup) -> some View {
-        SessionCardView(session: session, agentName: group.name, jumpFocus: $focusedCard)
+        SessionCardView(session: session, agentName: group.name, jumpFocus: $jumpFocus)
             .overlay {
                 // A ring only where one is news: the card the alarm just
                 // brought into view. Neutral ink — a green ring on a card
@@ -692,7 +710,7 @@ struct BoardView: View {
             target = plan.sides.firstBlocked(in: group.sessions)
         }
         guard let target else { return }
-        withMotion(.snappy) {
+        withAnimation(jumpAnimation) {
             switch plan.arrangement {
             case .narrow:
                 // List rows answer to their session's own id.
@@ -703,7 +721,50 @@ struct BoardView: View {
             jumped = target.id
             jumpStamp += 1
         }
-        focusedCard = target.id
+        moveVoiceOver(to: .card(target.id), in: plan)
+    }
+
+    /// A jump's scroll: .snappy, drawn in one step under Reduce Motion as
+    /// withMotion would be, and also while VoiceOver runs. VoiceOver is about
+    /// to go to whatever the jump brings into view, and a row still sliding in
+    /// at the edge of the screen when the cursor arrives is one it may scroll
+    /// again on its own, to show it whole, against the scroll in flight. Drawn
+    /// in one step, the card or head is already where the jump leaves it.
+    private var jumpAnimation: Animation? {
+        UIAccessibility.isReduceMotionEnabled || UIAccessibility.isVoiceOverRunning ? nil : .snappy
+    }
+
+    /// Moves VoiceOver to what a jump has just brought into view: a card for
+    /// an alarm, a head for a name on the agent line.
+    ///
+    /// The wide board's stacks are eager, so every card and head already has
+    /// its element and the cursor is sent at once. The phone's List is lazy: a
+    /// row more than about a screen away has not been made when the jump
+    /// fires, and a request then has nothing to land on — and since the focus
+    /// state would already hold the target, setting it again later would be
+    /// no change at all. So unless the row is laid out, the target waits with
+    /// `landing`, and the row takes the cursor when the scroll lays it out
+    /// (`reportsLanding`).
+    private func moveVoiceOver(to target: JumpTarget, in plan: BoardPlan) {
+        if plan.arrangement == .narrow && !landing.isLaidOut(target) {
+            landing.wait(for: target)
+        } else {
+            landing.stopWaiting()
+            jumpFocus = target
+        }
+    }
+
+    /// A List row's part in a jump: it tells `landing` it exists while it is
+    /// laid out, and takes VoiceOver when a jump has been waiting for it.
+    private func reportsLanding<Row: View>(_ row: Row, as target: JumpTarget) -> some View {
+        row
+            .onAppear {
+                guard landing.arrived(target) else { return }
+                // A turn later: the row the List has just made is in the
+                // window by then, where VoiceOver can find it.
+                Task { @MainActor in jumpFocus = target }
+            }
+            .onDisappear { landing.left(target) }
     }
 
     /// Where a jumped-to row comes to rest in the List.
@@ -1062,6 +1123,14 @@ private struct BoardPlan {
     /// One side of a pair of cards.
     var side: CGFloat { BoardArrangement.track(width: width, count: 2, gap: BoardArrangement.cardGap) }
 
+    /// Whether each card is a whole column wide at the reader's text size. At
+    /// an accessibility size that decides whether a card keeps its rail
+    /// beside its text (SessionCardView's `stacked`).
+    var cardsColumnWide: Bool {
+        BoardArrangement.cardIsColumnWide(arrangement, width: width,
+                                          minColumn: BoardArrangement.minColumn * scale)
+    }
+
     /// The board's shape. A change of it is drawn, not animated — see
     /// `settles(on:)`.
     var shape: Shape {
@@ -1084,6 +1153,53 @@ private struct BoardPlan {
         /// track count stay as they were — two agents becoming two different
         /// agents, or the phone's list going from one group to two.
         let agents: [String]
+    }
+}
+
+/// Which of the phone's List rows are laid out, and the one a jump is waiting
+/// for.
+///
+/// A List makes a row only as it scrolls into view, so a card two screens
+/// down has no accessibility element when its alarm is pressed. The jump
+/// leaves its target here; the row, laid out by the scroll, finds itself
+/// named and takes the cursor (`BoardView.reportsLanding`). A row already
+/// laid out takes it at once, which is what the set is for: a row already on
+/// screen gets no onAppear to hand over in.
+///
+/// A class held in @State, and deliberately not observable: rows write to it
+/// whenever they scroll in or out, and none of that is anything to redraw.
+/// Main thread only; every caller is a view action.
+///
+/// Counted rather than a set: when the list swaps one arrangement of its rows
+/// for another, the same card can be laid out twice for a moment, and SwiftUI
+/// promises no order between the new row's appearing and the old one's
+/// going. A set would drop a card that is on screen if the old row left
+/// last; a count does not care.
+private final class JumpLanding {
+    private var laidOut: [JumpTarget: Int] = [:]
+    private var waiting: (target: JumpTarget, until: Date)?
+
+    func isLaidOut(_ target: JumpTarget) -> Bool { (laidOut[target] ?? 0) > 0 }
+
+    /// Two seconds to arrive, the ring's two seconds. After that, a row that
+    /// appears because the reader scrolled there is not taken for the jump's.
+    func wait(for target: JumpTarget) {
+        waiting = (target, Date().addingTimeInterval(2))
+    }
+
+    func stopWaiting() { waiting = nil }
+
+    /// A row has been laid out. True when it is the one a jump is waiting for.
+    func arrived(_ target: JumpTarget) -> Bool {
+        laidOut[target, default: 0] += 1
+        guard let waiting, waiting.target == target else { return false }
+        self.waiting = nil
+        return Date() < waiting.until
+    }
+
+    func left(_ target: JumpTarget) {
+        guard let count = laidOut[target] else { return }
+        laidOut[target] = count > 1 ? count - 1 : nil
     }
 }
 

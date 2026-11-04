@@ -7,6 +7,11 @@ struct SessionCardView: View {
     @Environment(SessionStore.self) private var store
     @Environment(\.openSession) private var openSession
     @Environment(\.cardsSwipeToDismiss) private var swipesToDismiss
+    /// The reader's text size: at an accessibility size the card can stack
+    /// (`stacked`), and its name and message take the lines they need.
+    @Environment(\.dynamicTypeSize) private var typeSize
+    /// Whether the board gives this card a whole column at that text size.
+    @Environment(\.cardIsColumnWide) private var columnWide
     let session: Session
     /// Whose session this is, spelled as its section's head spells it.
     ///
@@ -18,13 +23,41 @@ struct SessionCardView: View {
     let agentName: String
     /// Set by the board when an alarm brings this card into view, so that
     /// VoiceOver lands on the card and not on the alarm that was pressed.
-    let jumpFocus: AccessibilityFocusState<String?>.Binding
+    let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
 
-    /// An active card gone quiet for this long is probably a dead agent
-    /// (killed mid-turn, crashed machine) — stop pulsing and dim it.
+    /// An active card that has heard nothing for this long is stale: most
+    /// likely a dead agent — killed mid-turn, an interrupted turn, which fires
+    /// no Stop, a machine gone to sleep — or one very long tool call. The
+    /// board cannot tell which, but it knows exactly how long it has heard
+    /// nothing, and the card says so (`card`).
     static let staleAfter: TimeInterval = 10 * 60
 
     private var statusColor: Color { Theme.color(for: session.status) }
+
+    /// At an accessibility text size, a card narrower than one board column
+    /// stacks: its status on a line of its own above the text, Focus under it.
+    ///
+    /// Beside the text nothing in the rail can shrink — the status word is the
+    /// card's one reading, Focus is a 44pt target with its word — and with the
+    /// time and the tokens figure, which are numbers, they needed 335pt of card
+    /// at AX1, 461 at AX3 and 604 at AX5, against 343 on a 375pt phone, 408 on
+    /// a 6.9" one and 288 in a 320pt window. So from AX2 the card went past
+    /// both edges ("CODIN", the F of the name), and a List cannot scroll
+    /// sideways to show them. At AX1 it still fits a phone, but beside the
+    /// rail the name gets 13 to 18 characters a line, where stacked it gets 19
+    /// to 28. Stacked, no line is wider than its widest single piece.
+    ///
+    /// The status goes above the text, not under it: it is the card's one
+    /// reading, and beside the text it stood at the top. Focus goes under, at
+    /// the trailing edge it held, over the line that reports on it.
+    ///
+    /// The step the board takes too: from an accessibility size a phone pins
+    /// the agent line (`BoardArrangement.headsScroll`); below it, beside the
+    /// text fits every phone with room over. Where the board gives the card a
+    /// column at the reader's size — an iPad's columns, its full width, and a
+    /// phone held sideways at the smaller accessibility sizes — the rail fits
+    /// beside the text, and stays there (`cardIsColumnWide`).
+    private var stacked: Bool { typeSize.isAccessibilitySize && !columnWide }
 
     var body: some View {
         // One shared clock: refreshes the relative timestamp and re-evaluates
@@ -62,26 +95,41 @@ struct SessionCardView: View {
     }
 
     private func card(now: Date) -> some View {
-        let stale = session.status.isActive
-            && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
+        let stale = isStale(at: now)
         return VStack(alignment: .leading, spacing: 0) {
-            // Content on the left, a rail on the right carrying the status and
-            // the card's one control.
-            //
-            // The rail is the SHORTER column — badge plus a 44pt button is
-            // ~66pt against ~94pt of name, message and metadata — so it never
-            // sets the card's height. What it buys is the meta line, which used
-            // to stand 44pt tall for no reason except that the button sat in
-            // it; with the button gone that row collapses to its ~18pt of text.
-            // Roughly 26pt off every card, a fifth of its height.
-            //
-            // The rail sits OUTSIDE the content's tap gesture on purpose. The
-            // gesture covers the column it belongs to and nothing else, so it
-            // cannot reach across and swallow the button's tap the way the old
-            // full-card NavigationLink overlay did.
-            HStack(alignment: .top, spacing: Theme.Space.sm) {
-                content(now: now)
-                rail
+            if stacked {
+                // One thing to a line: the status, the text, the control
+                // (`stacked`). The status is the first line of the content
+                // column here (`content`), inside the card's element, so a
+                // finger on it hears the card. A card changes arrangement only
+                // when the text size or the board's width changes, never with
+                // its content.
+                VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                    content(now: now, stale: stale)
+                    if session.host != nil {
+                        FocusControl(session: session)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+            } else {
+                // Content on the left, a rail on the right carrying the status and
+                // the card's one control.
+                //
+                // The rail is the SHORTER column — badge plus a 44pt button is
+                // ~66pt against ~94pt of name, message and metadata — so it never
+                // sets the card's height. What it buys is the meta line, which used
+                // to stand 44pt tall for no reason except that the button sat in
+                // it; with the button gone that row collapses to its ~18pt of text.
+                // Roughly 26pt off every card, a fifth of its height.
+                //
+                // The rail sits OUTSIDE the content's tap gesture on purpose. The
+                // gesture covers the column it belongs to and nothing else, so it
+                // cannot reach across and swallow the button's tap the way the old
+                // full-card NavigationLink overlay did.
+                HStack(alignment: .top, spacing: Theme.Space.sm) {
+                    content(now: now, stale: stale)
+                    rail(stale: stale)
+                }
             }
 
             // The outcome line: "Brought to front", or why the control is
@@ -100,29 +148,49 @@ struct SessionCardView: View {
         // dashboard UI and never reads as intentional, whatever colour or
         // corner radius it is given. A large tinted area also reads from much
         // further away than a 4pt sliver.
+        //
+        // Except on a stale card, which is drawn untinted, on the plain card
+        // and its plain edge: the board can no longer vouch for the state the
+        // tint would claim (Theme.cardSurface).
         .background(
             RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .fill(Theme.cardSurface(for: session.status))
+                .fill(Theme.cardSurface(for: session.status, stale: stale))
         )
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.lg, style: .continuous)
-                .strokeBorder(Theme.cardEdge(for: session.status))
+                .strokeBorder(Theme.cardEdge(for: session.status, stale: stale))
         )
         // No glow. A lit halo is the trading-terminal tell, and it is exactly
         // wrong in a dark room at 1am — which is when this board is read.
         //
-        // Only staleness dims a card now. `done` used to be dimmed too, from
-        // when it meant "finished, nothing to see". It now means the agent
-        // handed back and is waiting on YOU, so dimming it hid the one state
-        // the board most needs to surface.
-        .opacity(stale ? 0.62 : 1)
+        // And nothing dims. A stale card was drawn whole at 0.62 opacity,
+        // which took its message to 3.4:1 and its meta line to 2.6:1, under
+        // WCAG AA on the card most worth a closer look, and told VoiceOver
+        // nothing. It keeps every word at full strength now and says what it
+        // is three other ways: the untinted surface, a "?" where its state's
+        // glyph was, and "no update for 14m" where its time was. `done` was
+        // once dimmed too, from when it meant "finished, nothing to see"; it
+        // means the agent is waiting on YOU, the state the board most needs
+        // to surface.
+        //
+        // Crossing into stale is the board's own clock passing a line, not
+        // news from the agent, so it is drawn and never animated: whatever
+        // animation the update arrived in is dropped.
+        .transaction(value: stale) { $0.animation = nil }
+    }
+
+    private func isStale(at now: Date) -> Bool {
+        session.status.isActive && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
     }
 
     /// Name, message and metadata — everything the card says, and the only part
     /// the whole-card tap belongs to.
-    private func content(now: Date) -> some View {
+    private func content(now: Date, stale: Bool) -> some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            if stacked {
+                statusBadge(stale: stale)
+            }
             nameAndMessage
                 // The height its width needs, whatever height it is offered.
                 // A card with a status line under it ("MacBook is offline")
@@ -133,71 +201,8 @@ struct SessionCardView: View {
                 // grows around them.
                 .fixedSize(horizontal: false, vertical: true)
 
-            // Machine, when, how much — three different facts. The machine is
-            // the one the card never showed; it was buried in the Focus
-            // control's label, so two sessions of the same project on two
-            // machines were indistinguishable at a glance.
-            //
-            // The agent used to lead this line, in a chip. It is gone: the
-            // card now sits under its agent's head, and a chip repeating the
-            // section's title on every card in the section was the loudest
-            // thing on the line saying the least.
-            //
-            // No spacing of its own. The optional facts carry the separator
-            // that FOLLOWS them, and the tokens figure the one before it, so
-            // whatever drops out takes its dot with it. With the chip gone the optional facts are first on the
-            // line, and a stack that spaced its children would leave a gap —
-            // and the old leading "·" — in front of the time whenever they
-            // collapsed to nothing.
-            HStack(spacing: 0) {
-                metaLead
-                Text(Self.relativeTime(from: session.updatedDate, to: now))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.textTertiary)
-                    // "just now" / "12m ago" — short, and a truncated time is
-                    // worse than no time. It holds its width.
-                    .fixedSize()
-                // What this session has spent, and ONLY when the board has a
-                // figure for it. An absent total means unknown — reporting off,
-                // an agent that doesn't report, or nothing heard yet — so there
-                // is no number, no dash and no placeholder, and a card without
-                // one looks exactly as it did before this line existed.
-                //
-                // It rides the meta line instead of taking a row of its own.
-                // The cards have been shortened twice on the owner's ask, and a
-                // figure that is read on the lean-in has not earned 18pt off
-                // the height of every card on the board.
-                //
-                // Tertiary, like the rest of this line. Colour here means
-                // state; a token count is not one, and tinting it would put a
-                // second loud element on a card whose whole job is to have
-                // exactly one.
-                if let tokensLabel = session.tokensLabel {
-                    metaSeparator
-                    Text(tokensLabel)
-                        // Tabular figures: this ticks in place as the hook
-                        // reports, and proportional digits would make the whole
-                        // line twitch sideways each time.
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.textTertiary)
-                        // Last on the line, after the time. A total first
-                        // arrives on the hook's 15-minute throttle — minutes
-                        // after the card itself — and appending it leaves
-                        // everything already on the line where the eye left it.
-                        //
-                        // Fixed width, because "1.2…" reads as a bug. When
-                        // the line is tight it is the project label, marked
-                        // below as the first to give way, that yields.
-                        .fixedSize()
-                        // Combined into the card's one accessibility element,
-                        // where a bare "1.4M" would be read as a quantity of
-                        // nothing in particular.
-                        .accessibilityLabel("\(tokensLabel) tokens")
-                }
-                Spacer(minLength: 0)
-            }
-            .font(.caption)
-            .lineLimit(1)
+            // Machine, when, how much — see `metaLine`.
+            metaLine(now: now, stale: stale)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // The tap covers this column and nothing else. It used to sit on a
@@ -207,14 +212,44 @@ struct SessionCardView: View {
         // machine is not, so only the harmless one is a whole-column gesture.
         .contentShape(Rectangle())
         .onTapGesture { openSession(session.id) }
-        .accessibilityElement(children: .combine)
+        // One element, built rather than combined, and read in the order the
+        // card is read by eye: whose session and which (the label), then its
+        // state — the card's one reading — and what it last said (the value).
+        // Combined, it read every line of this column in turn, and the state,
+        // drawn in the rail outside it, came after the name, the message and
+        // the whole meta line: an alarm's jump landed on the half of the card
+        // without it. The badge's word is hidden, so it is not read twice.
+        //
+        // The meta line is the lean-in, and waits where VoiceOver keeps one:
+        // the More Content rotor. With the children ignored VoiceOver reads
+        // nothing else in this column, so whatever is added to the column has
+        // to be added here as well.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(session.name.isEmpty ? agentName : "\(agentName), \(session.name)")
+        .accessibilityValue(spokenState(stale: stale, now: now))
         .accessibilityAddTraits(.isButton)
+        // The tap, stated, so a double-tap opens history wherever the
+        // element's centre happens to fall.
+        .accessibilityAction { openSession(session.id) }
         .accessibilityHint("Opens this session's history")
-        .accessibilityFocused(jumpFocus, equals: session.id)
+        .accessibilityFocused(jumpFocus, equals: .card(session.id))
+        .accessibilityCustomContent(.machine, machineFact.map { Text($0) })
+        .accessibilityCustomContent(.directory, directoryFact.map { Text($0) })
+        .accessibilityCustomContent(.updated, Text(Self.spokenRelativeTime(from: session.updatedDate, to: now)))
+        .accessibilityCustomContent(.tokens, session.tokensLabel.map { Text($0) })
+        // Voice Control: "Tap data-pipeline", with or without its agent.
+        .accessibilityInputLabels(session.name.isEmpty ? [agentName] : [session.name, "\(agentName) \(session.name)"])
         .accessibilityActions {
             if let host = session.host, store.isMachineOnline(host.machine.id) {
                 Button("Bring to front on \(store.machineLabel(for: host))") {
                     send(.focus)
+                }
+                // Offered beside it once a session has ended, as the Resume
+                // button is.
+                if store.focus[session.id]?.resumeOffered == true {
+                    Button("Resume on \(store.machineLabel(for: host))") {
+                        send(.resume)
+                    }
                 }
             }
             // The long-press menu is not something VoiceOver's rotor offers,
@@ -227,6 +262,188 @@ struct SessionCardView: View {
                 }
             }
         }
+    }
+
+    /// Machine, when, how much — three different facts. The machine is the
+    /// one the card never showed; it was buried in the Focus control's label,
+    /// so two sessions of the same project on two machines were
+    /// indistinguishable at a glance.
+    ///
+    /// The agent used to lead this line, in a chip. It is gone: the card now
+    /// sits under its agent's head, and a chip repeating the section's title
+    /// on every card in the section was the loudest thing on the line saying
+    /// the least.
+    ///
+    /// No spacing of its own. The optional facts carry the separator that
+    /// FOLLOWS them, and the tokens figure the one before it, so whatever
+    /// drops out takes its dot with it. With the chip gone the optional facts
+    /// are first on the line, and a stack that spaced its children would
+    /// leave a gap — and the old leading "·" — in front of the time whenever
+    /// they collapsed to nothing.
+    ///
+    /// Above the default text size the time and the tokens figure can outgrow
+    /// a narrow card by themselves. Both are fixed, because a cut number reads
+    /// as a different number, so in a 320pt window at xxxL they and the rail
+    /// came to more than the card, and the dot between them was what got
+    /// squeezed out. There the figure takes a line of its own under the time
+    /// instead, whole, and so it does on a stacked card at the accessibility
+    /// sizes, where the line is a phone's width less the card's. The first
+    /// candidate is the one line as it always was, chosen whenever it fits,
+    /// and at the default size and below this is not a cascade at all.
+    @ViewBuilder
+    private func metaLine(now: Date, stale: Bool) -> some View {
+        if typeSize > .large, let tokensLabel = session.tokensLabel {
+            // Each candidate measures what it draws. A stale card's one-line
+            // fallback is a candidate of its own: nested inside the first, it
+            // was measured by its first option, the words, and so was never
+            // chosen — the figure dropped to a second line where one line held.
+            ViewThatFits(in: .horizontal) {
+                if stale {
+                    metaRow {
+                        HStack(spacing: 0) { staleWords(now: now); metaSeparator; tokensFigure(tokensLabel) }
+                            .fixedSize()
+                    }
+                    metaRow {
+                        HStack(spacing: 0) { timeText(now: now, stale: true); metaSeparator; tokensFigure(tokensLabel) }
+                            .fixedSize()
+                    }
+                } else {
+                    metaRow { timeAndTokens(now: now, stale: false, tokens: tokensLabel) }
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    metaRow { time(now: now, stale: stale) }
+                    tokensFigure(tokensLabel)
+                }
+            }
+            .font(.caption)
+            .lineLimit(1)
+        } else if stale {
+            HStack(spacing: 0) {
+                metaLead
+                // Offered the width before the facts: on a stale card the
+                // words are the news, and the machine or the place is what
+                // gives way to them.
+                Group {
+                    if let tokensLabel = session.tokensLabel {
+                        timeAndTokens(now: now, stale: true, tokens: tokensLabel)
+                    } else {
+                        time(now: now, stale: true)
+                    }
+                }
+                .layoutPriority(1)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .lineLimit(1)
+        } else {
+            HStack(spacing: 0) {
+                metaLead
+                time(now: now, stale: false)
+                // What this session has spent, and ONLY when the board has a
+                // figure for it. An absent total means unknown — reporting
+                // off, an agent that doesn't report, or nothing heard yet — so
+                // there is no number, no dash and no placeholder, and a card
+                // without one looks exactly as it did before this line existed.
+                //
+                // It rides the meta line instead of taking a row of its own.
+                // The cards have been shortened twice on the owner's ask, and a
+                // figure that is read on the lean-in has not earned 18pt off
+                // the height of every card on the board.
+                if let tokensLabel = session.tokensLabel {
+                    metaSeparator
+                    tokensFigure(tokensLabel)
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .lineLimit(1)
+        }
+    }
+
+    /// The optional facts, then `tail`, measured by `tail` alone.
+    ///
+    /// The facts propose no width of their own to ViewThatFits (an ideal width
+    /// of zero, the device `nameAndMessage` uses for the message), so a
+    /// candidate fits when what must be on its line fits, and the facts' own
+    /// cascade takes whatever width is left. The tail is offered the width
+    /// first, as on a stale card's single line.
+    private func metaRow<Tail: View>(@ViewBuilder _ tail: () -> Tail) -> some View {
+        HStack(spacing: 0) {
+            metaLead.frame(minWidth: 0, idealWidth: 0)
+            tail().layoutPriority(1)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// When the board last heard from the session: "just now", "12m ago".
+    /// Short, and a truncated time is worse than no time, so it holds its
+    /// width.
+    ///
+    /// On a stale card it is the news, so it says so — "no update for 14m",
+    /// in the brighter secondary ink — and falls back to the plain "14m ago",
+    /// still bright, only where the words do not fit. The "?" in the badge and
+    /// the untinted surface say the rest, and VoiceOver hears the words
+    /// whichever form is drawn (`spokenState`).
+    @ViewBuilder
+    private func time(now: Date, stale: Bool) -> some View {
+        if stale {
+            ViewThatFits(in: .horizontal) {
+                staleWords(now: now)
+                timeText(now: now, stale: true)
+            }
+        } else {
+            timeText(now: now, stale: false)
+        }
+    }
+
+    /// The time and the tokens figure on one line, as one piece: a stale
+    /// card's words with the figure, or its plain time with the figure. Measured
+    /// apart, a line that only just fitted squeezed the dot between them to
+    /// nothing, so each candidate keeps its own.
+    @ViewBuilder
+    private func timeAndTokens(now: Date, stale: Bool, tokens: String) -> some View {
+        if stale {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 0) { staleWords(now: now); metaSeparator; tokensFigure(tokens) }
+                    .fixedSize()
+                HStack(spacing: 0) { timeText(now: now, stale: true); metaSeparator; tokensFigure(tokens) }
+                    .fixedSize()
+            }
+        } else {
+            HStack(spacing: 0) { timeText(now: now, stale: false); metaSeparator; tokensFigure(tokens) }
+                .fixedSize()
+        }
+    }
+
+    private func timeText(now: Date, stale: Bool) -> some View {
+        Text(Self.relativeTime(from: session.updatedDate, to: now))
+            .monospacedDigit()
+            .foregroundStyle(stale ? Theme.textSecondary : Theme.textTertiary)
+            .fixedSize()
+    }
+
+    private func staleWords(now: Date) -> some View {
+        Text("no update for \(Self.age(from: session.updatedDate, to: now))")
+            .monospacedDigit()
+            .foregroundStyle(Theme.textSecondary)
+            .fixedSize()
+    }
+
+    /// What this session has spent. Tabular figures: it ticks in place as the
+    /// hook reports, and proportional digits would make the whole line twitch
+    /// sideways each time. Tertiary, like the rest of the line: colour here
+    /// means state, and a token count is not one.
+    ///
+    /// Last on the line, after the time. A total first arrives on the hook's
+    /// 15-minute throttle — minutes after the card itself — and appending it
+    /// leaves everything already on the line where the eye left it. Fixed
+    /// width, because "1.2…" reads as a bug: when the line is tight it is the
+    /// project label that yields.
+    private func tokensFigure(_ label: String) -> some View {
+        Text(label)
+            .monospacedDigit()
+            .foregroundStyle(Theme.textTertiary)
+            .fixedSize()
     }
 
     /// The name, and under it what the session last said.
@@ -259,9 +476,21 @@ struct SessionCardView: View {
     /// its own to ViewThatFits (an ideal width of zero), so the name alone is
     /// what is measured. Laid out, the message takes the full width and wraps
     /// to its two lines as before.
+    ///
+    /// At an accessibility size the name is never cut, and the message takes
+    /// up to four lines; the rest is one tap away. There two lines of name held
+    /// 23 characters of a 44-character title at AX4 on a 375pt phone, and the
+    /// trade left the message one line: "Approve: …" on the blocked card whose
+    /// message is the reason it needs you. The agent line is what a phone pins
+    /// at those sizes, so the list has the height.
     @ViewBuilder
     private var nameAndMessage: some View {
-        if session.message.isEmpty {
+        if typeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                name(lines: nil)
+                if !session.message.isEmpty { message(lines: 4) }
+            }
+        } else if session.message.isEmpty {
             name(lines: 2)
         } else {
             ViewThatFits(in: .horizontal) {
@@ -278,19 +507,14 @@ struct SessionCardView: View {
         }
     }
 
-    private func name(lines: Int) -> some View {
+    private func name(lines: Int?) -> some View {
         Text(session.name)
             .font(.title3.weight(.semibold))
             .foregroundStyle(Theme.textPrimary)
             .lineLimit(lines)
-            // Read with its agent in front. The whole column is combined
-            // into one element below, and a child's own label is the one
-            // way to put a word into that element without drawing it —
-            // the tokens figure further down does the same.
-            .accessibilityLabel("\(agentName), \(session.name)")
     }
 
-    private func message(lines: Int) -> some View {
+    private func message(lines: Int?) -> some View {
         Text(session.message)
             .font(.subheadline)
             .foregroundStyle(Theme.textSecondary)
@@ -342,7 +566,7 @@ struct SessionCardView: View {
     /// options depending on the data.
     @ViewBuilder
     private var metaLead: some View {
-        let machine = session.host.map { store.machineLabel(for: $0) }
+        let machine = machineFact
         // The directory appears whenever it says something the name does not.
         // The name is the session's title when the agent has one (the Claude
         // app titles every session, `/rename` titles one in the CLI) and the
@@ -354,8 +578,7 @@ struct SessionCardView: View {
         // reads "feature-x · in my-repo" from its first event, and any other
         // untitled card shows the directory only once the session has moved.
         // Either way it is context, never identity.
-        let place = !session.project.isEmpty && session.project != session.name
-            ? "in \(session.project)" : nil
+        let place = directoryFact.map { "in \($0)" }
         switch (machine, place) {
         case let (machine?, place?):
             if isTitled {
@@ -422,18 +645,9 @@ struct SessionCardView: View {
     /// Status on top because it is what you read; the control beneath it
     /// because it is what you do about what you read. Both trailing-aligned, so
     /// the rail keeps a clean edge whatever the length of the status word.
-    private var rail: some View {
+    private func rail(stale: Bool) -> some View {
         VStack(alignment: .trailing, spacing: Theme.Space.xs) {
-            HStack(spacing: 3) {
-                Image(systemName: Theme.symbol(for: session.status))
-                    .font(.caption2.weight(.semibold))
-                Text(session.status.label.uppercased())
-                    .font(.caption2.weight(.semibold))
-                    .kerning(0.5)
-            }
-            .foregroundStyle(statusColor)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(session.status.label)
+            statusBadge(stale: stale)
 
             if session.host != nil {
                 FocusControl(session: session)
@@ -452,6 +666,57 @@ struct SessionCardView: View {
         // while the content is the part that should absorb whatever is left.
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(1)
+    }
+
+    /// What state the session is in: its glyph and its word, in the state's
+    /// colour, the loudest thing on the card.
+    ///
+    /// A stale card keeps its last reading — the word, in its colour — and
+    /// trades the glyph for a question: "? CODING", what the board last heard,
+    /// which it can no longer vouch for. In the rail the "?" is drawn in the
+    /// state glyph's own space, with the glyph kept but unseen, so the rail is
+    /// exactly as wide as it was and nothing on the card re-wraps when the
+    /// clock crosses the line. On a stacked card it simply replaces the
+    /// glyph. Not a clock, which is idle's glyph, nor an exclamation mark,
+    /// which is blocked's.
+    ///
+    /// Hidden from VoiceOver, which hears the state as the value of the card's
+    /// own element, straight after its name (`content`). On a stacked card the
+    /// badge sits inside that element, so touching it reads the card. In the
+    /// rail it sits outside it, beside the Focus control, and a finger set on
+    /// the word itself hears nothing: SwiftUI has no element that answers to
+    /// touch but stays out of the swipe order, and a second stop that says the
+    /// state again on every card would cost more than the gap.
+    private func statusBadge(stale: Bool) -> some View {
+        HStack(spacing: 3) {
+            Group {
+                if stale && stacked {
+                    // On its own line nothing beside it can re-wrap, and the
+                    // kept glyph's room would only push the "?" in from the
+                    // edge the name starts at.
+                    Image(systemName: "questionmark")
+                } else {
+                    Image(systemName: Theme.symbol(for: session.status))
+                        .opacity(stale ? 0 : 1)
+                        .overlay(alignment: .trailing) {
+                            if stale { Image(systemName: "questionmark") }
+                        }
+                }
+            }
+            .font(.caption2.weight(.semibold))
+            Text(session.status.label.uppercased())
+                .font(.caption2.weight(.semibold))
+                .kerning(0.5)
+                // Stacked, the word is offered the card's width rather than
+                // its own: it stays one word, a little smaller if it must —
+                // "PLANNING" at AX5 is about 257pt of the 264 a 320pt window
+                // leaves inside a card — and never "PLANNI…". Beside the text
+                // the rail is sized to the word and these are the defaults.
+                .lineLimit(stacked ? 1 : nil)
+                .minimumScaleFactor(stacked ? 0.8 : 1)
+        }
+        .foregroundStyle(statusColor)
+        .accessibilityHidden(true)
     }
 
     // MARK: - Focus
@@ -478,7 +743,8 @@ struct SessionCardView: View {
     // never stopped, and on a board left open all day it cost battery to say
     // the same thing continuously. Motion on this board now means something
     // changed. The state is carried by the icon, the word and the card's own
-    // tint instead.
+    // tint instead — and on a stale card, which keeps only the word, by the
+    // "?" and the untinted surface (`statusBadge`).
 
     // MARK: - Time
 
@@ -495,11 +761,87 @@ struct SessionCardView: View {
             return "\(seconds / 86_400)d ago"
         }
     }
+
+    /// relativeTime's span without "ago": "14m", "2h", "3d" — what a stale
+    /// card's "no update for" is followed by. Its first reading is "10m",
+    /// which states the rule.
+    static func age(from date: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        switch seconds {
+        case ..<3600: return "\(max(1, seconds / 60))m"
+        case ..<86_400: return "\(seconds / 3600)h"
+        default: return "\(seconds / 86_400)d"
+        }
+    }
+
+    /// relativeTime's steps said in words — "14 minutes", "2 hours", "3
+    /// days". The face's "14m" is for the eye, and a speech engine may read
+    /// it as a length.
+    static func spokenAge(of date: Date, at now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        let age: DateComponents
+        switch seconds {
+        case ..<3600: age = DateComponents(minute: max(1, seconds / 60))
+        case ..<86_400: age = DateComponents(hour: seconds / 3600)
+        default: age = DateComponents(day: seconds / 86_400)
+        }
+        return spokenUnits.string(from: age) ?? ""
+    }
+
+    /// "just now", "12 minutes ago": the meta line's time, spoken.
+    static func spokenRelativeTime(from date: Date, to now: Date) -> String {
+        now.timeIntervalSince(date) < 45 ? "just now" : "\(spokenAge(of: date, at: now)) ago"
+    }
+
+    static let spokenUnits: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.allowedUnits = [.minute, .hour, .day]
+        return formatter
+    }()
+
+    // MARK: - VoiceOver
+
+    /// The machine this session runs on, as the board names it.
+    private var machineFact: String? {
+        session.host.map { store.machineLabel(for: $0) }
+    }
+
+    /// The working directory, when it says something the name does not (see
+    /// `metaLead`).
+    private var directoryFact: String? {
+        !session.project.isEmpty && session.project != session.name ? session.project : nil
+    }
+
+    /// The card's one reading as VoiceOver says it: the state the badge draws;
+    /// on a stale card, for how long nothing has been heard, in words, whether
+    /// or not the words fitted on the face; then what the session last said.
+    private func spokenState(stale: Bool, now: Date) -> String {
+        var reading = session.status.label
+        if stale {
+            reading += ", no update for \(Self.spokenAge(of: session.updatedDate, at: now))"
+        }
+        if !session.message.isEmpty {
+            reading += ". \(session.message)"
+        }
+        return reading
+    }
+}
+
+/// The meta line's facts by name, in its order, for VoiceOver's More Content
+/// rotor. Computed rather than stored: the key type is not Sendable.
+private extension AccessibilityCustomContentKey {
+    static var machine: Self { Self("Machine", id: "machine") }
+    static var directory: Self { Self("Directory", id: "directory") }
+    static var updated: Self { Self("Updated", id: "updated") }
+    static var tokens: Self { Self("Tokens", id: "tokens") }
 }
 
 // MARK: - Focus
 
-/// The card's one control, living in the rail beneath the status badge.
+/// The card's one control, living in the rail beneath the status badge — or,
+/// on a card stacked at an accessibility size, on a line of its own under the
+/// text, where it does add a 44pt line.
 ///
 /// Split out of the old FocusRow, a full-width footer behind a divider: cards
 /// WITH a control stood visibly taller than cards without one, which made the
@@ -539,6 +881,8 @@ private struct FocusControl: View {
                 }
                 .buttonStyle(FocusButtonStyle())
                 .disabled(!online)
+                // The word on the button, and not the glyph's own name first.
+                .accessibilityLabel("Resume")
             }
             Button { send(.focus) } label: {
                 HStack(spacing: Theme.Space.xxs) {
@@ -548,11 +892,16 @@ private struct FocusControl: View {
             }
             .buttonStyle(FocusButtonStyle())
             .disabled(!online)
+            // Starts with the word on the button (WCAG 2.5.3, label in name):
+            // Voice Control's "Tap Focus" finds it, and a sighted VoiceOver
+            // user hears what they see. The sentence after it says what the
+            // word does.
             .accessibilityLabel(
                 online && host != nil
-                    ? "Bring to front on \(store.machineLabel(for: host!))"
-                    : "Bring to front"
+                    ? "Focus, bring to front on \(store.machineLabel(for: host!))"
+                    : "Focus, bring to front"
             )
+            .accessibilityInputLabels(["Focus", "Bring to front"])
         }
         .fixedSize()
     }
@@ -594,9 +943,9 @@ private struct FocusStatusLine: View {
         Group {
             if let state {
                 Text(state.text).foregroundStyle(color(for: state.kind))
-                    .accessibilityAddTraits(.updatesFrequently)
             } else if let offlineNote {
                 Text(offlineNote).foregroundStyle(Theme.textTertiary)
+                    .accessibilityLabel(spokenOfflineNote ?? offlineNote)
             } else if let beat {
                 // Last in the order on purpose. A tap you are waiting on and a
                 // machine that has gone offline are both things you might act
@@ -606,6 +955,7 @@ private struct FocusStatusLine: View {
                 // until a card next changes, and `done` being the commonest
                 // state, anything louder would be permanent furniture.
                 Text(beatLabel(beat)).foregroundStyle(Theme.textTertiary)
+                    .accessibilityLabel(spokenBeatLabel(beat))
             }
         }
         .font(.caption)
@@ -613,7 +963,48 @@ private struct FocusStatusLine: View {
         .motion(.snappy, value: state)
         .motion(.snappy, value: beat)
         .accessibilityElement(children: .combine)
+        // Said aloud as it lands. The cursor is on the Focus button, or on
+        // the card for its Bring to front action, not on this line: the other
+        // machine's answer arrived in silence, and a success clears itself in
+        // 8 s. Outcomes only — "Sending…" and "Sent…" acknowledge the tap, and
+        // a reader can swipe to them — and the not-connected receipt, which
+        // is one. Never the clearing, and never on a row the List re-creates
+        // (no `initial`). The line no longer asks VoiceOver to poll it
+        // (`.updatesFrequently`): with the cursor on it, every outcome was
+        // heard twice.
+        .onChange(of: state) { old, new in
+            guard let new, new.text != old?.text,
+                  new.done || new.text.hasPrefix("Sent —") else { return }
+            // "Not running on MacBook" puts a Resume button above Focus, where
+            // the cursor is not: say the remedy with the failure.
+            let spoken = new.resumeOffered && online ? "\(new.text). Resume is available" : new.text
+            var line = AttributedString(spoken)
+            line.accessibilitySpeechAnnouncementPriority = new.kind == .fail ? .high : .default
+            AccessibilityNotification.Announcement(line).post()
+        }
     }
+
+    /// The offline note with its time said in words.
+    private var spokenOfflineNote: String? {
+        guard let host, !online, let lastSeen = store.machines[host.machine.id]?.lastSeenDate else { return nil }
+        return "\(name) is offline, last seen \(SessionCardView.spokenRelativeTime(from: lastSeen, to: now))"
+    }
+
+    /// The beat with its duration said in words: "Waited 2 hours 14 minutes".
+    private func spokenBeatLabel(_ beat: SessionStore.WaitBeat) -> String {
+        let span = Self.spokenDuration.string(from: beat.waited.rounded()) ?? duration(beat.waited)
+        switch beat.from {
+        case .blocked: return "Waited \(span)"
+        default: return "Unseen for \(span)"
+        }
+    }
+
+    private static let spokenDuration: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.allowedUnits = [.hour, .minute]
+        return formatter
+    }()
 
     /// `blocked` was waiting on a decision; `done` was not waiting at all — it
     /// finished and sat there. "Waited" would be wrong for the second, and the
@@ -693,6 +1084,15 @@ private struct OpenSessionKey: EnvironmentKey {
     static let defaultValue: (String) -> Void = { _ in }
 }
 
+/// Whether the board gives each card a whole column at the reader's text size
+/// (`BoardArrangement.cardIsColumnWide`). The board has measured its width; a
+/// card could only learn its own from a reader that decides a frame late.
+/// Unknown means no: a card nobody vouches for stacks at an accessibility
+/// size, which is the safe way to be wrong.
+private struct CardIsColumnWideKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 /// Whether the container a card sits in lets it be swiped away.
 ///
 /// Only the phone's List does. The card asks so that it can offer VoiceOver a
@@ -710,6 +1110,11 @@ extension EnvironmentValues {
     var cardsSwipeToDismiss: Bool {
         get { self[CardsSwipeToDismissKey.self] }
         set { self[CardsSwipeToDismissKey.self] = newValue }
+    }
+
+    var cardIsColumnWide: Bool {
+        get { self[CardIsColumnWideKey.self] }
+        set { self[CardIsColumnWideKey.self] = newValue }
     }
 }
 

@@ -115,8 +115,18 @@ enum Theme {
     ///
     /// Baking them also means the two platforms cannot drift: change a state
     /// colour and both tables are regenerated from the same oklab maths.
-    static func cardSurface(for status: AgentStatus) -> Color {
-        switch status {
+    ///
+    /// STALE — an active card that has heard nothing for ten minutes
+    /// (`SessionCardView.staleAfter`) — is the same mix with the state's share
+    /// at nothing, which is `card` itself: no tint, because the board can no
+    /// longer vouch for the state the tint would claim. Every text token
+    /// clears AA on it, the meta line at 5.47:1 the lowest, where the 0.62
+    /// fade this replaces left the message at 3.4:1 and the meta line at 2.6.
+    /// It is also darker than every tinted surface (1.15:1 against coding's),
+    /// which is what reads from across the room.
+    static func cardSurface(for status: AgentStatus, stale: Bool = false) -> Color {
+        if stale { return card }
+        return switch status {
         case .idle: rgb(0x1E231F)
         case .planning: rgb(0x242426)
         case .coding: rgb(0x1D2525)
@@ -128,8 +138,11 @@ enum Theme {
 
     /// A card's border, from the same mix against `cardBorder`. Blocked keeps a
     /// brighter edge, because it is the one state that means a human is needed.
-    static func cardEdge(for status: AgentStatus) -> Color {
-        switch status {
+    /// A stale card's is `cardBorder` itself, for the reason its surface is
+    /// `card`.
+    static func cardEdge(for status: AgentStatus, stale: Bool = false) -> Color {
+        if stale { return cardBorder }
+        return switch status {
         case .idle: rgb(0x4C544E)
         case .planning: rgb(0x66596A)
         case .coding: rgb(0x475E69)

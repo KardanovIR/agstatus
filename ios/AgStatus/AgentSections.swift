@@ -97,6 +97,11 @@ struct AgentHead: View {
     /// The board's one clock, so every countdown on screen turns over together
     /// whether its head is pinned or scrolling.
     let now: Date
+    /// The board's VoiceOver target after a jump, bound to this head's
+    /// surface: a name on the agent line scrolls the head to the top and sends
+    /// the cursor here, to the element that names the section (`summary`, a
+    /// header). Every head is handed it; only a scrolling head is sent to.
+    let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
     /// Brings this agent's first blocked card into view.
     let onJump: () -> Void
 
@@ -159,6 +164,7 @@ struct AgentHead: View {
                 .accessibilityLabel(summary)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityHint("Shows 30 days of usage")
+                .accessibilityFocused(jumpFocus, equals: group.section)
             }
             // Read as one agent: the head, its alarm, then its limits.
             .accessibilityElement(children: .contain)

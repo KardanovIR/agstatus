@@ -196,6 +196,22 @@ enum BoardArrangement: Equatable {
         let count = max(1, count)
         return max(0, (width - gap * CGFloat(count - 1)) / CGFloat(count))
     }
+
+    /// Whether a card is a whole column wide at the reader's text size,
+    /// `minColumn` scaled as the caller scales it.
+    ///
+    /// Columns and pairs are, by construction: `fit` admits a second column
+    /// only once each is that wide (checked in `verify`). The list is a column
+    /// only where its width is one — an iPad's full width, or a phone held
+    /// sideways at the smaller accessibility sizes (635 to 800pt against a
+    /// column of 527 at AX1 and 629 at AX2; the 6.9" at AX3 too), and never a
+    /// phone in portrait. At an accessibility size this decides whether a card
+    /// keeps its rail beside its text (SessionCardView's `stacked`), so a
+    /// phone turned at those sizes can change a card's arrangement.
+    static func cardIsColumnWide(_ arrangement: BoardArrangement, width: CGFloat,
+                                 minColumn: CGFloat = minColumn) -> Bool {
+        arrangement != .narrow || width >= minColumn
+    }
 }
 
 // MARK: - HeadForm
@@ -464,6 +480,25 @@ extension BoardArrangement {
         assert(fit(width: 0) == 1 && fit(width: -20) == 1, "never less than one")
         // Large text raises the bar instead of squeezing the columns.
         assert(resolve(width: 1000, agents: 2, minColumn: 340 * 1.5) == .narrow, "scaled column")
+
+        // A card is a column wide in columns and pairs, by `fit`, and in the
+        // list only where the list's width is one. At AX1 a column is 527pt
+        // (title3 at 31 over 20), so no card on a phone in portrait is, nor in
+        // a Slide Over window; a 6.9" phone held sideways (800) is. At AX5
+        // (55 over 20) a 13" iPad's portrait list still is and an 11" one's is
+        // not.
+        let ax1 = minColumn * 31 / 20, ax5 = minColumn * 55 / 20
+        for width: CGFloat in [288, 343, 370, 408] {
+            assert(!cardIsColumnWide(.narrow, width: width, minColumn: ax1), "a phone's card at AX1, \(width)")
+        }
+        assert(cardIsColumnWide(.narrow, width: 800, minColumn: ax1), "a sideways 6.9\" list at AX1")
+        assert(cardIsColumnWide(.narrow, width: 1000, minColumn: ax5), "13\" portrait list at AX5")
+        assert(!cardIsColumnWide(.narrow, width: 802, minColumn: ax5), "11\" portrait list at AX5")
+        assert(cardIsColumnWide(.columns, width: 1344, minColumn: ax1), "columns at AX1")
+        for width in stride(from: CGFloat(704), through: 1400, by: 1) where fit(width: width) >= 2 {
+            assert(track(width: width, count: fit(width: width)) >= minColumn, "a track is a column at \(width)")
+            assert(track(width: width, count: 2, gap: cardGap) >= minColumn, "a pair is a column at \(width)")
+        }
 
         // Tracks: the gutters come out first, and what is left is shared.
         assert(track(width: 1344, count: 2) == 660, "two tracks")
