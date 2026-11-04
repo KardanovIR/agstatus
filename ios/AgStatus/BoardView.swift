@@ -344,15 +344,18 @@ struct BoardView: View {
         } else if plan.headsScroll {
             // More agents than this board pins heads for: on a wide board more
             // than fit, on a phone more than two — or, on a phone held
-            // sideways or at an accessibility text size, any at all. Their
-            // heads scroll with their sections; this one line is what stays.
+            // sideways, at an accessibility text size, or with a fifth limit
+            // window in a head, any at all. Their heads scroll with their
+            // sections; this one line is what stays.
             agentLine(plan, scroller: scroller)
         } else {
             switch plan.arrangement {
             case .narrow:
                 // Two across, each keeping its own height; the only agent
                 // takes the whole row. A third agent no longer gets a row of
-                // its own here — see `BoardArrangement.narrowPinnedHeads`.
+                // its own here — see `BoardArrangement.narrowPinnedHeads` —
+                // and no head here holds more than four limit windows:
+                // `narrowPinnedWindows`.
                 headRows(plan, perRow: 2, gap: BoardArrangement.headGap, level: false, scroller: scroller)
                     .padding(.horizontal, Theme.Space.md)
                     .padding(.top, 10)
@@ -485,9 +488,10 @@ struct BoardView: View {
     private func groupedList(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
         List {
             if plan.headsScroll {
-                // Three agents or more, or any number on a phone held sideways
-                // or at an accessibility text size: the agent line is pinned
-                // above, and each agent's full head opens its group and
+                // Three agents or more, or any number on a phone held sideways,
+                // at an accessibility text size, or with a fifth limit window
+                // in a head: the agent line is pinned above, and each agent's
+                // full head opens its group and
                 // scrolls with it, as the sections of a wide board do. No
                 // pinned group name as well — it would stand directly over a
                 // head saying the same name, which is the repetition one agent
@@ -804,8 +808,8 @@ struct BoardView: View {
     /// before 26, with several agents, the row goes to the centre, which no
     /// version can put under anything. With one agent there is no label, nor
     /// wherever the heads scroll (three agents or more, a phone held sideways,
-    /// an accessibility text size), which leaves nothing pinned inside the
-    /// list — and there the top is simply the top.
+    /// an accessibility text size, a fifth limit window), which leaves nothing
+    /// pinned inside the list — and there the top is simply the top.
     private func listAnchor(_ plan: BoardPlan) -> UnitPoint {
         if plan.groups.count < 2 || plan.headsScroll { return .top }
         if #available(iOS 26.0, *) { return .top }
@@ -1325,9 +1329,12 @@ private struct BoardPlan {
     let sides: CardSides
 
     /// Whether the heads scroll with their sections under one pinned agent
-    /// line. Never on an idle board, where the heads are all there is.
+    /// line. Never on an idle board: there are no sections for an agent line
+    /// to name. Where an idle board's pinned heads would not fit, they scroll
+    /// inside the empty state instead (`idleHeadsScroll`).
     var headsScroll: Bool {
         !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count,
+                                              windows: groups.mostWindows,
                                               largeText: largeText, compactHeight: compactHeight)
     }
 

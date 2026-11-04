@@ -362,7 +362,12 @@ struct AgentHead: View {
     private func meters(_ form: HeadForm) -> some View {
         switch form {
         case .narrow:
-            // Half a phone fits the label OR the value, not both.
+            // Half a phone fits the label OR the value, not both. Pinned, it
+            // is never asked for more than four: from a fifth window the
+            // phone pins the agent line, and this head opens its group in
+            // the list at the whole width instead
+            // (`BoardArrangement.narrowPinnedWindows`). An idle board is the
+            // exception, with nothing else to show.
             meterRows(stacked: true)
         case .regular:
             meterRows(stacked: false)
@@ -515,11 +520,13 @@ private struct AlarmButtonStyle: ButtonStyle {
 
 /// One pinned line for a board whose sections scroll.
 ///
-/// With more agents than fit, the limits scroll away with their sections —
-/// decided, because pinning four heads would leave no board. This line is what
-/// stays: each agent's mark and name, which take you to its section, and its
-/// alarm, which takes you to its first blocked card. Two controls side by
-/// side, because one cannot sit inside the other.
+/// With more agents than fit — or on a phone held sideways, at an
+/// accessibility text size, or with a fifth limit window in a head — the
+/// limits scroll away with their sections: decided, because pinning the heads
+/// there would leave no board. This line is what stays: each agent's mark and
+/// name, which take you to its section, and its alarm, which takes you to its
+/// first blocked card. Two controls side by side, because one cannot sit
+/// inside the other.
 struct AgentLine: View {
     let groups: [AgentGroup]
     let width: CGFloat
