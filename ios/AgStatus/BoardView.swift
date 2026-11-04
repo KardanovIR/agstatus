@@ -219,11 +219,19 @@ struct BoardView: View {
             }
         }
         .settles(on: plan.shape)
-        // Keyed on the limits the heads show, as it was when the heads were
-        // only limit bars: a head arriving or leaving, or a bar moving. Not on
-        // the groups themselves, which change with every message of every
-        // session and would animate the whole board each time.
-        .motion(.snappy, value: plan.groups.map(\.usage))
+        // A head gaining or losing a limit window, which changes its height:
+        // it grows with the cards under it moving together, rather than
+        // jumping. Keyed on which windows there are, so it fires when one
+        // comes or goes and at no other time. A bar that moves animates its
+        // own fill (LimitMeter), pinned or scrolling, and heads arriving or
+        // leaving change the board's shape, which is drawn (`settles`).
+        //
+        // It was keyed on every agent's usage report. A report carries the
+        // time it was made, so each one armed an animation even when no bar
+        // had moved, and it was armed over the whole board: a card that
+        // changed in the same update — the snapshot and the limits arrive
+        // together on a reconnect — cross-faded its old text into its new.
+        .motion(.snappy, value: plan.groups.map { $0.windows.map(\.id) })
         .motion(.snappy, value: store.streak)
         #if DEBUG
         .frame(maxWidth: Self.widthForScreenshots.map { $0 + 2 * Theme.Space.md })
