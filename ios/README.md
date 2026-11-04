@@ -10,9 +10,9 @@ SwiftUI / WKWebView wrapper around the Claude Status dashboard, the iOS twin of 
 
 ## Requirements
 
-- macOS with **Xcode 15+** installed (Xcode 26.5 is what was used to scaffold this).
+- macOS with **Xcode 26+** installed: the board uses SwiftUI from the iOS 26 SDK, behind run-time checks. 1.6.5 was built with Xcode 26.6.
 - An **Apple ID** added in Xcode → Settings → Accounts. A free Apple ID is enough — you do **not** need the paid Apple Developer Program.
-- An iPhone with **iOS 16+**, in *Developer Mode* (Settings → Privacy & Security → Developer Mode → On, then reboot).
+- An iPhone with **iOS 17+**, in *Developer Mode* (Settings → Privacy & Security → Developer Mode → On, then reboot).
 
 ## Install on your iPhone — free, no developer account
 
@@ -112,4 +112,4 @@ ios/
     └── Assets.xcassets/         # AppIcon + AccentColor catalogs
 ```
 
-Min iOS 16. Supports iPhone + iPad. Portrait + both landscape orientations.
+Min iOS 17. Supports iPhone + iPad. Portrait + both landscape orientations.
