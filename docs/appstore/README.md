@@ -32,33 +32,34 @@ Upload in this order — the first one is what people see in search results:
 
 | # | File | Shows |
 | --- | --- | --- |
-| 1 | `02-board.png` | The live board: per-agent limit blocks and four sessions across coding / blocked / done / testing |
+| 1 | `02-board.png` | The board sorted by agent: Claude's and Codex's heads with their plan limits, each over its own sessions (on iPad, a column per agent) |
 | 2 | `04-usage.png` | Usage detail: tokens per day, the plan limit charted over it, and spend per project |
 | 3 | `03-history.png` | A session timeline, every status change timestamped |
 | 4 | `01-welcome.png` | Setup options and "Try the demo" — no account required |
 
 ## Landscape
 
-`simctl` has no orientation command, so rotate the Simulator through its own
-menu, **before launching** the app so it lays out in landscape from the first
-frame:
+`simctl` has no orientation command, but backboardd takes one through
+`notifyutil`, with no Simulator window and no Accessibility permission. Set it
+**before launching** the app, so it lays out in landscape from the first frame:
 
 ```bash
-open -a Simulator
-osascript -e 'tell application "Simulator" to activate' -e 'delay 2' \
-  -e 'tell application "System Events" to tell process "Simulator" to click menu item "Rotate Left" of menu "Device" of menu bar item "Device" of menu bar 1'
+# 4 = landscape, 1 = portrait
+xcrun simctl spawn "$DEV" notifyutil -s com.apple.backboardd.rawOrientation 4 \
+  -p com.apple.backboardd.rawOrientation
 ```
 
-Then the catch: the device rotates and the app lays out correctly, but
-`simctl io screenshot` still writes the frame at the device's **portrait**
-dimensions, with the landscape content turned 90° inside it. `sips -r 270
-<file>` straightens it into a true 2752 × 2064. Skip that and the image is both
-sideways and the wrong size for the slot.
+Then the catch: the app lays out in landscape, but `simctl io screenshot`
+still writes the frame at the device's **portrait** dimensions, with the
+landscape content turned inside it. `sips -r 90 <file>` straightens it into a
+true 2752 × 2064. Skip that and the image is both sideways and the wrong size
+for the slot; turn it the wrong way (270) and it comes out upside down, which
+the size check does not catch, so look at it.
 
-Two things that cost time here: a plain `key code 124 using command down` does
-nothing — the menu item has to be clicked — and the click fails silently
-without Accessibility permission for whatever runs `osascript`, so verify the
-output dimensions rather than trusting the exit code.
+The Simulator's own Device → Rotate Left menu works too, through `osascript`,
+but only when the Simulator can be brought to the front and whatever runs
+`osascript` has Accessibility permission; it fails silently otherwise, and its
+captures need `sips -r 270` instead.
 
 ## Regenerating
 
@@ -119,5 +120,22 @@ Two timing details, both learned the hard way:
 Install the app on a simulator that has never run it to get the welcome screen —
 otherwise the saved board sends you straight to the board.
 
-The same captures, resized, are the phone images on the landing page
-(`public/img/app-board.png`, `public/img/app-history.png`).
+The same captures, resized, are the phone images on the landing page:
+`public/img/board.webp`, `usage.webp` and `history.webp`, 570 × 1240, made
+from the 6.9" set. Their alt text in `public/landing.html` describes what
+each shows, so change it with the image.
+
+```bash
+cwebp -q 80 -resize 570 1240 6.9/02-board.png -o ../../public/img/board.webp
+```
+
+## What 1.6.5's set was captured with
+
+Demo mode, frozen so a capture cannot race a status change, with Claude's
+cards named by session titles as a real board names them:
+`AGSTATUS_DEMO=1 AGSTATUS_DEMO_FREEZE=1 AGSTATUS_DEMO_TITLES=1`. The iPhones
+show the default demo board, which puts both agents' sections on screen. The
+iPads add `AGSTATUS_DEMO_SCENARIO=busy`, five Claude sessions and four Codex
+ones, which fills both columns. History and usage add `AGSTATUS_OPEN_HISTORY=1`
+and `AGSTATUS_OPEN_USAGE=claude` to the same variables. The welcome images
+were taken first, on each device's first launch.
