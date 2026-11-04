@@ -99,6 +99,12 @@ enum Theme {
     /// The board's accent: the colour of "ready for you".
     static let accent = color(for: .done)
 
+    /// The fill behind white words and glyphs that dismiss something — the
+    /// list's swipe, where iOS draws the title in white on the tint. White on
+    /// `blocked` itself is 3.15:1; this is the blocked hue taken down to 56%,
+    /// oklch(56% 0.190 28): white on it 5.13:1.
+    static let destructiveFill = rgb(0xCC342D)
+
     /// A card's own surface, tinted by its state.
     ///
     /// These are PRECOMPUTED from the web's `color-mix(in oklab, card 90%,
@@ -186,8 +192,8 @@ enum Theme {
     // a human.
     //
     // Deliberately off the six state hues for the same reason. Wood and bronze
-    // sit warm at 55-60, clear of `blocked` at 28; silver and platinum carry
-    // almost no chroma at all; gold at 85 is the one with real saturation and
+    // sit warm at 54-55, clear of `blocked` at 28; silver and platinum carry
+    // almost no chroma at all; gold at 81 is the one with real saturation and
     // it is the tier most people will sit at longest.
     //
     // The ladder is also legible without colour: each tier shows a pip count,
@@ -195,20 +201,25 @@ enum Theme {
     // and the board's second design principle says state is never carried by
     // colour alone — a rank is no different.
 
-    /// oklch(70% 0.040 60) — lifted from 58%, which measured 3.7:1 on the card
-    /// surface and failed AA outright. It is the palest warm tone here rather
-    /// than the darkest: legibility decides the lightness, and the hue plus the
-    /// pip count carry the rank.
+    /// oklch(67.8% 0.024 54) — 6.13:1 on the card. Lifted from a darker wood
+    /// that measured 3.7:1 and failed AA outright. It is the palest warm tone
+    /// here rather than the darkest: legibility decides the lightness, and the
+    /// hue plus the pip count carry the rank.
     static let tierWood = rgb(0xA4948A)
-    /// oklch(66% 0.095 55)
-    static let tierBronze = rgb(0xA57453)
-    /// oklch(82% 0.010 240)
+    /// oklch(66% 0.095 55) — 5.59:1 on the card. The hex used to be 0xA57453,
+    /// which is oklch(60.1% 0.078 55): 4.46:1, under AA for the tier name it
+    /// colours. The metals' notes had drifted from their hex values; the other
+    /// four — wood above, the three below — now name what their hex values
+    /// are, so the OKLCH beside each is the source again, as the top of this
+    /// file says.
+    static let tierBronze = rgb(0xBF8258)
+    /// oklch(84.2% 0.007 269) — 11.05:1 on the card.
     static let tierSilver = rgb(0xC9CBD0)
-    /// oklch(80% 0.130 85)
+    /// oklch(75.0% 0.133 81) — 7.96:1 on the card.
     static let tierGold = rgb(0xD9A43C)
-    /// oklch(76% 0.020 220) — pulled down from 90%. At near-white it was the
-    /// brightest thing on the board, and the top rung of an ambient counter
-    /// out-shouting a `blocked` card is exactly backwards.
+    /// oklch(79.6% 0.017 245) — 9.50:1 on the card. Pulled down from a
+    /// near-white, which was the brightest thing on the board: the top rung
+    /// of an ambient counter out-shouting a `blocked` card is backwards.
     static let tierPlatinum = rgb(0xB4BEC7)
 
     /// The meter's colour at `percent` of its limit.

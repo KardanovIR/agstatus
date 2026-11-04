@@ -583,7 +583,7 @@ struct BoardView: View {
                 } label: {
                     Label("Dismiss", systemImage: "xmark.circle.fill")
                 }
-                .tint(Theme.color(for: .blocked))
+                .tint(Theme.destructiveFill)
             }
     }
 
@@ -845,35 +845,32 @@ struct BoardView: View {
     }
 
     private var pushTip: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "bell.badge")
-                .font(.subheadline)
-                .foregroundStyle(Theme.accent)
-                .accessibilityHidden(true)
-            Text("Get a ping when an agent needs you")
-                .font(.footnote)
-                .foregroundStyle(Theme.textPrimary)
-                .lineLimit(2)
-            Spacer(minLength: 4)
-            Button("Enable") {
-                withMotion { pushTipShown = true }
-                if let board = store.board {
-                    Task { await notifications.enable(for: board) }
+        Group {
+            if typeSize.isAccessibilitySize {
+                // The sentence first, whole, and the two controls under it.
+                // Beside them it was squeezed to "Ge…" at AX5 on a 375pt
+                // phone, and "Enable" stood there not saying what it enables.
+                VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                    pushTipText
+                    HStack {
+                        pushTipEnable
+                        Spacer(minLength: 0)
+                        pushTipClose
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Image(systemName: "bell.badge")
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.accent)
+                        .accessibilityHidden(true)
+                    pushTipText
+                        .lineLimit(2)
+                    Spacer(minLength: 4)
+                    pushTipEnable
+                    pushTipClose
                 }
             }
-            .font(.footnote.weight(.semibold))
-            .buttonStyle(.borderless)
-            .foregroundStyle(Theme.accent)
-            Button {
-                withMotion { pushTipShown = true }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(4)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss notification tip")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -888,6 +885,56 @@ struct BoardView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 4)
         .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private var pushTipText: some View {
+        Text("Get a ping when an agent needs you")
+            .font(.footnote)
+            .foregroundStyle(Theme.textPrimary)
+    }
+
+    /// 44pt to hit, laid out as the word: the reach is padding inside the
+    /// label, where the button's hit shape includes it, cancelled by the same
+    /// padding outside — the alarm's way (`AlarmButton.reach`). Drawn as it
+    /// was, it was 16pt tall.
+    private var pushTipEnable: some View {
+        Button {
+            withMotion { pushTipShown = true }
+            if let board = store.board {
+                Task { await notifications.enable(for: board) }
+            }
+        } label: {
+            Text("Enable")
+                .padding(.vertical, 14)
+                .padding(.horizontal, 5)
+                .contentShape(Rectangle())
+        }
+        .font(.footnote.weight(.semibold))
+        .buttonStyle(.borderless)
+        .foregroundStyle(Theme.accent)
+        .padding(.vertical, -14)
+        .padding(.horizontal, -5)
+    }
+
+    /// The same reach, from a 21pt target to about 40 by 45.
+    private var pushTipClose: some View {
+        Button {
+            withMotion { pushTipShown = true }
+        } label: {
+            Image(systemName: "xmark")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Theme.textSecondary)
+                .padding(4)
+                .padding(.vertical, 12)
+                .padding(.leading, 5)
+                .padding(.trailing, 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, -12)
+        .padding(.leading, -5)
+        .padding(.trailing, -14)
+        .accessibilityLabel("Dismiss notification tip")
     }
 
     // MARK: - Empty state
@@ -1014,6 +1061,9 @@ struct BoardView: View {
         Button {
             UIPasteboard.general.string = url.absoluteString
             UINotificationFeedbackGenerator().notificationOccurred(.success)
+            // The tick that stands in for the glyph for 1.5 s is the only
+            // other sign, and VoiceOver cannot see it.
+            AccessibilityNotification.Announcement("Webhook URL copied").post()
             withMotion { copiedWebhook = true }
             Task {
                 try? await Task.sleep(for: .seconds(1.5))
@@ -1026,12 +1076,23 @@ struct BoardView: View {
                     .foregroundStyle(Theme.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Image(systemName: copiedWebhook ? "checkmark" : "doc.on.doc")
-                    .font(.footnote)
-                    .foregroundStyle(copiedWebhook ? Theme.color(for: .done) : Theme.textSecondary)
+                // A word as well as the glyph: the URL is what gets copied,
+                // not a name for the control, and Voice Control needs a
+                // visible word to say (WCAG 2.5.3). Spelled out beside the
+                // icon rather than as a Label, which a tight row can reduce
+                // to its icon alone (FocusControl).
+                HStack(spacing: Theme.Space.xxs) {
+                    Image(systemName: copiedWebhook ? "checkmark" : "doc.on.doc")
+                    Text(copiedWebhook ? "Copied" : "Copy")
+                }
+                .font(.footnote)
+                .foregroundStyle(copiedWebhook ? Theme.color(for: .done) : Theme.textSecondary)
+                .fixedSize()
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            // A control: 44pt at the least, where the one line made it 35.
+            .frame(minHeight: 44)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Theme.card)
@@ -1043,6 +1104,7 @@ struct BoardView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Copy webhook URL")
+        .accessibilityInputLabels(["Copy webhook URL", "Copy", "Webhook"])
     }
 
     // MARK: - Connecting
@@ -1480,6 +1542,7 @@ private extension View {
 /// pick one arbitrarily. A row that goes somewhere half-chosen is worse than a
 /// row that stays put.
 private struct StreakBar: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let streak: Streak
 
     /// How far along the current rung, 0–1. Measured between the tier reached
@@ -1528,20 +1591,28 @@ private struct StreakBar: View {
                         // actually be counted at a glance, which is the whole
                         // job: the rank must survive without hue, because
                         // roughly one man in twelve cannot separate the metals.
-                        HStack(spacing: Theme.Space.xxs) {
-                            ForEach(0..<StreakTier.allCases.count, id: \.self) { index in
-                                Circle()
-                                    .fill(index < pips ? metal : Color.clear)
-                                    .overlay(
-                                        Circle().strokeBorder(
-                                            index < pips ? Color.clear : Theme.cardBorder,
-                                            lineWidth: 1
+                        //
+                        // Not at an accessibility size. There they sat on the
+                        // baseline after a 49pt "Silver" and read as an
+                        // ellipsis, as though the name had been cut, and they
+                        // took the width the day count needed. The name is
+                        // the rank in words, which needs no hue either.
+                        if !typeSize.isAccessibilitySize {
+                            HStack(spacing: Theme.Space.xxs) {
+                                ForEach(0..<StreakTier.allCases.count, id: \.self) { index in
+                                    Circle()
+                                        .fill(index < pips ? metal : Color.clear)
+                                        .overlay(
+                                            Circle().strokeBorder(
+                                                index < pips ? Color.clear : Theme.cardBorder,
+                                                lineWidth: 1
+                                            )
                                         )
-                                    )
-                                    .frame(width: 5, height: 5)
+                                        .frame(width: 5, height: 5)
+                                }
                             }
+                            .accessibilityHidden(true)
                         }
-                        .accessibilityHidden(true)
                     }
                     // Whole words or the short form, never "19 day" over "s".
                     // VoiceOver reads the bar's own label, not these.

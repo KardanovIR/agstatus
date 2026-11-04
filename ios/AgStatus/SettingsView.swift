@@ -289,6 +289,8 @@ struct SettingsView: View {
     private func copyWebhook(_ url: URL) {
         UIPasteboard.general.string = url.absoluteString
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        // The tick is the only other sign, and VoiceOver cannot see it.
+        AccessibilityNotification.Announcement("Webhook URL copied").post()
         withMotion { copiedWebhook = true }
         Task {
             try? await Task.sleep(for: .seconds(1.5))
