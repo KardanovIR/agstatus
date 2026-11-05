@@ -106,12 +106,18 @@
  * that means a human is required.
  *
  * A stale card's "?" (marks.js STALE_MARK) is as tall, and only as wide as
- * itself: see "Stale" below. */
+ * itself: see "Stale" below.
+ *
+ * Sized in rem, as the word beside it is: 15px at the default text size, and
+ * as much larger as the reader's text. In px they stayed 15 while the word
+ * grew, and at 250% text the mark was a third of its word's height — the
+ * channel that carries state without colour, shrinking for the readers who
+ * most need it. iOS's symbols have always grown with Dynamic Type. */
 .state-mark,
 .stale-mark {
   flex: none;
-  width: 15px;
-  height: 15px;
+  width: 0.9375rem;
+  height: 0.9375rem;
   color: var(--state);
   display: block;
 }
@@ -120,11 +126,13 @@
  * geometric marks, NOT the Anthropic or OpenAI logos: this board is
  * self-hosted by other people, and redistributing someone's trademark inside
  * it is a different thing from naming their tool. */
+/* 12px, set 1px low with 3px after it, at the default text size; in rem so the
+ * mark keeps its place beside the word as the word grows. */
 .source svg {
-  width: 12px;
-  height: 12px;
-  vertical-align: -1px;
-  margin-right: 3px;
+  width: 0.75rem;
+  height: 0.75rem;
+  vertical-align: -0.0625rem;
+  margin-right: 0.1875rem;
 }
 
 .badge {
@@ -360,7 +368,7 @@
 .ts-stale,
 .stale-said { display: none; }
 
-/* The 9-unit viewBox at the marks' 15px height: 8.44px. */
+/* The 9-unit viewBox at the marks' height: 8.44px of 15 at the default size. */
 .stale-mark {
   width: auto;
   aspect-ratio: 9 / 16;

@@ -103,9 +103,10 @@ main {
   .stat.zero { opacity: 0.7; }
 }
 
+/* 6px at the default text size, in rem so it grows with its count. */
 .stat .dot {
-  width: 6px;
-  height: 6px;
+  width: 0.375rem;
+  height: 0.375rem;
   border-radius: var(--r-pill);
   background: var(--state);
   flex: none;
@@ -541,11 +542,16 @@ body.detail-open > .footer { display: none; }
 .tl-row.status-done { --state: var(--st-done); }
 
 /* One continuous hairline down the column, stopped at both ends so the run
- * reads as bounded rather than as something cut off. */
+ * reads as bounded rather than as something cut off.
+ *
+ * The dot and the offsets that keep it level with its row's first line are in
+ * rem, as that line is: at the default size 9px, 6px down and the line's ends
+ * 11px in. In px the dot stayed put while the words grew, and drifted up off
+ * the status it marks. The hairline is a rule, and stays 2px. */
 .tl-gutter {
   position: relative;
   flex: none;
-  width: 9px;
+  width: 0.5625rem;
   display: flex;
   justify-content: center;
 }
@@ -559,15 +565,15 @@ body.detail-open > .footer { display: none; }
   background: var(--ink-800);
 }
 
-.tl-first .tl-gutter::before { top: 11px; }
-.tl-last .tl-gutter::before { bottom: calc(100% - 11px); }
+.tl-first .tl-gutter::before { top: 0.6875rem; }
+.tl-last .tl-gutter::before { bottom: calc(100% - 0.6875rem); }
 .tl-first.tl-last .tl-gutter::before { display: none; }
 
 .tl-dot {
   position: relative;
-  margin-top: 6px;
-  width: 9px;
-  height: 9px;
+  margin-top: 0.375rem;
+  width: 0.5625rem;
+  height: 0.5625rem;
   border-radius: var(--r-pill);
   background: var(--state);
 }
@@ -603,8 +609,8 @@ body.detail-open > .footer { display: none; }
 }
 
 .tl-status .state-mark {
-  width: 13px;
-  height: 13px;
+  width: 0.8125rem;
+  height: 0.8125rem;
 }
 
 .tl-at {

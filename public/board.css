@@ -80,14 +80,16 @@ body {
   align-items: center;
 }
 
+/* 7px at the default text size, its ring 2px: in rem, so the lamp grows with
+ * the wordmark beside it rather than shrinking against it. */
 .conn-dot {
-  width: 7px;
-  height: 7px;
+  width: 0.4375rem;
+  height: 0.4375rem;
   border-radius: var(--r-pill);
   background: var(--st-done);
   /* Hollow when the stream is down, so the state survives being read in the
    * corner of the eye and by anyone who cannot separate the two colours. */
-  box-shadow: inset 0 0 0 4px transparent;
+  box-shadow: inset 0 0 0 0.25rem transparent;
   transition: background var(--d-mid) var(--ease), box-shadow var(--d-mid) var(--ease);
 }
 
@@ -95,7 +97,7 @@ body {
 
 .conn.disconnected .conn-dot {
   background: var(--st-blocked);
-  box-shadow: inset 0 0 0 2px var(--ink-950);
+  box-shadow: inset 0 0 0 0.125rem var(--ink-950);
 }
 
 /* Reachable by a screen reader, invisible to everyone else. */
@@ -149,9 +151,11 @@ body {
     border-color var(--d-fast) var(--ease);
 }
 
+/* 15px at the default text size, in rem so the icon grows with the word on
+ * the button, as the card's state marks do (card.css). */
 .act svg {
-  width: 15px;
-  height: 15px;
+  width: 0.9375rem;
+  height: 0.9375rem;
   flex: none;
   margin-right: var(--space-2xs);
 }

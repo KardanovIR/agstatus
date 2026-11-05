@@ -507,6 +507,40 @@ describe('board script: focus lifecycle', () => {
       expect(card.classList.contains('changed')).toBe(true);
     });
 
+    // A reader moving by Tab or by buttons lands on the title and heard only
+    // its name, on every card. It is described by the state row (which holds
+    // the stale words) and the message, so the state comes with the name; the
+    // description is read from the live row, so the markup stays put.
+    it('describes the title by its state and its message, from the live row', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [
+        session({ host: null, updatedAt: Date.now() - 14 * MIN }),
+        session({ id: 's2', host: null, status: 'blocked', message: '' }),
+      ]);
+      const doc = b.grid().ownerDocument;
+      const title = (id: string) => b.$(`.card[data-id="${id}"] .name-open`) as HTMLElement;
+
+      const refs = title('s1').getAttribute('aria-describedby')!.split(' ');
+      expect(refs).toEqual(['card-s1-state', 'card-s1-msg']);
+      const [row, msg] = refs.map((id) => doc.getElementById(id)!);
+      expect(row.classList.contains('card-state-row')).toBe(true);
+      expect(row.closest('.card')).toBe(b.$('.card[data-id="s1"]'));
+      expect(msg.textContent).toBe('editing src/app.ts');
+      // The badge, the stale words (shown to the tree only by .card.stale),
+      // and a full stop between the state and the message.
+      expect(row.querySelector('.badge')!.textContent).toBe('coding');
+      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
+      expect(row.lastElementChild!.className).toBe('sr-only');
+      expect(row.lastElementChild!.textContent).toBe('.');
+      // The name is still the words on the button, for Voice Control.
+      expect(title('s1').getAttribute('aria-label')).toBe("Fix the parser — open this session's history");
+
+      // No message, no reference to one; every card's ids are its own.
+      expect(title('s2').getAttribute('aria-describedby')).toBe('card-s2-state');
+      expect(doc.querySelectorAll('[id="card-s1-state"]')).toHaveLength(1);
+    });
+
     it('is only ever a working card: idle, blocked and done carry no stale form', async () => {
       vi.useFakeTimers();
       const b = await loadBoard();

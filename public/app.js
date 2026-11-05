@@ -335,20 +335,36 @@
   //
   // A working card's state row carries a "?" mark beside its state's own, for
   // when it goes stale; .card.stale swaps one for the other.
+  //
+  // The title is the card's first control, and a reader moving from control
+  // to control heard only its name — "api-server — open this session's
+  // history" — on every card: no state, and on a stale card nothing of how
+  // long it had been quiet. That lived in the row beneath, reached only by
+  // reading on. So the button is described by that row and by what the
+  // session last said, the reading iOS's card gives as its one element's
+  // value ("Coding, no update for 14 minutes. Editing src/auth/token.ts").
+  // Described, not labelled: the name stays the words on the button (WCAG
+  // 2.5.3), and a description is computed from the live row when it is read,
+  // so a stale card's age stays current without its markup changing every
+  // minute. The row's last word is a hidden full stop, the pause between the
+  // state and the message that the two elements would otherwise run together.
   function cardInner(s) {
     const working = ACTIVE_STATUSES.has(s.status);
+    const stateId = `card-${s.id}-state`;
+    const msgId = `card-${s.id}-msg`;
     return `<div class="card-head">
         <div class="card-title-row">
           <button class="name-open" type="button" data-open="${escape(s.id)}"
                   aria-label="${escape(`${s.name} — open this session's history`)}"
+                  aria-describedby="${escape(s.message ? `${stateId} ${msgId}` : stateId)}"
             ><span class="name" title="${escape(s.name)}">${escape(s.name)}</span
             ><span class="name-more" aria-hidden="true">›</span></button>
           <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
         </div>
-        <div class="card-state-row">${stateMark(s.status)}${working ? STALE_MARK : ''}<span class="badge">${
-          escape(s.status)}</span>${working ? staleSaid(s) : ''}</div>
+        <div class="card-state-row" id="${escape(stateId)}">${stateMark(s.status)}${working ? STALE_MARK : ''}<span class="badge">${
+          escape(s.status)}</span>${working ? staleSaid(s) : ''}<span class="sr-only">.</span></div>
       </div>${
-        s.message ? `<p class="message">${escape(s.message)}</p>` : ''
+        s.message ? `<p class="message" id="${escape(msgId)}">${escape(s.message)}</p>` : ''
       }${cardMeta(s)}${renderFocus(s)}`;
   }
 

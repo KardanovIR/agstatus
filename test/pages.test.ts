@@ -179,6 +179,36 @@ describe('static pages', () => {
     });
   });
 
+  // The marks carry state without colour, and in px they stayed 15 while the
+  // words beside them grew: at 250% text a mark was a third of its word's
+  // height. Every glyph that carries state or labels a control is sized in rem.
+  describe('marks and icons grow with the text', () => {
+    const read = (file: string) => fs.readFileSync(path.resolve(__dirname, '..', 'public', file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const sheets = { 'card.css': read('card.css'), 'board.css': read('board.css'), 'shell.css': read('shell.css') };
+    // Not the timeline's hairline (.tl-gutter::before): a rule, and 2px on purpose.
+    const GLYPHS = /-mark\b|\bsvg\b|\.dot\b|\.conn-dot\b|\.tl-dot\b/;
+
+    it('sizes none of them in px', () => {
+      let checked = 0;
+      for (const [name, css] of Object.entries(sheets)) {
+        for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+          const selector = m[1].trim();
+          if (!GLYPHS.test(selector) || !/\b(width|height|margin-top|top|bottom)\s*:/.test(m[2])) continue;
+          checked += 1;
+          for (const decl of m[2].split(';')) {
+            if (!/^\s*(min-|max-)?(width|height|margin-top|top|bottom)\s*:/.test(decl)) continue;
+            // Fixed pixels alone are what stays put. A calc() with a term in
+            // the text's own units, calc(6px + 0.54545em), grows with it.
+            const fixed = /\d+px/.test(decl) && !/\d(?:\.\d+)?(?:r?em|ch|ex)\b/.test(decl);
+            expect(fixed, `${name} ${selector}: ${decl.trim()}`).toBe(false);
+          }
+        }
+      }
+      expect(checked).toBeGreaterThanOrEqual(7);
+    });
+  });
+
   // The install one-liners are the documented way in, so both routes have to
   // work on a self-hosted board too — not only on the hosted instance.
   it('serves the install scripts in both modes', async () => {
