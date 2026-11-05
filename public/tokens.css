@@ -207,6 +207,34 @@
   --d-slow: 420ms;
 }
 
+/* ---- More contrast -------------------------------------------------------
+ * For a reader who has asked the system for it: macOS and iOS "Increase
+ * contrast" report it to the page as `prefers-contrast: more`. The quiet
+ * inks and the hairlines are the narrowest margins on the board, chosen for a
+ * dark room, and these second values are the ones iOS takes under the same
+ * setting (Theme.swift), so the two clients agree there as well. Standard
+ * contrast is untouched.
+ *
+ *   text-3 takes text-2's value, and text-2 moves up a step to keep the three
+ *   inks apart. text-1 already clears 12:1 and stays.
+ *   ink-800, every hairline on the board, goes from 30% to 50%. That includes
+ *   the usage chart's gridlines and the timeline's connector. A card's edge is
+ *   a mix taken from it (card.css), so the edges follow on their own.
+ *   ink-700, the emphatic hairline, keeps its step above ink-800 (+8, as at
+ *   30/38). Left at 38% it would sit under the raised hairline, and every
+ *   hover that brightens a border would dim it instead. iOS has no such token.
+ *
+ * The blocked card's edge and the limit meter's track are derived where they
+ * are drawn, so their second values live in card.css. */
+@media (prefers-contrast: more) {
+  :root {
+    --ink-800: oklch(50% 0.011 var(--hue));
+    --ink-700: oklch(58% 0.012 var(--hue));
+    --text-2: oklch(82% 0.012 var(--hue));
+    --text-3: oklch(74% 0.012 var(--hue));
+  }
+}
+
 /*
  * Self-hosted, latin subset. Not a CDN link: docs/privacy.md promises no
  * third-party requests, and a webfont from Google is a third-party request on

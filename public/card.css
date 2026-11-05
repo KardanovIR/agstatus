@@ -60,6 +60,12 @@
   border-color: var(--state-line);
 }
 
+/* More contrast (see tokens.css): blocked's edge goes from 42% of the state
+ * colour to 70%. The other edges are mixes of --ink-800 and follow it there. */
+@media (prefers-contrast: more) {
+  .card { --state-line: oklch(from var(--state) l c h / 0.70); }
+}
+
 .card.stale { opacity: 0.62; }
 
 /* Name first and largest: it is how you know WHICH session you are looking at,
@@ -367,6 +373,13 @@
   background: var(--ink-850);
   overflow: hidden;
   position: relative;
+}
+
+/* More contrast (see tokens.css): the empty part of the meter is the top ink
+ * at 14%, as Theme.meterTrack is on iOS under the same setting, where at
+ * standard contrast it is a raised surface barely off the card. */
+@media (prefers-contrast: more) {
+  .meter-track { background: oklch(from var(--text-1) l c h / 0.14); }
 }
 
 .meter-fill {
