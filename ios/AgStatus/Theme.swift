@@ -65,9 +65,9 @@ enum Theme {
     // 4.63:1 on a blocked card is the narrowest AA margin on the board; it
     // goes to 6.60:1 by taking secondary's value, and secondary moves up to
     // keep the three apart (8.70:1 at the least). Primary is already 12.75:1
-    // at the least and stays. Standard contrast is untouched. The web has no
-    // `prefers-contrast` counterpart yet, so these second values are iOS's
-    // alone; they are written in OKLCH like the rest so the web can take them.
+    // at the least and stays. Standard contrast is untouched. The web takes
+    // the same second values under `prefers-contrast: more` (public/tokens.css),
+    // so the two clients agree there as well.
 
     /// oklch(94% 0.010 155)
     static let textPrimary = rgb(0xE6EDE8)
@@ -528,8 +528,8 @@ enum Theme {
 
 // The third design principle is that motion means something changed. Its
 // corollary is that someone who has asked the system for less motion gets none
-// — which is the board's own rule, not a courtesy. public/board.css:232 honours
-// prefers-reduced-motion on the web, and public/site.css:431 does the same for
+// — which is the board's own rule, not a courtesy. public/board.css's
+// prefers-reduced-motion block honours it on the web, and public/site.css:431 does the same for
 // the landing, docs and privacy pages; until these existed the iOS app honoured
 // it nowhere, in any view, while the principle claimed otherwise.
 //
