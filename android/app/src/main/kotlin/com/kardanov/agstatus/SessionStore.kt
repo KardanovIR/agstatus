@@ -615,15 +615,23 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     // MARK: Demo mode
 
-    /** Board-less fake mode driven by DemoData on a ~4s tick. */
-    fun startDemo() {
+    /**
+     * Board-less fake mode driven by DemoData on a ~4s tick.
+     *
+     * [agedMinutes] and [frozen] are the debug screenshot hook's (MainActivity):
+     * every working session as if it last reported that long ago — past ten
+     * minutes, a stale card — and a board that holds still, without which the
+     * first tick brings a session back to life.
+     */
+    fun startDemo(agedMinutes: Int = 0, frozen: Boolean = false) {
         cancelStream()
         stopDemoJob()
         clearFocus()
-        _sessions.value = sortedByUpdate(DemoData.initialSessions())
+        _sessions.value = sortedByUpdate(DemoData.aged(DemoData.initialSessions(), agedMinutes))
         _usage.value = DemoData.usage()
         _machines.value = DemoData.machines().associateBy { it.id }
         _connection.value = Connection.DEMO
+        if (frozen) return
         demoJob = viewModelScope.launch {
             while (isActive) {
                 delay(DEMO_TICK_MILLIS)

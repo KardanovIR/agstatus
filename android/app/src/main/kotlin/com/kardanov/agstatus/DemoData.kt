@@ -76,6 +76,22 @@ object DemoData {
         )
     }
 
+    /**
+     * Every working session (planning, coding, testing) as if it last reported
+     * [minutes] ago. Past ten that is a stale card, which the demo never shows
+     * otherwise: its sessions are seconds to a few minutes old. Zero or less
+     * leaves the sessions as they are. iOS's AGSTATUS_DEMO_STALE.
+     */
+    fun aged(sessions: List<Session>, minutes: Int): List<Session> {
+        if (minutes <= 0) return sessions
+        val at = System.currentTimeMillis() - minutes * 60_000L
+        return sessions.map { session ->
+            if (!session.status.isActive) return@map session
+            val updatedAt = minOf(session.updatedAt, at)
+            session.copy(updatedAt = updatedAt, createdAt = minOf(session.createdAt, updatedAt))
+        }
+    }
+
     /** Listener presence for the demo hosts: the MacBook is on, the Mac mini went quiet. */
     fun machines(): List<MachinePresence> {
         val now = System.currentTimeMillis()

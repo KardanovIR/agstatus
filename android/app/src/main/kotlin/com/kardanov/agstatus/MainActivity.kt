@@ -52,8 +52,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --es agstatus_open_usage claude
+ *
+ * A stale card, which the demo never shows otherwise: every working session
+ * last reported that many minutes ago (past 10, stale), on a board that holds
+ * still, as iOS's AGSTATUS_DEMO_STALE and AGSTATUS_DEMO_FREEZE:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ei agstatus_demo_stale 14 --ez agstatus_demo_freeze true
  */
 private const val EXTRA_DEMO = "agstatus_demo"
+private const val EXTRA_DEMO_STALE = "agstatus_demo_stale"
+private const val EXTRA_DEMO_FREEZE = "agstatus_demo_freeze"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
 private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
 
@@ -77,7 +86,10 @@ class MainActivity : ComponentActivity() {
             savedInstanceState == null &&
             intent.getBooleanExtra(EXTRA_DEMO, false)
         ) {
-            store.startDemo()
+            store.startDemo(
+                agedMinutes = intent.getIntExtra(EXTRA_DEMO_STALE, 0),
+                frozen = intent.getBooleanExtra(EXTRA_DEMO_FREEZE, false),
+            )
         }
         val openHistory = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_HISTORY, false)
         val openUsage =
