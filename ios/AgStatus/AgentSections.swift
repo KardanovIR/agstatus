@@ -164,6 +164,11 @@ struct AgentHead: View {
                 .accessibilityLabel(summary)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityHint("Shows 30 days of usage")
+                // Voice Control: "Tap Claude usage", or "Tap Claude". The label
+                // is a sentence whose counts move while it is being said. Where
+                // the agent line is pinned over the heads it answers to the
+                // name too, and Voice Control numbers the two.
+                .accessibilityInputLabels(["\(group.name) usage", group.name])
                 .accessibilityFocused(jumpFocus, equals: group.section)
             }
             // Read as one agent: the head, its alarm, then its limits.
@@ -504,6 +509,10 @@ private struct AlarmButton: View {
         .padding(.horizontal, -Self.reach.x)
         .padding(.vertical, -Self.reach.y)
         .accessibilityLabel("\(agent): \(count) blocked, show the first")
+        // Voice Control: "Tap Claude blocked", or just "Tap blocked". Where two
+        // are on screen — two agents', or one agent's in its head and on the
+        // agent line — Voice Control numbers them.
+        .accessibilityInputLabels(["\(agent) blocked", "\(count) blocked", "Blocked"])
     }
 }
 
@@ -602,6 +611,8 @@ struct AgentLine: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(group.name), show its sessions")
+        // Voice Control: "Tap Codex", not the whole sentence.
+        .accessibilityInputLabels([group.name, "Show \(group.name)"])
     }
 
     @ViewBuilder
