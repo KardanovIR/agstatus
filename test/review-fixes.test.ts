@@ -643,7 +643,7 @@ describe('board script: the usage detail', () => {
    * measure a label, and the board draws no chart. This stands in for both,
    * the way a browser would answer.
    */
-  function layOut(b: Awaited<ReturnType<typeof loadBoard>>, width: number) {
+  function layOut(b: Awaited<ReturnType<typeof loadBoard>>, width: number, fontSize = 11) {
     Object.defineProperty(b.win.HTMLElement.prototype, 'clientWidth', {
       configurable: true,
       get(this: HTMLElement) { return this.id === 'dv-plot' ? width : 0; },
@@ -653,7 +653,7 @@ describe('board script: the usage detail', () => {
       measureText: (text: string) => ({ width: text.length * 6 }),
     })) as never;
     vi.stubGlobal('getComputedStyle', () => ({
-      fontSize: '11px', fontStyle: 'normal', fontWeight: '400', fontFamily: 'sans-serif',
+      fontSize: `${fontSize}px`, fontStyle: 'normal', fontWeight: '400', fontFamily: 'sans-serif',
     }));
   }
 
@@ -705,6 +705,80 @@ describe('board script: the usage detail', () => {
       expect(x).toBeGreaterThanOrEqual(left - 0.05);
       expect(x + Number(bar.getAttribute('width'))).toBeLessThanOrEqual(right + 0.05);
     }
+  });
+
+  it('marks a window with a single reading by its own shape, and keys it by that mark', async () => {
+    // A board's first day of recording a window: one reading, today. Every
+    // such reading sits on the same day, and a point cannot carry a pattern,
+    // so a dot in the window's colour differed from the others by hue alone.
+    // "week" has a second day and draws its line beside them.
+    vi.useFakeTimers();
+    const firstDay = () => ({
+      ...usageHistory(),
+      history: [
+        { source: 'claude', windowId: 'session', points: [{ at: noon(0), usedPct: 34 }] },
+        { source: 'claude', windowId: 'week', points: [{ at: noon(-1), usedPct: 20 }, { at: noon(0), usedPct: 62 }] },
+        { source: 'claude', windowId: 'week_fable', points: [{ at: noon(0), usedPct: 41 }] },
+      ],
+    });
+    const b = await loadBoard({ usageHistory: firstDay });
+    b.emit('snapshot', [session({ source: 'claude' })]);
+    b.emit('usage', claudeUsage());
+    layOut(b, 700);
+    await openUsage(b);
+
+    const svg = document.querySelector('#dv-plot svg.dv-chart')!;
+    expect(svg.querySelectorAll('circle')).toHaveLength(0);
+    expect([...svg.querySelectorAll('.dv-line')].map((l) => l.getAttribute('style'))).toEqual([STYLES[1]]);
+
+    // Each mark in its window's colour, over a casing of its own outline.
+    const marks = [...svg.querySelectorAll('.dv-mark')];
+    expect(marks.map((m) => m.getAttribute('style'))).toEqual(['fill:var(--st-done)', 'fill:var(--st-planning)']);
+    for (const mark of marks) {
+      const casing = mark.previousElementSibling!;
+      expect(casing.getAttribute('class')).toBe('dv-mark-case');
+      expect(casing.getAttribute('d')).toBe(mark.getAttribute('d'));
+    }
+
+    // A path is one absolute point and then relative steps, so with that
+    // point taken off what is left is the shape alone: a circle for the
+    // first window, a square for the third, and the same shape in the key.
+    const shape = (d: string | null) => d!.replace(/^M[-\d.]+ [-\d.]+/, '');
+    const [circle, square] = marks.map((m) => shape(m.getAttribute('d')));
+    expect(circle).toBe('a4 4 0 1 0 8 0a4 4 0 1 0 -8 0Z');
+    expect(square).toBe('h7.2v7.2h-7.2Z');
+
+    // Each key is what the chart draws for its window: the mark while it has
+    // a single reading, a sample of the line once it has two.
+    const keys = [...document.querySelectorAll('#detail .dv-key')];
+    expect(keys.map((k) => k.querySelector('.dv-key-id')!.textContent)).toEqual(['session', 'week', 'week_fable']);
+    const [sessionKey, weekKey, fableKey] = keys;
+    expect(shape(sessionKey.querySelector('.dv-swatch path.dv-mark')!.getAttribute('d'))).toBe(circle);
+    expect(sessionKey.querySelector('.dv-swatch path')!.getAttribute('style')).toBe('fill:var(--st-done)');
+    expect(weekKey.querySelector('.dv-swatch path')).toBeNull();
+    expect(weekKey.querySelector('.dv-swatch line')!.getAttribute('style')).toBe(STYLES[1]);
+    expect(shape(fableKey.querySelector('.dv-swatch path.dv-mark')!.getAttribute('d'))).toBe(square);
+    expect(fableKey.querySelector('.dv-swatch path')!.getAttribute('style')).toBe('fill:var(--st-planning)');
+  });
+
+  it("grows a single reading's mark with the reader's text, as the plot grows", async () => {
+    // At twice the board's 11 px type the plot is half as tall again, and so
+    // is the mark: a reader who enlarges the text can still tell its shape.
+    // The key's box grows by the same rule in CSS (.dv-swatch-mark).
+    vi.useFakeTimers();
+    const b = await loadBoard({
+      usageHistory: () => ({
+        ...usageHistory(),
+        history: [{ source: 'claude', windowId: 'session', points: [{ at: noon(0), usedPct: 34 }] }],
+      }),
+    });
+    b.emit('snapshot', [session({ source: 'claude' })]);
+    layOut(b, 700, 22);
+    await openUsage(b);
+
+    const mark = document.querySelector('#dv-plot .dv-mark')!;
+    expect(mark.getAttribute('d')!.replace(/^M[-\d.]+ [-\d.]+/, '')).toBe('a6 6 0 1 0 12 0a6 6 0 1 0 -12 0Z');
+    expect(document.querySelector('#detail .dv-key .dv-swatch')!.getAttribute('class')).toBe('dv-swatch dv-swatch-mark');
   });
 
   it('says what the chart shows: the busiest day, and each window by its name', async () => {

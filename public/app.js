@@ -931,9 +931,9 @@
   // do not convert: a plan limit weights models and cache reads differently.
   //
   // iOS draws the same screen (UsageDetailView), and the two follow each other
-  // closely: the same colours in the same order, the same patterns, the same
-  // keys, the same words for a screen reader. A window drawn teal here and
-  // lilac there is the drift the shared palette exists to prevent.
+  // closely: the same colours in the same order, the same patterns and marks,
+  // the same keys, the same words for a screen reader. A window drawn teal
+  // here and lilac there is the drift the shared palette exists to prevent.
 
   const DETAIL_DAYS = 30;
 
@@ -983,6 +983,80 @@
     return `stroke:${LINE_COLORS[i % LINE_COLORS.length]}`
       + (dash.length ? `;stroke-dasharray:${dash.join(' ')}` : '');
   };
+
+  // A window the board has only just started recording has a single reading,
+  // and a point cannot carry a pattern. Every such reading sits on the same
+  // day, today, so a mark in the window's colour alone would differ from its
+  // neighbours by hue alone until the second day's reading. So each window
+  // has a shape as well, paired with its colour and pattern by position as
+  // Theme.seriesMarker pairs them: circle, plus, square, triangle, diamond,
+  // triangle pointing down. A shape rather than a short sample of the line's
+  // pattern: along a time axis a sample spans days, and reads as the run of
+  // days it is not.
+  //
+  // Which shape goes on which colour was measured, on the colours as drawn
+  // with Machado 2009 as above. The first four colours meet one another under
+  // one kind of colour-blind vision or another (blue comes within 0.05 of
+  // lilac, teal and green), so they take one shape of each kind, and blue,
+  // which meets the most, takes the plus, the shape least like the rest. The
+  // two pairs alike in shape, square and diamond, triangle up and down, fall
+  // on colours that stay 0.128 and 0.143 apart. Red takes the triangle that
+  // points down: pointing up, a red triangle is a warning sign.
+  //
+  // Each covers about what an 8 px circle does, 43 to 52 px², so no window's
+  // mark outweighs another's. A triangle sits on its centroid, which is where
+  // the eye puts it. The sizes are Theme's, point for point, at the board's
+  // 11 px type; a mark grows with the plot, at half the rate of the text, so
+  // a reader who enlarges the text can still tell its shape.
+  const LINE_MARKS = ['circle', 'plus', 'square', 'triangle', 'diamond', 'triangle-down'];
+  const TRIANGLE_H = 5 * Math.sqrt(3);   // a 10 px side
+  const num = (n) => String(+n.toFixed(3));
+
+  /** Whether a window has a single day's reading: a mark in the chart, not a line. */
+  const singleReading = (s) => s.values.filter((v) => v !== null).length === 1;
+
+  /**
+   * The nth window's mark, as a path centred on (cx, cy), `k` times its size
+   * at 11 px type. One absolute point and then relative steps, so a mark and
+   * its key differ in that point alone.
+   */
+  function markPath(i, cx, cy, k = 1) {
+    const from = (dx, dy) => `M${num(cx + dx * k)} ${num(cy + dy * k)}`;
+    const by = (...steps) => steps.map((n) => num(n * k)).join(' ');
+    const h = TRIANGLE_H;
+    switch (LINE_MARKS[i % LINE_MARKS.length]) {
+      case 'circle':
+        return `${from(-4, 0)}a${by(4, 4)} 0 1 0 ${by(8, 0)}a${by(4, 4)} 0 1 0 ${by(-8, 0)}Z`;
+      case 'plus':        // arms 3.25 px thick, 9.5 px across
+        return `${from(-1.625, -4.75)}h${by(3.25)}v${by(3.125)}h${by(3.125)}v${by(3.25)}`
+          + `h${by(-3.125)}v${by(3.125)}h${by(-3.25)}v${by(-3.125)}`
+          + `h${by(-3.125)}v${by(-3.25)}h${by(3.125)}Z`;
+      case 'square':
+        return `${from(-3.6, -3.6)}h${by(7.2)}v${by(7.2)}h${by(-7.2)}Z`;
+      case 'triangle':
+        return `${from(0, (-h * 2) / 3)}l${by(5, h)}h${by(-10)}Z`;
+      case 'diamond':
+        return `${from(0, -5)}l${by(5, 5)}l${by(-5, 5)}l${by(-5, -5)}Z`;
+      default:            // triangle pointing down
+        return `${from(0, (h * 2) / 3)}l${by(5, -h)}h${by(-10)}Z`;
+    }
+  }
+
+  /**
+   * A single reading's key: its mark, as the chart draws it, without the
+   * casing, which on the card it sits on draws nothing. In the key a triangle
+   * is centred on its box rather than its centroid, beside the name. The box
+   * grows with the text as the chart's marks do (`.dv-swatch-mark`).
+   */
+  const MARK_KEY = 12;
+  function keyMark(i) {
+    const shape = LINE_MARKS[i % LINE_MARKS.length];
+    const lift = shape === 'triangle' ? TRIANGLE_H / 6 : shape === 'triangle-down' ? -TRIANGLE_H / 6 : 0;
+    return `<svg class="dv-swatch dv-swatch-mark" width="${MARK_KEY}" height="${MARK_KEY}"`
+      + ` viewBox="0 0 ${MARK_KEY} ${MARK_KEY}">`
+      + `<path class="dv-mark" d="${markPath(i, MARK_KEY / 2, MARK_KEY / 2 + lift)}"`
+      + ` style="fill:${LINE_COLORS[i % LINE_COLORS.length]}" /></svg>`;
+  }
 
   /**
    * A limit line's key: a sample of the line, drawn as the chart draws it, so
@@ -1078,6 +1152,12 @@
     const measure = (text) => textWidth(text, font, size);
     const at = (n) => n.toFixed(1);
     const line = Math.round(size * 1.2);   // a label's line: 13 px at 11 px
+    // The plot grows at half the rate of the text, so the lines gain room as
+    // the labels do, and a single reading's mark grows with it. Today's mark
+    // reaches past the plot's right edge, so the gap before the percentages
+    // grows by the same rule and the mark never meets "100%".
+    const grow = 1 + (size / 11 - 1) / 2;
+    const gap = 6 * grow;
 
     // Every label is measured before anything is placed, so the insets are
     // what the reader's text size makes them. A date is centred under its day,
@@ -1087,14 +1167,13 @@
     const dates = days.map(dayLabel);
     const widestDate = Math.max(0, ...dates.map(measure));
     const L = Math.ceil(Math.max(Math.max(measure(topLabel), measure('0')) + 8, widestDate / 2));
-    const R = Math.ceil(Math.max(Math.max(...GRID_PCTS.map((p) => measure(`${p}%`))) + 6, widestDate / 2));
+    const R = Math.ceil(Math.max(Math.max(...GRID_PCTS.map((p) => measure(`${p}%`))) + gap, widestDate / 2));
     const T = Math.ceil(line / 2) + 1;
     const plotW = width - L - R;
     if (plotW < 2) return '';
     // A quarter of the width, which is what the old viewBox gave its plot, and
-    // never under the 150 px iOS gives its own. It grows at half the rate of
-    // the text, so the lines gain room as the labels do.
-    const plotH = Math.round(Math.max(150, width / 4) * (1 + (size / 11 - 1) / 2));
+    // never under the 150 px iOS gives its own.
+    const plotH = Math.round(Math.max(150, width / 4) * grow);
     const bottom = T + plotH;
     // Under the plot: half a label for "0%", a gap, and the dates.
     const H = bottom + Math.ceil(line / 2) + 3 + line + 1;
@@ -1110,7 +1189,7 @@
 
     const grid = GRID_PCTS.map((p) => `
       <line class="dv-grid" x1="${L}" x2="${width - R}" y1="${at(y(p))}" y2="${at(y(p))}" />
-      <text class="dv-axis" x="${width - R + 6}" y="${at(y(p))}" dy="0.35em">${p}%</text>`).join('');
+      <text class="dv-axis" x="${at(width - R + gap)}" y="${at(y(p))}" dy="0.35em">${p}%</text>`).join('');
 
     const axis = `
       <text class="dv-axis" x="${L - 8}" y="${T}" dy="0.35em" text-anchor="end">${escape(topLabel)}</text>
@@ -1128,16 +1207,17 @@
     // bar and passes visibly over the lines drawn before it.
     const lines = series.map((s) => {
       const points = [];
-      s.values.forEach((v, i) => { if (v !== null) points.push([at(x(i)), at(y(v))]); });
+      s.values.forEach((v, i) => { if (v !== null) points.push([x(i), y(v)]); });
       if (points.length === 0) return '';
-      if (points.length === 1) {
-        // A board that has only just started recording has one reading, and a
-        // path with a single moveto draws nothing at all: mark it as a point.
-        const [cx, cy] = points[0];
-        return `<circle class="dv-dot-case" cx="${cx}" cy="${cy}" r="3.75" />`
-          + `<circle cx="${cx}" cy="${cy}" r="2.5" style="fill:${LINE_COLORS[s.index % LINE_COLORS.length]}" />`;
+      if (singleReading(s)) {
+        // A board that has only just started recording a window has one
+        // reading, and a path with a single moveto draws nothing at all: mark
+        // it with the window's shape, cased as a line is.
+        const d = markPath(s.index, points[0][0], points[0][1], grow);
+        return `<path class="dv-mark-case" d="${d}" />`
+          + `<path class="dv-mark" d="${d}" style="fill:${LINE_COLORS[s.index % LINE_COLORS.length]}" />`;
       }
-      const d = `M${points.map((p) => p.join(' ')).join('L')}`;
+      const d = `M${points.map(([px, py]) => `${at(px)} ${at(py)}`).join('L')}`;
       return `<path class="dv-case" d="${d}" /><path class="dv-line" d="${d}" style="${lineStyle(s.index)}" />`;
     }).join('');
 
@@ -1230,12 +1310,17 @@
 
     // The keys wrap as words do: one row where they fit, a new row where the
     // next does not, and an id never breaks while it fits a row of its own.
-    // They are for eyes. A screen reader hears every window named, with its
-    // readings, from the chart's own text below.
+    // Each is what the chart draws for its window: a sample of its line, or
+    // its mark while it has a single reading. They are for eyes. A screen
+    // reader hears every window named, with its readings, from the chart's
+    // own text below.
     const legend = model.series.length === 0
       ? '<span class="dv-legend"><span class="dv-key-none">limit history starts once reported</span></span>'
-      : `<span class="dv-legend" aria-hidden="true">${model.series.map((s) => `
-          <span class="dv-key">${keySample(s.index)}<span class="dv-key-id">${escape(s.windowId)}</span></span>`).join('')}
+      : `<span class="dv-legend" aria-hidden="true">${model.series.map((s) => {
+          const key = singleReading(s) ? keyMark(s.index) : keySample(s.index);
+          return `
+          <span class="dv-key">${key}<span class="dv-key-id">${escape(s.windowId)}</span></span>`;
+        }).join('')}
         </span>`;
 
     const projects = [...perProject.entries()].sort((a, b) => b[1] - a[1]);

@@ -244,6 +244,14 @@ body.detail-open > .footer { display: none; }
   align-self: center;
 }
 
+/* A single reading's key: 12 px at the board's 11 px type, growing at half
+ * the rate of the text as the plot and its marks do (`grow` in app.js), so
+ * key and mark stay one size. */
+.dv-swatch-mark {
+  width: calc(6px + 0.54545em);
+  height: calc(6px + 0.54545em);
+}
+
 /* A key cut short names nothing, and an id is not a word: wrapped, a window
  * reads as two. A key too long for the room beside the others takes the next
  * row whole; only one too long for the card itself breaks, and it breaks
@@ -298,7 +306,14 @@ body.detail-open > .footer { display: none; }
   stroke-linecap: round;
 }
 
-.dv-dot-case { fill: var(--ink-900); }
+/* A single reading's mark (app.js's markPath) is cased the same way: its own
+ * outline, 1.25 px out, in the card's colour, under its fill. */
+.dv-mark-case {
+  fill: var(--ink-900);
+  stroke: var(--ink-900);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
 
 .dv-grid {
   stroke: var(--ink-800);
