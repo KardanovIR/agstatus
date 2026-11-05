@@ -231,7 +231,7 @@ enum DemoData {
         var series: [UsageHistorySeries] = []
         var projects: [UsageProjectDay] = []
 
-        for plan in demoPlans {
+        for plan in plansForScreenshots {
             for window in plan.windows {
                 series.append(limitSeries(source: plan.source, window: window, grid: grid, rng: &rng))
             }
@@ -277,6 +277,36 @@ enum DemoData {
         /// Projects and their share of this agent's daily spend.
         let projects: [(name: String, weight: Double)]
     }
+
+    /// `demoPlans`, except that AGSTATUS_DEMO_LIMITS=many (or 1–6), which
+    /// gives Codex's head that many windows, gives its usage history the same
+    /// ones: the chart's six line patterns can only be looked at with six.
+    private static var plansForScreenshots: [DemoPlan] {
+        #if DEBUG
+        let limits = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"]
+        if let count = limits == "many" ? 6 : limits.flatMap(Int.init), (1...6).contains(count) {
+            return demoPlans.map { plan in
+                guard plan.source == "codex" else { return plan }
+                return DemoPlan(source: plan.source,
+                                windows: Array(codexSixHistory.prefix(count)),
+                                projects: plan.projects)
+            }
+        }
+        #endif
+        return demoPlans
+    }
+
+    #if DEBUG
+    /// `codexSixWindows`' windows as history, each ending on its head's value.
+    private static let codexSixHistory: [(id: String, startsDaysAgo: Int, endPct: Double, weekly: Bool)] = [
+        ("week", 16, 47, true),
+        ("session_gpt_6_astra", 6, 22, false),
+        ("week_gpt_6_astra", 16, 38, true),
+        ("session_gpt_6_mini", 5, 9, false),
+        ("week_gpt_6_mini", 12, 64, true),
+        ("week_review", 9, 12, true),
+    ]
+    #endif
 
     private static let demoPlans: [DemoPlan] = [
         DemoPlan(source: "claude",
@@ -434,8 +464,9 @@ enum DemoData {
     ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
     ///                           are working instead) | none (nobody is blocked)
     ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%) | many
-    ///                           (Codex reports six windows) | 1…6 (that
-    ///                           many of the six)
+    ///                           (Codex reports six windows, and its usage
+    ///                           history has six lines) | 1…6 (that many of
+    ///                           the six)
     ///   AGSTATUS_DEMO_STALE     <minutes> (every working session last
     ///                           reported that long ago: past 10, stale)
     ///   AGSTATUS_DEMO_TITLES    1 (Claude's cards carry session titles, as
@@ -455,6 +486,10 @@ enum DemoData {
     ///                           VoiceOver were running, which in the
     ///                           simulator it never is; the log category
     ///                           `blocks` records what was said)
+    ///   AGSTATUS_USAGE_SCROLL   projects | note (UsageDetailView, opened
+    ///                           with AGSTATUS_OPEN_USAGE: scrolls to that
+    ///                           part, which at the accessibility sizes is
+    ///                           below a phone's first screen)
     enum Scenario: String {
         case demo
         /// Five and four: two full columns, something blocked in each.
