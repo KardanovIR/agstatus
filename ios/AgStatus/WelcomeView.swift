@@ -73,7 +73,7 @@ struct WelcomeView: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
+            .tint(Theme.accentFill)
             .disabled(isCreating)
 
             Button {
@@ -265,7 +265,7 @@ private struct BoardURLEntrySheet: View {
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
+                .tint(Theme.accentFill)
                 .disabled(isConnecting || text.trimmingCharacters(in: .whitespaces).isEmpty)
 
                 Spacer()

@@ -1042,7 +1042,7 @@ struct BoardView: View {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
+            .tint(Theme.accentFill)
             .padding(.top, 4)
         }
 
@@ -1173,7 +1173,7 @@ struct BoardView: View {
                     .padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
+            .tint(Theme.accentFill)
             .padding(.top, 4)
         }
         .padding(32)
