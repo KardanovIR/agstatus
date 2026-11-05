@@ -72,7 +72,7 @@ ai,monitor,dashboard,session,developer,terminal,cli,devtool,tracker,remote,usage
 
 > Agents run for minutes, then quietly wait for you. See every session, what it is doing, and how much of your plan is left — without walking back to the desk.
 
-**Description** (3581/4000)
+**Description** (3638/4000)
 
 ```
 AgStatus turns your phone into a live status board for the AI coding agents running on your computer.
@@ -86,7 +86,7 @@ ON THE BOARD
 • Sessions grouped by agent, with a column for each on iPad
 • One card per session, color-coded through six states: idle, planning, coding, testing, blocked, done
 • The last thing the agent reported — the file it is editing, the test command it ran, the approval it is waiting for
-• Blocked and finished cards carry the color while busy ones recede, and a session that has gone quiet dims, so the ones that need you stand out
+• Blocked and finished cards carry the color while busy ones recede, so the ones that need you stand out; a session that has gone quiet loses its color, shows a “?” and says how long it has been silent
 • Updates stream in as they happen — no polling, no refresh button
 • Long-press a card to dismiss it or, with Focus set up on your Mac, bring its terminal to the front; on iPhone you can also swipe it away
 • Keep-screen-awake option for when the board lives on a desk or a shelf
