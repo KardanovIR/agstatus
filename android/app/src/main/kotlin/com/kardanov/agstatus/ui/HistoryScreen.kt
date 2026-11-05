@@ -44,15 +44,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.HistoryEvent
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.SessionStore
@@ -143,7 +140,7 @@ fun HistoryScreen(
                     contentPadding = PaddingValues(bottom = 24.dp),
                 ) {
                     if (session != null) {
-                        item(key = "header") { HistoryHeader(session) }
+                        item(key = "header") { HistoryHeader(session, nowMillis = now) }
                     }
                     itemsIndexed(events, key = { _, event -> event.seq }) { index, event ->
                         HistoryTimelineRow(
@@ -167,7 +164,7 @@ private suspend fun loadHistory(store: SessionStore, sessionId: String): List<Hi
 // MARK: - Header
 
 @Composable
-private fun HistoryHeader(session: Session) {
+private fun HistoryHeader(session: Session, nowMillis: Long) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -191,38 +188,13 @@ private fun HistoryHeader(session: Session) {
             )
         }
         Spacer(Modifier.weight(1f))
-        HistoryStatusBadge(session.status)
-    }
-}
-
-/**
- * The session's current state, drawn exactly as the card draws it: glyph, word,
- * colour. It was a tinted pill with a tinted border — a status badge of the
- * kind the enterprise admin panel is made of, and the only thing on this screen
- * that did not match the card you tapped to get here.
- */
-@Composable
-private fun HistoryStatusBadge(status: AgentStatus) {
-    val color = Theme.colorFor(status)
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.clearAndSetSemantics { contentDescription = status.label },
-    ) {
-        Icon(
-            imageVector = Theme.iconFor(status),
-            contentDescription = null,
-            tint = color,
-            modifier = Modifier.size(14.dp),
-        )
-        Text(
-            text = status.label.uppercase(),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.6.sp,
-            color = color,
-            maxLines = 1,
-        )
+        // The session's current state, drawn by the card's own mark: glyph,
+        // word, colour — and, once the board can no longer vouch for it, "?"
+        // for the glyph, as on the card that was tapped to get here. It was a
+        // tinted pill with a tinted border, a status badge of the kind the
+        // enterprise admin panel is made of, and then a copy of the card's
+        // mark that did not know about stale.
+        StatusMark(session = session, stale = session.isStale(nowMillis), nowMillis = nowMillis)
     }
 }
 

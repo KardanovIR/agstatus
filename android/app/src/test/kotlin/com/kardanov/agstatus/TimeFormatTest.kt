@@ -57,4 +57,31 @@ class TimeFormatTest {
         assertEquals("just now", TimeFormat.relative(now - 44_999, now))
         assertEquals("1m ago", TimeFormat.relative(now - 45_001, now))
     }
+
+    // A stale card's "no update for 14m": relative's span without "ago", on
+    // the same steps, so the words and the "14m ago" they fall back to agree.
+    @Test
+    fun `age is the relative span without ago`() {
+        val ago = { seconds: Long -> TimeFormat.age(now - seconds * 1000, now) }
+        assertEquals("10m", ago(10 * 60))
+        assertEquals("14m", ago(14 * 60 + 59))
+        assertEquals("59m", ago(3599))
+        assertEquals("1h", ago(3600))
+        assertEquals("23h", ago(86_399))
+        assertEquals("1d", ago(86_400))
+        for (seconds in listOf(10L * 60, 14L * 60, 3600L, 2L * 86_400)) {
+            assertEquals("${ago(seconds)} ago", agoSeconds(seconds))
+        }
+    }
+
+    @Test
+    fun `spoken age spells its units out, one without an s`() {
+        val said = { seconds: Long -> TimeFormat.spokenAge(now - seconds * 1000, now) }
+        assertEquals("1 minute", said(30))
+        assertEquals("14 minutes", said(14 * 60))
+        assertEquals("1 hour", said(3600))
+        assertEquals("2 hours", said(2 * 3600 + 59 * 60))
+        assertEquals("1 day", said(86_400))
+        assertEquals("3 days", said(3 * 86_400))
+    }
 }

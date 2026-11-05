@@ -85,7 +85,25 @@ data class Session(
 ) {
     /** Falls back to the id so a card is never nameless. */
     val displayName: String get() = name.ifBlank { id }
+
+    /**
+     * The one stale rule, kept by the card and the history it opens, so the
+     * screen a stale card opens shows the same "?": a working session that
+     * has heard nothing for [STALE_AFTER_MILLIS].
+     */
+    fun isStale(nowMillis: Long): Boolean =
+        status.isActive && nowMillis - updatedAt > STALE_AFTER_MILLIS
 }
+
+/**
+ * A working session (planning, coding, testing) that has heard nothing for this
+ * long is stale: most likely a dead agent — killed mid-turn, an interrupted
+ * turn (which fires no Stop hook), a machine gone to sleep — and sometimes one
+ * very long tool call. The board cannot tell which, but it knows exactly how
+ * long it has heard nothing, and the card says so (`SessionCard`). The web and
+ * iOS boards keep the same ten minutes.
+ */
+const val STALE_AFTER_MILLIS = 10 * 60 * 1000L
 
 // MARK: - Host (Focus)
 

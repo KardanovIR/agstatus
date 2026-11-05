@@ -171,14 +171,27 @@ object Theme {
      * What this is NOT: a coloured stripe down the card's edge. That is the
      * most overused device in dashboard UI and never reads as intentional,
      * whatever colour or radius it is given.
+     *
+     * STALE — a working card that has heard nothing for ten minutes
+     * ([STALE_AFTER_MILLIS]) — is the same mix with the state's share at
+     * nothing, which is [card] itself: the board can no longer vouch for the
+     * state a tint would claim. It replaces a 0.62 alpha on the whole card,
+     * which left the message at 3.42:1 and the meta line at 2.61:1 against the
+     * ground, under WCAG AA on a card that is still a control. On [card] every
+     * text token clears AA, the tertiary meta line lowest at 5.47:1, and the
+     * card is darker than every tinted one, which is what reads from across
+     * the room. The web and iOS boards draw the same.
      */
-    fun cardSurface(status: AgentStatus): Color = when (status) {
-        AgentStatus.IDLE -> Color(0xFF1E231F)
-        AgentStatus.PLANNING -> Color(0xFF242426)
-        AgentStatus.CODING -> Color(0xFF1D2525)
-        AgentStatus.TESTING -> Color(0xFF1C2623)
-        AgentStatus.BLOCKED -> Color(0xFF30231D)
-        AgentStatus.DONE -> Color(0xFF1C271F)
+    fun cardSurface(status: AgentStatus, stale: Boolean = false): Color {
+        if (stale) return card
+        return when (status) {
+            AgentStatus.IDLE -> Color(0xFF1E231F)
+            AgentStatus.PLANNING -> Color(0xFF242426)
+            AgentStatus.CODING -> Color(0xFF1D2525)
+            AgentStatus.TESTING -> Color(0xFF1C2623)
+            AgentStatus.BLOCKED -> Color(0xFF30231D)
+            AgentStatus.DONE -> Color(0xFF1C271F)
+        }
     }
 
     /**
@@ -187,14 +200,20 @@ object Theme {
      * only entry derived at runtime rather than baked, so that behaviour
      * survives a change to the blocked colour. No glow: a lit halo is the
      * crypto-terminal tell, and it is exactly wrong in a dark room at 1am.
+     *
+     * A stale card's edge is [cardBorder] itself, for the reason its surface
+     * is [card].
      */
-    fun cardEdge(status: AgentStatus): Color = when (status) {
-        AgentStatus.IDLE -> Color(0xFF4C544E)
-        AgentStatus.PLANNING -> Color(0xFF66596A)
-        AgentStatus.CODING -> Color(0xFF475E69)
-        AgentStatus.TESTING -> Color(0xFF43615F)
-        AgentStatus.DONE -> Color(0xFF43664F)
-        AgentStatus.BLOCKED -> blocked.copy(alpha = 0.42f)
+    fun cardEdge(status: AgentStatus, stale: Boolean = false): Color {
+        if (stale) return cardBorder
+        return when (status) {
+            AgentStatus.IDLE -> Color(0xFF4C544E)
+            AgentStatus.PLANNING -> Color(0xFF66596A)
+            AgentStatus.CODING -> Color(0xFF475E69)
+            AgentStatus.TESTING -> Color(0xFF43615F)
+            AgentStatus.DONE -> Color(0xFF43664F)
+            AgentStatus.BLOCKED -> blocked.copy(alpha = 0.42f)
+        }
     }
 
     // ---- Limits ----------------------------------------------------------

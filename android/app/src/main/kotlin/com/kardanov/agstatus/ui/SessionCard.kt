@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.FlipToFront
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.QuestionMark
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -27,10 +29,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -40,9 +42,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.CommandType
 import com.kardanov.agstatus.FocusCopy
 import com.kardanov.agstatus.FocusStatus
@@ -53,16 +55,17 @@ import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.TimeFormat
 
 /**
- * An active card gone quiet for this long is probably a dead agent
- * (killed mid-turn, crashed machine) — stop reading it as live and dim it.
- */
-private const val STALE_AFTER_MILLIS = 10 * 60 * 1000L
-
-/**
  * One agent session, readable at arm's length: big name, the state as a shape
  * and a word, the last message, and the facts underneath. `nowMillis` is
  * supplied by the caller's clock so the timestamp and staleness refresh
  * together.
+ *
+ * A stale card — working, and silent for ten minutes ([Session.isStale]) —
+ * keeps every word at full strength and says what it is three other ways, as
+ * the web and iOS cards do: the untinted surface and edge
+ * ([Theme.cardSurface]), "?" in place of its state's glyph ([StatusMark]), and
+ * "no update for 14m" where its time was ([MetaLine]). TalkBack hears "Coding,
+ * no update for 14 minutes".
  *
  * A session that reports a host gets a Focus footer: an explicit control —
  * never the card's tap, which is history — enabled only while that machine's
@@ -78,20 +81,26 @@ fun SessionCard(
     focus: FocusStatus? = null,
     onCommand: (CommandType) -> Unit = {},
 ) {
-    val statusColor = Theme.colorFor(session.status)
-    val stale = session.status.isActive && nowMillis - session.updatedAt > STALE_AFTER_MILLIS
+    val stale = session.isStale(nowMillis)
     val shape = RoundedCornerShape(16.dp)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .semantics(mergeDescendants = true) {}
-            // Only staleness dims a card now. `done` used to be dimmed to 0.55
-            // as well, from when it meant "finished, nothing to see". It means
-            // the agent handed back and is waiting on YOU — and it is the
-            // board's accent colour — so dimming it hid the one state this
-            // board most needs to surface.
-            .alpha(if (stale) 0.62f else 1f)
+            // Nothing dims. A stale card was drawn whole at 0.62 alpha, which
+            // took its message to 3.42:1 and its meta line to 2.61:1 against
+            // the ground — under AA on the card most worth a closer look, and
+            // one that is still a control — while TalkBack was told nothing.
+            // `done` was once dimmed too, from when it meant "finished,
+            // nothing to see"; it means the agent handed back and is waiting
+            // on YOU, the state this board most needs to surface.
+            //
+            // Crossing into stale is the board's own clock passing a line, not
+            // news from the agent, and it is drawn, never animated: the colours
+            // below are set, not animated to, and a card that goes stale keeps
+            // its place in the list.
+            //
             // No glow. The blocked card used to carry a 12dp coloured shadow;
             // a lit halo is the trading-terminal tell, and it is exactly wrong
             // in a dark room at 1am, which is when this board gets read. The
@@ -103,8 +112,11 @@ fun SessionCard(
             // device in dashboard UI and never reads as intentional, whatever
             // colour or corner radius it is given. A large tinted area also
             // reads from much further away than a 4dp sliver.
-            .background(Theme.cardSurface(session.status))
-            .border(1.dp, Theme.cardEdge(session.status), shape)
+            //
+            // Except on a stale card, drawn on the plain card and its plain
+            // edge: the board can no longer vouch for the state a tint claims.
+            .background(Theme.cardSurface(session.status, stale))
+            .border(1.dp, Theme.cardEdge(session.status, stale), shape)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -121,7 +133,7 @@ fun SessionCard(
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(8.dp))
-            StatusMark(status = session.status, color = statusColor)
+            StatusMark(session = session, stale = stale, nowMillis = nowMillis)
         }
 
         if (session.message.isNotEmpty()) {
@@ -134,7 +146,7 @@ fun SessionCard(
             )
         }
 
-        MetaLine(session = session, nowMillis = nowMillis, machines = machines)
+        MetaLine(session = session, nowMillis = nowMillis, machines = machines, stale = stale)
 
         session.host?.let { host ->
             FocusFooter(
@@ -159,21 +171,55 @@ fun SessionCard(
  * to say the same thing continuously. Motion on this board now means something
  * changed. The pill itself was a status badge of the kind the enterprise admin
  * panel is made of; the card's own tint does that job across a far larger area.
+ *
+ * A stale session keeps its last reading — the word, in its colour — and
+ * trades the glyph for a question: "? CODING", what the board last heard,
+ * which it can no longer vouch for. Not a clock, which is idle's glyph, nor an
+ * exclamation mark, which is blocked's. The "?" is drawn in the glyph's own
+ * 14dp box, at its trailing edge beside the word, so the mark is exactly as
+ * wide as it was: beside the name on a card, and beside the directory in the
+ * history header, nothing re-wraps or cuts differently when the clock crosses
+ * the line. TalkBack hears "Coding, no update for 14 minutes".
+ *
+ * The history screen draws this too, so the screen a card opens shows its "?".
  */
 @Composable
-private fun StatusMark(status: AgentStatus, color: Color) {
+internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
+    val status = session.status
+    val color = Theme.colorFor(status)
+    val said = if (stale) {
+        "${status.label}, no update for ${TimeFormat.spokenAge(session.updatedAt, nowMillis)}"
+    } else {
+        status.label
+    }
     Row(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
         // One node reading "Coding", not a glyph and a word in sequence.
-        modifier = Modifier.clearAndSetSemantics { contentDescription = status.label },
+        modifier = Modifier.clearAndSetSemantics { contentDescription = said },
     ) {
-        Icon(
-            imageVector = Theme.iconFor(status),
-            contentDescription = null,
-            tint = color,
-            modifier = Modifier.size(14.dp),
-        )
+        if (stale) {
+            // Material's "?" is a narrow glyph centred in its square: 6.54 to
+            // 17.46 of the 24 units, so at 14dp it ends 3.81dp short of the
+            // box's trailing edge, where the state glyphs end 1.17dp short
+            // (2 to 22: idle, coding, blocked, done) or 1.75dp (2.5 or 3 to
+            // 21: planning, testing). Moved 2.6dp it ends 1.21dp short and
+            // stands as far from the word as they do; the box, and so the
+            // row, keeps its width.
+            Icon(
+                imageVector = Icons.Outlined.QuestionMark,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(14.dp).offset(x = 2.6.dp),
+            )
+        } else {
+            Icon(
+                imageVector = Theme.iconFor(status),
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(14.dp),
+            )
+        }
         Text(
             text = status.label.uppercase(),
             style = TextStyle(
@@ -201,6 +247,14 @@ private fun StatusMark(status: AgentStatus, color: Color) {
  * wide — present to a screen reader, invisible to everyone else. A FlowRow
  * cannot fail that way: it takes a second line instead of taking it out of the
  * one item that can shrink.
+ *
+ * On a stale card the time is the news, so it says so: "no update for 14m", in
+ * the brighter secondary ink. The words outrank the machine and the directory:
+ * either of those is cut with an ellipsis when it is wider than a line, and
+ * the words never are. Where they do not fit a line of their own — the largest
+ * font scales on the narrowest windows — the plain "14m ago" stands in, still
+ * bright. TalkBack hears none of it here: it hears "no update for 14
+ * minutes" straight after the state ([StatusMark]).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -208,6 +262,7 @@ private fun MetaLine(
     session: Session,
     nowMillis: Long,
     machines: Map<String, MachinePresence>,
+    stale: Boolean,
 ) {
     val machine = session.host?.let { remember(it, machines) { FocusCopy.machineLabel(it, machines) } }
     val project = session.project.takeIf { it.isNotEmpty() && it != session.displayName }
@@ -252,14 +307,46 @@ private fun MetaLine(
             MetaFact("in $project")
         }
         MetaSeparator()
-        Text(
-            text = TimeFormat.relative(session.updatedAt, nowMillis),
-            // Tabular figures: this ticks in place on the board's clock, and
-            // proportional digits make the whole line twitch sideways each time.
-            style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
-            color = Theme.textTertiary,
-            maxLines = 1,
-        )
+        if (stale) {
+            FirstThatFits(Modifier.clearAndSetSemantics {}) {
+                MetaTime("no update for ${TimeFormat.age(session.updatedAt, nowMillis)}", Theme.textSecondary)
+                MetaTime(TimeFormat.relative(session.updatedAt, nowMillis), Theme.textSecondary)
+            }
+        } else {
+            MetaTime(TimeFormat.relative(session.updatedAt, nowMillis), Theme.textTertiary)
+        }
+    }
+}
+
+@Composable
+private fun MetaTime(text: String, color: Color) {
+    Text(
+        text = text,
+        // Tabular figures: this ticks in place on the board's clock, and
+        // proportional digits make the whole line twitch sideways each time.
+        style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
+        color = color,
+        maxLines = 1,
+    )
+}
+
+/**
+ * The first child that fits the width offered, else the last: the two-way
+ * ViewThatFits that Compose does not have. Each child is measured once, at its
+ * own full width, and only the one chosen is placed. In a FlowRow the width
+ * offered is a whole line, so a child that fits is moved to a line of its own
+ * rather than passed over.
+ */
+@Composable
+private fun FirstThatFits(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val natural = constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity)
+        val placeables = measurables.map { it.measure(natural) }
+        if (placeables.isEmpty()) return@Layout layout(constraints.minWidth, constraints.minHeight) {}
+        val chosen = placeables.firstOrNull { it.width <= constraints.maxWidth } ?: placeables.last()
+        layout(chosen.width.coerceIn(constraints.minWidth, constraints.maxWidth), chosen.height) {
+            chosen.placeRelative(0, 0)
+        }
     }
 }
 
