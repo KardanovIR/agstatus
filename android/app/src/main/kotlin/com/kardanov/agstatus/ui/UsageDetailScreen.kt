@@ -51,7 +51,9 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -117,6 +119,20 @@ fun UsageDetailScreen(
     val totalTokens = remember(tokensPerDay) { tokensPerDay.sum() }
     val maxTokens = remember(tokensPerDay) { max(1L, tokensPerDay.maxOrNull() ?: 0L) }
 
+    // What TalkBack hears in the chart's place, in the words VoiceOver and a
+    // web screen reader hear. A window goes by the name the board's own block
+    // gives it ("Weekly (all models)"), and one the board no longer reports
+    // keeps its id, as its key does.
+    val labels = remember(info) {
+        info?.windows.orEmpty().distinctBy { it.id }.associate { it.id to it.displayLabel }
+    }
+    val tokensSummary = remember(name, days, tokensPerDay) {
+        UsageDetail.tokensSummary(name, days, tokensPerDay)
+    }
+    val limitsSummary = remember(name, days, series, sampled, labels) {
+        UsageDetail.limitsSummary(name, days, series.map { it.windowId }, sampled, labels)
+    }
+
     Scaffold(
         modifier = modifier,
         containerColor = Theme.background,
@@ -174,11 +190,12 @@ fun UsageDetailScreen(
                     DetailCard {
                         ChartHeader(totalTokens = totalTokens, series = series, sampled = sampled)
                         TokensChart(
-                            name = name,
                             days = days,
                             tokensPerDay = tokensPerDay,
                             maxTokens = maxTokens,
                             sampled = sampled,
+                            tokensSummary = tokensSummary,
+                            limitsSummary = limitsSummary,
                             modifier = Modifier.padding(top = 6.dp),
                         )
                     }
@@ -251,7 +268,9 @@ private fun SectionTitle(text: String, modifier: Modifier = Modifier) {
         color = Theme.textSecondary,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = modifier,
+        // A heading, so TalkBack can move between the two cards as VoiceOver
+        // does on iOS and a screen reader does between the web's h3s.
+        modifier = modifier.semantics { heading() },
     )
 }
 
@@ -290,15 +309,18 @@ private fun ChartTitle(totalTokens: Long, modifier: Modifier = Modifier) {
     Row(modifier = modifier) {
         SectionTitle("TOKENS PER DAY", Modifier.alignByBaseline())
         // Weighted, so a cramped header trims the total rather than the label.
+        val total = UsageDetail.fmtTokens(totalTokens)
         Text(
-            text = " · ${UsageDetail.fmtTokens(totalTokens)} total",
+            text = " · $total total",
             fontSize = 11.sp,
             color = Theme.textTertiary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .alignByBaseline()
-                .weight(1f, fill = false),
+                .weight(1f, fill = false)
+                // Not the "·", which is layout; iOS says the same.
+                .clearAndSetSemantics { contentDescription = "$total tokens in total" },
         )
     }
 }
@@ -329,7 +351,9 @@ private fun ChartLegend(
         return
     }
     FlowRow(
-        modifier = modifier,
+        // The keys are for eyes. TalkBack hears every window named, with its
+        // readings, from the chart (TokensChart), as on iOS and the web.
+        modifier = modifier.clearAndSetSemantics { },
         horizontalArrangement = Arrangement.spacedBy(12.dp, alignment),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
@@ -428,15 +452,50 @@ private val PLOT_HEIGHT = 166.dp
  * Tokens per day as bars against the left axis, each recorded limit window as
  * a line against the right axis, on one shared 30-day scale. Hand-drawn on a
  * Canvas — the app carries no charting dependency.
+ *
+ * TalkBack has the two measures in the chart's place as two summaries, as
+ * VoiceOver has two charts on iOS: [tokensSummary] over the upper half and
+ * [limitsSummary] over the lower, so a swipe reads them in turn and a touch
+ * finds one. It used to hear one fixed sentence and none of the numbers.
  */
 @Composable
 private fun TokensChart(
-    name: String,
     days: List<String>,
     tokensPerDay: List<Long>,
     maxTokens: Long,
     sampled: List<List<Double?>>,
+    tokensSummary: String,
+    limitsSummary: String?,
     modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier.fillMaxWidth()) {
+        ChartCanvas(days, tokensPerDay, maxTokens, sampled)
+        Column(Modifier.matchParentSize()) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .semantics { contentDescription = tokensSummary },
+            )
+            if (limitsSummary != null) {
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .semantics { contentDescription = limitsSummary },
+                )
+            }
+        }
+    }
+}
+
+/** The chart as drawn. For eyes: TalkBack hears [TokensChart]'s summaries. */
+@Composable
+private fun ChartCanvas(
+    days: List<String>,
+    tokensPerDay: List<Long>,
+    maxTokens: Long,
+    sampled: List<List<Double?>>,
 ) {
     val measurer = rememberTextMeasurer()
     val density = LocalDensity.current
@@ -444,7 +503,6 @@ private fun TokensChart(
     val topLabel = remember(maxTokens) { UsageDetail.fmtTokens(maxTokens) }
     val barColor = Theme.usageTokenBar
     val gridColor = Theme.cardBorder
-    val description = "$name: tokens per day and recorded plan limits over ${days.size} days"
 
     // The plot grows at half the rate of the reader's text, as on iOS and the
     // web, and the space above and below it holds its labels at their size:
@@ -459,10 +517,9 @@ private fun TokensChart(
     val below = maxOf(20.dp, labelHeight / 2 + 3.dp + labelHeight + 1.dp)
 
     Canvas(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxWidth()
-            .height(above + PLOT_HEIGHT * growth + below)
-            .semantics { contentDescription = description },
+            .height(above + PLOT_HEIGHT * growth + below),
     ) {
         if (days.isEmpty()) return@Canvas
         // The insets are measured from the labels, so they fit at any text

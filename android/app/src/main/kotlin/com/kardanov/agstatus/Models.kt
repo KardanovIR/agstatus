@@ -18,6 +18,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 /**
@@ -510,6 +511,51 @@ object UsageDetail {
      */
     fun showTick(index: Int, lastIndex: Int): Boolean =
         index % 7 == 0 || (index == lastIndex && lastIndex % 7 > 2)
+
+    /**
+     * What TalkBack hears for the bars, as VoiceOver hears on iOS and a screen
+     * reader on the web, word for word: the total and the busiest day. Tokens
+     * and a plan limit's percentage do not convert (the fourth principle), so
+     * they are two summaries, never one scale for the ear either.
+     */
+    fun tokensSummary(name: String, days: List<String>, tokensPerDay: List<Long>): String {
+        val opening = "$name tokens per day over the last ${days.size} days"
+        val total = tokensPerDay.sum()
+        val busiest = tokensPerDay.indices.maxByOrNull { tokensPerDay[it] }
+        if (total <= 0L || busiest == null || busiest !in days.indices) return "$opening: none reported."
+        return "$opening. ${fmtTokens(total)} tokens in total; the busiest day, " +
+            "${dayLabel(days[busiest])}, ${fmtTokens(tokensPerDay[busiest])}."
+    }
+
+    /**
+     * What TalkBack hears for the lines: each window by the name the board's
+     * own block gives it ([labels], by id; one the board no longer reports
+     * keeps its id), its latest reading and its highest day, and since when
+     * the board has recorded it where that is inside the range: a line starts
+     * partway because a board only knows the limits it has seen. Null when no
+     * window has a reading.
+     */
+    fun limitsSummary(
+        name: String,
+        days: List<String>,
+        windowIds: List<String>,
+        sampled: List<List<Double?>>,
+        labels: Map<String, String>,
+    ): String? {
+        val readings = windowIds.indices.mapNotNull { index ->
+            val values = sampled.getOrNull(index) ?: return@mapNotNull null
+            val seen = values.filterNotNull()
+            if (seen.isEmpty()) return@mapNotNull null
+            val first = values.indexOfFirst { it != null }
+            val since = if (first > 0 && first in days.indices) ", since ${dayLabel(days[first])}" else ""
+            val window = windowIds[index]
+            "${labels[window] ?: window}$since: ${seen.last().roundToInt()}% at the latest reading, " +
+                "${seen.max().roundToInt()}% on the highest day."
+        }
+        if (readings.isEmpty()) return null
+        return (listOf("$name plan limit used, by day, over the last ${days.size} days.") + readings)
+            .joinToString(" ")
+    }
 
     /**
      * Whether a window has a single day's reading, on the first day the board

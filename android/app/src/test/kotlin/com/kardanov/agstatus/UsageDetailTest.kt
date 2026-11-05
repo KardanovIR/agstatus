@@ -323,6 +323,61 @@ class UsageDetailTest {
         assertFalse(UsageDetail.isSingleReading(listOf(null, null)))
     }
 
+    // MARK: - What TalkBack hears
+
+    @Test
+    fun tokensSummarySaysTheTotalAndTheBusiestDay() {
+        val days = UsageDetail.dayRange(4, noon) // 09-05 .. 09-08
+        assertEquals(
+            "Claude tokens per day over the last 4 days. 3.5M tokens in total; " +
+                "the busiest day, ${UsageDetail.dayLabel("2026-09-06")}, 3.0M.",
+            UsageDetail.tokensSummary("Claude", days, listOf(0L, 3_000_000L, 0L, 500_000L)),
+        )
+        assertEquals(
+            "Claude tokens per day over the last 4 days: none reported.",
+            UsageDetail.tokensSummary("Claude", days, listOf(0L, 0L, 0L, 0L)),
+        )
+    }
+
+    @Test
+    fun limitsSummaryNamesEachWindowWithItsReadings() {
+        // The web's and iOS's words. A window recorded from before the range
+        // began has no "since"; one the board no longer reports keeps its id;
+        // one with no reading yet is left out.
+        val days = UsageDetail.dayRange(4, noon) // 09-05 .. 09-08
+        val sampled = listOf(
+            listOf(10.0, 58.0, 58.0, 34.0),
+            listOf(20.0, 20.0, 20.0, 62.0),
+            listOf(null, null, 70.0, 41.0),
+            listOf(null, null, null, 33.4),
+            listOf(null, null, null, null),
+        )
+        val labels = mapOf(
+            "session" to "Current session",
+            "week" to "Weekly (all models)",
+            "week_fable" to "Weekly (Fable)",
+        )
+        assertEquals(
+            "Claude plan limit used, by day, over the last 4 days. " +
+                "Current session: 34% at the latest reading, 58% on the highest day. " +
+                "Weekly (all models): 62% at the latest reading, 62% on the highest day. " +
+                "Weekly (Fable), since ${UsageDetail.dayLabel("2026-09-07")}: " +
+                "41% at the latest reading, 70% on the highest day. " +
+                "week_retired, since ${UsageDetail.dayLabel("2026-09-08")}: " +
+                "33% at the latest reading, 33% on the highest day.",
+            UsageDetail.limitsSummary(
+                "Claude",
+                days,
+                listOf("session", "week", "week_fable", "week_retired", "week_new"),
+                sampled,
+                labels,
+            ),
+        )
+        assertNull(
+            UsageDetail.limitsSummary("Claude", days, listOf("week"), listOf(listOf(null, null, null, null)), labels),
+        )
+    }
+
     @Test
     fun marksGrowAtHalfTheRateOfTheText() {
         assertEquals(1f, UsageDetail.growth(1f), 0f)
