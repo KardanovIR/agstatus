@@ -295,19 +295,68 @@ enum Theme {
     // Token spend is not a state, so it takes the accent rather than borrowing
     // a status colour — an earlier version drew the chart in `planning` blue,
     // which made a chart of tokens look like a chart of planning.
+    //
+    // The plan-limit lines take the state colours in an order chosen so that
+    // the first three — Claude reports three windows — are as far apart as
+    // six state colours allow (in OKLab, with Machado 2009 for colour-blind
+    // vision). The order used to be done, coding, testing: blue and teal are
+    // 0.056 apart (0.044 for a deuteranope), so "week" and "week_fable" drew
+    // as one blue line. Blue and lilac are 0.125 apart, the closest pair now
+    // in the first three. Red, the alarm, comes last: a red limit line reads
+    // as a limit in trouble, and only a sixth window ever draws one.
+    //
+    // Colour is still not enough on its own (the second principle): blue and
+    // lilac collapse for a protanope (0.009), and blue and teal meet again from
+    // a fourth window on. So each line also has its own pattern, below, and
+    // blue's dashes sit beside lilac's dots and teal's dash-dot, where hue
+    // cannot tell them apart. The two patterns most alike — dashed and long
+    // dash, dash-dot and dash-dot-dot — fall on pairs that hue does separate.
+    //
+    // The web's chart (`LINE_COLORS` in public/app.js) still has the old
+    // order and no patterns, so for now a window can be teal there and
+    // lilac here.
 
     static let seriesColors: [Color] = [
         color(for: .done),
         color(for: .coding),
-        color(for: .testing),
         color(for: .planning),
+        color(for: .testing),
         color(for: .idle),
         color(for: .blocked),
     ]
 
     /// The nth series colour, wrapping around for boards with many windows.
     static func seriesColor(_ index: Int) -> Color {
-        seriesColors[((index % seriesColors.count) + seriesColors.count) % seriesColors.count]
+        seriesColors[wrapped(index, seriesColors.count)]
+    }
+
+    /// A limit line's width, in the chart and in its key.
+    static let seriesLineWidth: CGFloat = 1.75
+
+    /// Each limit line's pattern, paired with `seriesColors` by position, so
+    /// six windows give six lines that differ in shape as well as hue.
+    ///
+    /// Lengths are along the path. The round caps add half the line's width
+    /// to each end of a mark, so a mark reads 1.75pt longer than written and a
+    /// gap 1.75pt shorter, and a mark of zero length is a round dot. Every gap
+    /// reads 3–3.5pt, the least that stays open on a 1.75pt line.
+    private static let seriesDashes: [[CGFloat]] = [
+        [],                                   // solid
+        [4.25, 5.25],                         // dashed: 6pt marks
+        [0, 4.5],                             // dotted
+        [4.25, 4.75, 0, 4.75],                // dash, dot
+        [9.25, 5.25],                         // long dash: 11pt marks
+        [4.25, 4.75, 0, 4.75, 0, 4.75],       // dash, dot, dot
+    ]
+
+    /// How the nth limit line is stroked, in the chart and in its key.
+    static func seriesStroke(_ index: Int) -> StrokeStyle {
+        StrokeStyle(lineWidth: seriesLineWidth, lineCap: .round, lineJoin: .round,
+                    dash: seriesDashes[wrapped(index, seriesDashes.count)])
+    }
+
+    private static func wrapped(_ index: Int, _ count: Int) -> Int {
+        ((index % count) + count) % count
     }
 
     // MARK: - Space
