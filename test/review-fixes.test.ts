@@ -431,6 +431,98 @@ describe('board script: focus lifecycle', () => {
     expect(b.$('.card[data-id="b"]')!.className).toContain('status-coding');
   });
 
+  // A working card that hears nothing for ten minutes is stale. It used to be
+  // the whole card at 0.62 opacity and nothing else; now it keeps its words and
+  // says so — "?" for its mark, "no update for 14m" for its time, and to a
+  // screen reader "no update for 14 minutes" after its state. jsdom loads no
+  // stylesheet, so these hold the markup and the class that card.css draws
+  // from (pages.test.ts holds the CSS).
+  describe('a working card that goes quiet', () => {
+    const MIN = 60_000;
+
+    it('goes stale in place on the clock, with nothing repainted and nothing animated', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session({ host: null })]);
+      const card = b.$('.card') as HTMLElement;
+      const title = card.querySelector('.name-open');
+      // Both forms from the first paint, the live one showing.
+      expect(card.classList.contains('stale')).toBe(false);
+      expect(card.querySelector('.state-mark')).not.toBeNull();
+      expect(card.querySelector('.stale-mark')!.getAttribute('aria-hidden')).toBe('true');
+      expect(card.querySelector('.ts-ago')!.textContent).toBe('just now');
+
+      // Ten minutes is the line, not past it. Labels and the class are redrawn
+      // on the board's 15 s tick, so each step goes one tick past its minute.
+      await vi.advanceTimersByTimeAsync(10 * MIN);
+      expect(card.classList.contains('stale')).toBe(false);
+      await vi.advanceTimersByTimeAsync(4 * MIN + 15_000);
+      expect(card.classList.contains('stale')).toBe(true);
+
+      // The board's clock is not news: no state-change lift, and the card's
+      // markup was not rebuilt, only its time labels retimed.
+      expect(card.classList.contains('changed')).toBe(false);
+      expect(card.querySelector('.name-open')).toBe(title);
+      const words = card.querySelector('.ts-stale')!;
+      expect(words.textContent).toBe('no update for 14m');
+      expect(words.getAttribute('aria-hidden')).toBe('true');
+      // The short form the CSS falls back to on a line too narrow for the words.
+      expect(card.querySelector('.ts-ago')!.textContent).toBe('14m ago');
+
+      // Heard straight after the state, with its units in words.
+      const row = card.querySelector('.card-state-row')!;
+      expect(row.querySelector('.badge')!.textContent).toBe('coding');
+      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
+      expect(row.querySelector('.stale-said')!.classList.contains('sr-only')).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(47 * MIN);
+      expect(words.textContent).toBe('no update for 1h');
+      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 1 hour');
+    });
+
+    it('is stale from its first paint when it arrives already quiet', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session({ host: null, status: 'testing', updatedAt: Date.now() - 25 * MIN })]);
+      const card = b.$('.card') as HTMLElement;
+      expect(card.classList.contains('stale')).toBe(true);
+      expect(card.querySelector('.ts-stale')!.textContent).toBe('no update for 25m');
+    });
+
+    it('is drawn fresh, not as a change of state, when its agent speaks again', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [session({ host: null, updatedAt: Date.now() - 14 * MIN })]);
+      const card = b.$('.card') as HTMLElement;
+      expect(card.classList.contains('stale')).toBe(true);
+
+      b.emit('session', session({ host: null, message: 'editing src/store.ts' }));
+      expect(b.$('.card')).toBe(card);
+      expect(card.classList.contains('stale')).toBe(false);
+      expect(card.classList.contains('changed')).toBe(false);
+      expect(card.querySelector('.ts-ago')!.textContent).toBe('just now');
+
+      // A new state is still a change, stale or not.
+      b.emit('session', session({ host: null, status: 'blocked', message: 'needs approval' }));
+      expect(card.classList.contains('changed')).toBe(true);
+    });
+
+    it('is only ever a working card: idle, blocked and done carry no stale form', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      const hourAgo = Date.now() - 60 * MIN;
+      b.emit('snapshot', ['idle', 'blocked', 'done'].map((status, i) =>
+        session({ id: `s${i}`, status, host: null, updatedAt: hourAgo })));
+      const cards = b.$$('.card');
+      expect(cards).toHaveLength(3);
+      for (const card of cards) {
+        expect(card.classList.contains('stale')).toBe(false);
+        expect(card.querySelector('.stale-mark, .ts-stale, .stale-said')).toBeNull();
+        expect(card.querySelector('.ts')!.textContent).toBe('1h ago');
+      }
+    });
+  });
+
   // The web board served no session timeline at all: the server has had
   // /api/sessions/:id/history since 1.2 and iOS has rendered it since, but a
   // click on a web card matched only [data-dismiss] and [data-focus] and fell

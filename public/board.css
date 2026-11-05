@@ -220,13 +220,24 @@ body {
   animation: card-in var(--d-slow) var(--ease) both;
 }
 
-/* A state change earns one brief lift of the card's own edge. */
+/* A state change earns one brief lift of the card's own edge, and its surface
+ * crosses to the new tint instead of jumping.
+ *
+ * Only a state change. The transition used to sit on .card itself, so anything
+ * that moved the surface was drawn as news — and a stale card's surface moves
+ * on the board's own clock (card.css, "Stale"). `transition: none` on
+ * .card.stale would not have been enough: whether a transition runs is decided
+ * by the style after the change, so taking .stale off when the agent spoke
+ * again would still have faded the tint back in. Here, a stale card that hears
+ * from its agent in the same state is simply drawn fresh, as on iOS; one that
+ * hears a new state gets this, like any other change of state. */
 @keyframes state-change {
   50% { border-color: var(--state); }
 }
 
 .card.changed {
   animation: state-change 900ms var(--ease);
+  transition: border-color var(--d-mid) var(--ease), background var(--d-mid) var(--ease);
 }
 
 @media (prefers-reduced-motion: reduce) {

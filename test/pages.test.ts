@@ -141,6 +141,44 @@ describe('static pages', () => {
     });
   });
 
+  // A stale card was the whole card at 0.62 opacity: over the ground its
+  // message measured 3.42:1 and its meta line 2.61:1, under AA on a card that
+  // is still a control. The board-script tests see the class but jsdom draws
+  // nothing, so this holds the stylesheets to what the class must draw.
+  describe('a stale card keeps its words and moves on no clock', () => {
+    const read = (file: string) => fs.readFileSync(path.resolve(__dirname, '..', 'public', file), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');   // comments name the old fade; only rules count
+    const card = read('card.css');
+    const board = read('board.css');
+    const rule = (css: string, selector: string) => {
+      const m = new RegExp(`\\n${selector.replace(/\./g, '\\.')} \\{([^}]*)\\}`).exec(css);
+      if (!m) throw new Error(`no rule for ${selector}`);
+      return m[1];
+    };
+
+    it('fades nothing', () => {
+      let rules = 0;
+      for (const css of [card, board]) {
+        for (const m of css.matchAll(/([^{}]*\.stale[^{}]*)\{([^}]*)\}/g)) {
+          rules += 1;
+          expect(m[2], `${m[1].trim()} must not fade`).not.toMatch(/opacity|filter/);
+        }
+      }
+      expect(rules).toBeGreaterThan(0);
+    });
+
+    it('is drawn on the plain card surface and the plain edge', () => {
+      const r = rule(card, '.card.stale');
+      expect(r).toMatch(/background:\s*var\(--ink-900\)/);
+      expect(r).toMatch(/border-color:\s*var\(--ink-800\)/);
+    });
+
+    it('moves its surface only for a change of state, never for the clock', () => {
+      expect(rule(card, '.card')).not.toMatch(/transition/);
+      expect(rule(board, '.card.changed')).toMatch(/transition:[^;]*background/);
+    });
+  });
+
   // The install one-liners are the documented way in, so both routes have to
   // work on a self-hosted board too — not only on the hosted instance.
   it('serves the install scripts in both modes', async () => {

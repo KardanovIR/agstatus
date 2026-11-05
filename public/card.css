@@ -42,7 +42,8 @@
   background: color-mix(in oklab, var(--ink-900) 90%, var(--state));
   border: 1px solid color-mix(in oklab, var(--ink-800) 62%, var(--state));
   border-radius: var(--r-lg);
-  transition: border-color var(--d-mid) var(--ease), background var(--d-mid) var(--ease);
+  /* No transition here: the surface moves when the state changes, and that
+   * transition lives with the change itself, on board.css's .card.changed. */
 }
 
 .card.status-idle { --state: var(--st-idle); }
@@ -60,19 +61,17 @@
   border-color: var(--state-line);
 }
 
-.card.stale { opacity: 0.62; }
+/* A stale card is drawn untinted, says "?" for its mark and "no update for 14m"
+ * for its time. All of it is under "Stale" below, after the rules it overrides. */
 
 /* More contrast (see tokens.css). Blocked's edge goes from 42% of the state
- * colour to 70%; the other edges are mixes of --ink-800 and follow it there.
- *
- * A stale card still dims, but only as far as its words stay readable. At
- * 0.62 its meta line is 3.41:1 under this setting; 0.8 keeps every word at
- * AA, 4.80:1 at the least (--text-3 on a planning card). iOS no longer dims
- * a stale card at all, at any contrast (SessionCardView on claude/ios-a11y):
- * it untints it and says "no update for 14m" instead. */
+ * colour to 70%; the other edges are mixes of --ink-800 and follow it there,
+ * and so does a stale card's plain --ink-800 edge. A stale card no longer dims
+ * at any contrast ("Stale" below), so it needs nothing of its own here: the
+ * 0.8 it took under this setting was only ever there to soften the 0.62 fade
+ * that is gone. */
 @media (prefers-contrast: more) {
   .card { --state-line: oklch(from var(--state) l c h / 0.70); }
-  .card.stale { opacity: 0.8; }
 }
 
 /* Name first and largest: it is how you know WHICH session you are looking at,
@@ -104,8 +103,12 @@
  * to carry state without colour. It did carry it, but it meant nothing on
  * sight: you had to learn the code. An icon does the same job legibly. Blocked
  * is the only one that is not a quiet outline, because it is the only state
- * that means a human is required. */
-.state-mark {
+ * that means a human is required.
+ *
+ * A stale card's "?" (marks.js STALE_MARK) is as tall, and only as wide as
+ * itself: see "Stale" below. */
+.state-mark,
+.stale-mark {
   flex: none;
   width: 15px;
   height: 15px;
@@ -266,6 +269,10 @@
   color: var(--text-3);
   font-size: var(--t-xs);
   min-width: 0;
+  /* Queried by a stale card's time, which falls back to its short form on a
+   * line too narrow for its words (under "Stale"). Inline-size only: the line
+   * takes the card's width, never its content's. */
+  container: meta / inline-size;
 }
 
 /* The machine, not the project.
@@ -317,6 +324,73 @@
 .tok {
   flex: none;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- Stale --------------------------------------------------------------
+ * A working card — planning, coding or testing — that has heard nothing for ten
+ * minutes (STALE_MS in app.js). Most often a dead agent or an interrupted turn,
+ * which fires no Stop hook; sometimes one very long tool call. The board cannot
+ * tell which, but it knows exactly how long it has heard nothing.
+ *
+ * It used to fade the whole card to 0.62 opacity. Over the ground that put the
+ * message at 3.42:1 and the meta line at 2.61:1, under AA on a card that is
+ * still a control, and a screen reader was told nothing. Now every word keeps
+ * its full strength and the card says what it is three other ways, as the iOS
+ * and Android cards do:
+ *   - the untinted surface and edge: the tinted mix above with the state's
+ *     share at 0%, because the board can no longer vouch for the state a tint
+ *     would claim. The faintest text on it, the meta line, is 5.47:1;
+ *   - "?" in place of the state's mark, at the name's edge. The word keeps the
+ *     state's colour: it is what the board last heard. The row is a line of its
+ *     own, so the word moving in by the glyph's spare width re-wraps nothing;
+ *   - "no update for 14m" where the time was, in the secondary ink.
+ * A screen reader hears ", no update for 14 minutes" after the state instead
+ * (app.js cardInner), with its units in words.
+ *
+ * Both forms of everything are in a working card's markup from its first paint,
+ * and this one class picks between them, so the clock crossing the line flips
+ * a class and repaints nothing. It is never animated, either way: the line is
+ * the board's own clock, not news (see .card.changed in board.css). */
+.card.stale {
+  background: var(--ink-900);
+  border-color: var(--ink-800);
+}
+
+.stale-mark,
+.ts-stale,
+.stale-said { display: none; }
+
+/* The 9-unit viewBox at the marks' 15px height: 8.44px. */
+.stale-mark {
+  width: auto;
+  aspect-ratio: 9 / 16;
+}
+
+.card.stale .state-mark { display: none; }
+.card.stale .stale-mark { display: block; }
+/* Visually hidden by .sr-only (board.css): this is only what is heard. */
+.card.stale .stale-said { display: inline; }
+
+/* The words outrank the machine and the directory: .ts never shrinks, so on a
+ * narrow card those two are what give way, never these. */
+.card.stale .ts-stale {
+  display: inline;
+  color: var(--text-2);
+}
+.card.stale .ts-ago { display: none; }
+
+/* Where the line is too narrow for the words even on a line of their own — the
+ * largest text sizes on the narrowest cards — the time says "14m ago" instead,
+ * still bright, rather than running out of the card. The widest the words get,
+ * "no update for 59m", measures 8.59em of the meta line's own size in Public
+ * Sans ("23h" is 8.26em); the em here is the container's, so the line scales
+ * with the text. On a 320px phone it takes about 250% text to reach it. */
+@container meta (width < 9em) {
+  .card.stale .ts-stale { display: none; }
+  .card.stale .ts-ago {
+    display: inline;
+    color: var(--text-2);
+  }
 }
 
 /* The agent behind the session. It was in the data all along and the card never

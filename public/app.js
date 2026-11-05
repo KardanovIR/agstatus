@@ -3,8 +3,12 @@
 
   const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'];
   const ACTIVE_STATUSES = new Set(['planning', 'coding', 'testing']);
-  // An active card gone quiet for this long is probably a dead agent
-  // (killed mid-turn, crashed machine) — stop pulsing and dim it.
+  // A working card that has heard nothing for this long is stale: most likely
+  // a dead agent — killed mid-turn, an interrupted turn (which fires no Stop
+  // hook), a machine gone to sleep — and sometimes one very long tool call. The
+  // board cannot tell which, but it knows exactly how long it has heard
+  // nothing, and the card says so (card.css, "Stale"). The iOS and Android
+  // cards keep the same rule.
   const STALE_MS = 10 * 60 * 1000;
 
   // Workspace-aware base path: on /w/<token> (or a sub-path), all API calls
@@ -46,6 +50,23 @@
     return `${Math.floor(s / 86400)}d ago`;
   };
 
+  /** relTime's span without "ago": "14m", "2h", "1d" — what a stale card's "no update for" is followed by. */
+  const age = (ts) => {
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 3600) return `${Math.max(1, Math.floor(s / 60))}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h`;
+    return `${Math.floor(s / 86400)}d`;
+  };
+
+  /** The same span in words, "14 minutes", for a screen reader: "14m" can be read as a length. */
+  const spokenAge = (ts) => {
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    const [n, unit] = s < 3600 ? [Math.max(1, Math.floor(s / 60)), 'minute']
+      : s < 86400 ? [Math.floor(s / 3600), 'hour']
+        : [Math.floor(s / 86400), 'day'];
+    return `${n} ${unit}${n === 1 ? '' : 's'}`;
+  };
+
   const fmtTokens = (n) => {
     if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
     if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
@@ -56,10 +77,15 @@
   /** A plan limit's reading as the board prints it: whole, or to a tenth where it has one. */
   const fmtPct = (pct) => `${pct % 1 ? pct.toFixed(1) : String(pct)}%`;
 
-  /** Every [data-ts] on the page, or inside one element, retimed. */
+  /**
+   * Every [data-ts] on the page, or inside one element, retimed: "14m ago", or
+   * with data-form="age" "14m", or with data-form="spoken" "14 minutes".
+   */
   function paintTimes(root) {
     (root || document).querySelectorAll('[data-ts]').forEach((el) => {
-      el.textContent = relTime(Number(el.dataset.ts));
+      const ts = Number(el.dataset.ts);
+      const form = el.dataset.form;
+      el.textContent = form === 'age' ? age(ts) : form === 'spoken' ? spokenAge(ts) : relTime(ts);
     });
   }
 
@@ -72,7 +98,7 @@
   // The fallback is not decoration: if that script fails, every card still
   // renders and still names its state in the badge. It loses the second,
   // non-colour channel, which is worth a blank rather than a broken board.
-  const { STATE_MARK = {}, ICON = {} } = window.AGSTATUS_MARKS || {};
+  const { STATE_MARK = {}, STALE_MARK = '', ICON = {} } = window.AGSTATUS_MARKS || {};
 
   // Only a known status becomes a class or picks a mark. The server validates
   // the enum, but this is a string off the network going into classList.add,
@@ -273,7 +299,17 @@
     // Left empty on purpose: paintTimes fills it, here and on the 15s tick, so
     // the markup this card is compared against does not change every minute
     // purely because a label aged.
-    facts.push(`<span class="ts" data-ts="${s.updatedAt}"></span>`);
+    //
+    // A working card also carries its stale form, "no update for 14m", which
+    // .card.stale shows in place of the time (card.css, "Stale"): both are here
+    // from the first paint, so the clock crossing the line flips a class and
+    // repaints nothing. The words are hidden from a screen reader, which hears
+    // them in words straight after the state instead (cardInner).
+    const ts = Number(s.updatedAt);
+    facts.push(ACTIVE_STATUSES.has(s.status)
+      ? `<span class="ts"><span class="ts-stale" aria-hidden="true">no update for <span data-ts="${ts}" data-form="age"></span></span>`
+        + `<span class="ts-ago" data-ts="${ts}"></span></span>`
+      : `<span class="ts" data-ts="${ts}"></span>`);
     // Absent, not zero, when nothing was reported — a card must never claim a
     // session spent nothing. These are tokens the agent's own logs attribute to
     // it, and they are NOT a share of a plan limit: the two measures do not
@@ -286,10 +322,21 @@
       + '</div>';
   }
 
+  // On a working card, what a screen reader hears straight after the state once
+  // the card is stale: "coding, no update for 14 minutes", the units in words.
+  // Hidden from everyone until .card.stale shows it (card.css), and then only to
+  // the accessibility tree (.sr-only); the eye reads the "?" and the meta line.
+  const staleSaid = (s) => `<span class="stale-said sr-only">, no update for <span data-ts="${
+    Number(s.updatedAt)}" data-form="spoken"></span></span>`;
+
   // The name is first and largest — it is how you know WHICH session this is,
   // and the state only matters once you have found the right card. They were on
   // one line before, competing for width, and the name was what truncated.
+  //
+  // A working card's state row carries a "?" mark beside its state's own, for
+  // when it goes stale; .card.stale swaps one for the other.
   function cardInner(s) {
+    const working = ACTIVE_STATUSES.has(s.status);
     return `<div class="card-head">
         <div class="card-title-row">
           <button class="name-open" type="button" data-open="${escape(s.id)}"
@@ -298,7 +345,8 @@
             ><span class="name-more" aria-hidden="true">›</span></button>
           <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
         </div>
-        <div class="card-state-row">${stateMark(s.status)}<span class="badge">${escape(s.status)}</span></div>
+        <div class="card-state-row">${stateMark(s.status)}${working ? STALE_MARK : ''}<span class="badge">${
+          escape(s.status)}</span>${working ? staleSaid(s) : ''}</div>
       </div>${
         s.message ? `<p class="message">${escape(s.message)}</p>` : ''
       }${cardMeta(s)}${renderFocus(s)}`;
@@ -874,7 +922,9 @@
 
   setInterval(() => {
     paintTimes();
-    // Active cards cross the staleness threshold without any new event.
+    // Active cards cross the staleness threshold without any new event. The
+    // class is the whole of it: everything a stale card shows is already in its
+    // markup, and painted just above.
     document.querySelectorAll('.card[data-active-since]').forEach((el) => {
       el.classList.toggle('stale', Date.now() - Number(el.dataset.activeSince) > STALE_MS);
     });

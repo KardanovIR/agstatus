@@ -31,8 +31,8 @@
   // board is self-hosted by other people, and redistributing someone's
   // trademark inside it is a different thing from naming their tool.
 
-  const stroked = (cls, body) =>
-    `<svg class="${cls}" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"`
+  const stroked = (cls, body, box = '0 0 16 16') =>
+    `<svg class="${cls}" viewBox="${box}" aria-hidden="true" fill="none" stroke="currentColor"`
     + ` stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 
   // A filled disc with the glyph punched out of it. evenodd counts crossings,
@@ -59,6 +59,24 @@
       `<path d="${DISC}M8.9 4.35v4.8a.9.9 0 0 1-1.8 0V4.35a.9.9 0 0 1 1.8 0ZM8 12.3a1.05 1.05 0 1 1 0-2.1 1.05 1.05 0 0 1 0 2.1Z"/>`),
     done: stroked('state-mark', '<circle cx="8" cy="8" r="6"/><path d="M5.3 8.2 7.2 10.1 10.8 5.9"/>'),
   };
+
+  // A stale card's mark, in place of its state's: a working card that has
+  // heard nothing for ten minutes (STALE_MS in app.js) keeps the word the board
+  // last heard and trades the glyph for a question, because the board can no
+  // longer vouch for it. iOS draws SF Symbols' `questionmark` there.
+  //
+  // Not a clock, which is idle's mark, and not an exclamation mark, which is
+  // blocked's. A quiet outline like the four that need nothing from you, on
+  // the same grid and as tall, but only as wide as itself (9 of the 16 units,
+  // with the bearing the others keep at their edges). The state row is a line
+  // of its own under the name, so nothing beside the mark can re-wrap, and a
+  // "?" centred in a 16-unit box stood three pixels in from the edge the name
+  // starts at, with a wider gap before its word than any other mark has. iOS's
+  // stacked card makes the same call: the "?" replaces the glyph rather than
+  // keeping its room.
+  const STALE_MARK = stroked('stale-mark',
+    '<path d="M5.5 5.75a2.5 2.5 0 1 1 4.415 1.607c-.643.766-1.915 1.193-1.915 2.243v.3"/>'
+    + '<circle cx="8" cy="12.75" r="1" fill="currentColor" stroke="none"/>', '3.5 0 9 16');
 
   const ICON = {
     claude: stroked('', '<path d="M8 2.4v11.2M3.15 5.2l9.7 5.6M3.15 10.8l9.7-5.6"/>'),
@@ -91,5 +109,5 @@
       + '<path d="M7.1 8.9 13.6 2.4M11.3 4.7l1.5 1.5M12.7 3.3l1.5 1.5"/>'),
   };
 
-  window.AGSTATUS_MARKS = { STATE_MARK, ICON, TAG };
+  window.AGSTATUS_MARKS = { STATE_MARK, STALE_MARK, ICON, TAG };
 })();
