@@ -186,8 +186,13 @@ struct SessionCardView: View {
         .transaction(value: stale) { $0.animation = nil }
     }
 
-    private func isStale(at now: Date) -> Bool {
-        session.status.isActive && now.timeIntervalSince(session.updatedDate) > Self.staleAfter
+    private func isStale(at now: Date) -> Bool { Self.isStale(session, at: now) }
+
+    /// The one stale rule, which the card and the history it opens both
+    /// keep, so that the screen a stale card opens does not put back the
+    /// tint the card has taken off, and shows the same "?".
+    static func isStale(_ session: Session, at now: Date) -> Bool {
+        session.status.isActive && now.timeIntervalSince(session.updatedDate) > staleAfter
     }
 
     /// Name, message and metadata — everything the card says, and the only part
@@ -1155,6 +1160,10 @@ struct SessionHistoryView: View {
 
     @State private var events: [HistoryEvent] = []
     @State private var loaded = false
+    /// How many answers have been asked for, and which of them is on screen
+    /// (`load`).
+    @State private var asked = 0
+    @State private var shown = 0
     /// The name the screen opened with, kept if the session leaves the board
     /// while it is open. The title used to fall back to the raw session id,
     /// which VoiceOver reads a character at a time.
@@ -1178,15 +1187,24 @@ struct SessionHistoryView: View {
         .navigationTitle(session?.name ?? title ?? "Session history")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.background, for: .navigationBar)
-        .task {
-            title = session?.name
+        // Loaded on appear, and again on every update to this session (a new
+        // SSE event). Once the first answer is in, an update waits 300 ms and
+        // the next one replaces it, so a burst of events is one request.
+        // Answers are put in order (`load`): each event used to start a task
+        // of its own, and two in flight could land in either order.
+        .task(id: session?.updatedAt) {
+            if title == nil { title = session?.name }
+            // Gone from the board, and its history with it on the server, by
+            // design: what is on screen stays. Asked again, the server answers
+            // with nothing, and the timeline being read turned into "No
+            // history yet" under the session's name.
+            if loaded && session == nil { return }
+            if loaded {
+                do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            }
             await load()
         }
         .onChange(of: session?.name) { _, name in if let name { title = name } }
-        // Live: any update to this session (new SSE event) refreshes the list.
-        .onChange(of: session?.updatedAt) {
-            Task { await load() }
-        }
         .refreshable { await load() }
     }
 
@@ -1202,9 +1220,18 @@ struct SessionHistoryView: View {
             loaded = true
             return
         }
-        if let fetched = try? await AgStatusAPI.history(of: sessionId, for: board) {
-            events = fetched
-        }
+        asked += 1
+        let answer = asked
+        // Not cancelled with the task that asked for it. A session that posts
+        // faster than one round trip — parallel tool calls, a slow tunnel —
+        // would cancel every request before its answer came, and the screen
+        // would stay blank for as long as the burst lasted.
+        let fetched = await Task { try? await AgStatusAPI.history(of: sessionId, for: board) }.value
+        // An answer older than the one on screen is dropped, never laid over
+        // it. The pull to refresh is ordered the same way.
+        guard answer > shown else { return }
+        shown = answer
+        if let fetched { events = fetched }
         loaded = true
     }
 
@@ -1234,25 +1261,99 @@ struct SessionHistoryView: View {
         .motion(.snappy, value: events)
     }
 
+    /// The state the session is in, drawn as the card that was tapped to get
+    /// here draws it, and where it works, in the outlined box Android's
+    /// history draws.
+    ///
+    /// It wore a pill: the state's word on the state's colour at 16%, with a
+    /// 35% border, beside a filled chip. That is the status badge of the admin
+    /// panels this board is not, it said what the row under it says, and on a
+    /// stale session it put back the tint the card had taken off. Now it is
+    /// the card's own badge — glyph and word in the state's colour, "?" for
+    /// the glyph once the board can no longer vouch for it.
+    ///
+    /// One element, so VoiceOver does not open the screen on a bare folder
+    /// name and then a bare word.
+    ///
+    /// One line while the box and the badge fit beside each other. Where they
+    /// do not, the badge takes a line of its own above the box, as a stacked
+    /// card puts its state first: squeezed beside the box its word broke in
+    /// two, "COD-ING" at AX4 on an SE.
     private func headerRow(_ session: Session) -> some View {
-        HStack(spacing: 10) {
-            if !session.project.isEmpty {
-                Text(session.project)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(Theme.textSecondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Theme.cardBorder))
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let stale = SessionCardView.isStale(session, at: context.date)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.Space.sm) {
+                    projectBox(session)
+                    Spacer(minLength: 0)
+                    headerBadge(session, stale: stale, keepsGlyphWidth: true)
+                }
+                VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                    headerBadge(session, stale: stale, keepsGlyphWidth: false)
+                    projectBox(session)
+                }
             }
-            Spacer()
-            Text(session.status.label)
-                .font(.system(.caption, design: .rounded).weight(.semibold))
-                .foregroundStyle(Theme.color(for: session.status))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(Theme.color(for: session.status).opacity(0.16)))
-                .overlay(Capsule().strokeBorder(Theme.color(for: session.status).opacity(0.35)))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(headerLabel(session, stale: stale, now: context.date))
         }
+    }
+
+    /// The directory, outlined. A long one wraps inside its box rather than
+    /// being cut: it is the one place the screen says where the session works.
+    @ViewBuilder
+    private func projectBox(_ session: Session) -> some View {
+        if !session.project.isEmpty {
+            Text(session.project)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.sm, style: .continuous)
+                        .strokeBorder(Theme.cardBorder)
+                )
+        }
+    }
+
+    /// The card's badge: glyph and word in the state's colour, "?" for the
+    /// glyph once the board can no longer vouch for the state. One word,
+    /// a little smaller if it must be, never broken.
+    ///
+    /// Beside the box the "?" is drawn in the glyph's own room, as the card's
+    /// rail draws it: it is about 10pt narrower than the coding glyph, and the
+    /// header chose between one line and two by that width, so crossing into
+    /// stale moved the whole timeline 22pt. On a line of its own it replaces
+    /// the glyph, as on a stacked card.
+    private func headerBadge(_ session: Session, stale: Bool, keepsGlyphWidth: Bool) -> some View {
+        HStack(spacing: 3) {
+            Group {
+                if stale && !keepsGlyphWidth {
+                    Image(systemName: "questionmark")
+                } else {
+                    Image(systemName: Theme.symbol(for: session.status))
+                        .opacity(stale ? 0 : 1)
+                        .overlay(alignment: .trailing) {
+                            if stale { Image(systemName: "questionmark") }
+                        }
+                }
+            }
+            Text(session.status.label.uppercased())
+                .kerning(0.5)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(Theme.color(for: session.status))
+    }
+
+    /// "Directory acme-api. Coding", and on a stale session "Coding, no
+    /// update for 14 minutes", as the card says it.
+    private func headerLabel(_ session: Session, stale: Bool, now: Date) -> String {
+        var state = session.status.label
+        if stale {
+            state += ", no update for \(SessionCardView.spokenAge(of: session.updatedDate, at: now))"
+        }
+        return session.project.isEmpty ? state : "Directory \(session.project). \(state)"
     }
 
     private var emptyState: some View {
@@ -1275,7 +1376,6 @@ struct SessionHistoryView: View {
 // MARK: - HistoryRow
 
 private struct HistoryRow: View {
-    @Environment(\.dynamicTypeSize) private var typeSize
     /// The line above the dot, grown with the status beside it so the dot
     /// stays level with its word: fixed at 10pt it floated above the word at
     /// the accessibility sizes, in the gap between two rows.
@@ -1336,10 +1436,14 @@ private struct HistoryRow: View {
                     Text(event.message)
                         .font(.subheadline)
                         .foregroundStyle(isFirst ? Theme.textPrimary : Theme.textSecondary)
-                        // The history is where a message is read whole:
-                        // three lines hold most at the standard sizes, and at
-                        // the accessibility sizes it takes the lines it needs.
-                        .lineLimit(typeSize.isAccessibilitySize ? nil : 3)
+                        // The history is where a message is read whole, so it
+                        // takes the lines it needs. Three held most at the
+                        // default size, but not the hook's 120-character
+                        // prompts from xL on an SE or from xxL on a 6.1"
+                        // phone: the larger the text, the less of the message
+                        // there was, on the screen the card sends you to for
+                        // the rest of it.
+                        .lineLimit(nil)
                 }
             }
             .padding(.vertical, 10)
@@ -1348,10 +1452,21 @@ private struct HistoryRow: View {
         .accessibilityLabel([event.status.label, event.message, timeText].filter { !$0.isEmpty }.joined(separator: ", "))
     }
 
+    /// The state's glyph and its word. The row carried its state in the dot
+    /// and in the word's colour, two carriers that are both hue; the glyph is
+    /// the card's own, as the web's and Android's timelines draw it. Inline
+    /// in the text, so it sits on the word's baseline and grows with it.
+    ///
+    /// One line, a little smaller if it must be, as a stacked card's badge
+    /// is: with Bold Text at AX5 in a 320pt window "Planning" and its glyph
+    /// come to 272pt of a 264pt column, and the glyph was left alone on a line
+    /// above its word.
     private var statusText: some View {
-        Text(event.status.label)
+        Text("\(Image(systemName: Theme.symbol(for: event.status))) \(event.status.label)")
             .font(.system(.subheadline, design: .rounded).weight(.semibold))
             .foregroundStyle(color)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
     }
 
     private var clockText: some View {
