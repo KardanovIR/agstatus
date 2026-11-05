@@ -776,6 +776,7 @@
     es.addEventListener('usage', (e) => {
       usage = JSON.parse(e.data);
       renderUsage();
+      respeak();
     });
 
     es.onopen = () => {
@@ -928,16 +929,88 @@
   // as far as those logs go). The lines are the account-wide plan limit, which
   // only exists from the moment a board starts recording it. They correlate but
   // do not convert: a plan limit weights models and cache reads differently.
+  //
+  // iOS draws the same screen (UsageDetailView), and the two follow each other
+  // closely: the same colours in the same order, the same patterns, the same
+  // keys, the same words for a screen reader. A window drawn teal here and
+  // lilac there is the drift the shared palette exists to prevent.
 
   const DETAIL_DAYS = 30;
-  // Tokens-and-limits in the palette's own terms. These were six hand-typed
-  // hex literals — the same drift the OKLCH move exists to prevent — and they
-  // were the old Tailwind-ish set, so the chart kept the look the board left.
-  // Same order as Theme.seriesColors on iOS.
+
+  // The plan-limit lines take the state colours, in the palette's own terms
+  // (they were six hand-typed hex literals once, the old Tailwind-ish set), in
+  // Theme.seriesColors' order: done, coding, planning, testing, idle, blocked.
+  // The first three are what Claude reports, and they are as far apart as six
+  // state colours allow; red, the alarm, comes last, because a red limit line
+  // reads as a limit in trouble and only a sixth window draws one.
+  //
+  // The order used to be done, coding, testing. Blue and teal are 0.056 apart
+  // in OKLab (0.044 for a deuteranope), so "week" and "week_fable" drew as one
+  // blue line. Blue and lilac, second and third now, are 0.125 apart. All of
+  // these are measured on the colours as drawn, 8-bit sRGB, with Machado 2009
+  // for colour-blind vision.
   const LINE_COLORS = [
-    'var(--st-done)', 'var(--st-coding)', 'var(--st-testing)',
-    'var(--st-planning)', 'var(--st-idle)', 'var(--st-blocked)',
+    'var(--st-done)', 'var(--st-coding)', 'var(--st-planning)',
+    'var(--st-testing)', 'var(--st-idle)', 'var(--st-blocked)',
   ];
+
+  // Hue is still not enough on its own (the second principle): blue and lilac
+  // collapse for a protanope (0.009), and blue and teal meet again from a
+  // fourth window on. So each line has its own pattern too, paired with its
+  // colour by position as Theme.seriesStroke pairs them: solid, dashed,
+  // dotted, dash-dot, long dash, dash-dot-dot. The two most alike, dashed and
+  // long dash or dash-dot and dash-dot-dot, fall on colours that hue does
+  // tell apart.
+  //
+  // Lengths run along the path, in px, and the chart draws one px to the px,
+  // so these are the marks iOS draws in points. The round caps add half the
+  // line's width to each end of a mark: a mark reads 1.75 px longer than
+  // written and a gap 1.75 px shorter, and a mark of zero length is a round
+  // dot. Every gap reads 3 to 3.5 px, the least that stays open on this line.
+  const LINE_WIDTH = 1.75;
+  const LINE_DASHES = [
+    [],                               // solid
+    [4.25, 5.25],                     // dashed: 6 px marks
+    [0, 4.5],                         // dotted
+    [4.25, 4.75, 0, 4.75],            // dash, dot
+    [9.25, 5.25],                     // long dash: 11 px marks
+    [4.25, 4.75, 0, 4.75, 0, 4.75],   // dash, dot, dot
+  ];
+
+  /** The nth limit line's colour and pattern, in the chart and in its key. */
+  const lineStyle = (i) => {
+    const dash = LINE_DASHES[i % LINE_DASHES.length];
+    return `stroke:${LINE_COLORS[i % LINE_COLORS.length]}`
+      + (dash.length ? `;stroke-dasharray:${dash.join(' ')}` : '');
+  };
+
+  /**
+   * A limit line's key: a sample of the line, drawn as the chart draws it, so
+   * key and line match by shape as well as by hue. It holds as many whole
+   * marks as fit, so no key ends in a stub that reads as another pattern — a
+   * long dash cut short is a dash. Theme's SeriesSwatch, mark for mark.
+   */
+  const KEY_W = 26;
+  const KEY_H = 6;
+  function keySample(i) {
+    const dash = LINE_DASHES[i % LINE_DASHES.length];
+    let length = KEY_W;                 // as drawn, caps included
+    if (dash.length) {
+      length = LINE_WIDTH;
+      for (let step = 0, along = 0; step < 64; step++) {
+        const segment = dash[step % dash.length];
+        if (step % 2 === 0) {
+          if (along + segment + LINE_WIDTH > KEY_W) break;
+          length = along + segment + LINE_WIDTH;
+        }
+        along += segment;
+      }
+    }
+    const x1 = (KEY_W - length) / 2 + LINE_WIDTH / 2;
+    return `<svg class="dv-swatch" width="${KEY_W}" height="${KEY_H}" viewBox="0 0 ${KEY_W} ${KEY_H}">`
+      + `<line class="dv-line" x1="${x1}" x2="${x1 + length - LINE_WIDTH}" y1="${KEY_H / 2}"`
+      + ` y2="${KEY_H / 2}" style="${lineStyle(i)}" /></svg>`;
+  }
 
   const dayLabel = (day) => {
     const d = new Date(`${day}T00:00:00Z`);
@@ -966,7 +1039,174 @@
     });
   }
 
+  // ---- The chart, drawn at its own size -------------------------------------
+  //
+  // One px to the px, and drawn again whenever its width changes. It was a
+  // fixed 720×220 viewBox scaled by CSS, which on a phone, in a 325 px card,
+  // drew everything at 0.45: the axis labels at 4.5 px, the lines under a pixel
+  // wide and the plot 81 px tall — and no one dash length can read the same
+  // there and on a monitor, where the same viewBox drew at 1.31. Drawn at its
+  // size, its labels are the board's 11 px tick type and its patterns the same
+  // marks everywhere, as iOS's Canvas draws them in points.
+
+  const GRID_PCTS = [0, 25, 50, 75, 100];
+
+  // The usage detail on screen, if one is: what it draws, and the observer
+  // that draws it again at a new width.
+  let shown = null;
+
+  /** Forgets the chart on screen, which is leaving or being replaced. */
+  function stopChart() {
+    if (shown && shown.observer) shown.observer.disconnect();
+    shown = null;
+  }
+
+  let measurer;
+  /** A label's width as drawn in `font`; erring wide where nothing can measure. */
+  function textWidth(text, font, size) {
+    if (measurer === undefined) measurer = document.createElement('canvas').getContext('2d');
+    if (!measurer) return text.length * size * 0.6;
+    measurer.font = font;
+    return measurer.measureText(text).width;
+  }
+
+  /** `model` as an SVG `width` px wide, its type taken from `style`. */
+  function chartMarkup(model, width, style) {
+    const { days, tokens, maxTokens, series } = model;
+    const size = parseFloat(style.fontSize) || 11;
+    const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const measure = (text) => textWidth(text, font, size);
+    const at = (n) => n.toFixed(1);
+    const line = Math.round(size * 1.2);   // a label's line: 13 px at 11 px
+
+    // Every label is measured before anything is placed, so the insets are
+    // what the reader's text size makes them. A date is centred under its day,
+    // and the end days sit near the plot's edges, so half a date has to fit
+    // beside the plot as well.
+    const topLabel = fmtTokens(maxTokens);
+    const dates = days.map(dayLabel);
+    const widestDate = Math.max(0, ...dates.map(measure));
+    const L = Math.ceil(Math.max(Math.max(measure(topLabel), measure('0')) + 8, widestDate / 2));
+    const R = Math.ceil(Math.max(Math.max(...GRID_PCTS.map((p) => measure(`${p}%`))) + 6, widestDate / 2));
+    const T = Math.ceil(line / 2) + 1;
+    const plotW = width - L - R;
+    if (plotW < 2) return '';
+    // A quarter of the width, which is what the old viewBox gave its plot, and
+    // never under the 150 px iOS gives its own. It grows at half the rate of
+    // the text, so the lines gain room as the labels do.
+    const plotH = Math.round(Math.max(150, width / 4) * (1 + (size / 11 - 1) / 2));
+    const bottom = T + plotH;
+    // Under the plot: half a label for "0%", a gap, and the dates.
+    const H = bottom + Math.ceil(line / 2) + 3 + line + 1;
+
+    // A day is a bar's width, at most 24 px however few the days, and the
+    // first and last days sit half a bar in from the plot's edges. Centred on
+    // the edges, as they were, half the last bar ran under "100%".
+    const last = days.length - 1;
+    const barW = Math.min(24, Math.max(2, (plotW / days.length) * 0.62));
+    const step = last > 0 ? (plotW - barW) / last : 0;
+    const x = (i) => (last === 0 ? L + plotW / 2 : L + barW / 2 + step * i);
+    const y = (pct) => bottom - (Math.min(100, Math.max(0, pct)) / 100) * plotH;
+
+    const grid = GRID_PCTS.map((p) => `
+      <line class="dv-grid" x1="${L}" x2="${width - R}" y1="${at(y(p))}" y2="${at(y(p))}" />
+      <text class="dv-axis" x="${width - R + 6}" y="${at(y(p))}" dy="0.35em">${p}%</text>`).join('');
+
+    const axis = `
+      <text class="dv-axis" x="${L - 8}" y="${T}" dy="0.35em" text-anchor="end">${escape(topLabel)}</text>
+      <text class="dv-axis" x="${L - 8}" y="${bottom}" dy="0.35em" text-anchor="end">0</text>`;
+
+    const bars = tokens.map((v, i) => {
+      if (!(v > 0)) return '';
+      const h = Math.max(1, (v / maxTokens) * plotH);
+      return `<rect class="dv-bar" x="${at(x(i) - barW / 2)}" y="${at(bottom - h)}" width="${at(barW)}"
+        height="${at(h)}" rx="1.5"><title>${escape(dates[i])}: ${escape(fmtTokens(v))} tokens</title></rect>`;
+    }).join('');
+
+    // One per limit window, over the bars, each in its own colour and pattern.
+    // Each is cased in the card's colour first, so it holds where it crosses a
+    // bar and passes visibly over the lines drawn before it.
+    const lines = series.map((s) => {
+      const points = [];
+      s.values.forEach((v, i) => { if (v !== null) points.push([at(x(i)), at(y(v))]); });
+      if (points.length === 0) return '';
+      if (points.length === 1) {
+        // A board that has only just started recording has one reading, and a
+        // path with a single moveto draws nothing at all: mark it as a point.
+        const [cx, cy] = points[0];
+        return `<circle class="dv-dot-case" cx="${cx}" cy="${cy}" r="3.75" />`
+          + `<circle cx="${cx}" cy="${cy}" r="2.5" style="fill:${LINE_COLORS[s.index % LINE_COLORS.length]}" />`;
+      }
+      const d = `M${points.map((p) => p.join(' ')).join('L')}`;
+      return `<path class="dv-case" d="${d}" /><path class="dv-line" d="${d}" style="${lineStyle(s.index)}" />`;
+    }).join('');
+
+    // Dates every seventh day, every fourteenth or more where a week's room no
+    // longer holds one, and the last day too when its date clears the one
+    // before it.
+    const room = widestDate + 10;
+    const every = step > 0 ? 7 * Math.max(1, Math.ceil(room / (7 * step))) : 1;
+    const ticks = [];
+    for (let i = 0; i <= last; i += every) ticks.push(i);
+    const final = ticks[ticks.length - 1];
+    if (final !== last && (last - final) * step >= room) ticks.push(last);
+    const dateY = at(H - 1 - line / 2);
+    const xTicks = ticks.map((i) => `
+      <text class="dv-axis" x="${at(x(i))}" y="${dateY}" dy="0.35em" text-anchor="middle">${escape(dates[i])}</text>`).join('');
+
+    return `<svg class="dv-chart" width="${width}" height="${H}" viewBox="0 0 ${width} ${H}" aria-hidden="true">
+      ${grid}${axis}${bars}${lines}${xTicks}
+    </svg>`;
+  }
+
+  /**
+   * What a screen reader has in the chart's place, as VoiceOver has on iOS:
+   * the two measures as two summaries, because tokens and a plan limit's
+   * percentage do not convert (the fourth principle) and are not put on one
+   * scale for the ear either. A window goes by the name the board's own block
+   * gives it, and one the board no longer reports keeps its id, as its key
+   * does.
+   */
+  function spokenMarkup(source, name, model) {
+    const { days, tokens, series } = model;
+    const labels = new Map(((usage.find((u) => u.source === source) || {}).windows || [])
+      .map((w) => [w.id, w.label || w.id]));
+    const total = tokens.reduce((a, b) => a + b, 0);
+    let busiest = 0;
+    tokens.forEach((v, i) => { if (v > tokens[busiest]) busiest = i; });
+    const tokensText = total > 0
+      ? `${name} tokens per day over the last ${days.length} days. ${fmtTokens(total)} tokens `
+        + `in total; the busiest day, ${dayLabel(days[busiest])}, ${fmtTokens(tokens[busiest])}.`
+      : `${name} tokens per day over the last ${days.length} days: none reported.`;
+    // Each window's latest reading and its highest day, and since when the
+    // board has recorded it where that is inside the range: a line starts
+    // partway because a board only knows the limits it has seen.
+    const readings = series.map((s) => {
+      const seen = s.values.filter((v) => v !== null);
+      if (seen.length === 0) return '';
+      const first = s.values.findIndex((v) => v !== null);
+      const since = first > 0 ? `, since ${dayLabel(days[first])}` : '';
+      return `<li>${escape(`${labels.get(s.windowId) || s.windowId}${since}: `
+        + `${Math.round(seen[seen.length - 1])}% at the latest reading, `
+        + `${Math.round(Math.max(...seen))}% on the highest day.`)}</li>`;
+    }).join('');
+    return `<p>${escape(tokensText)}</p>${readings ? `
+      <p>${escape(`${name} plan limit used, by day, over the last ${days.length} days.`)}</p>
+      <ul>${readings}</ul>` : ''}`;
+  }
+
+  /**
+   * Names the windows again once the board's usage frame is in. A detail
+   * opened straight from its address can draw before that frame lands, and
+   * would otherwise go on calling every window by its id.
+   */
+  function respeak() {
+    const el = shown && document.getElementById('dv-spoken');
+    if (el) paint(el, spokenMarkup(shown.source, shown.name, shown.model));
+  }
+
   function renderDetail(source, data) {
+    stopChart();
     const days = dayRange(data.days || DETAIL_DAYS);
     const name = SOURCE_NAMES[source] || source;
 
@@ -978,61 +1218,25 @@
       if (perDay.has(row.day)) perDay.set(row.day, perDay.get(row.day) + row.tokens);
       perProject.set(row.project, (perProject.get(row.project) || 0) + row.tokens);
     }
-    const series = (data.history || []).filter((h) => h.source === source);
-    const maxTokens = Math.max(1, ...perDay.values());
-    const totalTokens = [...perDay.values()].reduce((a, b) => a + b, 0);
+    const daily = days.map((d) => perDay.get(d));
+    const totalTokens = daily.reduce((a, b) => a + b, 0);
+    const model = {
+      days,
+      tokens: daily,
+      maxTokens: Math.max(1, ...daily),
+      series: (data.history || []).filter((h) => h.source === source)
+        .map((s, index) => ({ windowId: s.windowId, values: sampleSeries(s.points, days), index })),
+    };
 
-    // Geometry. The viewBox does the scaling; CSS only sets the drawn size.
-    const W = 720, H = 220, L = 44, R = 40, T = 14, B = 26;
-    const plotW = W - L - R, plotH = H - T - B;
-    const x = (i) => L + (days.length === 1 ? plotW / 2 : (i * plotW) / (days.length - 1));
-    const barW = Math.max(2, (plotW / days.length) * 0.62);
-
-    const bars = days.map((day, i) => {
-      const v = perDay.get(day) || 0;
-      const h = (v / maxTokens) * plotH;
-      return `<rect class="dv-bar" x="${(x(i) - barW / 2).toFixed(1)}" y="${(T + plotH - h).toFixed(1)}"
-        width="${barW.toFixed(1)}" height="${Math.max(0, h).toFixed(1)}" rx="1.5"
-        ><title>${escape(dayLabel(day))}: ${escape(fmtTokens(v))} tokens</title></rect>`;
-    }).join('');
-
-    const lines = series.map((s, si) => {
-      const vals = sampleSeries(s.points, days);
-      let d = '';
-      vals.forEach((v, i) => {
-        if (v === null) return;
-        const px = x(i), py = T + plotH - (Math.min(100, Math.max(0, v)) / 100) * plotH;
-        d += `${d === '' ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`;
-      });
-      const drawn = vals.filter((v) => v !== null).length;
-      if (drawn === 0) return '';
-      const color = LINE_COLORS[si % LINE_COLORS.length];
-      if (drawn === 1) {
-        // A board that has only just started recording has one reading; a path
-        // with a single moveto renders nothing at all, so mark it as a point.
-        const i = vals.findIndex((v) => v !== null);
-        const py = T + plotH - (Math.min(100, Math.max(0, vals[i])) / 100) * plotH;
-        return `<circle class="dv-dot" cx="${x(i).toFixed(1)}" cy="${py.toFixed(1)}" r="2.5" fill="${color}" />`;
-      }
-      return `<path class="dv-line" d="${d}" stroke="${color}" />`;
-    }).join('');
-
-    const legend = series.map((s, si) => `
-      <span class="dv-key">
-        <i style="background:${LINE_COLORS[si % LINE_COLORS.length]}"></i>${escape(s.windowId)}
-      </span>`).join('');
-
-    const gridLines = [0, 25, 50, 75, 100].map((pct) => {
-      const py = T + plotH - (pct / 100) * plotH;
-      return `<line class="dv-grid" x1="${L}" x2="${W - R}" y1="${py.toFixed(1)}" y2="${py.toFixed(1)}" />
-              <text class="dv-axis dv-axis-r" x="${W - R + 6}" y="${(py + 3.5).toFixed(1)}">${pct}%</text>`;
-    }).join('');
-
-    const lastTick = days.length - 1;
-    const showTick = (i) => i % 7 === 0 || (i === lastTick && lastTick % 7 > 2);
-    const xTicks = days.map((day, i) => showTick(i)
-      ? `<text class="dv-axis" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="middle">${escape(dayLabel(day))}</text>`
-      : '').join('');
+    // The keys wrap as words do: one row where they fit, a new row where the
+    // next does not, and an id never breaks while it fits a row of its own.
+    // They are for eyes. A screen reader hears every window named, with its
+    // readings, from the chart's own text below.
+    const legend = model.series.length === 0
+      ? '<span class="dv-legend"><span class="dv-key-none">limit history starts once reported</span></span>'
+      : `<span class="dv-legend" aria-hidden="true">${model.series.map((s) => `
+          <span class="dv-key">${keySample(s.index)}<span class="dv-key-id">${escape(s.windowId)}</span></span>`).join('')}
+        </span>`;
 
     const projects = [...perProject.entries()].sort((a, b) => b[1] - a[1]);
     const topShare = projects.length > 0 ? projects[0][1] : 1;
@@ -1056,24 +1260,41 @@
       </div>
       <div class="dv-card">
         <div class="dv-card-head">
-          <span class="dv-card-title">Tokens per day<span class="dv-sub"> · ${escape(fmtTokens(totalTokens))} total</span></span>
-          <span class="dv-legend">${legend || '<span class="dv-key-none">limit history starts once reported</span>'}</span>
+          <h3 class="dv-card-title">Tokens per day <span class="dv-sub">· ${escape(fmtTokens(totalTokens))} total</span></h3>
+          ${legend}
         </div>
-        <svg class="dv-chart" viewBox="0 0 ${W} ${H}" role="img"
-             aria-label="${escape(name)} tokens per day and plan limit over time">
-          ${gridLines}
-          <text class="dv-axis" x="${L - 8}" y="${T + 4}" text-anchor="end">${escape(fmtTokens(maxTokens))}</text>
-          <text class="dv-axis" x="${L - 8}" y="${T + plotH + 4}" text-anchor="end">0</text>
-          ${bars}${lines}${xTicks}
-        </svg>
+        <div class="dv-plot" id="dv-plot"></div>
+        <div class="sr-only" id="dv-spoken"></div>
       </div>
       <div class="dv-card">
-        <div class="dv-card-head"><span class="dv-card-title">Where the tokens went</span></div>
+        <div class="dv-card-head"><h3 class="dv-card-title">Where the tokens went</h3></div>
         ${projectRows}
       </div>
       <p class="dv-note">Bars are tokens your agent spent, read from its own local logs.
         Lines are the account-wide plan limit, recorded from when this board first saw it.
         They track each other but are not the same measure.</p>`);
+
+    // The chart is drawn into the card once the card has a width, and again
+    // whenever that width changes: a window resized, a phone turned.
+    const plot = document.getElementById('dv-plot');
+    shown = { source, name, model, observer: null };
+    // Through paint, so a usage frame that changes no name leaves it alone.
+    paint(document.getElementById('dv-spoken'), spokenMarkup(source, name, model));
+    let drawnWidth = 0;
+    const draw = () => {
+      const width = plot.clientWidth;
+      if (!plot.isConnected || width <= 0) return;
+      drawnWidth = width;
+      paint(plot, chartMarkup(model, width, getComputedStyle(plot)));
+    };
+    draw();
+    if (typeof ResizeObserver === 'function') {
+      shown.observer = new ResizeObserver(() => { if (plot.clientWidth !== drawnWidth) draw(); });
+      shown.observer.observe(plot);
+    }
+    // A cold load can draw before the webfonts arrive and measure its labels in
+    // the fallback face; it draws again once they are in.
+    if (document.fonts && document.fonts.status !== 'loaded') document.fonts.ready.then(draw);
 
     const back = document.getElementById('dv-back');
     back.addEventListener('click', () => { location.hash = ''; });
@@ -1184,6 +1405,7 @@
     if (m) lastSource = m[1];
     if (sm) lastSession = sm[1];
     const showing = Boolean(m || sm);
+    stopChart();   // whatever comes next, the chart on screen now is leaving
     document.body.classList.toggle('detail-open', showing);
     if (m) openDetail(m[1]);
     else if (sm) openSession(sm[1]);

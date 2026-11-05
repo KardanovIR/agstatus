@@ -24,6 +24,7 @@
  * board emits that arrive with a margin from the UA. */
 h1,
 h2,
+h3,
 p { margin: 0; }
 
 main {
@@ -190,44 +191,71 @@ body.detail-open > .footer { display: none; }
   margin-bottom: var(--space-xs);
 }
 
+/* A heading, so a screen reader can move between the two cards as it moves
+ * between the board's blocks; it keeps the look of the label it was. */
 .dv-card-title {
   font-size: var(--t-2xs);
+  font-weight: inherit;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-3);
 }
 
+/* One piece: where the title and the total do not share a line, the total
+ * takes the next one whole rather than leaving "total" behind on its own. */
 .dv-sub {
   color: var(--text-2);
   text-transform: none;
   letter-spacing: 0;
   font-family: var(--font-read);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
+/* The keys wrap as words do, so six windows take two rows rather than six,
+ * and the rows sit closer than the keys so a row reads as a row. */
 .dv-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-sm);
+  gap: var(--space-2xs) var(--space-sm);
+  min-width: 0;
   font-size: var(--t-2xs);
   color: var(--text-3);
 }
 
+/* A key's baseline is its name's, so a legend sharing the title's line sits
+ * on the title's baseline; the sample rides the middle of the name. */
 .dv-key {
   display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  min-width: 0;
 }
 
-.dv-key i {
-  display: inline-block;
-  width: 10px;
-  height: 2px;
-  border-radius: 2px;
+.dv-swatch {
+  flex: none;
+  align-self: center;
 }
 
-/* Scales uniformly from its viewBox: stretching it would distort the axis
- * labels along with the plot. */
+/* A key cut short names nothing, and an id is not a word: wrapped, a window
+ * reads as two. A key too long for the room beside the others takes the next
+ * row whole; only one too long for the card itself breaks, and it breaks
+ * rather than losing its end. */
+.dv-key-id {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The chart draws at its own size: app.js measures this box and lays the SVG
+ * out to it, one px to the px, so the type set here is the type on screen and
+ * grows with the reader's text size as the rest of the board's does. */
+.dv-plot {
+  font-family: var(--font-label);
+  font-size: var(--t-2xs);
+}
+
+/* Drawn to the box's width already; this only keeps it in proportion for the
+ * moment between a resize and its redraw. */
 .dv-chart {
   display: block;
   width: 100%;
@@ -242,25 +270,36 @@ body.detail-open > .footer { display: none; }
   opacity: 0.5;
 }
 
+/* A limit line and its key. The width is LINE_WIDTH in app.js, which lays the
+ * patterns out on it; the colour and the pattern come with each line. */
 .dv-line {
   fill: none;
-  stroke-width: 1.75;
+  stroke-width: 1.75px;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
 
+/* Under each line, 2.5 px wider and in the card's own colour, so the line
+ * holds where it crosses a bar and passes visibly over the lines drawn before
+ * it. Uncased, a line over a bar is 1.83:1 (blocked) to 2.81:1 (done, the
+ * bars' own green); cased, its neighbour is the card, 5.70:1 at the least. */
+.dv-case {
+  fill: none;
+  stroke: var(--ink-900);
+  stroke-width: 4.25px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.dv-dot-case { fill: var(--ink-900); }
+
 .dv-grid {
   stroke: var(--ink-800);
-  stroke-width: 1;
+  stroke-width: 1px;
+  shape-rendering: crispEdges;
 }
 
-.dv-axis {
-  fill: var(--text-3);
-  font-family: var(--font-label);
-  font-size: 10px;
-}
-
-.dv-axis-r { text-anchor: start; }
+.dv-axis { fill: var(--text-3); }
 
 .dv-proj + .dv-proj { margin-top: var(--space-xs); }
 

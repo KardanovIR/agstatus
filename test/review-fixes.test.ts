@@ -147,8 +147,11 @@ const HISTORY = [
   { seq: 0, status: 'planning', message: '', at: 1_700_000_000_000 },
 ];
 
-/** Evaluates public/app.js against a real DOM and returns the handles a test drives it by. */
-async function loadBoard() {
+/**
+ * Evaluates public/app.js against a real DOM and returns the handles a test drives it by.
+ * `usageHistory` is what GET /api/usage/history answers, built when it is asked for.
+ */
+async function loadBoard(opts: { usageHistory?: () => unknown } = {}) {
   const dom = new JSDOM(INDEX_HTML, { url: 'http://board.test/' });
   const doc = dom.window.document;
   const calls: Array<{ url: string; method: string; body: string }> = [];
@@ -189,6 +192,9 @@ async function loadBoard() {
     calls.push({ url, method: init?.method || 'GET', body: init?.body || '' });
     if (url.endsWith('/api/config')) return reply({ mode: 'legacy', webhookUrl: 'http://board.test/webhook' });
     if (url.endsWith('/commands')) return reply({ id: JSON.parse(init!.body!).id, delivered: true });
+    if (url.includes('/api/usage/history')) {
+      return reply(opts.usageHistory ? opts.usageHistory() : { days: 30, history: [], projects: [] });
+    }
     if (url.includes('/history')) return reply(HISTORY);
     return reply({});
   });
@@ -200,6 +206,8 @@ async function loadBoard() {
 
   const gridEl = doc.getElementById('grid')!;
   return {
+    /** The DOM's own window, for the prototypes a test has to stand in for layout on. */
+    win: dom.window,
     grid: () => gridEl,
     /** Element-level reads, now that there is a real tree to query. */
     $: (sel: string) => gridEl.querySelector(sel),
@@ -571,5 +579,163 @@ describe('board script: focus lifecycle', () => {
     b.emit('session', session());
     expect(statusText(b.grid())).toBe('');
     expect(resumeShown(b.grid())).toBe(false);
+  });
+});
+
+describe('board script: the usage detail', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const DAY = 86_400_000;
+  /** The UTC day `offset` days from today, as the API keys it. */
+  const day = (offset: number) => new Date(Date.now() + offset * DAY).toISOString().slice(0, 10);
+  const noon = (offset: number) => Date.parse(`${day(offset)}T12:00:00Z`);
+  /** What the board prints for that day: its own dayLabel. */
+  const label = (offset: number) => new Date(`${day(offset)}T00:00:00Z`)
+    .toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+  // Claude's three windows, as the server sorts them. "week" and "week_fable"
+  // are the pair that used to draw as one blue line. A Codex window rides
+  // along to show the chart keeps to its own agent.
+  const usageHistory = () => ({
+    days: 30,
+    history: [
+      { source: 'claude', windowId: 'session',
+        points: [{ at: noon(-40), usedPct: 10 }, { at: noon(-2), usedPct: 58 }, { at: noon(0), usedPct: 34 }] },
+      { source: 'claude', windowId: 'week', points: [{ at: noon(-40), usedPct: 20 }, { at: noon(0), usedPct: 62 }] },
+      { source: 'claude', windowId: 'week_fable', points: [{ at: noon(-9), usedPct: 70 }, { at: noon(0), usedPct: 41 }] },
+      { source: 'codex', windowId: 'week', points: [{ at: noon(-1), usedPct: 5 }] },
+    ],
+    projects: [
+      { source: 'claude', project: 'agstatus', day: day(-3), tokens: 2_000_000 },
+      { source: 'claude', project: 'docs', day: day(-3), tokens: 1_000_000 },
+      { source: 'claude', project: 'agstatus', day: day(0), tokens: 500_000 },
+    ],
+  });
+  const claudeUsage = () => [{
+    source: 'claude',
+    updatedAt: Date.now(),
+    windows: [
+      { id: 'session', label: 'Current session', usedPct: 34, resetsAt: null },
+      { id: 'week', label: 'Weekly (all models)', usedPct: 62, resetsAt: null },
+      { id: 'week_fable', label: 'Weekly (Fable)', usedPct: 41, resetsAt: null },
+    ],
+  }];
+
+  // Theme.seriesColors' order and Theme.seriesStroke's patterns on iOS:
+  // solid green, dashed blue, dotted lilac.
+  const STYLES = [
+    'stroke:var(--st-done)',
+    'stroke:var(--st-coding);stroke-dasharray:4.25 5.25',
+    'stroke:var(--st-planning);stroke-dasharray:0 4.5',
+  ];
+
+  async function openUsage(b: Awaited<ReturnType<typeof loadBoard>>) {
+    location.hash = 'usage/claude';
+    await b.settle();
+    await b.settle();   // openDetail awaits a fetch before it paints
+  }
+
+  /**
+   * jsdom lays nothing out, so the chart's box has no width, nothing can
+   * measure a label, and the board draws no chart. This stands in for both,
+   * the way a browser would answer.
+   */
+  function layOut(b: Awaited<ReturnType<typeof loadBoard>>, width: number) {
+    Object.defineProperty(b.win.HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) { return this.id === 'dv-plot' ? width : 0; },
+    });
+    b.win.HTMLCanvasElement.prototype.getContext = (() => ({
+      font: '',
+      measureText: (text: string) => ({ width: text.length * 6 }),
+    })) as never;
+    vi.stubGlobal('getComputedStyle', () => ({
+      fontSize: '11px', fontStyle: 'normal', fontWeight: '400', fontFamily: 'sans-serif',
+    }));
+  }
+
+  it('gives each limit line its own pattern as well as its own colour, in the order iOS gives them', async () => {
+    vi.useFakeTimers();
+    const b = await loadBoard({ usageHistory });
+    b.emit('snapshot', [session({ source: 'claude' })]);
+    b.emit('usage', claudeUsage());
+    layOut(b, 700);
+    await openUsage(b);
+
+    // The key is a sample of its line, pattern and all, ending on a whole
+    // mark: three 6 px dashes, six dots, never a stub that reads as another
+    // pattern. It is for eyes; the chart's own text names every window.
+    const legend = document.querySelector('#detail .dv-legend')!;
+    expect(legend.getAttribute('aria-hidden')).toBe('true');
+    expect([...legend.querySelectorAll('.dv-key-id')].map((k) => k.textContent))
+      .toEqual(['session', 'week', 'week_fable']);
+    const samples = [...legend.querySelectorAll('.dv-swatch line')];
+    expect(samples.map((l) => l.getAttribute('style'))).toEqual(STYLES);
+    expect(samples.map((l) => [Number(l.getAttribute('x1')), Number(l.getAttribute('x2'))]))
+      .toEqual([[0.875, 25.125], [1.375, 24.625], [1.75, 24.25]]);
+
+    // The chart draws at its own width, one px to the px, so those are the
+    // marks on screen at any width.
+    const svg = document.querySelector('#dv-plot svg.dv-chart')!;
+    expect(svg.getAttribute('aria-hidden')).toBe('true');
+    expect(svg.getAttribute('viewBox')).toMatch(/^0 0 700 \d+$/);
+
+    // Each line the same as its key, and each laid over a casing of its own
+    // path in the card's colour, so it holds where it crosses a bar.
+    const lines = [...svg.querySelectorAll('.dv-line')];
+    expect(lines.map((l) => l.getAttribute('style'))).toEqual(STYLES);
+    for (const line of lines) {
+      const casing = line.previousElementSibling!;
+      expect(casing.getAttribute('class')).toBe('dv-case');
+      expect(casing.getAttribute('d')).toBe(line.getAttribute('d'));
+    }
+
+    // The bars sit inside the plot. The last one, today's, was centred on its
+    // right edge and ran half under "100%".
+    const grid = svg.querySelector('.dv-grid')!;
+    const left = Number(grid.getAttribute('x1'));
+    const right = Number(grid.getAttribute('x2'));
+    const bars = [...svg.querySelectorAll('.dv-bar')];
+    expect(bars).toHaveLength(2);
+    for (const bar of bars) {
+      const x = Number(bar.getAttribute('x'));
+      expect(x).toBeGreaterThanOrEqual(left - 0.05);
+      expect(x + Number(bar.getAttribute('width'))).toBeLessThanOrEqual(right + 0.05);
+    }
+  });
+
+  it('says what the chart shows: the busiest day, and each window by its name', async () => {
+    vi.useFakeTimers();
+    const b = await loadBoard({ usageHistory });
+    b.emit('snapshot', [session({ source: 'claude' })]);
+    b.emit('usage', claudeUsage());
+    await openUsage(b);
+
+    expect([...document.querySelectorAll('#detail h3')].map((h) => h.textContent))
+      .toEqual(['Tokens per day · 3.5M total', 'Where the tokens went']);
+    expect([...document.querySelectorAll('#dv-spoken p, #dv-spoken li')].map((e) => e.textContent)).toEqual([
+      `Claude tokens per day over the last 30 days. 3.5M tokens in total; the busiest day, ${label(-3)}, 3.0M.`,
+      'Claude plan limit used, by day, over the last 30 days.',
+      // Recorded from before the range began, so no "since".
+      'Current session: 34% at the latest reading, 58% on the highest day.',
+      'Weekly (all models): 62% at the latest reading, 62% on the highest day.',
+      `Weekly (Fable), since ${label(-9)}: 41% at the latest reading, 70% on the highest day.`,
+    ]);
+  });
+
+  it('names the windows once the usage frame lands, when the detail drew first', async () => {
+    // Opened straight from its address, the detail can draw before the stream
+    // has said what the board calls each window.
+    vi.useFakeTimers();
+    const b = await loadBoard({ usageHistory });
+    await openUsage(b);
+    const items = () => [...document.querySelectorAll('#dv-spoken li')].map((e) => e.textContent!.split(':')[0]);
+    expect(items()).toEqual(['session', 'week', `week_fable, since ${label(-9)}`]);
+
+    b.emit('usage', claudeUsage());
+    expect(items()).toEqual(['Current session', 'Weekly (all models)', `Weekly (Fable), since ${label(-9)}`]);
   });
 });
