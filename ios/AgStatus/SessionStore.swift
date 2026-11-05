@@ -753,7 +753,7 @@ final class SessionStore {
 
     /// Records how long a session waited, at the moment it stops waiting.
     ///
-    /// Any existing beat is dropped first, unconditionally: a beat lives until
+    /// Any existing beat is dropped first, whatever follows: a beat lives until
     /// its card next changes, and this IS the card changing. Without that a
     /// stale duration would sit under a card that has long since moved on.
     ///
@@ -766,7 +766,10 @@ final class SessionStore {
     ///   - it waited longer than the floor. A wait you never noticed is not
     ///     news, and without this every `done` card would carry a line forever.
     private func noteBeat(was old: Session, is new: Session) {
-        beats[new.id] = nil
+        // Only when there is one: a write through the subscript tells every
+        // card that reads `beats` it changed, nil over nil included, and so
+        // re-ran every card's status line on every hook event.
+        if beats[new.id] != nil { beats[new.id] = nil }
         guard old.status == .blocked || old.status == .done else { return }
         guard old.status != new.status else { return }
         let waited = new.updatedDate.timeIntervalSince(old.updatedDate)

@@ -99,8 +99,12 @@ struct BoardView: View {
             .navigationDestination(for: String.self) { sessionId in
                 SessionHistoryView(sessionId: sessionId)
             }
-            .environment(\.openSession) { path.append($0) }
-            .environment(\.openUsage) { path.append(UsageDetailRoute(source: $0)) }
+            // Actions, not bare closures, so that one hook event runs only its
+            // own card, not every card under the board (`BoardAction`). The
+            // heads still run again: each is handed a rebuilt AgentGroup on
+            // every pass.
+            .environment(\.openSession, BoardAction(name: "history") { path.append($0) })
+            .environment(\.openUsage, BoardAction(name: "usage") { path.append(UsageDetailRoute(source: $0)) })
             .navigationTitle("AgStatus")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Theme.background, for: .navigationBar)
