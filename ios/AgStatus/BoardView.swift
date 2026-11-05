@@ -246,11 +246,18 @@ struct BoardView: View {
 
     /// Debug-only deep links so screenshot automation can reach the pushed
     /// screens, which have no launch argument and cannot be tapped by simctl.
-    /// AGSTATUS_OPEN_HISTORY=1 opens the first session's timeline;
+    /// AGSTATUS_OPEN_SHEET=settings|pair presents that sheet;
+    /// AGSTATUS_OPEN_HISTORY=1 opens the first session's timeline, and
+    /// AGSTATUS_OPEN_HISTORY=<session id> that session's;
     /// AGSTATUS_OPEN_USAGE=<source> opens that agent's usage history.
     private func openHistoryForScreenshots() async {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
+        switch environment["AGSTATUS_OPEN_SHEET"] {
+        case "settings": showSettings = true; return
+        case "pair": showPairSheet = true; return
+        default: break
+        }
         if let source = environment["AGSTATUS_OPEN_USAGE"], !source.isEmpty {
             // Demo usage is seeded synchronously; a real board's arrives over SSE.
             for _ in 0..<40 {
@@ -262,14 +269,17 @@ struct BoardView: View {
             }
             return
         }
-        guard environment["AGSTATUS_OPEN_HISTORY"] == "1" else { return }
+        guard let which = environment["AGSTATUS_OPEN_HISTORY"], !which.isEmpty else { return }
         // Demo sessions are seeded synchronously; a real board arrives over SSE.
         for _ in 0..<40 {
             if !store.sessions.isEmpty { break }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        if let first = store.sessions.first, path.isEmpty {
-            path.append(first.id)
+        // "1" is the first session; anything else names one, so a stale
+        // session's history can be reached when a blocked one sorts first.
+        let session = which == "1" ? store.sessions.first : store.sessions.first { $0.id == which }
+        if let session, path.isEmpty {
+            path.append(session.id)
         }
         #endif
     }
