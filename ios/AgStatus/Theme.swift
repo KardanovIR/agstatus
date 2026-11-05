@@ -96,8 +96,23 @@ enum Theme {
         }
     }
 
-    /// The board's accent: the colour of "ready for you".
+    /// The board's accent: the colour of "ready for you". An ink, for dark
+    /// surfaces: never the fill behind a white label (`accentFill`).
+    ///
+    /// The asset catalogue's AccentColor is a copy of this value, typed by
+    /// hand, which the system tints untinted controls with. Change one, change
+    /// both.
     static let accent = color(for: .done)
+
+    /// The fill of a prominent button — "Pair your computer", "Start over" —
+    /// where iOS draws the label in white on the tint. White on `accent` is
+    /// 2.05:1, the faintest words the app drew, on the one call to action
+    /// each of those screens has. This is the accent's hue taken down to 52%,
+    /// oklch(52% 0.125 155): white on it 5.19:1, and 3.71:1 against the page,
+    /// so the button still reads as one. Dark rather than a dark label on the
+    /// light green, which would be the brightest area on a dark screen: the
+    /// glare this board is built to avoid.
+    static let accentFill = rgb(0x0C7D48)
 
     /// The fill behind white words and glyphs that dismiss something — the
     /// list's swipe, where iOS draws the title in white on the tint. White on
@@ -119,12 +134,15 @@ enum Theme {
     /// lightnesses, and the tint is subtle enough that being wrong by 3x is
     /// the difference between a design and a mess.
     ///
-    /// Baking them also means the two platforms cannot drift: change a state
-    /// colour and both tables are regenerated from the same oklab maths.
+    /// Baking them also means the two platforms share one recipe: change a
+    /// state colour and both tables are regenerated from the same oklab maths.
+    /// No script does it, so the recipes written here are the only record of
+    /// how; each hex below is that mix to within one unit.
     ///
     /// STALE — an active card that has heard nothing for ten minutes
     /// (`SessionCardView.staleAfter`) — is the same mix with the state's share
-    /// at nothing, which is `card` itself: no tint, because the board can no
+    /// at nothing, which is `card` itself, and is iOS's alone so far: the web
+    /// still fades a stale card. No tint, because the board can no
     /// longer vouch for the state the tint would claim. Every text token
     /// clears AA on it, the meta line at 5.47:1 the lowest, where the 0.62
     /// fade this replaces left the message at 3.4:1 and the meta line at 2.6.
@@ -142,10 +160,12 @@ enum Theme {
         }
     }
 
-    /// A card's border, from the same mix against `cardBorder`. Blocked keeps a
-    /// brighter edge, because it is the one state that means a human is needed.
-    /// A stale card's is `cardBorder` itself, for the reason its surface is
-    /// `card`.
+    /// A card's border: `color-mix(in oklab, cardBorder 62%, state)`, the
+    /// web's card edge (card.css). Not the surfaces' 90%, which would take
+    /// the edges against the page from 2.5–3.0:1 to 1.6–1.7:1. Blocked keeps a
+    /// brighter edge, the state at 42% alpha (the web's `--state-line`),
+    /// because it is the one state that means a human is needed. A stale
+    /// card's is `cardBorder` itself, for the reason its surface is `card`.
     static func cardEdge(for status: AgentStatus, stale: Bool = false) -> Color {
         if stale { return cardBorder }
         return switch status {
