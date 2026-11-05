@@ -1114,14 +1114,17 @@
    * A single reading's key: its mark, as the chart draws it, without the
    * casing, which on the card it sits on draws nothing. In the key a triangle
    * is centred on its box rather than its centroid, beside the name. The box
-   * grows with the text as the chart's marks do (`.dv-swatch-mark`).
+   * grows with the text as the chart's marks do (`.dv-swatch-mark`). While a
+   * window has one reading it keys the legend and heads the window's column
+   * in the table of days, where `keySample` does once it has two. For eyes:
+   * the table's head is not hidden from a screen reader, so the key itself is.
    */
   const MARK_KEY = 12;
   function keyMark(i) {
     const shape = LINE_MARKS[i % LINE_MARKS.length];
     const lift = shape === 'triangle' ? TRIANGLE_H / 6 : shape === 'triangle-down' ? -TRIANGLE_H / 6 : 0;
     return `<svg class="dv-swatch dv-swatch-mark" width="${MARK_KEY}" height="${MARK_KEY}"`
-      + ` viewBox="0 0 ${MARK_KEY} ${MARK_KEY}">`
+      + ` viewBox="0 0 ${MARK_KEY} ${MARK_KEY}" aria-hidden="true">`
       + `<path class="dv-mark" d="${markPath(i, MARK_KEY / 2, MARK_KEY / 2 + lift)}"`
       + ` style="fill:${LINE_COLORS[i % LINE_COLORS.length]}" /></svg>`;
   }
@@ -1131,7 +1134,9 @@
    * key and line match by shape as well as by hue. It holds as many whole
    * marks as fit, so no key ends in a stub that reads as another pattern — a
    * long dash cut short is a dash. Theme's SeriesSwatch, mark for mark.
-   * It keys the legend, and heads the window's column in the table of days.
+   * It keys the legend, and heads the window's column in the table of days,
+   * once the window has a second reading; before that its mark does
+   * (`keyMark`), as the chart draws no line for it.
    */
   const KEY_W = 26;
   const KEY_H = 6;
@@ -1372,7 +1377,8 @@
    * board first recorded a window its cell is empty, where its line has not
    * started yet, and it tells a screen reader so rather than reading as
    * nothing at all. Each window's column is headed by its block's name and
-   * its line's key, which is what ties it to a legend that shows ids. An
+   * the key the legend gives it, a sample of its line or, while it has a
+   * single reading, its mark: what ties it to a legend that shows ids. An
    * agent that reported no tokens at all has no tokens column: thirty zeros
    * would say it spent none, where the card below says none were reported.
    */
@@ -1389,7 +1395,8 @@
     const words = (text) => escape(text).split(' ')
       .map((word) => `<span class="dv-word">${word}</span>`).join(' ');
     const head = windows.map((s) => `
-          <th scope="col">${keySample(s.index)}${words(names.get(s.windowId) || s.windowId)}</th>`).join('');
+          <th scope="col">${singleReading(s) ? keyMark(s.index) : keySample(s.index)}${
+            words(names.get(s.windowId) || s.windowId)}</th>`).join('');
     const rows = days.map((day, i) => {
       const limits = windows.map((s) => (s.values[i] === null
         ? '<td><span class="sr-only">no reading</span></td>'

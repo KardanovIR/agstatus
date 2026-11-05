@@ -887,6 +887,47 @@ describe('board script: the usage detail', () => {
     expect(fableKey.querySelector('.dv-swatch path')!.getAttribute('style')).toBe('fill:var(--st-planning)');
   });
 
+  it('heads a single-reading window\'s column in the table of days with its mark, as the legend keys it', async () => {
+    // The table's column keys are what tie it to a legend that shows ids, by
+    // shape as well as hue. On a window's first day the chart draws its mark
+    // and the legend keys it by that mark, and a line sample at the head of
+    // its column was a pattern drawn nowhere else: hue alone again.
+    vi.useFakeTimers();
+    const firstDay = () => ({
+      ...usageHistory(),
+      history: [
+        { source: 'claude', windowId: 'session', points: [{ at: noon(0), usedPct: 34 }] },
+        { source: 'claude', windowId: 'week', points: [{ at: noon(-1), usedPct: 20 }, { at: noon(0), usedPct: 62 }] },
+        { source: 'claude', windowId: 'week_fable', points: [{ at: noon(0), usedPct: 41 }] },
+      ],
+    });
+    const b = await loadBoard({ usageHistory: firstDay });
+    b.emit('snapshot', [session({ source: 'claude' })]);
+    b.emit('usage', claudeUsage());
+    layOut(b, 700);
+    await openUsage(b);
+
+    const box = document.querySelector<HTMLDetailsElement>('#detail details.dv-days')!;
+    box.querySelector('summary')!.dispatchEvent(new b.win.MouseEvent('click', { bubbles: true }));
+    await b.settle();
+    expect(box.open).toBe(true);
+
+    const shapeOf = (svg: Element | null) => svg?.querySelector('path.dv-mark')?.getAttribute('d')
+      ?.replace(/^M[-\d.]+ [-\d.]+/, '') ?? null;
+    const legend = [...document.querySelectorAll('#detail .dv-key .dv-swatch')];
+    const heads = [...box.querySelectorAll('thead th[scope="col"] svg.dv-swatch')];
+    expect(heads).toHaveLength(3);
+    // The same key as the legend's, window by window: a mark, a line, a mark.
+    expect(heads.map(shapeOf)).toEqual(legend.map(shapeOf));
+    expect(shapeOf(heads[0])).toBe('a4 4 0 1 0 8 0a4 4 0 1 0 -8 0Z');
+    expect(heads[1].querySelector('line')!.getAttribute('style')).toBe(STYLES[1]);
+    expect(shapeOf(heads[2])).toBe('h7.2v7.2h-7.2Z');
+    expect(heads[0].querySelector('path')!.getAttribute('style')).toBe('fill:var(--st-done)');
+    expect(heads[2].querySelector('path')!.getAttribute('style')).toBe('fill:var(--st-planning)');
+    // A mark is for eyes, as a line sample is: the head of a table is read.
+    expect(heads.map((k) => k.getAttribute('aria-hidden'))).toEqual(['true', 'true', 'true']);
+  });
+
   it("grows a single reading's mark with the reader's text, as the plot grows", async () => {
     // At twice the board's 11 px type the plot is half as tall again, and so
     // is the mark: a reader who enlarges the text can still tell its shape.
