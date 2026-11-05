@@ -323,6 +323,134 @@ body.detail-open > .footer { display: none; }
 
 .dv-axis { fill: var(--text-3); }
 
+/* ---- Each day's figures --------------------------------------------------
+ * The chart's numbers, a day to a row, behind a disclosure under it. The
+ * chart is the reading and this is the lean-in, so it starts closed and asks
+ * quietly. It is how a keyboard, a screen reader or a phone gets one day's
+ * figure, which on the chart only a mouse could hover out of a bar. */
+.dv-days { margin-top: var(--space-2xs); }
+
+/* Quiet until approached, like the board's other chevrons. It turns to point
+ * at what it opened, and at once, because the table appears at once: a
+ * chevron easing round after it would be motion reporting nothing. */
+.dv-days-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  min-height: 24px;
+  font-size: var(--t-xs);
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.dv-days-toggle::-webkit-details-marker { display: none; }
+
+.dv-days-toggle:hover { color: var(--text-1); }
+
+/* 10 px at the default text size, and growing with the reader's as the label
+ * beside it does. */
+.dv-days-more {
+  flex: none;
+  width: 0.625rem;
+  height: 0.625rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dv-days[open] .dv-days-more { transform: rotate(90deg); }
+
+/* A table too wide for the card scrolls inside it, and the box starts out
+ * that way, before app.js has measured, so the table never pushes the page
+ * wider, not even for the frame it opens in. The box is positioned because
+ * the hidden "no reading" in an empty cell is: with the page as its
+ * containing block, that text escaped the scroll and widened the page by
+ * itself, to 404 px on a 375 px phone.
+ *
+ * A table that fits is not a scrolling box at all (app.js adds .fits), and
+ * that is what lets its header row hold at the top of the window: inside a
+ * scrolling box, the box would hold it instead. One that does not fit is
+ * made a Tab stop, so a keyboard can scroll it as well. */
+.dv-days-wrap {
+  position: relative;
+  margin-top: var(--space-2xs);
+  overflow-x: auto;
+}
+
+.dv-days-wrap.fits { overflow: visible; }
+
+/* The board's type, not an admin panel's grid: no zebra, no rule between
+ * rows, figures right-aligned in tabular numerals so a column reads down.
+ * Labels recede and the figures read: the dates and the header in --text-3,
+ * the figures in --text-2, and a day without a token back at --text-3, as
+ * the legend's zero counts recede. */
+.dv-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: var(--font-read);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.dv-table th,
+.dv-table td {
+  padding: 2px 0 2px var(--space-md);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.dv-table th {
+  font-family: var(--font-label);
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.dv-table tr > :first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+/* The header row holds at the top of the window while the page scrolls
+ * through the days, so a column is still named thirty rows down. A window's
+ * name may take two lines on a phone; its figures never do. */
+.dv-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-bottom: var(--space-2xs);
+  border-bottom: 1px solid var(--ink-800);
+  background: var(--ink-900);
+  font-size: var(--t-2xs);
+  white-space: normal;
+  vertical-align: bottom;
+}
+
+.dv-table tbody tr:first-child > * { padding-top: var(--space-2xs); }
+
+.dv-table .dv-swatch {
+  margin-right: var(--space-2xs);
+  vertical-align: middle;
+}
+
+.dv-word { white-space: nowrap; }
+
+.dv-nil { color: var(--text-3); }
+
+/* Scrolled sideways, the dates stay put and the figures pass under them. */
+.dv-days-wrap:not(.fits) tr > :first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding-right: var(--space-sm);
+  background: var(--ink-900);
+}
+
+.dv-days-wrap:not(.fits) thead th:first-child { z-index: 2; }
+
 .dv-proj + .dv-proj { margin-top: var(--space-xs); }
 
 .dv-proj-head {
@@ -655,9 +783,10 @@ body.detail-open > .footer { display: none; }
 }
 
 /* Same rule as board.css applies to the cards: a target you cannot hover is a
- * target you cannot aim at, so the shell's two buttons grow to Apple's
- * minimum rather than staying at the 34px a cursor can manage. */
+ * target you cannot aim at, so the shell's buttons grow to Apple's minimum
+ * rather than staying at the size a cursor can manage. */
 @media (hover: none) {
   .copy,
-  .dv-back { min-height: 44px; }
+  .dv-back,
+  .dv-days-toggle { min-height: 44px; }
 }
