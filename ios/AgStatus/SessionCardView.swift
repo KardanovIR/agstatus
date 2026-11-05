@@ -1106,18 +1106,20 @@ private struct OpenSessionKey: EnvironmentKey {
     static let defaultValue = BoardAction(name: "none") { _ in }
 }
 
-/// Something a card or a head asks the board to do with a key — open a
-/// session's history, an agent's usage — and the board does by pushing it
-/// onto its own path.
+/// Something a card, a head or the agent line asks the board to do with a key
+/// — open a session's history or an agent's usage, which the board pushes onto
+/// its own path; bring an agent's section or its first blocked card into view.
 ///
 /// Equal to any action of the same name, whatever closure it carries. The
 /// board makes a fresh one on every pass, and a closure is never equal to the
 /// last: written into the environment as a bare closure it changed on every
 /// hook event, so every card and head under the board ran its body again and
 /// every card was measured again, for an event that was not theirs. Equal, the
-/// environment has nothing to pass on. Every pass's closure does the same
-/// thing — appends to the path the board holds in its state — so the one a
-/// card captured first does what the newest would.
+/// environment has nothing to pass on, and a head has nothing new to compare
+/// (`AgentHead`'s `==`). Every pass's closure does the same thing, from what
+/// the board holds rather than from the pass that made it — its path, or the
+/// board as last drawn — so the one a view captured first does what the
+/// newest would.
 struct BoardAction: Equatable {
     let name: String
     let run: (String) -> Void

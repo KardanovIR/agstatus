@@ -42,12 +42,12 @@ private struct AgentMark: View {
 /// Two steps up from the caption2 the limit blocks used to be titled in: it
 /// was the label on a box of bars, and it is now the title of a section.
 private struct AgentIdentity: View {
-    let group: AgentGroup
+    let source: String
 
     var body: some View {
         HStack(spacing: 7) {
-            AgentMark(source: group.source)
-            Text(group.name)
+            AgentMark(source: source)
+            Text(UsageInfo.displayName(for: source))
                 .font(.system(.footnote, design: .rounded).weight(.bold))
                 .kerning(0.6)
                 .textCase(.uppercase)
@@ -71,9 +71,14 @@ private struct AgentIdentity: View {
 /// One view in four forms (HeadForm), chosen from the width it is handed. No
 /// reader inside it: every arrangement already knows how wide its heads are,
 /// and a head that measured itself would pick its form a pass late.
+///
+/// Made with `.equatable()` wherever it is made, so that it runs only when
+/// something it draws has changed — see `==`.
 struct AgentHead: View {
     @Environment(\.openUsage) private var openUsage
-    let group: AgentGroup
+    /// What it draws of its agent: not the agent's group, which changes with
+    /// every event on any of its cards.
+    let group: AgentSummary
     /// The head's full width, edge to edge.
     let width: CGFloat
     /// Whether it stands alone on its row — see `HeadForm.resolve`.
@@ -93,7 +98,7 @@ struct AgentHead: View {
     var alone = false
     /// The other heads of its row that carry an alarm. Two heads side by side
     /// must agree on where the alarm goes — see `line`.
-    var peers: [AgentGroup] = []
+    var peers: [AgentAlarm] = []
     /// The board's one clock, so every countdown on screen turns over together
     /// whether its head is pinned or scrolling.
     let now: Date
@@ -102,8 +107,9 @@ struct AgentHead: View {
     /// the cursor here, to the element that names the section (`summary`, a
     /// header). Every head is handed it; only a scrolling head is sent to.
     let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
-    /// Brings this agent's first blocked card into view.
-    let onJump: () -> Void
+    /// Brings an agent's first blocked card into view, given its source. An
+    /// action and not a closure, so that it compares (`==`).
+    let onJump: BoardAction
 
     private var form: HeadForm {
         HeadForm.resolve(outer: width, canStrip: canStrip, scale: scale)
@@ -179,13 +185,13 @@ struct AgentHead: View {
     /// cannot see the edge change colour.
     private var summary: String {
         var parts = [group.name]
-        if !group.sessions.isEmpty { parts.append(sessionCount) }
+        if group.sessions > 0 { parts.append(sessionCount) }
         if group.blocked > 0 { parts.append("\(group.blocked) blocked") }
         return parts.joined(separator: ", ")
     }
 
     private var sessionCount: String {
-        "\(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s")"
+        "\(group.sessions) session\(group.sessions == 1 ? "" : "s")"
     }
 
     // MARK: Forms
@@ -249,7 +255,7 @@ struct AgentHead: View {
                 ZStack(alignment: .leading) {
                     ForEach(peers) { peer in
                         HStack(spacing: 0) {
-                            AgentIdentity(group: peer)
+                            AgentIdentity(source: peer.source)
                             Spacer(minLength: Theme.Space.xs)
                             AlarmButton(agent: peer.name, count: peer.blocked, showsWord: false, action: {})
                         }
@@ -260,7 +266,7 @@ struct AgentHead: View {
                     oneLine(form)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    AgentIdentity(group: group)
+                    AgentIdentity(source: group.source)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                     alarm(form)
@@ -278,11 +284,11 @@ struct AgentHead: View {
             // count goes before a letter of the name does: the count is a
             // number you can get by looking down, and the name is the only
             // thing saying whose section this is.
-            AgentIdentity(group: group)
+            AgentIdentity(source: group.source)
                 .layoutPriority(1)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
-            if form != .narrow && !group.sessions.isEmpty {
+            if form != .narrow && group.sessions > 0 {
                 // Whole or not at all, and the gap travels with it, so a count
                 // that has dropped out leaves no space behind.
                 ViewThatFits(in: .horizontal) {
@@ -319,8 +325,8 @@ struct AgentHead: View {
 
     private var identityAndCount: some View {
         HStack(spacing: Theme.Space.xs) {
-            AgentIdentity(group: group)
-            if !group.sessions.isEmpty { count }
+            AgentIdentity(source: group.source)
+            if group.sessions > 0 { count }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -341,7 +347,7 @@ struct AgentHead: View {
         AlarmButton(agent: group.name,
                     count: group.blocked,
                     showsWord: form != .narrow,
-                    action: onJump)
+                    action: { onJump(group.source) })
     }
 
     // MARK: Limits
@@ -416,6 +422,38 @@ struct AgentHead: View {
                 }
             }
         }
+    }
+}
+
+extension AgentHead: Equatable {
+    /// Equal when it would be drawn the same: every input but the focus
+    /// binding, which is the same binding, to the board's one focus state, on
+    /// every pass.
+    ///
+    /// The board makes every head afresh on every pass, and a hook event is
+    /// one card's news: most passes change nothing a head draws. Handed the
+    /// agent's group and a fresh closure, a head was never equal to the last
+    /// one by SwiftUI's own comparison, so every head on the board ran again
+    /// for every event, and was laid out again. Made with `.equatable()`, a
+    /// head is compared by this instead, and runs when what it draws has
+    /// changed. Where heads stand in rows, the rows must be left alone too,
+    /// or they lay their heads out again regardless (`HeadRows`).
+    ///
+    /// The action is compared by name (`BoardAction`), and a head that does
+    /// not run keeps the one it was handed when it last did. So the board's
+    /// jump carries no plan of its own: it reads the board as last drawn
+    /// (`BoardView`'s `DrawnBoard`).
+    static func == (lhs: AgentHead, rhs: AgentHead) -> Bool {
+        lhs.group == rhs.group
+            && lhs.width == rhs.width
+            && lhs.canStrip == rhs.canStrip
+            && lhs.showsNoLimits == rhs.showsNoLimits
+            && lhs.fillsHeight == rhs.fillsHeight
+            && lhs.scale == rhs.scale
+            && lhs.alone == rhs.alone
+            && lhs.peers == rhs.peers
+            && lhs.now == rhs.now
+            && lhs.onJump == rhs.onJump
     }
 }
 
@@ -536,12 +574,19 @@ private struct AlarmButtonStyle: ButtonStyle {
 /// name, which take you to its section, and its alarm, which takes you to its
 /// first blocked card. Two controls side by side, because one cannot sit
 /// inside the other.
-struct AgentLine: View {
-    let groups: [AgentGroup]
+///
+/// Equal when it would be drawn the same, as a head is (`AgentHead`'s `==`),
+/// and made with `.equatable()`: every input is a value, the actions compared
+/// by name. A card's message, a session arriving, a limit filling: none of it
+/// is anything this line draws.
+struct AgentLine: View, Equatable {
+    let groups: [AgentAlarm]
     let width: CGFloat
     var scale: CGFloat = 1
-    let onSection: (String) -> Void
-    let onJump: (String) -> Void
+    /// Scrolls to an agent's section, given its source.
+    let onSection: BoardAction
+    /// Brings an agent's first blocked card into view, given its source.
+    let onJump: BoardAction
 
     /// Wide enough for a mark, a name and an alarm. A further agent starts a
     /// second row sooner than any name is cut to a letter.
@@ -584,7 +629,7 @@ struct AgentLine: View {
     /// under the name, as it does in the head (`AgentHead.line`), instead of
     /// the name being cut to "C" beside it: the agent that needs you is the
     /// one whose name must survive.
-    private func cell(_ group: AgentGroup) -> some View {
+    private func cell(_ group: AgentAlarm) -> some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Theme.Space.xs) {
                 nameButton(group)
@@ -600,11 +645,11 @@ struct AgentLine: View {
         .frame(minHeight: 44)
     }
 
-    private func nameButton(_ group: AgentGroup) -> some View {
+    private func nameButton(_ group: AgentAlarm) -> some View {
         Button {
             onSection(group.source)
         } label: {
-            AgentIdentity(group: group)
+            AgentIdentity(source: group.source)
                 .padding(.horizontal, 2)
                 .frame(minHeight: 44)
                 .contentShape(Rectangle())
@@ -616,7 +661,7 @@ struct AgentLine: View {
     }
 
     @ViewBuilder
-    private func alarm(_ group: AgentGroup) -> some View {
+    private func alarm(_ group: AgentAlarm) -> some View {
         if group.blocked > 0 {
             AlarmButton(agent: group.name,
                         count: group.blocked,

@@ -22,7 +22,8 @@ import Foundation
 /// Derived on every render from the store's flat array and never stored, so
 /// grouping cannot drift from the list it describes — and the store's own
 /// ordering, its dismiss-and-restore and its refresh are left exactly as they
-/// were.
+/// were. It carries every field of every session it holds, which is why a
+/// head is not handed one (`AgentSummary`).
 struct AgentGroup: Identifiable, Equatable {
     /// The agent's key as sessions carry it ("claude", "codex", …).
     let source: String
@@ -76,6 +77,56 @@ struct AgentGroup: Identifiable, Equatable {
             AgentGroup(source: source, sessions: bySource[source] ?? [], usage: reports[source])
         }
     }
+
+    /// What its head draws of it.
+    var summary: AgentSummary {
+        AgentSummary(source: source, sessions: sessions.count, blocked: blocked, windows: windows)
+    }
+
+    /// What its place on the agent line draws of it, and all a head needs of
+    /// the heads beside it.
+    var alarm: AgentAlarm { AgentAlarm(source: source, blocked: blocked) }
+}
+
+// MARK: - What a head draws
+
+/// An agent as its head draws it: who it is, how many sessions it has, how
+/// many of them are blocked, and its limits. Nothing else of its group.
+///
+/// A head used to be handed the group itself. The board rebuilds every group
+/// on every pass, and a group carries its sessions, so on every hook event
+/// every head on the board was a new value and ran again — and measured every
+/// reset time in every one of its meters again — for a message changing on a
+/// card that it does not draw. Handed this and compared as a value
+/// (`AgentHead`'s `==`), a head runs when one of these changes, and otherwise
+/// not at all.
+struct AgentSummary: Identifiable, Equatable {
+    let source: String
+    /// How many sessions it has on the board.
+    let sessions: Int
+    /// How many of them are waiting on a person (`AgentGroup.blocked`).
+    let blocked: Int
+    let windows: [UsageWindow]
+
+    var id: String { source }
+    var section: JumpTarget { .section(source) }
+    var name: String { UsageInfo.displayName(for: source) }
+    var alarm: AgentAlarm { AgentAlarm(source: source, blocked: blocked) }
+}
+
+/// An agent as its name and alarm draw it: who it is, and how many of its
+/// sessions are waiting on a person — an alarm, when that is any.
+///
+/// All the agent line draws of each agent, and all a head needs of the heads
+/// beside it (`AgentHead.peers`). Narrower than `AgentSummary` on purpose: a
+/// window filling in one agent's head, or a session arriving under it, is
+/// nothing the line or a neighbouring head draws.
+struct AgentAlarm: Identifiable, Equatable {
+    let source: String
+    let blocked: Int
+
+    var id: String { source }
+    var name: String { UsageInfo.displayName(for: source) }
 }
 
 // MARK: - Windows
@@ -628,6 +679,22 @@ extension BoardArrangement {
         assert(groups[0].usage?.source == "claude" && groups[2].usage == nil, "an empty report is no report")
         assert(groups.map(\.blocked) == [0, 1, 0], "done is not counted")
         assert(groups[1].firstBlocked?.id == "c", "first blocked in a column")
+        // What a head and the agent line are handed. A card's message is
+        // nothing either draws; a card becoming blocked is, for its own agent.
+        let reports = [report("codex"), report("claude", windows: 2)]
+        let quiet = AgentGroup.make(sessions: board, usage: reports)
+        var edited = board
+        edited[1].message = "Editing src/auth/token.ts"
+        let messaged = AgentGroup.make(sessions: edited, usage: reports)
+        assert(messaged != quiet && messaged.map(\.summary) == quiet.map(\.summary), "a message is no head's news")
+        edited[3].status = .blocked
+        let oneBlocked = AgentGroup.make(sessions: edited, usage: reports)
+        assert(oneBlocked[0].summary != quiet[0].summary && oneBlocked[1].summary == quiet[1].summary,
+               "a blocked card is its own agent's")
+        assert(oneBlocked.map(\.alarm) == [AgentAlarm(source: "claude", blocked: 1),
+                                           AgentAlarm(source: "codex", blocked: 1),
+                                           AgentAlarm(source: "gemini", blocked: 0)], "the alarms")
+        assert(quiet[0].summary.sessions == 2 && quiet[0].summary.windows.count == 2, "counts and limits")
         let idle = AgentGroup.make(sessions: [], usage: [report("codex"), report("claude"),
                                                          report("gemini", windows: 0)])
         assert(idle.map(\.source) == ["claude", "codex"], "no sessions: every agent that reports limits")
