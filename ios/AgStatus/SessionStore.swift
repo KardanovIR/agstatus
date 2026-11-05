@@ -11,6 +11,9 @@
 
 import Foundation
 import Observation
+#if DEBUG
+import os
+#endif
 
 @MainActor @Observable
 final class SessionStore {
@@ -844,6 +847,13 @@ final class SessionStore {
                 // could not appear in demo mode at all — which is the only
                 // place the design can actually be looked at.
                 self.noteBeats(was: self.sessions, is: incoming)
+                #if DEBUG
+                // What a block said aloud is checked against (`Logger.blocks`).
+                for session in incoming where session.status == .blocked
+                    && self.sessions.contains(where: { $0.id == session.id && $0.status != .blocked }) {
+                    Logger.blocks.info("demo tick blocked \(session.id, privacy: .public)")
+                }
+                #endif
                 self.sessions = incoming
                 self.lastActivityAt = Date()
             }

@@ -451,6 +451,10 @@ enum DemoData {
     ///                           connecting is drawn as reconnecting)
     ///   AGSTATUS_JUMP           <source> (BoardView: presses that agent's
     ///                           alarm once the board is laid out)
+    ///   AGSTATUS_ANNOUNCE_BLOCKS 1 (BoardView: says a new block aloud as if
+    ///                           VoiceOver were running, which in the
+    ///                           simulator it never is; the log category
+    ///                           `blocks` records what was said)
     enum Scenario: String {
         case demo
         /// Five and four: two full columns, something blocked in each.
