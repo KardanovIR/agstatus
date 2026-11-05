@@ -156,9 +156,9 @@ enum Theme {
     ///
     /// STALE — an active card that has heard nothing for ten minutes
     /// (`SessionCardView.staleAfter`) — is the same mix with the state's share
-    /// at nothing, which is `card` itself, and is iOS's alone so far: the web
-    /// still fades a stale card. No tint, because the board can no
-    /// longer vouch for the state the tint would claim. Every text token
+    /// at nothing, which is `card` itself, as the web board and the Android
+    /// app draw it too. No tint, because the board can no longer vouch for
+    /// the state the tint would claim. Every text token
     /// clears AA on it, the meta line at 5.47:1 the lowest, where the 0.62
     /// fade this replaces left the message at 3.4:1 and the meta line at 2.6.
     /// It is also darker than every tinted surface (1.15:1 against coding's),
@@ -345,9 +345,8 @@ enum Theme {
     // cannot tell them apart. The two patterns most alike — dashed and long
     // dash, dash-dot and dash-dot-dot — fall on pairs that hue does separate.
     //
-    // The web's chart (`LINE_COLORS` in public/app.js) still has the old
-    // order and no patterns, so for now a window can be teal there and
-    // lilac here.
+    // The web's chart (`LINE_COLORS` in public/app.js) takes the same order
+    // and the same patterns, so a window is the same line on both.
 
     static let seriesColors: [Color] = [
         color(for: .done),
