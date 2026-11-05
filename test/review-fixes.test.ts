@@ -726,6 +726,11 @@ describe('board script: the usage detail', () => {
     ]);
   });
 
+  /** The day table's column headers, as a screen reader names them. */
+  const columns = () => [...document.querySelectorAll('#dv-days thead th')].map((th) => th.textContent!.trim());
+  /** A row's cells, its day first, as a screen reader reads them across. */
+  const cells = (row: Element) => [...(row as HTMLTableRowElement).cells].map((c) => c.textContent!.trim());
+
   it('names the windows once the usage frame lands, when the detail drew first', async () => {
     // Opened straight from its address, the detail can draw before the stream
     // has said what the board calls each window.
@@ -734,8 +739,152 @@ describe('board script: the usage detail', () => {
     await openUsage(b);
     const items = () => [...document.querySelectorAll('#dv-spoken li')].map((e) => e.textContent!.split(':')[0]);
     expect(items()).toEqual(['session', 'week', `week_fable, since ${label(-9)}`]);
+    const box = document.querySelector<HTMLDetailsElement>('#detail details.dv-days')!;
+    box.open = true;
+    await b.settle();
+    expect(columns()).toEqual(['Day', 'Tokens', 'session', 'week', 'week_fable']);
 
     b.emit('usage', claudeUsage());
     expect(items()).toEqual(['Current session', 'Weekly (all models)', `Weekly (Fable), since ${label(-9)}`]);
+    // The table is named again too, inside a disclosure left as it was: open.
+    expect(columns()).toEqual(['Day', 'Tokens', 'Current session', 'Weekly (all models)', 'Weekly (Fable)']);
+    expect(document.querySelector('#detail details.dv-days')).toBe(box);
+    expect(box.open).toBe(true);
+  });
+
+  it('gives every day\'s figures to a keyboard, a screen reader and a phone, not just to a mouse', async () => {
+    // A bar's figure was only in its <title>, which needs a pointer to hover
+    // it: no keyboard can, a phone never shows one, and the SVG is hidden from
+    // screen readers. The figures are a table now, behind a disclosure.
+    vi.useFakeTimers();
+    const b = await loadBoard({
+      usageHistory: () => {
+        const h = usageHistory();
+        h.history[0].points[2].usedPct = 34.5;   // as a Codex reading can be
+        return h;
+      },
+    });
+    b.emit('snapshot', [session({ source: 'claude' })]);
+    b.emit('usage', claudeUsage());
+    await openUsage(b);
+
+    // Closed until asked: the chart is the reading, the table the lean-in. A
+    // real <summary>, so Enter and Space open it without a handler, and it
+    // follows the summaries in reading order.
+    const box = document.querySelector<HTMLDetailsElement>('#detail details.dv-days')!;
+    const summary = box.querySelector('summary')!;
+    expect(box.open).toBe(false);
+    expect(box.previousElementSibling!.id).toBe('dv-spoken');
+    expect(summary.textContent!.trim()).toBe('Each day\'s figures');
+    summary.dispatchEvent(new b.win.MouseEvent('click', { bubbles: true }));
+    await b.settle();
+    expect(box.open).toBe(true);
+
+    const table = box.querySelector('table')!;
+    expect(table.closest('[aria-hidden]')).toBeNull();
+    expect(table.caption!.textContent).toBe('Claude by day over the last 30 days, newest first: '
+      + 'tokens spent, and plan limit used as each day ended.');
+
+    // Tokens and percentages in columns of their own, since they do not
+    // convert. A window goes by its block's name, under its line's key.
+    expect(columns()).toEqual(['Day', 'Tokens', 'Current session', 'Weekly (all models)', 'Weekly (Fable)']);
+    const keys = [...table.querySelectorAll('thead svg.dv-swatch')];
+    expect(keys.map((k) => k.getAttribute('aria-hidden'))).toEqual(['true', 'true', 'true']);
+    expect(keys.map((k) => k.querySelector('line')!.getAttribute('style'))).toEqual(STYLES);
+
+    // A row a day, today first, each headed by its date.
+    const rows = [...table.tBodies[0].rows];
+    expect(rows).toHaveLength(30);
+    expect(rows.every((r) => r.cells[0].matches('th[scope="row"]'))).toBe(true);
+    const row = (offset: number) => rows[-offset];
+    // A reading prints as the board's block prints it, to a tenth where it
+    // has one.
+    expect(cells(row(0))).toEqual([label(0), '500K', '34.5%', '62%', '41%']);
+    expect(cells(row(-2))).toEqual([label(-2), '0', '58%', '20%', '70%']);
+    expect(cells(row(-3))).toEqual([label(-3), '3.0M', '10%', '20%', '70%']);
+    // A day without a token says 0, quieter; one with tokens does not.
+    expect(row(-2).cells[1].className).toBe('dv-nil');
+    expect(row(-3).cells[1].className).toBe('');
+    // Before the board first recorded a window, its cell is empty to the eye,
+    // as its line has not started, and says why to a screen reader.
+    expect(cells(row(-10))).toEqual([label(-10), '0', '10%', '20%', 'no reading']);
+    expect(row(-10).cells[4].querySelector('.sr-only')!.textContent).toBe('no reading');
+    expect(cells(row(-9))[4]).toBe('70%');
+
+    // It fits here (jsdom lays nothing out), so it is no Tab stop.
+    const wrap = document.getElementById('dv-days')!;
+    expect(wrap.classList.contains('fits')).toBe(true);
+    expect(wrap.hasAttribute('tabindex')).toBe(false);
+  });
+
+  it('scrolls a table too wide for its card inside the card, where a keyboard can reach it', async () => {
+    vi.useFakeTimers();
+    const b = await loadBoard({ usageHistory });
+    // Six windows on a phone: the table needs 380 px and the card has 300.
+    let tableWidth = 380;
+    Object.defineProperty(b.win.HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) { return this.id === 'dv-days' ? 300 : 0; },
+    });
+    Object.defineProperty(b.win.HTMLElement.prototype, 'scrollWidth', {
+      configurable: true,
+      get(this: HTMLElement) { return this.id === 'dv-days' ? Math.max(300, tableWidth) : 0; },
+    });
+    await openUsage(b);
+    const box = document.querySelector<HTMLDetailsElement>('#detail details.dv-days')!;
+    const wrap = document.getElementById('dv-days')!;
+    box.open = true;
+    await b.settle();
+
+    // It scrolls in its box (the box's state until measured, so it never
+    // widens the page for a frame), and the box is a Tab stop named for what
+    // it holds, because the table has nothing else to focus.
+    expect(wrap.classList.contains('fits')).toBe(false);
+    expect(wrap.getAttribute('tabindex')).toBe('0');
+    expect(wrap.getAttribute('role')).toBe('region');
+    expect(document.getElementById(wrap.getAttribute('aria-labelledby')!)).toBe(box.querySelector('summary'));
+
+    // Measured again when the table changes: the usage frame renames its
+    // columns. Now it fits, and stops scrolling, but a box that has focus
+    // keeps its Tab stop rather than dropping the reader to <body>.
+    wrap.focus();
+    tableWidth = 280;
+    b.emit('usage', claudeUsage());
+    expect(wrap.classList.contains('fits')).toBe(true);
+    expect(document.activeElement).toBe(wrap);
+    expect(wrap.getAttribute('tabindex')).toBe('0');
+
+    // Opened again without the focus, it is no Tab stop at all.
+    wrap.blur();
+    box.open = false;
+    await b.settle();
+    box.open = true;
+    await b.settle();
+    expect(wrap.classList.contains('fits')).toBe(true);
+    expect(wrap.hasAttribute('tabindex')).toBe(false);
+    expect(wrap.hasAttribute('role')).toBe(false);
+  });
+
+  it('offers no table when there is no figure to put in one', async () => {
+    vi.useFakeTimers();
+    const b = await loadBoard();   // no tokens, no limit history
+    await openUsage(b);
+    expect(document.querySelector('#detail .dv-card')).not.toBeNull();
+    expect(document.querySelector('#detail details')).toBeNull();
+  });
+
+  it('prints no tokens column for an agent that reported no tokens, rather than thirty zeros', async () => {
+    // "0" would say none were spent. The card below says none were reported.
+    vi.useFakeTimers();
+    const b = await loadBoard({ usageHistory: () => ({ ...usageHistory(), projects: [] }) });
+    b.emit('usage', claudeUsage());
+    await openUsage(b);
+    const box = document.querySelector<HTMLDetailsElement>('#detail details.dv-days')!;
+    box.open = true;
+    await b.settle();
+    expect(box.querySelector('caption')!.textContent)
+      .toBe('Claude by day over the last 30 days, newest first: plan limit used as each day ended.');
+    expect(columns()).toEqual(['Day', 'Current session', 'Weekly (all models)', 'Weekly (Fable)']);
+    expect(cells(box.querySelector('tbody tr')!)).toEqual([label(0), '34%', '62%', '41%']);
   });
 });

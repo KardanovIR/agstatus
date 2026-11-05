@@ -53,6 +53,9 @@
     return String(Math.round(n));
   };
 
+  /** A plan limit's reading as the board prints it: whole, or to a tenth where it has one. */
+  const fmtPct = (pct) => `${pct % 1 ? pct.toFixed(1) : String(pct)}%`;
+
   /** Every [data-ts] on the page, or inside one element, retimed. */
   function paintTimes(root) {
     (root || document).querySelectorAll('[data-ts]').forEach((el) => {
@@ -172,7 +175,6 @@
       if (active.size > 0 && !active.has(u.source)) continue;
       const bars = (u.windows || []).map((w) => {
         const pct = Math.min(100, Math.max(0, Number(w.usedPct) || 0));
-        const pctText = pct % 1 ? pct.toFixed(1) : String(pct);
         const reset = w.resetsAt ? fmtReset(w.resetsAt) : '';
         // board.css's .meter, which is what it was written for: "a percentage
         // of an unknown quota — never a token count". scaleX rather than width,
@@ -182,7 +184,7 @@
           <div class="meter">
             <div class="meter-head">
               <span class="meter-label">${escape(w.label || w.id)}</span>
-              <span class="meter-value">${pctText}%${
+              <span class="meter-value">${fmtPct(pct)}${
                 reset ? ` <span class="usage-reset">· ${escape(reset)}</span>` : ''
               }</span>
             </div>
@@ -776,7 +778,7 @@
     es.addEventListener('usage', (e) => {
       usage = JSON.parse(e.data);
       renderUsage();
-      respeak();
+      renameWindows();
     });
 
     es.onopen = () => {
@@ -989,6 +991,7 @@
    * key and line match by shape as well as by hue. It holds as many whole
    * marks as fit, so no key ends in a stub that reads as another pattern — a
    * long dash cut short is a dash. Theme's SeriesSwatch, mark for mark.
+   * It keys the legend, and heads the window's column in the table of days.
    */
   const KEY_W = 26;
   const KEY_H = 6;
@@ -1007,7 +1010,8 @@
       }
     }
     const x1 = (KEY_W - length) / 2 + LINE_WIDTH / 2;
-    return `<svg class="dv-swatch" width="${KEY_W}" height="${KEY_H}" viewBox="0 0 ${KEY_W} ${KEY_H}">`
+    return `<svg class="dv-swatch" width="${KEY_W}" height="${KEY_H}" viewBox="0 0 ${KEY_W} ${KEY_H}"`
+      + ' aria-hidden="true">'
       + `<line class="dv-line" x1="${x1}" x2="${x1 + length - LINE_WIDTH}" y1="${KEY_H / 2}"`
       + ` y2="${KEY_H / 2}" style="${lineStyle(i)}" /></svg>`;
   }
@@ -1160,17 +1164,25 @@
   }
 
   /**
+   * What the board's own block calls each of an agent's windows, by id. One
+   * the board no longer reports has no name here and keeps its id, as its key
+   * does.
+   */
+  function windowNames(source) {
+    return new Map(((usage.find((u) => u.source === source) || {}).windows || [])
+      .map((w) => [w.id, w.label || w.id]));
+  }
+
+  /**
    * What a screen reader has in the chart's place, as VoiceOver has on iOS:
    * the two measures as two summaries, because tokens and a plan limit's
    * percentage do not convert (the fourth principle) and are not put on one
    * scale for the ear either. A window goes by the name the board's own block
-   * gives it, and one the board no longer reports keeps its id, as its key
-   * does.
+   * gives it. Every day's figures follow, in the table below.
    */
   function spokenMarkup(source, name, model) {
     const { days, tokens, series } = model;
-    const labels = new Map(((usage.find((u) => u.source === source) || {}).windows || [])
-      .map((w) => [w.id, w.label || w.id]));
+    const labels = windowNames(source);
     const total = tokens.reduce((a, b) => a + b, 0);
     let busiest = 0;
     tokens.forEach((v, i) => { if (v > tokens[busiest]) busiest = i; });
@@ -1195,14 +1207,108 @@
       <ul>${readings}</ul>` : ''}`;
   }
 
+  /** Whether there is a figure to put in a table: a token spent, or a reading. */
+  const hasFigures = (model) => model.tokens.some((v) => v > 0)
+    || model.series.some((s) => s.values.some((v) => v !== null));
+
   /**
-   * Names the windows again once the board's usage frame is in. A detail
-   * opened straight from its address can draw before that frame lands, and
-   * would otherwise go on calling every window by its id.
+   * The chart's figures, a day to a row, for whoever cannot hover a bar for its
+   * tooltip: a keyboard, a screen reader, a phone. iOS hands VoiceOver every
+   * point as an Audio Graph. The web's way to the same figures is a table, and
+   * it is there for eyes too, behind a disclosure under the chart: the chart
+   * is the reading, the table the lean-in.
+   *
+   * Tokens and each window's percentage keep columns of their own, because
+   * they do not convert. The newest day comes first, as the session timeline
+   * puts its newest event first: today is what the board is checked for. A
+   * day's percentage is the window's reading as that day ended, the point its
+   * line passes through, printed as the board's block prints it. Before the
+   * board first recorded a window its cell is empty, where its line has not
+   * started yet, and it tells a screen reader so rather than reading as
+   * nothing at all. Each window's column is headed by its block's name and
+   * its line's key, which is what ties it to a legend that shows ids. An
+   * agent that reported no tokens at all has no tokens column: thirty zeros
+   * would say it spent none, where the card below says none were reported.
    */
-  function respeak() {
-    const el = shown && document.getElementById('dv-spoken');
-    if (el) paint(el, spokenMarkup(shown.source, shown.name, shown.model));
+  function daysMarkup(source, name, model) {
+    const { days, tokens, series } = model;
+    const names = windowNames(source);
+    const spent = tokens.some((v) => v > 0);
+    const windows = series.filter((s) => s.values.some((v) => v !== null));
+    const caption = `${name} by day over the last ${days.length} days, newest first: `
+      + [spent && 'tokens spent', windows.length > 0 && 'plan limit used as each day ended']
+        .filter(Boolean).join(', and ') + '.';
+    // A name wraps between its words on a phone and never inside one, where
+    // "GPT-6-Astra" left "6-" on a line of its own.
+    const words = (text) => escape(text).split(' ')
+      .map((word) => `<span class="dv-word">${word}</span>`).join(' ');
+    const head = windows.map((s) => `
+          <th scope="col">${keySample(s.index)}${words(names.get(s.windowId) || s.windowId)}</th>`).join('');
+    const rows = days.map((day, i) => {
+      const limits = windows.map((s) => (s.values[i] === null
+        ? '<td><span class="sr-only">no reading</span></td>'
+        : `<td>${fmtPct(s.values[i])}</td>`)).join('');
+      const spend = !spent ? ''
+        : `<td${tokens[i] > 0 ? '' : ' class="dv-nil"'}>${escape(fmtTokens(tokens[i]))}</td>`;
+      return `
+        <tr><th scope="row">${escape(dayLabel(day))}</th>${spend}${limits}</tr>`;
+    }).reverse().join('');
+    return `<table class="dv-table">
+      <caption class="sr-only">${escape(caption)}</caption>
+      <thead><tr><th scope="col">Day</th>${spent ? '<th scope="col">Tokens</th>' : ''}${head}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  /**
+   * A table too wide for its card, six windows on a phone, scrolls sideways
+   * inside the card rather than pushing the page wider, and is then a stop on
+   * the Tab order, because a table holds nothing else a keyboard could scroll
+   * it by. One that fits is neither a scrolling box nor a Tab stop, and not
+   * being a scrolling box is what lets its header row hold at the top of the
+   * window while the page scrolls through thirty days. The box scrolls until
+   * this has measured it (shell.css says why), and is measured as it opens,
+   * as the card's width or the table's own changes, and once the webfonts are
+   * in.
+   */
+  function fitDays() {
+    const wrap = document.getElementById('dv-days');
+    if (!wrap || !wrap.parentElement.open) return;
+    // A pixel over is rounding, and lands in the card's padding unseen.
+    const fits = wrap.scrollWidth <= wrap.clientWidth + 1;
+    wrap.classList.toggle('fits', fits);
+    if (!fits) {
+      wrap.tabIndex = 0;
+      wrap.setAttribute('role', 'region');
+      wrap.setAttribute('aria-labelledby', 'dv-days-toggle');
+    } else if (document.activeElement !== wrap) {
+      // Kept while it has focus, which would otherwise drop to <body>.
+      wrap.removeAttribute('tabindex');
+      wrap.removeAttribute('role');
+      wrap.removeAttribute('aria-labelledby');
+    }
+  }
+
+  /**
+   * Names the windows again once the board's usage frame is in, in the
+   * summaries and over the table's columns. A detail opened straight from its
+   * address can draw before that frame lands, and would otherwise go on
+   * calling every window by its id. The table is painted inside its
+   * disclosure, which stays open if it was.
+   */
+  function renameWindows() {
+    if (!shown) return;
+    const spoken = document.getElementById('dv-spoken');
+    if (spoken) paint(spoken, spokenMarkup(shown.source, shown.name, shown.model));
+    const figures = document.getElementById('dv-days');
+    const before = figures && figures.querySelector('table');
+    if (figures && paint(figures, daysMarkup(shown.source, shown.name, shown.model))) {
+      if (shown.observer) {
+        shown.observer.unobserve(before);
+        shown.observer.observe(figures.querySelector('table'));
+      }
+      fitDays();
+    }
   }
 
   function renderDetail(source, data) {
@@ -1265,6 +1371,11 @@
         </div>
         <div class="dv-plot" id="dv-plot"></div>
         <div class="sr-only" id="dv-spoken"></div>
+        ${hasFigures(model) ? `<details class="dv-days">
+          <summary class="dv-days-toggle" id="dv-days-toggle"><svg class="dv-days-more" width="10" height="10"
+            viewBox="0 0 10 10" aria-hidden="true"><path d="M3.75 1.75 7 5 3.75 8.25" /></svg>Each day's figures</summary>
+          <div class="dv-days-wrap" id="dv-days"></div>
+        </details>` : ''}
       </div>
       <div class="dv-card">
         <div class="dv-card-head"><h3 class="dv-card-title">Where the tokens went</h3></div>
@@ -1280,17 +1391,30 @@
     shown = { source, name, model, observer: null };
     // Through paint, so a usage frame that changes no name leaves it alone.
     paint(document.getElementById('dv-spoken'), spokenMarkup(source, name, model));
+    const figures = document.getElementById('dv-days');
+    if (figures) {
+      paint(figures, daysMarkup(source, name, model));
+      figures.parentElement.addEventListener('toggle', fitDays);
+    }
     let drawnWidth = 0;
     const draw = () => {
       const width = plot.clientWidth;
       if (!plot.isConnected || width <= 0) return;
       drawnWidth = width;
       paint(plot, chartMarkup(model, width, getComputedStyle(plot)));
+      fitDays();   // the card's width is the table's room too
     };
     draw();
     if (typeof ResizeObserver === 'function') {
-      shown.observer = new ResizeObserver(() => { if (plot.clientWidth !== drawnWidth) draw(); });
+      shown.observer = new ResizeObserver(() => {
+        if (plot.clientWidth !== drawnWidth) draw();
+        else fitDays();
+      });
       shown.observer.observe(plot);
+      // The table's own size too, which changes without the card's when the
+      // reader's text size does, and which a table that fits would otherwise
+      // carry past the card's edge.
+      if (figures) shown.observer.observe(figures.querySelector('table'));
     }
     // A cold load can draw before the webfonts arrive and measure its labels in
     // the fallback face; it draws again once they are in.
