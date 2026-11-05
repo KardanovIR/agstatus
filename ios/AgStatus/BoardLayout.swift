@@ -216,6 +216,11 @@ enum BoardArrangement: Equatable {
     /// of two, and an empty board's row of limits. As the limit blocks shipped.
     static let headGap: CGFloat = 10
 
+    /// Above the heads, under the navigation bar: the same wherever they are
+    /// pinned, and where an idle board opens its scrolling empty state with
+    /// them, so heads that move between the two are not moved down the screen.
+    static let headsTop: CGFloat = 10
+
     /// How many `minColumn` columns fit in `width`, gutters included. Never
     /// less than one: a board always has room for a list.
     static func fit(width: CGFloat, minColumn: CGFloat = minColumn) -> Int {

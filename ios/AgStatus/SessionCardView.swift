@@ -314,6 +314,17 @@ struct SessionCardView: View {
                         HStack(spacing: 0) { staleWords(now: now); metaSeparator; tokensFigure(tokensLabel) }
                             .fixedSize()
                     }
+                    if stacked {
+                        // A stacked card has the height, and its line the
+                        // width of the card: the words keep their line and
+                        // the figure takes the next, where the one-line
+                        // fallback below gave the words up for "14m ago" from
+                        // AX3, on the card that most needs them said.
+                        VStack(alignment: .leading, spacing: 0) {
+                            metaRow { staleWords(now: now) }
+                            tokensFigure(tokensLabel)
+                        }
+                    }
                     metaRow {
                         HStack(spacing: 0) { timeText(now: now, stale: true); metaSeparator; tokensFigure(tokensLabel) }
                             .fixedSize()

@@ -54,6 +54,10 @@ struct BoardView: View {
     /// exactly `BoardArrangement.minColumn`, and the head's thresholds scale
     /// by the same factor (`BoardPlan.scale`).
     @ScaledMetric(relativeTo: .title3) private var minColumn = BoardArrangement.minColumn
+    /// The connection lamp, 9pt at the default size, growing with the text
+    /// as the DEMO badge that stands in its place does, to 15pt; past that the
+    /// long press shows it large with its word (`connectionDot`).
+    @ScaledMetric(relativeTo: .caption2) private var lampMetric: CGFloat = 9
 
     /// At an accessibility size a phone pins the agent line, not its heads:
     /// `BoardArrangement.headsScroll`.
@@ -353,7 +357,7 @@ struct BoardView: View {
             headRows(plan, perRow: plan.wide ? min(plan.groups.count, 3) : 2,
                      gap: BoardArrangement.headGap, level: plan.wide, scroller: scroller)
                 .padding(.horizontal, Theme.Space.md)
-                .padding(.top, 10)
+                .padding(.top, BoardArrangement.headsTop)
                 .padding(.bottom, 2)
         } else if plan.headsScroll {
             // More agents than this board pins heads for: on a wide board more
@@ -372,7 +376,7 @@ struct BoardView: View {
                 // `narrowPinnedWindows`.
                 headRows(plan, perRow: 2, gap: BoardArrangement.headGap, level: false, scroller: scroller)
                     .padding(.horizontal, Theme.Space.md)
-                    .padding(.top, 10)
+                    .padding(.top, BoardArrangement.headsTop)
                     .padding(.bottom, 2)
             case .columns:
                 // The same tracks as the columns beneath, from the same
@@ -381,7 +385,7 @@ struct BoardView: View {
                 headRows(plan, perRow: plan.groups.count, gap: BoardArrangement.agentGutter,
                          level: true, scroller: scroller)
                     .padding(.horizontal, Theme.Space.md)
-                    .padding(.top, 10)
+                    .padding(.top, BoardArrangement.headsTop)
                     .padding(.bottom, 2)
             case .stackedOne:
                 // One agent: there is nothing to put beside it, so its head
@@ -389,7 +393,7 @@ struct BoardView: View {
                 // they were only bars.
                 headRows(plan, perRow: 1, gap: 0, level: false, canStrip: true, scroller: scroller)
                     .padding(.horizontal, Theme.Space.md)
-                    .padding(.top, 10)
+                    .padding(.top, BoardArrangement.headsTop)
                     .padding(.bottom, 2)
             case .stackedMany:
                 // Always `headsScroll`, and drawn above. The case is here
@@ -930,7 +934,10 @@ struct BoardView: View {
         .padding(.horizontal, -5)
     }
 
-    /// The same reach, from a 21pt target to about 40 by 45.
+    /// The same reach, from a 21pt target to 44 by 44. Toward Enable it
+    /// reaches 5pt, to meet Enable's own 5pt in the middle of the 10pt between
+    /// them; the rest goes the other way, over the tip's 14pt inset and 4pt
+    /// into the gutter beyond it, where there is nothing else to hit.
     private var pushTipClose: some View {
         Button {
             withMotion { pushTipShown = true }
@@ -941,13 +948,13 @@ struct BoardView: View {
                 .padding(4)
                 .padding(.vertical, 12)
                 .padding(.leading, 5)
-                .padding(.trailing, 14)
+                .padding(.trailing, 18)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .padding(.vertical, -12)
         .padding(.leading, -5)
-        .padding(.trailing, -14)
+        .padding(.trailing, -18)
         .accessibilityLabel("Dismiss notification tip")
     }
 
@@ -971,8 +978,9 @@ struct BoardView: View {
     /// columns — they leave this a strip, about 150pt on a 6.9" phone: the
     /// moon filled it, and the sentence that says nothing is running sat
     /// below the fold. Without them the title comes first, and the rest
-    /// scrolls. On a narrower sideways board, an SE or a 6.1" phone, and at an
-    /// accessibility size, the heads scroll in here instead (`idleHeads`),
+    /// scrolls. On a narrower sideways board (under 718pt: an SE, a mini, an
+    /// iPhone 15 or 16), on a wide one past four limit windows a head, and at
+    /// an accessibility size, the heads scroll in here instead (`idleHeads`),
     /// and the sentence follows them.
     private func emptyState(_ plan: BoardPlan) -> some View {
         ScrollView {
@@ -991,7 +999,7 @@ struct BoardView: View {
     /// 64pt above it go.
     private func emptyMessage(hasAgents: Bool, compact: Bool, underHeads: Bool) -> some View {
         let plain = compact || underHeads
-        return VStack(spacing: compact ? Theme.Space.xs : 16) {
+        return VStack(spacing: compact ? Theme.Space.xs : Theme.Space.md) {
                 if !plain {
                     Image(systemName: "moon.zzz.fill")
                         .font(.system(size: 44))
@@ -1010,8 +1018,8 @@ struct BoardView: View {
                     firstRun
                 }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, compact ? Theme.Space.sm : 24)
+        .padding(.horizontal, Theme.Space.lg)
+        .padding(.vertical, compact ? Theme.Space.sm : Theme.Space.lg)
         .padding(.top, plain ? 0 : 64)
         .frame(maxWidth: .infinity)
     }
@@ -1030,7 +1038,7 @@ struct BoardView: View {
                 }
             }
             .padding(.horizontal, Theme.Space.md)
-            .padding(.top, 10)
+            .padding(.top, BoardArrangement.headsTop)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -1143,7 +1151,9 @@ struct BoardView: View {
                         .foregroundStyle(Theme.textSecondary)
                     Text("Pull down to retry.")
                         .font(.caption)
-                        .foregroundStyle(Theme.textSecondary.opacity(0.7))
+                        // The line's token, 5.88:1. Secondary at 70% was a
+                        // grey of its own, darker than the lowest text token.
+                        .foregroundStyle(Theme.textTertiary)
                 }
                 .padding(.top, short ? Theme.Space.lg : 160)
                 .frame(maxWidth: .infinity)
@@ -1241,21 +1251,23 @@ struct BoardView: View {
     /// the corner of an eye. It also glowed, the only lit thing on a board
     /// where nothing glows.
     private var connectionDot: some View {
-        Group {
+        let size = min(lampMetric, 15)
+        let k = size / 9
+        return Group {
             switch lampState {
             case .live:
                 Circle().fill(dotColor)
             case .connecting, .reconnecting:
-                Circle().strokeBorder(dotColor, lineWidth: 2)
+                Circle().strokeBorder(dotColor, lineWidth: 2 * k)
             case .boardGone:
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .heavy))
+                    .font(.system(size: size, weight: .heavy))
                     .foregroundStyle(dotColor)
             case .idle, .demo:
-                Circle().strokeBorder(dotColor, style: StrokeStyle(lineWidth: 1.5, dash: [2, 2]))
+                Circle().strokeBorder(dotColor, style: StrokeStyle(lineWidth: 1.5 * k, dash: [2 * k, 2 * k]))
             }
         }
-        .frame(width: 9, height: 9)
+        .frame(width: size, height: size)
         // One element: what it is, then where it stands. A bare
         // "Reconnecting" named nothing. Not .updatesFrequently, which only
         // has VoiceOver poll the element its cursor is on: a dropped
@@ -1264,6 +1276,22 @@ struct BoardView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Board connection")
         .accessibilityValue(dotDescription)
+        // At the accessibility sizes a long press shows the lamp large, with
+        // its word, as the system's own bar buttons are shown: a 15pt ring
+        // against a 15pt disc is still a small difference to read.
+        .accessibilityShowsLargeContentViewer {
+            Label(dotDescription, systemImage: lampSymbol)
+        }
+    }
+
+    /// The lamp's shape as a symbol, for the large content viewer.
+    private var lampSymbol: String {
+        switch lampState {
+        case .live: "circle.fill"
+        case .connecting, .reconnecting: "circle"
+        case .boardGone: "xmark"
+        case .idle, .demo: "circle.dashed"
+        }
     }
 
     private var dotColor: Color {
@@ -1424,16 +1452,28 @@ private struct BoardPlan {
     /// three windows at AX4 on an SE, six from AX2 — where nothing could
     /// scroll it back into view.
     ///
-    /// And on a phone held sideways that is too narrow for two columns, an
-    /// SE or a 6.1" phone, where the heads go two across in their narrow
-    /// form, 54pt a window: on an SE's board of about 261pt between the
-    /// navigation bar and the streak, four windows already ran past its
-    /// bottom edge. Wider sideways boards, a 6.3" phone and up, lay the heads
-    /// across in one row of their regular form, which fits.
+    /// And on a phone held sideways that is too narrow for two columns — a
+    /// board under 718pt: an SE, a mini, an iPhone 15 or 16 — where the heads
+    /// go two across in their narrow form, 54pt a window: on an SE's board of
+    /// about 261pt between the navigation bar and the streak, four windows
+    /// already ran past its bottom edge. Wider sideways boards, 718pt and up —
+    /// an iPhone 12 to 14 or 16e, a 6.3" phone and larger — lay two heads
+    /// across in one row of their regular form, which fits up to four windows
+    /// a head. Past four it does not on the shortest of them: with six the row
+    /// is 252pt, which left the empty state 6pt on a 402pt-tall phone and
+    /// nothing on a 390pt one; with five, 29pt on the 390pt phones, under the
+    /// height of its first line, and 41pt on the 402pt ones, which held it.
+    /// The count cannot tell those apart, so past four the heads scroll on
+    /// both, as past `narrowPinnedWindows` a phone's pinned heads give way to
+    /// the agent line, and on a 402pt phone with five the sentence is then a
+    /// scroll away.
     ///
     /// No agent line: an idle board has no sections for its names to send
     /// you to, and nothing blocked.
-    var idleHeadsScroll: Bool { idle && (largeText || (compactHeight && !wide)) }
+    var idleHeadsScroll: Bool {
+        idle && (largeText || (compactHeight
+            && (!wide || groups.mostWindows > BoardArrangement.narrowPinnedWindows)))
+    }
 
     /// One agent's column, and the head over it.
     var track: CGFloat { BoardArrangement.track(width: width, count: groups.count) }
@@ -1452,7 +1492,7 @@ private struct BoardPlan {
     /// `settles(on:)`.
     var shape: Shape {
         Shape(arrangement: arrangement, tracks: arrangement == .columns ? groups.count : 0, idle: idle,
-              headsScroll: headsScroll, agents: groups.map(\.source))
+              headsScroll: headsScroll || idleHeadsScroll, agents: groups.map(\.source))
     }
 
     struct Shape: Hashable {
@@ -1463,7 +1503,11 @@ private struct BoardPlan {
         let idle: Bool
         /// Pinned heads or the agent line. A phone turned on its side keeps
         /// its list, but trades the one for the other, and its list's groups
-        /// go from named sections to heads among the rows.
+        /// go from named sections to heads among the rows. On an idle board,
+        /// pinned heads or heads scrolling in the empty state
+        /// (`idleHeadsScroll`), which a fifth limit window can swap: animated,
+        /// the outgoing row slid up under the toolbar and "Nothing running"
+        /// slid down through the incoming heads.
         let headsScroll: Bool
         /// Which agents are on the board. One arriving or leaving changes
         /// every head and every group even where the arrangement and the
