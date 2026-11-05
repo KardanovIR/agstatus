@@ -60,13 +60,20 @@
   border-color: var(--state-line);
 }
 
-/* More contrast (see tokens.css): blocked's edge goes from 42% of the state
- * colour to 70%. The other edges are mixes of --ink-800 and follow it there. */
+.card.stale { opacity: 0.62; }
+
+/* More contrast (see tokens.css). Blocked's edge goes from 42% of the state
+ * colour to 70%; the other edges are mixes of --ink-800 and follow it there.
+ *
+ * A stale card still dims, but only as far as its words stay readable. At
+ * 0.62 its meta line is 3.41:1 under this setting; 0.8 keeps every word at
+ * AA, 4.80:1 at the least (--text-3 on a planning card). iOS no longer dims
+ * a stale card at all, at any contrast (SessionCardView on claude/ios-a11y):
+ * it untints it and says "no update for 14m" instead. */
 @media (prefers-contrast: more) {
   .card { --state-line: oklch(from var(--state) l c h / 0.70); }
+  .card.stale { opacity: 0.8; }
 }
-
-.card.stale { opacity: 0.62; }
 
 /* Name first and largest: it is how you know WHICH session you are looking at,
  * and the status only matters once you have found the right card. The first

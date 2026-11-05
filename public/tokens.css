@@ -225,7 +225,9 @@
  *   hover that brightens a border would dim it instead. iOS has no such token.
  *
  * The blocked card's edge and the limit meter's track are derived where they
- * are drawn, so their second values live in card.css. */
+ * are drawn, so their second values live in card.css. So do the two things
+ * the board dims with opacity, which no token reaches: zero counts
+ * (shell.css) and stale cards (card.css) dim only as far as AA allows. */
 @media (prefers-contrast: more) {
   :root {
     --ink-800: oklch(50% 0.011 var(--hue));

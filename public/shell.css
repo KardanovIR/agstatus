@@ -96,6 +96,13 @@ main {
 .stat.zero { opacity: 0.45; }
 .stat.zero b { color: var(--text-3); }
 
+/* More contrast (see tokens.css): the zeros still recede, but only as far as
+ * their words stay readable. 0.7 is the least opacity that keeps --text-3 at
+ * AA on the ground under that setting, 4.63:1, where 0.45 leaves it 2.57:1. */
+@media (prefers-contrast: more) {
+  .stat.zero { opacity: 0.7; }
+}
+
 .stat .dot {
   width: 6px;
   height: 6px;
