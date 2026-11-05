@@ -2,10 +2,13 @@ package com.kardanov.agstatus
 
 import kotlinx.serialization.decodeFromString
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.abs
 
 /**
  * The arithmetic behind the usage detail screen. It has to match the web
@@ -207,5 +210,124 @@ class UsageDetailTest {
     @Test
     fun demoHistoryIsDeterministic() {
         assertEquals(DemoData.usageHistory(30, noon), DemoData.usageHistory(30, noon))
+    }
+
+    @Test
+    fun demoFirstDayGivesEachWindowOneReadingAndCodexItsSix() {
+        // The switches behind the first-day captures: every window starts
+        // today, and Codex reports all six windows a report may carry.
+        try {
+            DemoData.limitWindows = 6
+            DemoData.firstDayWindows = setOf("all")
+            val demo = DemoData.usageHistory(UsageDetail.DEFAULT_DAYS, noon)
+            val days = UsageDetail.dayRange(demo.days, noon)
+
+            assertEquals(6, demo.history.count { it.source == "codex" })
+            for (series in demo.history) {
+                val sampled = UsageDetail.sampleSeries(series.points, days)
+                assertTrue(series.windowId, UsageDetail.isSingleReading(sampled))
+                assertNotNull(sampled.last())
+            }
+        } finally {
+            DemoData.limitWindows = 0
+            DemoData.firstDayWindows = emptySet()
+        }
+    }
+
+    // MARK: - Lines, patterns and marks
+
+    @Test
+    fun limitLinesTakeTheOtherClientsColoursInTheirOrder() {
+        // done, coding, planning, testing, idle, blocked, as iOS's
+        // seriesColors and the web's LINE_COLORS. It was done, coding,
+        // testing, which drew "week" and "week_fable" as one blue line.
+        assertEquals(
+            listOf(Theme.done, Theme.coding, Theme.planning, Theme.testing, Theme.idle, Theme.blocked),
+            (0 until 6).map { Theme.usageLineColor(it) },
+        )
+        assertEquals(Theme.done, Theme.usageLineColor(6))
+    }
+
+    @Test
+    fun eachLineHasAPatternPairedWithItsColour() {
+        assertEquals(
+            listOf(
+                emptyList(),                                 // solid
+                listOf(4.25f, 5.25f),                        // dashed
+                listOf(0f, 4.5f),                            // dotted
+                listOf(4.25f, 4.75f, 0f, 4.75f),             // dash, dot
+                listOf(9.25f, 5.25f),                        // long dash
+                listOf(4.25f, 4.75f, 0f, 4.75f, 0f, 4.75f),  // dash, dot, dot
+            ),
+            (0 until 6).map { Theme.usageLineDash(it) },
+        )
+    }
+
+    @Test
+    fun aKeyEndsOnAWholeMark() {
+        // The web's keys, 26 wide: solid fills them, three 6dp dashes take 25,
+        // six dots 24.25. Never a stub that reads as another pattern.
+        assertEquals(
+            listOf(26f, 25f, 24.25f),
+            (0 until 3).map {
+                UsageDetail.keySampleLength(Theme.usageLineDash(it), Theme.USAGE_LINE_WIDTH, 26f)
+            },
+        )
+    }
+
+    @Test
+    fun eachWindowHasAMarkPairedWithItsColourAndPattern() {
+        assertEquals(
+            listOf(
+                Theme.UsageMark.CIRCLE, Theme.UsageMark.PLUS, Theme.UsageMark.SQUARE,
+                Theme.UsageMark.TRIANGLE, Theme.UsageMark.DIAMOND, Theme.UsageMark.TRIANGLE_DOWN,
+            ),
+            (0 until 6).map { Theme.usageMark(it) },
+        )
+    }
+
+    @Test
+    fun marksWeighTheSameAndSitOnTheirCentres() {
+        for (mark in Theme.UsageMark.entries) {
+            val outline = mark.outline
+            val area = if (mark == Theme.UsageMark.CIRCLE) {
+                PI * Theme.UsageMark.CIRCLE_RADIUS * Theme.UsageMark.CIRCLE_RADIUS
+            } else {
+                // The shoelace formula over the outline.
+                abs(outline.indices.sumOf { i ->
+                    val a = outline[i]
+                    val b = outline[(i + 1) % outline.size]
+                    (a.x * b.y - b.x * a.y).toDouble()
+                }) / 2
+            }
+            // About an 8dp circle each, so no window's mark outweighs another's.
+            assertTrue("$mark covers $area dp²", area in 43.0..52.0)
+            // The reading is the mark's centre: a triangle's centroid.
+            if (outline.isNotEmpty()) {
+                assertEquals(0.0, outline.map { it.x.toDouble() }.average(), 1e-4)
+                assertEquals(0.0, outline.map { it.y.toDouble() }.average(), 1e-4)
+            }
+        }
+        // In a key a triangle's box is centred instead, beside the name.
+        for (mark in listOf(Theme.UsageMark.TRIANGLE, Theme.UsageMark.TRIANGLE_DOWN)) {
+            val top = mark.outline.minOf { it.y } + mark.centreBelowMiddle
+            val bottom = mark.outline.maxOf { it.y } + mark.centreBelowMiddle
+            assertEquals(0f, top + bottom, 1e-4f)
+        }
+    }
+
+    @Test
+    fun aWindowWithOneDaysReadingIsMarkedRatherThanDrawn() {
+        assertTrue(UsageDetail.isSingleReading(listOf(null, null, 34.0)))
+        assertFalse(UsageDetail.isSingleReading(listOf(null, 20.0, 34.0)))
+        assertFalse(UsageDetail.isSingleReading(listOf(null, null)))
+    }
+
+    @Test
+    fun marksGrowAtHalfTheRateOfTheText() {
+        assertEquals(1f, UsageDetail.growth(1f), 0f)
+        assertEquals(1.5f, UsageDetail.growth(2f), 0f)
+        // A smaller text size leaves the plot as it is.
+        assertEquals(1f, UsageDetail.growth(0.85f), 0f)
     }
 }

@@ -134,28 +134,48 @@ object DemoData {
             ),
             UsageInfo(
                 source = "codex",
-                windows = listOf(
-                    UsageWindow(
-                        id = "week",
-                        label = "Weekly (all models)",
-                        usedPct = 47.0,
-                        resetsAt = now + 4 * 86_400_000L + 2 * 3_600_000L,
-                    ),
-                    UsageWindow(
-                        id = "session_gpt_6_astra",
-                        label = "Session (GPT-6-Astra)",
-                        usedPct = 22.0,
-                        resetsAt = now + 96 * 60_000L,
-                    ),
-                    UsageWindow(
-                        id = "week_gpt_6_astra",
-                        label = "Weekly (GPT-6-Astra)",
-                        usedPct = 38.0,
-                        resetsAt = now + 4 * 86_400_000L + 2 * 3_600_000L,
-                    ),
-                ),
+                windows = codexWindows(now).take(if (limitWindows in 1..6) limitWindows else 3),
                 updatedAt = now,
             ),
+        )
+    }
+
+    /**
+     * Screenshot switches for the usage screens, set from MainActivity's
+     * intent in a debug build before the demo starts, as iOS's
+     * AGSTATUS_DEMO_LIMITS and AGSTATUS_DEMO_FIRST_DAY.
+     *
+     * [limitWindows], 1 to 6, gives Codex that many of the six windows one
+     * report may carry, in its usage block and its history alike: the chart's
+     * six patterns and marks can only be looked at with six. Anything else
+     * leaves the demo's three.
+     *
+     * [firstDayWindows] starts those windows' history today, with a single
+     * reading, as on a board's first day; "all" is every window.
+     */
+    var limitWindows: Int = 0
+    var firstDayWindows: Set<String> = emptySet()
+
+    /** Codex at the six windows a report may carry; the demo shows the first three. */
+    private fun codexWindows(now: Long): List<UsageWindow> {
+        val week = now + 4 * 86_400_000L + 2 * 3_600_000L
+        return listOf(
+            UsageWindow(id = "week", label = "Weekly (all models)", usedPct = 47.0, resetsAt = week),
+            UsageWindow(
+                id = "session_gpt_6_astra",
+                label = "Session (GPT-6-Astra)",
+                usedPct = 22.0,
+                resetsAt = now + 96 * 60_000L,
+            ),
+            UsageWindow(id = "week_gpt_6_astra", label = "Weekly (GPT-6-Astra)", usedPct = 38.0, resetsAt = week),
+            UsageWindow(
+                id = "session_gpt_6_mini",
+                label = "Session (GPT-6-Mini)",
+                usedPct = 9.0,
+                resetsAt = now + 41 * 60_000L,
+            ),
+            UsageWindow(id = "week_gpt_6_mini", label = "Weekly (GPT-6-Mini)", usedPct = 64.0, resetsAt = week),
+            UsageWindow(id = "week_review", label = "Weekly (code review)", usedPct = 12.0, resetsAt = week),
         )
     }
 
@@ -260,7 +280,11 @@ object DemoData {
         val random = Random(source.hashCode() * 31 + window.id.hashCode())
         val weekly = window.id.startsWith("week")
         val hours = if (weekly) intArrayOf(11) else intArrayOf(7, 13, 19)
-        val firstDay = if (index == 2 && days.size > 8) days.size / 2 else 0
+        val firstDay = when {
+            "all" in firstDayWindows || window.id in firstDayWindows -> days.lastIndex
+            index == 2 && days.size > 8 -> days.size / 2
+            else -> 0
+        }
 
         val points = mutableListOf<UsagePoint>()
         var previous = Double.NaN

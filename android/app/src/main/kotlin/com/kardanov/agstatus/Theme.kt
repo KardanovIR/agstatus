@@ -14,12 +14,14 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import kotlin.math.sqrt
 
 /**
  * The AgStatus design system, third client.
@@ -235,17 +237,144 @@ object Theme {
         else -> done
     }
 
+    // ---- Usage chart -----------------------------------------------------
+    //
+    // The limit lines on the usage screen, which iOS (Theme.seriesColors,
+    // seriesStroke, seriesMarker) and the web (LINE_COLORS, LINE_DASHES,
+    // LINE_MARKS in public/app.js) draw the same way: the same colours in the
+    // same order, the same patterns, the same marks. A window drawn teal on one
+    // client and lilac on another is the drift a shared palette exists to stop.
+
     /**
-     * Limit-history line colours.
+     * Limit-history line colours: done, coding, planning, testing, idle,
+     * blocked. The first three are what Claude reports, and they are as far
+     * apart as six state colours allow. Red, the alarm, comes last, because a
+     * red limit line reads as a limit in trouble and only a sixth window draws
+     * one.
      *
-     * The order matches iOS `seriesColors` and `LINE_COLORS` in public/app.js.
-     * It used to start `planning, coding, …` while both of those started
-     * `done, coding, …`, so the same window was drawn in a different colour
-     * depending on which client you looked at.
+     * It was done, coding, testing: blue and teal are 0.056 apart in OKLab
+     * (0.044 for a deuteranope), so "week" and "week_fable" drew as one blue
+     * line. Before that it started planning, coding, … while the other clients
+     * started done, coding, …. All of these are measured on the colours as
+     * drawn, 8-bit sRGB, with Machado 2009 for colour-blind vision.
      */
-    private val usageLines = listOf(done, coding, testing, planning, idle, blocked)
+    private val usageLines = listOf(done, coding, planning, testing, idle, blocked)
 
     fun usageLineColor(index: Int): Color = usageLines[index.mod(usageLines.size)]
+
+    /** A limit line's width in dp, in the chart and in its key. */
+    const val USAGE_LINE_WIDTH = 1.75f
+
+    /**
+     * Each limit line's pattern, paired with its colour by position: solid,
+     * dashed, dotted, dash-dot, long dash, dash-dot-dot. Hue is not enough on
+     * its own (the second principle): blue and lilac collapse for a protanope
+     * (0.009), and blue and teal meet again from a fourth window on. The two
+     * patterns most alike, dashed and long dash or dash-dot and dash-dot-dot,
+     * fall on colours that hue does tell apart.
+     *
+     * Lengths run along the path, in dp. The round caps add half the line's
+     * width to each end of a mark, so a mark reads 1.75dp longer than written
+     * and a gap 1.75dp shorter, and a mark of zero length is a round dot.
+     * Every gap reads 3 to 3.5dp, the least that stays open on this line.
+     */
+    private val usageLineDashes: List<List<Float>> = listOf(
+        emptyList(),                                 // solid
+        listOf(4.25f, 5.25f),                        // dashed: 6dp marks
+        listOf(0f, 4.5f),                            // dotted
+        listOf(4.25f, 4.75f, 0f, 4.75f),             // dash, dot
+        listOf(9.25f, 5.25f),                        // long dash: 11dp marks
+        listOf(4.25f, 4.75f, 0f, 4.75f, 0f, 4.75f),  // dash, dot, dot
+    )
+
+    /** The nth limit line's pattern, in dp along the path; empty is solid. */
+    fun usageLineDash(index: Int): List<Float> = usageLineDashes[index.mod(usageLineDashes.size)]
+
+    /**
+     * A limit window's mark for a single reading.
+     *
+     * A window the board has only just started recording has one reading, and
+     * a point cannot carry a pattern. Every such reading sits on the same day,
+     * today, so a dot in the window's colour would differ from its neighbours
+     * by hue alone until the second day's reading. So each window has a shape
+     * as well, paired with its colour and pattern by position. A shape rather
+     * than a short sample of the line's pattern: along a time axis a sample
+     * spans days, and reads as the run of days it is not.
+     *
+     * Which shape goes on which colour was measured, on the colours as drawn.
+     * The first four colours meet one another under one kind of colour-blind
+     * vision or another (blue comes within 0.05 of lilac, teal and green), so
+     * they take one shape of each kind, and blue, which meets the most, takes
+     * the plus, the shape least like the rest. The two pairs alike in shape,
+     * square and diamond, triangle up and down, fall on colours that stay
+     * 0.128 and 0.143 apart. Red takes the triangle that points down: pointing
+     * up, a red triangle is a warning sign.
+     *
+     * Each covers about what an 8dp circle does, 43 to 52dp², so no window's
+     * mark outweighs another's. The sizes are iOS's in points and the web's in
+     * px, at the default text size.
+     */
+    enum class UsageMark {
+        CIRCLE, PLUS, SQUARE, TRIANGLE, DIAMOND, TRIANGLE_DOWN;
+
+        /**
+         * The mark's outline, in dp from the reading it marks, which is where
+         * a triangle's centroid sits: that is where the eye puts it. Empty for
+         * the circle, which is [CIRCLE_RADIUS] round the reading.
+         */
+        val outline: List<Offset>
+            get() = when (this) {
+                CIRCLE -> emptyList()
+                PLUS -> listOf(                       // arms 3.25dp thick, 9.5dp across
+                    Offset(-1.625f, -4.75f), Offset(1.625f, -4.75f), Offset(1.625f, -1.625f),
+                    Offset(4.75f, -1.625f), Offset(4.75f, 1.625f), Offset(1.625f, 1.625f),
+                    Offset(1.625f, 4.75f), Offset(-1.625f, 4.75f), Offset(-1.625f, 1.625f),
+                    Offset(-4.75f, 1.625f), Offset(-4.75f, -1.625f), Offset(-1.625f, -1.625f),
+                )
+                SQUARE -> listOf(
+                    Offset(-3.6f, -3.6f), Offset(3.6f, -3.6f), Offset(3.6f, 3.6f), Offset(-3.6f, 3.6f),
+                )
+                TRIANGLE -> listOf(
+                    Offset(0f, -TRIANGLE_HEIGHT * 2 / 3),
+                    Offset(5f, TRIANGLE_HEIGHT / 3),
+                    Offset(-5f, TRIANGLE_HEIGHT / 3),
+                )
+                DIAMOND -> listOf(Offset(0f, -5f), Offset(5f, 0f), Offset(0f, 5f), Offset(-5f, 0f))
+                TRIANGLE_DOWN -> listOf(
+                    Offset(0f, TRIANGLE_HEIGHT * 2 / 3),
+                    Offset(5f, -TRIANGLE_HEIGHT / 3),
+                    Offset(-5f, -TRIANGLE_HEIGHT / 3),
+                )
+            }
+
+        /**
+         * How far below the middle of its box the reading sits, in dp: a key
+         * centres the box beside its name, where the chart centres the shape on
+         * the reading.
+         */
+        val centreBelowMiddle: Float
+            get() = when (this) {
+                TRIANGLE -> TRIANGLE_HEIGHT / 6
+                TRIANGLE_DOWN -> -TRIANGLE_HEIGHT / 6
+                else -> 0f
+            }
+
+        companion object {
+            /** The circle's radius in dp. */
+            const val CIRCLE_RADIUS = 4f
+
+            /** A triangle with 10dp sides is 8.66dp tall. */
+            val TRIANGLE_HEIGHT = 5f * sqrt(3f)
+        }
+    }
+
+    private val usageMarks = listOf(
+        UsageMark.CIRCLE, UsageMark.PLUS, UsageMark.SQUARE,
+        UsageMark.TRIANGLE, UsageMark.DIAMOND, UsageMark.TRIANGLE_DOWN,
+    )
+
+    /** The nth limit window's mark for a single reading, in the chart and in its key. */
+    fun usageMark(index: Int): UsageMark = usageMarks[index.mod(usageMarks.size)]
 
     /**
      * Tokens-per-day bars, half-strength so the limit lines read over them.

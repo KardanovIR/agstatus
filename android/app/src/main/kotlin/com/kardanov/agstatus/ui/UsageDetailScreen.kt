@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -40,12 +41,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -106,6 +111,9 @@ fun UsageDetailScreen(
     }
     val projects = remember(data, source) { UsageDetail.projectTotals(data.projects, source) }
     val series = remember(data, source) { data.history.filter { it.source == source } }
+    // Each window on the day grid, which both the chart and its keys read: a
+    // window with a single day's reading is a mark in the one and the other.
+    val sampled = remember(series, days) { series.map { UsageDetail.sampleSeries(it.points, days) } }
     val totalTokens = remember(tokensPerDay) { tokensPerDay.sum() }
     val maxTokens = remember(tokensPerDay) { max(1L, tokensPerDay.maxOrNull() ?: 0L) }
 
@@ -164,13 +172,13 @@ fun UsageDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     DetailCard {
-                        ChartHeader(totalTokens = totalTokens, series = series)
+                        ChartHeader(totalTokens = totalTokens, series = series, sampled = sampled)
                         TokensChart(
                             name = name,
                             days = days,
                             tokensPerDay = tokensPerDay,
                             maxTokens = maxTokens,
-                            series = series,
+                            sampled = sampled,
                             modifier = Modifier.padding(top = 6.dp),
                         )
                     }
@@ -249,22 +257,22 @@ private fun SectionTitle(text: String, modifier: Modifier = Modifier) {
 
 /** "TOKENS PER DAY · 512.4M total" on the left, the line legend on the right. */
 @Composable
-private fun ChartHeader(totalTokens: Long, series: List<UsageSeries>) {
+private fun ChartHeader(totalTokens: Long, series: List<UsageSeries>, sampled: List<List<Double?>>) {
     // A phone width cannot hold the title and three legend keys on one line
     // without cutting one of them, so there the legend drops underneath.
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     if (wide) {
+        // The title keeps its width and the keys wrap in the rest, right
+        // aligned, so a sixth window adds a row of keys, not a cut title.
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Bottom,
+            verticalAlignment = Alignment.Top,
         ) {
             ChartTitle(
                 totalTokens = totalTokens,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(end = 10.dp),
+                modifier = Modifier.padding(end = 16.dp),
             )
-            ChartLegend(series, alignment = Alignment.End)
+            ChartLegend(series, sampled, Modifier.weight(1f), alignment = Alignment.End)
         }
     } else {
         Column(
@@ -272,7 +280,7 @@ private fun ChartHeader(totalTokens: Long, series: List<UsageSeries>) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             ChartTitle(totalTokens, Modifier.fillMaxWidth())
-            ChartLegend(series, Modifier.fillMaxWidth(), alignment = Alignment.Start)
+            ChartLegend(series, sampled, Modifier.fillMaxWidth(), alignment = Alignment.Start)
         }
     }
 }
@@ -295,10 +303,17 @@ private fun ChartTitle(totalTokens: Long, modifier: Modifier = Modifier) {
     }
 }
 
-/** A coloured dash per window id, in the same order the lines are drawn. */
+/**
+ * One key per window, in the order the lines are drawn, each what the chart
+ * draws for its window: a sample of its line, or its mark while it has a
+ * single reading. The keys wrap as words do, one row where they fit and a new
+ * row where the next does not, so six windows take two rows rather than
+ * three with a cut-off name.
+ */
 @Composable
 private fun ChartLegend(
     series: List<UsageSeries>,
+    sampled: List<List<Double?>>,
     modifier: Modifier = Modifier,
     alignment: Alignment.Horizontal = Alignment.End,
 ) {
@@ -313,45 +328,101 @@ private fun ChartLegend(
         )
         return
     }
-    Column(
+    FlowRow(
         modifier = modifier,
-        horizontalAlignment = alignment,
+        horizontalArrangement = Arrangement.spacedBy(12.dp, alignment),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        // Three keys sit across a phone width; a chattier agent wraps onto
-        // further lines rather than squeezing the title out of the header.
-        for (row in series.withIndex().chunked(3)) {
+        for ((index, entry) in series.withIndex()) {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                for ((index, entry) in row) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier
-                                .size(width = 10.dp, height = 2.dp)
-                                .background(Theme.usageLineColor(index), RoundedCornerShape(1.dp))
-                        )
-                        Text(
-                            text = entry.windowId,
-                            fontSize = 10.sp,
-                            color = Theme.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                if (UsageDetail.isSingleReading(sampled.getOrElse(index) { emptyList() })) {
+                    MarkKey(index)
+                } else {
+                    LineKey(index)
                 }
+                Text(
+                    text = entry.windowId,
+                    fontSize = 10.sp,
+                    color = Theme.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
+        }
+    }
+}
+
+/**
+ * A limit line's key: a sample of the line, drawn as the chart draws it, so
+ * key and line match by pattern as well as by hue. It holds as many whole
+ * marks as fit, so no key ends in a stub that reads as another pattern.
+ */
+@Composable
+private fun LineKey(index: Int) {
+    val color = Theme.usageLineColor(index)
+    val dash = Theme.usageLineDash(index)
+    Canvas(Modifier.size(width = KEY_WIDTH, height = 6.dp)) {
+        val lineWidth = Theme.USAGE_LINE_WIDTH.dp.toPx()
+        val length = UsageDetail.keySampleLength(dash, Theme.USAGE_LINE_WIDTH, KEY_WIDTH.value).dp.toPx()
+        val start = (size.width - length) / 2f + lineWidth / 2f
+        drawLine(
+            color = color,
+            start = Offset(start, size.height / 2f),
+            end = Offset(start + length - lineWidth, size.height / 2f),
+            strokeWidth = lineWidth,
+            cap = StrokeCap.Round,
+            pathEffect = dashEffect(dash),
+        )
+    }
+}
+
+/**
+ * A single reading's key: its mark, as the chart draws it, without the
+ * casing, which on the card it sits on draws nothing. A triangle is centred on
+ * its box here, beside the name, and on its centroid in the chart. It grows
+ * with the text as the chart's marks do.
+ */
+@Composable
+private fun MarkKey(index: Int) {
+    val growth = UsageDetail.growth(LocalDensity.current.fontScale)
+    val mark = Theme.usageMark(index)
+    val color = Theme.usageLineColor(index)
+    Canvas(Modifier.size(12.dp * growth)) {
+        val centre = Offset(size.width / 2f, size.height / 2f + mark.centreBelowMiddle.dp.toPx() * growth)
+        drawPath(markPath(mark, centre, growth), color)
+    }
+}
+
+private val KEY_WIDTH = 26.dp
+
+/** A line's pattern as a path effect, in px; none for a solid line. */
+private fun DrawScope.dashEffect(dash: List<Float>): PathEffect? =
+    if (dash.isEmpty()) null else PathEffect.dashPathEffect(FloatArray(dash.size) { dash[it].dp.toPx() }, 0f)
+
+/** [mark] as a path round [centre], [growth] times its size at the default text size. */
+private fun DrawScope.markPath(mark: Theme.UsageMark, centre: Offset, growth: Float): Path {
+    val unit = 1.dp.toPx() * growth
+    return Path().apply {
+        if (mark == Theme.UsageMark.CIRCLE) {
+            addOval(Rect(centre, Theme.UsageMark.CIRCLE_RADIUS * unit))
+        } else {
+            mark.outline.forEachIndexed { i, point ->
+                val x = centre.x + point.x * unit
+                val y = centre.y + point.y * unit
+                if (i == 0) moveTo(x, y) else lineTo(x, y)
+            }
+            close()
         }
     }
 }
 
 // MARK: - Chart
 
-private val CHART_HEIGHT = 196.dp
+/** The plot's height at the default text size; it grows with the text. */
+private val PLOT_HEIGHT = 166.dp
 
 /**
  * Tokens per day as bars against the left axis, each recorded limit window as
@@ -364,43 +435,68 @@ private fun TokensChart(
     days: List<String>,
     tokensPerDay: List<Long>,
     maxTokens: Long,
-    series: List<UsageSeries>,
+    sampled: List<List<Double?>>,
     modifier: Modifier = Modifier,
 ) {
     val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
     val axisStyle = remember { TextStyle(fontSize = 9.sp, color = Theme.textTertiary) }
-    val sampled = remember(series, days) {
-        series.map { UsageDetail.sampleSeries(it.points, days) }
-    }
     val topLabel = remember(maxTokens) { UsageDetail.fmtTokens(maxTokens) }
     val barColor = Theme.usageTokenBar
     val gridColor = Theme.cardBorder
     val description = "$name: tokens per day and recorded plan limits over ${days.size} days"
 
+    // The plot grows at half the rate of the reader's text, as on iOS and the
+    // web, and the space above and below it holds its labels at their size:
+    // half a label over the plot for "100%", and under it half a label for
+    // "0%", a gap and the dates. At the default size these are the 10 and
+    // 20dp they always were.
+    val growth = UsageDetail.growth(density.fontScale)
+    val labelHeight = remember(measurer, density) {
+        with(density) { measurer.measure("0", axisStyle).size.height.toDp() }
+    }
+    val above = maxOf(10.dp, labelHeight / 2 + 1.dp)
+    val below = maxOf(20.dp, labelHeight / 2 + 3.dp + labelHeight + 1.dp)
+
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .height(CHART_HEIGHT)
+            .height(above + PLOT_HEIGHT * growth + below)
             .semantics { contentDescription = description },
     ) {
         if (days.isEmpty()) return@Canvas
-        val left = 40.dp.toPx()
-        val right = 34.dp.toPx()
-        val top = 10.dp.toPx()
-        val bottom = 20.dp.toPx()
+        // The insets are measured from the labels, so they fit at any text
+        // size, and never under the 40 and 34dp they always were. Today's mark
+        // for a single reading reaches past the plot's right edge, and grows
+        // with the plot, so the gap before the percentages grows by the same
+        // rule and the mark never meets "100%".
+        val percentLabels = (0..100 step 25).map { it to measurer.measure("$it%", axisStyle) }
+        val maxLabel = measurer.measure(topLabel, axisStyle)
+        val zeroLabel = measurer.measure("0", axisStyle)
+        val gap = 8.dp.toPx()
+        val percentGap = 6.dp.toPx() * growth
+        val left = max(40.dp.toPx(), max(maxLabel.size.width, zeroLabel.size.width) + gap)
+        val right = max(34.dp.toPx(), percentLabels.maxOf { it.second.size.width } + percentGap)
+        val top = above.toPx()
+        val bottom = below.toPx()
         val plotWidth = size.width - left - right
         val plotHeight = size.height - top - bottom
         if (plotWidth <= 0f || plotHeight <= 0f) return@Canvas
 
+        // A day is a bar's width, and the first and last days sit half a bar
+        // in from the plot's edges, as on iOS and the web. Centred on the
+        // edges, half of today's bar, and today's mark, ran under "100%".
         val lastIndex = days.lastIndex
+        val barWidth = max(2.dp.toPx(), (plotWidth / days.size) * 0.62f)
+        val dayStep = if (lastIndex > 0) (plotWidth - barWidth) / lastIndex else 0f
         fun xAt(index: Int): Float =
-            if (lastIndex == 0) left + plotWidth / 2f else left + index * plotWidth / lastIndex
+            if (lastIndex == 0) left + plotWidth / 2f else left + barWidth / 2f + index * dayStep
 
         fun yAt(percent: Double): Float =
             top + plotHeight - (percent.coerceIn(0.0, 100.0) / 100.0).toFloat() * plotHeight
 
         // Grid, and the right-hand percentage axis the lines are read against.
-        for (percent in 0..100 step 25) {
+        for ((percent, label) in percentLabels) {
             val gridY = yAt(percent.toDouble())
             drawLine(
                 color = gridColor,
@@ -408,11 +504,10 @@ private fun TokensChart(
                 end = Offset(size.width - right, gridY),
                 strokeWidth = 1.dp.toPx(),
             )
-            val label = measurer.measure("$percent%", axisStyle)
             drawText(
                 textLayoutResult = label,
                 topLeft = Offset(
-                    size.width - right + 6.dp.toPx(),
+                    size.width - right + percentGap,
                     gridY - label.size.height / 2f,
                 ),
             )
@@ -420,13 +515,10 @@ private fun TokensChart(
 
         // Left-hand axis: only the busiest day and zero, because the bars are
         // a relative shape, not a table.
-        val gap = 8.dp.toPx()
-        val maxLabel = measurer.measure(topLabel, axisStyle)
         drawText(
             textLayoutResult = maxLabel,
             topLeft = Offset(left - gap - maxLabel.size.width, top - maxLabel.size.height / 2f),
         )
-        val zeroLabel = measurer.measure("0", axisStyle)
         drawText(
             textLayoutResult = zeroLabel,
             topLeft = Offset(
@@ -436,7 +528,6 @@ private fun TokensChart(
         )
 
         // Bars: tokens spent, scaled to the busiest day.
-        val barWidth = max(2.dp.toPx(), (plotWidth / days.size) * 0.62f)
         for (index in days.indices) {
             val tokens = tokensPerDay.getOrElse(index) { 0L }
             if (tokens <= 0L) continue
@@ -449,20 +540,29 @@ private fun TokensChart(
             )
         }
 
-        // Lines: the plan limits, over the bars.
+        // Lines: the plan limits, over the bars, each in its own colour and
+        // pattern. Each is cased in the card's colour first, 1.25dp each side,
+        // so it holds where it crosses a bar and passes visibly over the lines
+        // drawn before it. Uncased, a line over a bar is 1.83:1 (blocked) to
+        // 2.81:1 (done, the bars' own green); cased, its neighbour is the card,
+        // 5.70:1 at the least.
+        val lineWidth = Theme.USAGE_LINE_WIDTH.dp.toPx()
+        val casing = 2.5.dp.toPx()
         for ((seriesIndex, values) in sampled.withIndex()) {
             val color = Theme.usageLineColor(seriesIndex)
-            val recorded = values.count { it != null }
-            if (recorded == 0) continue
-            if (recorded == 1) {
-                // A board that has only just started recording holds a single
-                // reading, and a one-point path draws nothing at all.
+            if (values.none { it != null }) continue
+            if (UsageDetail.isSingleReading(values)) {
+                // A board that has only just started recording a window holds
+                // a single reading, and a one-point path draws nothing at all:
+                // mark it with the window's shape, cased as a line is.
                 val index = values.indexOfFirst { it != null }
-                drawCircle(
-                    color = color,
-                    radius = 2.5.dp.toPx(),
-                    center = Offset(xAt(index), yAt(values[index] ?: 0.0)),
+                val mark = markPath(
+                    Theme.usageMark(seriesIndex),
+                    Offset(xAt(index), yAt(values[index] ?: 0.0)),
+                    growth,
                 )
+                drawPath(mark, Theme.card, style = Stroke(width = casing, join = StrokeJoin.Round))
+                drawPath(mark, color)
                 continue
             }
             val path = Path()
@@ -476,11 +576,17 @@ private fun TokensChart(
             }
             drawPath(
                 path = path,
+                color = Theme.card,
+                style = Stroke(width = lineWidth + casing, cap = StrokeCap.Round, join = StrokeJoin.Round),
+            )
+            drawPath(
+                path = path,
                 color = color,
                 style = Stroke(
-                    width = 1.75.dp.toPx(),
+                    width = lineWidth,
                     cap = StrokeCap.Round,
                     join = StrokeJoin.Round,
+                    pathEffect = dashEffect(Theme.usageLineDash(seriesIndex)),
                 ),
             )
         }

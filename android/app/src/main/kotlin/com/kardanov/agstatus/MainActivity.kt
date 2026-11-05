@@ -59,10 +59,21 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --ei agstatus_demo_stale 14 --ez agstatus_demo_freeze true
+ *
+ * Codex with that many of the six windows a report may carry (1 to 6), and
+ * windows whose history starts today with a single reading ("all", or ids
+ * separated by commas), as iOS's AGSTATUS_DEMO_LIMITS and
+ * AGSTATUS_DEMO_FIRST_DAY:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --es agstatus_open_usage codex \
+ *         --ei agstatus_demo_limits 6 --es agstatus_demo_first_day all
  */
 private const val EXTRA_DEMO = "agstatus_demo"
 private const val EXTRA_DEMO_STALE = "agstatus_demo_stale"
 private const val EXTRA_DEMO_FREEZE = "agstatus_demo_freeze"
+private const val EXTRA_DEMO_LIMITS = "agstatus_demo_limits"
+private const val EXTRA_DEMO_FIRST_DAY = "agstatus_demo_first_day"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
 private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
 
@@ -86,6 +97,10 @@ class MainActivity : ComponentActivity() {
             savedInstanceState == null &&
             intent.getBooleanExtra(EXTRA_DEMO, false)
         ) {
+            DemoData.limitWindows = intent.getIntExtra(EXTRA_DEMO_LIMITS, 0)
+            DemoData.firstDayWindows = intent.getStringExtra(EXTRA_DEMO_FIRST_DAY)
+                ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+                .orEmpty()
             store.startDemo(
                 agedMinutes = intent.getIntExtra(EXTRA_DEMO_STALE, 0),
                 frozen = intent.getBooleanExtra(EXTRA_DEMO_FREEZE, false),

@@ -17,6 +17,7 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.max
 import kotlin.math.roundToLong
 
 /**
@@ -509,6 +510,42 @@ object UsageDetail {
      */
     fun showTick(index: Int, lastIndex: Int): Boolean =
         index % 7 == 0 || (index == lastIndex && lastIndex % 7 > 2)
+
+    /**
+     * Whether a window has a single day's reading, on the first day the board
+     * recorded it: the chart marks it with its shape rather than drawing a
+     * line, and its key is that mark.
+     */
+    fun isSingleReading(values: List<Double?>): Boolean = values.count { it != null } == 1
+
+    /**
+     * How far the plot grows with the reader's text: at half its rate, as on
+     * iOS and the web, so the lines gain room as the labels do. A single
+     * reading's mark grows with it, so a reader who enlarges the text can
+     * still tell its shape. 1 at the default size; never smaller.
+     */
+    fun growth(fontScale: Float): Float = 1f + (max(fontScale, 1f) - 1f) / 2f
+
+    /**
+     * How long a key's sample of a line reads, caps included: as many whole
+     * marks of the pattern as fit in [width], so no key ends in a stub that
+     * reads as another pattern (a long dash cut short is a dash). A solid line
+     * fills the width. All in the same unit.
+     */
+    fun keySampleLength(dash: List<Float>, lineWidth: Float, width: Float): Float {
+        if (dash.isEmpty()) return width
+        var along = 0f
+        var length = lineWidth
+        for (step in 0 until 64) {
+            val segment = dash[step % dash.size]
+            if (step % 2 == 0) {
+                if (along + segment + lineWidth > width) break
+                length = along + segment + lineWidth
+            }
+            along += segment
+        }
+        return length
+    }
 
     private val DAY_LABEL: DateTimeFormatter =
         DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())
