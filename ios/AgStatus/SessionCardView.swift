@@ -60,10 +60,16 @@ struct SessionCardView: View {
     private var stacked: Bool { typeSize.isAccessibilitySize && !columnWide }
 
     var body: some View {
-        // One shared clock: refreshes the relative timestamp and re-evaluates
-        // staleness every 30 s.
+        // The card's own clock: refreshes the relative timestamp and
+        // re-evaluates staleness every 30 s, counted from when the card last
+        // ran. A card no longer runs for other cards' events (`BoardAction`),
+        // so cards that changed at different moments tick at different
+        // moments, and a tick measures one card; cards that appeared together
+        // — at launch, or after a change they all read, such as the text size
+        // — tick together. Crossing into stale shows up to 30 s late.
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            card(now: context.date)
+            // Measured again only when it changes (`MeasuredOnce`).
+            MeasuredOnce { card(now: context.date) }
         }
         // What the system lifts for the menu is the card's own rounded shape,
         // not the rectangle around it: against a dimmed board, square corners
@@ -1077,11 +1083,32 @@ private struct FocusButtonStyle: ButtonStyle {
 
 /// How a card asks the board to open a session's detail.
 ///
-/// A closure rather than a NavigationLink: a link inside a List draws its own
+/// An action rather than a NavigationLink: a link inside a List draws its own
 /// disclosure chevron and tints with the app accent, and it has to cover the
 /// whole row — which is how it ended up swallowing taps meant for the control.
 private struct OpenSessionKey: EnvironmentKey {
-    static let defaultValue: (String) -> Void = { _ in }
+    static let defaultValue = BoardAction(name: "none") { _ in }
+}
+
+/// Something a card or a head asks the board to do with a key — open a
+/// session's history, an agent's usage — and the board does by pushing it
+/// onto its own path.
+///
+/// Equal to any action of the same name, whatever closure it carries. The
+/// board makes a fresh one on every pass, and a closure is never equal to the
+/// last: written into the environment as a bare closure it changed on every
+/// hook event, so every card and head under the board ran its body again and
+/// every card was measured again, for an event that was not theirs. Equal, the
+/// environment has nothing to pass on. Every pass's closure does the same
+/// thing — appends to the path the board holds in its state — so the one a
+/// card captured first does what the newest would.
+struct BoardAction: Equatable {
+    let name: String
+    let run: (String) -> Void
+
+    func callAsFunction(_ key: String) { run(key) }
+
+    static func == (lhs: BoardAction, rhs: BoardAction) -> Bool { lhs.name == rhs.name }
 }
 
 /// Whether the board gives each card a whole column at the reader's text size
@@ -1102,7 +1129,7 @@ private struct CardsSwipeToDismissKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    var openSession: (String) -> Void {
+    var openSession: BoardAction {
         get { self[OpenSessionKey.self] }
         set { self[OpenSessionKey.self] = newValue }
     }

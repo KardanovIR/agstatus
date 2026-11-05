@@ -399,3 +399,53 @@ struct FitsAsNothing: View {
         Color.clear.frame(width: 0, height: 0)
     }
 }
+
+/// Its content, measured once for each size it is offered, until the content
+/// changes.
+///
+/// A card is a nest of stacks and `ViewThatFits` cascades, and a stack asks
+/// each child for its size several times a pass, offering it different widths
+/// to find out how far it gives. A cascade measures its candidates afresh each
+/// time it is asked, so the asks multiply down the nest. In an iPad column,
+/// which is not a lazy List, every card is asked again whenever any card
+/// changes: twenty cards cost about 110 ms of main thread a hook event, fifty
+/// 330, and a stale card's own time cascade added about 10 ms each. Here each
+/// card answers from what it measured last, and only the card that changed is
+/// measured again: about 25 ms for twenty, 32 for fifty, and 31 to 47 with the
+/// thirteen of the twenty that can go stale gone stale (with `BoardAction`,
+/// which stops the other cards being changed at all). Measured from the
+/// card's own source in a macOS harness on an M4 Pro, not on an iPad.
+///
+/// The cache is SwiftUI's own (`Layout`), emptied whenever anything under it
+/// changes — its text, its state, the environment, the text size; probes
+/// confirmed each — so a card can never be laid out to a size it used to be.
+/// It passes the offer through unchanged and places its content where it
+/// stands, and a card lays out as it did: every capture of the board came out
+/// pixel-identical. What it does not pass on is its content's layoutPriority
+/// or an explicit leading, trailing, top or bottom alignment guide (baselines
+/// and centres do pass), so those go outside it. One view: it measures and
+/// places the first.
+struct MeasuredOnce: Layout {
+    struct Cache {
+        var sizes: [(offer: ProposedViewSize, size: CGSize)] = []
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache.sizes.removeAll(keepingCapacity: true)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        if let known = cache.sizes.first(where: { $0.offer == proposal }) { return known.size }
+        let size = subviews.first?.sizeThatFits(proposal) ?? .zero
+        // A pass asks with a handful of offers; a rotation brings a new set.
+        if cache.sizes.count >= 12 { cache.sizes.removeFirst() }
+        cache.sizes.append((proposal, size))
+        return size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        subviews.first?.place(at: bounds.origin, proposal: proposal)
+    }
+}

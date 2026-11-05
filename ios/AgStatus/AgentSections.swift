@@ -419,11 +419,11 @@ struct AgentHead: View {
 /// The board pushes a `UsageDetailRoute` onto its own path; the destination is
 /// declared at its root, beside the session one.
 private struct OpenUsageKey: EnvironmentKey {
-    static let defaultValue: (String) -> Void = { _ in }
+    static let defaultValue = BoardAction(name: "none") { _ in }
 }
 
 extension EnvironmentValues {
-    var openUsage: (String) -> Void {
+    var openUsage: BoardAction {
         get { self[OpenUsageKey.self] }
         set { self[OpenUsageKey.self] = newValue }
     }
