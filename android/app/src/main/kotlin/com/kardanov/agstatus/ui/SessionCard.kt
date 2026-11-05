@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.QuestionMark
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -322,9 +323,15 @@ private fun MetaLine(
 private fun MetaTime(text: String, color: Color) {
     Text(
         text = text,
+        fontSize = 12.sp,
         // Tabular figures: this ticks in place on the board's clock, and
         // proportional digits make the whole line twitch sideways each time.
-        style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
+        //
+        // Otherwise the facts' own style ([MetaFact] takes the ambient one):
+        // their 24sp line and their tracking. A bare TextStyle dropped both,
+        // and the time rode about 4dp above the line it ends, with tighter
+        // letters, which the stale card's brighter words made plain.
+        style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
         color = color,
         maxLines = 1,
     )
