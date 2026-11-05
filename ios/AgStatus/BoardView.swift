@@ -1,5 +1,8 @@
 import SwiftUI
 import UIKit
+#if DEBUG
+import os
+#endif
 
 /// The live board: one glanceable card per agent session, in one section per
 /// agent.
@@ -45,6 +48,9 @@ struct BoardView: View {
     @State private var announcedDrop = false
     /// The wait before a drop is said aloud.
     @State private var dropWait: Task<Void, Never>?
+    /// What the board has said about blocks, and what it is about to say
+    /// (`announceBlocks`).
+    @State private var blockSpeech = BlockSpeech()
 
     /// The narrowest a column may be, growing with the reader's text size.
     ///
@@ -67,6 +73,9 @@ struct BoardView: View {
     /// with the agent line pinned. The one size class the board reads, and it
     /// is never asked about width (`BoardArrangement`).
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+
+    /// A block is said aloud only while the app is in front (`announceBlocks`).
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -178,8 +187,10 @@ struct BoardView: View {
             .onChange(of: store.isDemo) { sides = CardSides().resolved(for: groups) }
             // The ring says "this is the blocked card you asked for". Once the
             // card is no longer blocked it would be saying something untrue.
-            .onChange(of: store.sessions.filter { $0.status == .blocked }.map(\.id)) { _, blocked in
-                if let jumped, !blocked.contains(jumped) { self.jumped = nil }
+            // A card that has just become blocked is said aloud.
+            .onChange(of: blockedCards) { old, new in
+                if let jumped, !new.ids.contains(jumped) { self.jumped = nil }
+                announceBlocks(from: old, to: new)
             }
             .task(id: jumpStamp) { await fadeRing() }
         }
@@ -848,6 +859,164 @@ struct BoardView: View {
         withMotion { jumped = nil }
     }
 
+    // MARK: - A block, aloud
+
+    /// The blocked cards, and what the board was doing when they were read:
+    /// what `announceBlocks` compares from one update to the next. One value,
+    /// so that a connection's first snapshot, which brings its cards and
+    /// `.live` in the same update, arrives as one change and is known for
+    /// what it is.
+    private struct BlockedCards: Equatable {
+        let ids: [String]
+        let connection: SessionStore.Connection
+        /// No cards at all, blocked or not.
+        let empty: Bool
+    }
+
+    private var blockedCards: BlockedCards {
+        BlockedCards(ids: store.sessions.filter { $0.status == .blocked }.map(\.id),
+                     connection: store.connection,
+                     empty: store.sessions.isEmpty)
+    }
+
+    /// How long a session whose block has been said goes unsaid if it blocks
+    /// again: the server's wait before it pushes the same session's block a
+    /// second time (`DEFAULT_DEBOUNCE_MS`, src/push.ts).
+    private static let blockRepeatWait: TimeInterval = 60
+
+    /// How long a new block waits for others before it is said. Blocks that
+    /// arrive together do not arrive in one update: two hook events posted at
+    /// once reached the board 15 ms apart, as two. Said as they came, the
+    /// second announcement would cut the first off mid-word, which a default
+    /// priority does to whatever is being spoken.
+    private static let blockGathering: Duration = .milliseconds(500)
+
+    /// Says aloud that a card has just become blocked — an agent waiting on
+    /// you, the board's main event. A sighted reader sees its head's alarm
+    /// appear. A reader with VoiceOver has only this, unless push is on and
+    /// its banner says it (`AppDelegate`).
+    ///
+    /// Speech nobody asked for has to be earned, so this is kept as rare as
+    /// the state it reports, the rarest on the board. Only a block that
+    /// arrives while the board is watching is news. A connection's first
+    /// snapshot (connecting or reconnecting to live) and the demo's seed
+    /// bring blocks that were standing before the board looked, and those
+    /// are drawn, not said — for the reason a snapshot clears the closing
+    /// beats. Nor is anything a fetch brings in while the stream is down. A
+    /// session that has been said is not said again for a minute, which is
+    /// as often as the server would push it.
+    ///
+    /// A block is gathered, and said half a second later with any that came
+    /// with it, as one sentence (`sayGatheredBlocks`), if it is still
+    /// blocked by then. The sentence goes at the default priority: it
+    /// interrupts what VoiceOver is reading, and the reader's next swipe
+    /// interrupts it. Nothing is said while the app is not in front, while
+    /// VoiceOver is off, or while push is on (`blockSilence`).
+    private func announceBlocks(from old: BlockedCards, to new: BlockedCards) {
+        let fresh = new.ids.filter { !old.ids.contains($0) }
+        guard !fresh.isEmpty else { return }
+        // Standing, not news: blocks that came with the connection, as a
+        // first snapshot's do, or with a demo's seed — its first, or the one
+        // an emptied demo board is given on its next tick.
+        let standing = old.connection != new.connection || (new.connection == .demo && old.empty)
+        guard !standing, new.connection == .live || new.connection == .demo else {
+            traceBlocks("\(Self.change(old, new)) \(fresh) \(standing ? "standing" : "off the stream"), not said")
+            return
+        }
+        let speech = blockSpeech
+        let now = Date()
+        speech.saidAt = speech.saidAt.filter { now.timeIntervalSince($0.value) < Self.blockRepeatWait }
+        let held = fresh.filter { speech.saidAt[$0] != nil }
+        let news = fresh.filter { !held.contains($0) && !speech.gathered.contains($0) }
+        traceBlocks("\(Self.change(old, new)) " + [
+            news.isEmpty ? nil : "\(news) gathered",
+            held.isEmpty ? nil : "\(held) held, said within the minute",
+        ].compactMap { $0 }.joined(separator: "; "))
+        guard !news.isEmpty else { return }
+        speech.gathered += news
+        guard speech.wait == nil else { return }
+        speech.wait = Task {
+            try? await Task.sleep(for: Self.blockGathering)
+            sayGatheredBlocks()
+        }
+    }
+
+    /// Says what `announceBlocks` gathered, as one sentence: the blocks still
+    /// standing. One answered within the half second is no longer news.
+    private func sayGatheredBlocks() {
+        let speech = blockSpeech
+        let gathered = speech.gathered
+        speech.gathered = []
+        speech.wait = nil
+        let sessions = gathered.compactMap { id in store.sessions.first { $0.id == id && $0.status == .blocked } }
+        guard let sentence = Self.blockSentence(for: sessions) else {
+            traceBlocks("nothing said: \(gathered) no longer blocked")
+            return
+        }
+        let silence = blockSilence
+        traceBlocks("""
+            \(silence.map { "not said, \($0):" } ?? "said") "\(sentence)" for \(sessions.map(\.id))\
+            \(sessions.count == gathered.count ? "" : "; \(gathered.filter { id in !sessions.contains { $0.id == id } }) no longer blocked")
+            """)
+        guard silence == nil else { return }
+        let now = Date()
+        for session in sessions { speech.saidAt[session.id] = now }
+        var line = AttributedString(sentence)
+        line.accessibilitySpeechAnnouncementPriority = .default
+        AccessibilityNotification.Announcement(line).post()
+    }
+
+    /// "Claude: data-pipeline needs you", or "2 sessions need you" — whose
+    /// session and which, as a card is read.
+    private static func blockSentence(for sessions: [Session]) -> String? {
+        guard let session = sessions.first else { return nil }
+        guard sessions.count == 1 else { return "\(sessions.count) sessions need you" }
+        let agent = UsageInfo.displayName(for: session.source)
+        return session.name.isEmpty ? "\(agent) needs you" : "\(agent): \(session.name) needs you"
+    }
+
+    /// Why a block would go unsaid now, or nil when it can be said.
+    private var blockSilence: String? {
+        if scenePhase != .active { return "the app is not active" }
+        if !voiceOverIsRunning { return "VoiceOver is off" }
+        // Its banner says it already. Not in the demo, whose blocks the
+        // server never hears of.
+        if notifications.state == .on && !store.isDemo { return "push is on" }
+        return nil
+    }
+
+    /// Whether VoiceOver is running — or, in a debug build launched with
+    /// AGSTATUS_ANNOUNCE_BLOCKS=1, taken to be, so that the simulator, where
+    /// it never runs, takes the path that says a block aloud.
+    private var voiceOverIsRunning: Bool {
+        #if DEBUG
+        if Self.announcesBlocksForTesting { return true }
+        #endif
+        return UIAccessibility.isVoiceOverRunning
+    }
+
+    #if DEBUG
+    private static let announcesBlocksForTesting =
+        ProcessInfo.processInfo.environment["AGSTATUS_ANNOUNCE_BLOCKS"] == "1"
+    #endif
+
+    /// A debug build's record of each newly blocked card and what became of
+    /// it (`Logger.blocks`); nothing in a release build, where the line is
+    /// never even built.
+    private func traceBlocks(_ line: @autoclosure () -> String) {
+        #if DEBUG
+        let line = line()
+        Logger.blocks.info("\(line, privacy: .public)")
+        #endif
+    }
+
+    /// "board live: blocked [a] → [a, b]:", or "board reconnecting → live: …"
+    /// when the connection changed in the same update, for the trace.
+    private static func change(_ old: BlockedCards, _ new: BlockedCards) -> String {
+        let board = old.connection == new.connection ? "\(new.connection)" : "\(old.connection) → \(new.connection)"
+        return "board \(board): blocked \(old.ids) → \(new.ids):"
+    }
+
     // MARK: - Push tip
 
     /// One-time nudge: the board is live, the server can push, and the user
@@ -1385,6 +1554,18 @@ struct BoardView: View {
     }
 }
 
+#if DEBUG
+extension Logger {
+    /// Blocks said aloud, or why not (`BoardView.announceBlocks`), beside the
+    /// demo's own record of each card its tick blocked — so a run can show
+    /// every new block said once, and once only. Debug builds only. At the
+    /// info level, which a stream shows without any `log config`:
+    /// `xcrun simctl spawn booted log stream --level info --predicate
+    /// 'subsystem == "com.kardanov.agstatus" AND category == "blocks"'`.
+    static let blocks = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AgStatus", category: "blocks")
+}
+#endif
+
 /// The toolbar's leading item: the DEMO badge, or the connection lamp.
 ///
 /// Both are labels, not controls, so on iOS 26 the item gives up the glass
@@ -1562,6 +1743,20 @@ private final class JumpLanding {
         guard let count = laidOut[target] else { return }
         laidOut[target] = count > 1 ? count - 1 : nil
     }
+}
+
+/// When each session's block was last said aloud, and the blocks gathered for
+/// the next sentence (`BoardView.announceBlocks`).
+///
+/// A class held in @State and deliberately not observable, as `JumpLanding`
+/// is: it changes with every new block, and none of that is anything to
+/// redraw. Main thread only; every caller is a view's change handler or the
+/// task one of them started.
+private final class BlockSpeech {
+    var saidAt: [String: Date] = [:]
+    var gathered: [String] = []
+    /// The half second the gathered blocks wait before they are said.
+    var wait: Task<Void, Never>?
 }
 
 private extension View {
