@@ -388,6 +388,90 @@ enum Theme {
                     dash: seriesDashes[wrapped(index, seriesDashes.count)])
     }
 
+    // A window the board has only just started recording has a single
+    // reading, and a point cannot carry a pattern. Every such reading sits on
+    // the same day, today, so a dot in the window's colour would differ from
+    // its neighbours by hue alone until the second day's reading. So each
+    // window has a shape as well, paired with its colour and pattern by
+    // position. A shape rather than a short sample of the line's pattern:
+    // along a time axis a sample spans days, and reads as the run of days it
+    // is not.
+    //
+    // Which shape goes on which colour was measured, on the colours as drawn
+    // with Machado 2009 as above. The first four colours meet one another
+    // under one kind of colour-blind vision or another (blue comes within
+    // 0.05 of lilac, teal and green), so they take one shape of each kind,
+    // and blue, which meets the most, takes the plus, the shape least like
+    // the rest. The two pairs alike in shape, square and diamond, triangle up
+    // and down, fall on colours that stay 0.128 and 0.143 apart. Red takes the
+    // triangle that points down: pointing up, a red triangle is a warning sign.
+    //
+    // `LINE_MARKS` in public/app.js draws the same shapes at the same sizes.
+
+    /// A limit window's mark for a single reading.
+    enum SeriesMarker {
+        case circle, plus, square, triangle, diamond, triangleDown
+
+        /// A triangle with 10pt sides, which is 8.66pt tall.
+        private static let triangleHeight: CGFloat = 5 * 3.0.squareRoot()
+
+        /// The mark centred on `point`, a triangle on its centroid, which is
+        /// where the eye puts it, `scale` times its size at the default text
+        /// size. Each covers about what an 8pt circle does, 43–52pt², so no
+        /// window's mark outweighs another's.
+        func path(centredOn point: CGPoint, scale: CGFloat = 1) -> Path {
+            func at(_ dx: CGFloat, _ dy: CGFloat) -> CGPoint {
+                CGPoint(x: point.x + dx * scale, y: point.y + dy * scale)
+            }
+            let h = Self.triangleHeight
+            var path = Path()
+            switch self {
+            case .circle:
+                path.addEllipse(in: CGRect(origin: at(-4, -4), size: CGSize(width: 8 * scale, height: 8 * scale)))
+            case .plus:                 // arms 3.25pt thick, 9.5pt across
+                let (arm, reach): (CGFloat, CGFloat) = (1.625, 4.75)
+                path.addLines([
+                    at(-arm, -reach), at(arm, -reach), at(arm, -arm), at(reach, -arm),
+                    at(reach, arm), at(arm, arm), at(arm, reach), at(-arm, reach),
+                    at(-arm, arm), at(-reach, arm), at(-reach, -arm), at(-arm, -arm),
+                ])
+            case .square:
+                path.addRect(CGRect(origin: at(-3.6, -3.6), size: CGSize(width: 7.2 * scale, height: 7.2 * scale)))
+            case .triangle:
+                path.addLines([at(0, -h * 2 / 3), at(5, h / 3), at(-5, h / 3)])
+            case .diamond:
+                path.addLines([at(0, -5), at(5, 0), at(0, 5), at(-5, 0)])
+            case .triangleDown:
+                path.addLines([at(0, h * 2 / 3), at(5, -h / 3), at(-5, -h / 3)])
+            }
+            path.closeSubpath()
+            return path
+        }
+
+        /// How far below the middle of its box the mark's centre sits, at
+        /// scale 1: a key centres the box beside its name, where the chart
+        /// centres the shape on the reading.
+        var centreBelowMiddle: CGFloat {
+            switch self {
+            case .triangle: Self.triangleHeight / 6
+            case .triangleDown: -Self.triangleHeight / 6
+            default: 0
+            }
+        }
+    }
+
+    /// Each limit window's mark, paired with `seriesColors` and
+    /// `seriesDashes` by position.
+    private static let seriesMarkers: [SeriesMarker] = [
+        .circle, .plus, .square, .triangle, .diamond, .triangleDown,
+    ]
+
+    /// The nth limit window's mark for a single reading, in the chart and in
+    /// its key.
+    static func seriesMarker(_ index: Int) -> SeriesMarker {
+        seriesMarkers[wrapped(index, seriesMarkers.count)]
+    }
+
     private static func wrapped(_ index: Int, _ count: Int) -> Int {
         ((index % count) + count) % count
     }

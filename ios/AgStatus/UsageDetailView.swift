@@ -195,11 +195,13 @@ struct UsageDetailView: View {
             // The keys wrap as words do: one row where they fit, and a new row
             // where the next does not. Six windows take two rows at the
             // default size rather than six, and at the accessibility sizes
-            // each key gets a row of its own.
+            // each key gets a row of its own. Each is what the chart draws
+            // for its window: a sample of its line, or its mark while it has
+            // a single reading.
             FlowRows(spacing: 12, rowSpacing: 4) {
                 ForEach(detail.series) { series in
                     HStack(spacing: 6) {
-                        SeriesSwatch(index: series.colorIndex)
+                        SeriesSwatch(index: series.colorIndex, singleReading: series.isSingleReading)
                         // A key cut short names nothing, and an id is not a
                         // word: wrapped, the system hyphenates it, and at AX5
                         // "session_gpt_6_astra" became "session_gp-" over
@@ -354,10 +356,14 @@ private struct UsageChart: View {
 
     private static let gridPercents = [0, 25, 50, 75, 100]
 
-    /// 150pt at the default size, growing at half the rate of its labels: the
-    /// lines gain room as the text does, and the chart still fits a phone's
-    /// screen at the cap.
-    private var plotHeight: CGFloat { 150 * (1 + (textScale - 1) / 2) }
+    /// How far the plot grows with its labels: at half their rate, so the
+    /// lines gain room as the text does and the chart still fits a phone's
+    /// screen at the cap. A single reading's mark grows with it, so a reader
+    /// who enlarges the text can still tell its shape.
+    static func growth(textScale: CGFloat) -> CGFloat { 1 + (textScale - 1) / 2 }
+
+    /// 150pt at the default size.
+    private var plotHeight: CGFloat { 150 * Self.growth(textScale: textScale) }
 
     /// caption2's line height, 13pt at the default size.
     private var labelLine: CGFloat { 13 * textScale }
@@ -392,8 +398,12 @@ private struct UsageChart: View {
 
         // A date is centred under its day, and the first and last days sit on
         // the plot's edges, so half a date must fit either side as well.
+        // Today's mark for a single reading reaches past the plot's right
+        // edge and grows with the plot, so the gap before the percentages
+        // grows by the same rule and the mark never meets "100%".
+        let gap = 6 * Self.growth(textScale: textScale)
         let leading = max(max(width(topTokens), width(zeroTokens)) + 8, widestDay / 2)
-        let trailing = max((percentLabels.map(width).max() ?? 0) + 6, widestDay / 2)
+        let trailing = max((percentLabels.map(width).max() ?? 0) + gap, widestDay / 2)
         let top = lineHeight / 2 + 1
         let plotWidth = size.width - leading - trailing
         let plotHeight = size.height - top - (lineHeight / 2 + 3 + lineHeight + 1)
@@ -422,7 +432,7 @@ private struct UsageChart: View {
             line.move(to: CGPoint(x: leading, y: lineY))
             line.addLine(to: CGPoint(x: size.width - trailing, y: lineY))
             context.stroke(line, with: .color(Theme.cardBorder), lineWidth: 1)
-            context.draw(label, at: CGPoint(x: size.width - trailing + 6, y: lineY), anchor: .leading)
+            context.draw(label, at: CGPoint(x: size.width - trailing + gap, y: lineY), anchor: .leading)
         }
 
         // Left-hand token axis: the busiest day at the top, zero at the bottom.
@@ -458,11 +468,14 @@ private struct UsageChart: View {
                 lastPoint = point
             }
             if drawn == 1 {
-                // A board that only just started recording has a single
-                // reading, and a one-point path draws nothing: mark it.
-                let dot = CGRect(x: lastPoint.x - 2.5, y: lastPoint.y - 2.5, width: 5, height: 5)
-                context.fill(Path(ellipseIn: dot.insetBy(dx: -1.25, dy: -1.25)), with: .color(Theme.card))
-                context.fill(Path(ellipseIn: dot), with: .color(color))
+                // A board that only just started recording a window has a
+                // single reading, and a one-point path draws nothing: mark it
+                // with the window's shape (Theme.seriesMarker), cased as a
+                // line is, in its own outline 1.25pt out in the card's colour.
+                let mark = Theme.seriesMarker(series.colorIndex)
+                    .path(centredOn: lastPoint, scale: Self.growth(textScale: textScale))
+                context.stroke(mark, with: .color(Theme.card), style: StrokeStyle(lineWidth: 2.5, lineJoin: .round))
+                context.fill(mark, with: .color(color))
             } else if drawn > 1 {
                 let style = Theme.seriesStroke(series.colorIndex)
                 context.stroke(path,
@@ -612,21 +625,30 @@ private struct UsageChartDescriptor: AXChartDescriptorRepresentable {
 
 /// A limit line's key: a sample of the line drawn exactly as the chart draws
 /// it — colour, width and pattern — so key and line match by shape as well
-/// as by hue.
+/// as by hue. While the window has a single reading the chart marks it
+/// rather than drawing a line, and the key is that mark, without the casing,
+/// which on the card it sits on draws nothing.
 private struct SeriesSwatch: View {
     let index: Int
+    let singleReading: Bool
 
     var body: some View {
-        Canvas { context, size in
-            let style = Theme.seriesStroke(index)
-            let length = Self.sampleLength(style, within: size.width)
-            let start = (size.width - length) / 2 + style.lineWidth / 2
-            var line = Path()
-            line.move(to: CGPoint(x: start, y: size.height / 2))
-            line.addLine(to: CGPoint(x: start + length - style.lineWidth, y: size.height / 2))
-            context.stroke(line, with: .color(Theme.seriesColor(index)), style: style)
+        if singleReading {
+            // Capped where the chart's labels are, as its marks are.
+            MarkKey(index: index)
+                .dynamicTypeSize(...UsageChart.largestTextSize)
+        } else {
+            Canvas { context, size in
+                let style = Theme.seriesStroke(index)
+                let length = Self.sampleLength(style, within: size.width)
+                let start = (size.width - length) / 2 + style.lineWidth / 2
+                var line = Path()
+                line.move(to: CGPoint(x: start, y: size.height / 2))
+                line.addLine(to: CGPoint(x: start + length - style.lineWidth, y: size.height / 2))
+                context.stroke(line, with: .color(Theme.seriesColor(index)), style: style)
+            }
+            .frame(width: 26, height: 6)
         }
-        .frame(width: 26, height: 6)
     }
 
     /// How long a sample reads, caps included: as many whole marks of the
@@ -645,6 +667,24 @@ private struct SeriesSwatch: View {
             along += segment
         }
         return length
+    }
+}
+
+/// A single reading's key: 12pt at the default text size, growing as the
+/// chart's marks do, so key and mark stay one size.
+private struct MarkKey: View {
+    let index: Int
+
+    @ScaledMetric(relativeTo: .caption2) private var textScale: CGFloat = 1
+
+    var body: some View {
+        let scale = UsageChart.growth(textScale: textScale)
+        Canvas { context, size in
+            let marker = Theme.seriesMarker(index)
+            let centre = CGPoint(x: size.width / 2, y: size.height / 2 + marker.centreBelowMiddle * scale)
+            context.fill(marker.path(centredOn: centre, scale: scale), with: .color(Theme.seriesColor(index)))
+        }
+        .frame(width: 12 * scale, height: 12 * scale)
     }
 }
 
@@ -707,6 +747,10 @@ struct UsageDetailData {
         let colorIndex: Int
 
         var id: String { "\(colorIndex)/\(windowId)" }
+
+        /// A single day's reading, on the first day the board recorded the
+        /// window: the chart marks it rather than drawing a line.
+        var isSingleReading: Bool { values.lazy.filter { $0 != nil }.count == 1 }
     }
 
     struct Project: Identifiable {

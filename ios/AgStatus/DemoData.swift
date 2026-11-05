@@ -281,19 +281,36 @@ enum DemoData {
     /// `demoPlans`, except that AGSTATUS_DEMO_LIMITS=many (or 1–6), which
     /// gives Codex's head that many windows, gives its usage history the same
     /// ones: the chart's six line patterns can only be looked at with six.
+    /// AGSTATUS_DEMO_FIRST_DAY=all, or a comma-separated list of window ids,
+    /// starts those windows' history today, with a single reading: the
+    /// chart's marks can only be looked at on a board's first day.
     private static var plansForScreenshots: [DemoPlan] {
         #if DEBUG
+        var plans = demoPlans
         let limits = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"]
         if let count = limits == "many" ? 6 : limits.flatMap(Int.init), (1...6).contains(count) {
-            return demoPlans.map { plan in
+            plans = plans.map { plan in
                 guard plan.source == "codex" else { return plan }
                 return DemoPlan(source: plan.source,
                                 windows: Array(codexSixHistory.prefix(count)),
                                 projects: plan.projects)
             }
         }
-        #endif
+        if let firstDay = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_FIRST_DAY"] {
+            let ids = Set(firstDay.split(separator: ",").map(String.init))
+            plans = plans.map { plan in
+                DemoPlan(source: plan.source,
+                         windows: plan.windows.map { window in
+                             guard firstDay == "all" || ids.contains(window.id) else { return window }
+                             return (id: window.id, startsDaysAgo: 1, endPct: window.endPct, weekly: window.weekly)
+                         },
+                         projects: plan.projects)
+            }
+        }
+        return plans
+        #else
         return demoPlans
+        #endif
     }
 
     #if DEBUG
@@ -467,6 +484,9 @@ enum DemoData {
     ///                           (Codex reports six windows, and its usage
     ///                           history has six lines) | 1…6 (that many of
     ///                           the six)
+    ///   AGSTATUS_DEMO_FIRST_DAY all | <window ids, comma-separated> (those
+    ///                           windows' usage history starts today, with a
+    ///                           single reading, as on a board's first day)
     ///   AGSTATUS_DEMO_STALE     <minutes> (every working session last
     ///                           reported that long ago: past 10, stale)
     ///   AGSTATUS_DEMO_TITLES    1 (Claude's cards carry session titles, as
