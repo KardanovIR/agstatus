@@ -38,8 +38,14 @@ enum Theme {
     static let card = rgb(0x141815)
     /// oklch(24.5% 0.010 155) — raised: tracks, pressed states
     static let raised = rgb(0x1D221E)
-    /// oklch(30% 0.011 155)
-    static let cardBorder = rgb(0x2A302B)
+    /// oklch(30% 0.011 155); oklch(50% 0.011 155) under Increase Contrast.
+    ///
+    /// Every hairline on the board is this: card and head borders, the
+    /// history's connectors, the usage chart's gridlines. At 1.43:1 on the
+    /// ground it is a boundary you find rather than see, which is the point
+    /// in a dark room; a reader who has asked for more contrast gets 3.23:1
+    /// on the ground and 3.00:1 on a card.
+    static let cardBorder = rgb(0x2A302B, increased: 0x5F6560)
     /// oklch(38% 0.012 155)
     /// Hairlines, emphatic: a RULE, never a glyph.
     ///
@@ -54,13 +60,22 @@ enum Theme {
     // All three clear WCAG AA on `card`, and on every state-tinted card. The
     // palette this replaces used a tertiary at 2.90:1 for the project name and
     // the timestamp — the two things you most need to read at a glance.
+    //
+    // INCREASE CONTRAST lifts the two quieter inks a step each. Tertiary's
+    // 4.63:1 on a blocked card is the narrowest AA margin on the board; it
+    // goes to 6.60:1 by taking secondary's value, and secondary moves up to
+    // keep the three apart (8.70:1 at the least). Primary is already 12.75:1
+    // at the least and stays. Standard contrast is untouched. The web has no
+    // `prefers-contrast` counterpart yet, so these second values are iOS's
+    // alone; they are written in OKLCH like the rest so the web can take them.
 
     /// oklch(94% 0.010 155)
     static let textPrimary = rgb(0xE6EDE8)
-    /// oklch(74% 0.012 155)
-    static let textSecondary = rgb(0xA5ADA7)
-    /// oklch(64.5% 0.012 155) — lifted from 60% to survive the card tint below
-    static let textTertiary = rgb(0x88908A)
+    /// oklch(74% 0.012 155); oklch(82% 0.012 155) under Increase Contrast
+    static let textSecondary = rgb(0xA5ADA7, increased: 0xBEC6C1)
+    /// oklch(64.5% 0.012 155) — lifted from 60% to survive the card tint below;
+    /// oklch(74% 0.012 155) under Increase Contrast
+    static let textTertiary = rgb(0x88908A, increased: 0xA5ADA7)
 
     // MARK: - State
     //
@@ -166,16 +181,33 @@ enum Theme {
     /// brighter edge, the state at 42% alpha (the web's `--state-line`),
     /// because it is the one state that means a human is needed. A stale
     /// card's is `cardBorder` itself, for the reason its surface is `card`.
+    ///
+    /// Under Increase Contrast each is the same mix taken from that setting's
+    /// `cardBorder`, oklch(50%): 3.46–4.00:1 against the card's own surface
+    /// (2.04–2.39 at standard contrast), and blocked's line goes from 42% to
+    /// 70%, 1.93 to 3.05:1.
     static func cardEdge(for status: AgentStatus, stale: Bool = false) -> Color {
         if stale { return cardBorder }
         return switch status {
-        case .idle: rgb(0x4C544E)
-        case .planning: rgb(0x66596A)
-        case .coding: rgb(0x475E69)
-        case .testing: rgb(0x43615F)
-        case .done: rgb(0x43664F)
-        case .blocked: color(for: .blocked).opacity(0.42)
+        case .idle: Edge.idle
+        case .planning: Edge.planning
+        case .coding: Edge.coding
+        case .testing: Edge.testing
+        case .done: Edge.done
+        case .blocked: Edge.blocked
         }
+    }
+
+    /// `cardEdge`'s values, made once: each is a dynamic colour, which is an
+    /// object rather than three numbers.
+    private enum Edge {
+        static let idle = rgb(0x4C544E, increased: 0x6F7771)
+        static let planning = rgb(0x66596A, increased: 0x8A7D8F)
+        static let coding = rgb(0x475E69, increased: 0x6A828D)
+        static let testing = rgb(0x43615F, increased: 0x668483)
+        static let done = rgb(0x43664F, increased: 0x668A72)
+        /// `color(for: .blocked)`'s value, at 42% (70%).
+        static let blocked = rgb(0xF75E51, increased: 0xF75E51, alpha: 0.42, increasedAlpha: 0.70)
     }
 
     // MARK: - Limits
@@ -200,7 +232,8 @@ enum Theme {
     /// toward 155, and it lands within a step of the old value on a card. Not
     /// `raised`, which the web's meter uses: a head lifts to `raised` under a
     /// finger, and a track of the same colour would vanish for the press.
-    static let meterTrack = textPrimary.opacity(0.06)
+    /// Under Increase Contrast the ink is at 14%: 1.46:1 on a card, from 1.15.
+    static let meterTrack = rgb(0xE6EDE8, increased: 0xE6EDE8, alpha: 0.06, increasedAlpha: 0.14)
 
     // MARK: - Tiers
     //
@@ -389,6 +422,22 @@ enum Theme {
         Color(red: Double((hex >> 16) & 0xFF) / 255,
               green: Double((hex >> 8) & 0xFF) / 255,
               blue: Double(hex & 0xFF) / 255)
+    }
+
+    /// A token with a second value for Increase Contrast (Settings >
+    /// Accessibility > Display & Text Size). SwiftUI resolves it from the
+    /// environment's `colorSchemeContrast` wherever it is drawn, a Canvas
+    /// included, so at standard contrast it is `hex` at `alpha` exactly.
+    private static func rgb(_ hex: UInt32, increased: UInt32,
+                            alpha: CGFloat = 1, increasedAlpha: CGFloat? = nil) -> Color {
+        Color(uiColor: UIColor { traits in
+            let high = traits.accessibilityContrast == .high
+            let value = high ? increased : hex
+            return UIColor(red: CGFloat((value >> 16) & 0xFF) / 255,
+                           green: CGFloat((value >> 8) & 0xFF) / 255,
+                           blue: CGFloat(value & 0xFF) / 255,
+                           alpha: high ? (increasedAlpha ?? alpha) : alpha)
+        })
     }
 }
 
