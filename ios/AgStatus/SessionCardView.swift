@@ -157,7 +157,8 @@ struct SessionCardView: View {
             //
             // A card with no subagents has no block, and is today's card.
             if let subtasks = session.subtasks {
-                SubtaskBlock(session: session, subtasks: subtasks, rule: Theme.cardEdge(for: display, stale: stale))
+                SubtaskBlock(session: session, subtasks: subtasks, rule: Theme.cardEdge(for: display, stale: stale),
+                             stacked: stacked)
                 metaLine(now: now, stale: stale)
                     .padding(.top, Theme.Space.xxs)
                     .accessibilityHidden(true)

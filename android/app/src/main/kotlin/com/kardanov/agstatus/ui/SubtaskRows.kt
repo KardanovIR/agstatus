@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +42,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -99,6 +101,21 @@ private const val ARRIVAL_FADE_MILLIS = 600
 /** The most of a card row's text its label may take; the activity keeps the rest. */
 private const val LABEL_SHARE = 0.58f
 
+/** A row's task and activity, and the em that [STACK_BELOW_EMS] counts. */
+private val ROW_TEXT = 13.sp
+
+/**
+ * Below this many of its own ems a row takes two lines ([SubtaskRow]), as
+ * below the web board's `20em`. Counted from [ROW_TEXT] rather than written
+ * as 260sp: since Android 14 type scales nonlinearly, and a length that large
+ * barely grows — at 200% 260sp is still about 260dp, under a 412dp phone's
+ * 351dp of row, while the 13sp text beside it doubles. Counted this way it is
+ * 260dp at the default size, under the rows of any phone from 360dp up, and
+ * about 500dp at 200%: it switches at about 115% on a 360dp phone and 150% on
+ * a 412dp one.
+ */
+private const val STACK_BELOW_EMS = 20
+
 // MARK: - Card
 
 /**
@@ -123,26 +140,30 @@ internal fun SubtaskBlock(
 ) {
     val reduceMotion = rememberReduceMotion()
     val footer = SubtaskSlots.footer(total = subtasks.items.size, shown = rows.size, done = subtasks.done)
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            // A finished row's slot that nothing takes closes over 200ms, and
-            // a slot opens the same way, instead of the card jumping.
-            .then(if (reduceMotion) Modifier else Modifier.animateContentSize(tween(SLOT_CLOSE_MILLIS, easing = BoardEase))),
-    ) {
-        HorizontalDivider(thickness = 1.dp, color = rule)
-        Spacer(Modifier.height(2.dp))
-        for (subtask in rows) {
-            key(subtask.id) {
-                SubtaskRow(
-                    subtask = subtask,
-                    animateArrival = drawnBefore && !reduceMotion,
-                    reduceMotion = reduceMotion,
-                    onClick = { onOpenSubtask(subtask.id) },
-                )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val stacked = maxWidth < with(LocalDensity.current) { ROW_TEXT.toDp() } * STACK_BELOW_EMS
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                // A finished row's slot that nothing takes closes over 200ms, and
+                // a slot opens the same way, instead of the card jumping.
+                .then(if (reduceMotion) Modifier else Modifier.animateContentSize(tween(SLOT_CLOSE_MILLIS, easing = BoardEase))),
+        ) {
+            HorizontalDivider(thickness = 1.dp, color = rule)
+            Spacer(Modifier.height(2.dp))
+            for (subtask in rows) {
+                key(subtask.id) {
+                    SubtaskRow(
+                        subtask = subtask,
+                        stacked = stacked,
+                        animateArrival = drawnBefore && !reduceMotion,
+                        reduceMotion = reduceMotion,
+                        onClick = { onOpenSubtask(subtask.id) },
+                    )
+                }
             }
+            footer?.let { SubtaskFooter(footer = it, reduceMotion = reduceMotion, onOpenSession = onOpenSession) }
         }
-        footer?.let { SubtaskFooter(footer = it, reduceMotion = reduceMotion, onOpenSession = onOpenSession) }
     }
 }
 
@@ -154,10 +175,18 @@ internal fun SubtaskBlock(
  * 28dp, not 48. A row opens the same session screen as its neighbours, only
  * at a different subagent, so a mis-tap costs a scroll. Focus, the card's one
  * control that reaches across to another machine, keeps its 44.
+ *
+ * [stacked] below [STACK_BELOW_EMS]: at a reader's larger text the three
+ * parts no longer share a line, and at 200% the task and the activity came
+ * down to a few letters each. So the task takes the whole width, two lines
+ * if it needs them, and the activity and the state share the next, the state
+ * still at the trailing edge under the badge, its mark and word together.
+ * None of the three is dropped, and TalkBack hears the same row either way.
  */
 @Composable
 private fun SubtaskRow(
     subtask: Subtask,
+    stacked: Boolean,
     animateArrival: Boolean,
     reduceMotion: Boolean,
     onClick: () -> Unit,
@@ -165,27 +194,19 @@ private fun SubtaskRow(
     val blocked = subtask.state == SubtaskState.BLOCKED
     val arrival = rememberArrival(animateArrival, ROW_IN_MILLIS)
     val stateCue = rememberCue(subtask.state, !reduceMotion, STATE_IN_MILLIS, SubtaskSlots::stateCellMoves)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 28.dp)
-            .rising(arrival, ROW_RISE)
-            // Its own button inside the card's merged node, read as one line.
-            // The semantics are set after clickable on purpose: set before it,
-            // they would clear the click action along with the children.
-            .clickable(role = Role.Button, onClick = onClick)
-            .clearAndSetSemantics { contentDescription = SubtaskCopy.rowDescription(subtask) },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        LabelAndActivity(
-            label = subtask.label,
-            activity = subtask.activity,
-            // The one row that needs you is lit, not heavier: a bold red word
-            // under the BLOCKED badge would be a second BLOCKED.
-            labelColor = if (blocked) Theme.textPrimary else Theme.textSecondary,
-            modifier = Modifier.weight(1f),
-        )
+    // The one row that needs you is lit, not heavier: a bold red word under
+    // the BLOCKED badge would be a second BLOCKED.
+    val labelColor = if (blocked) Theme.textPrimary else Theme.textSecondary
+    val rowModifier = Modifier
+        .fillMaxWidth()
+        .defaultMinSize(minHeight = 28.dp)
+        .rising(arrival, ROW_RISE)
+        // Its own button inside the card's merged node, read as one line.
+        // The semantics are set after clickable on purpose: set before it,
+        // they would clear the click action along with the children.
+        .clickable(role = Role.Button, onClick = onClick)
+        .clearAndSetSemantics { contentDescription = SubtaskCopy.rowDescription(subtask) }
+    val state = @Composable {
         StateMark(
             state = subtask.state,
             markSize = 11.dp,
@@ -193,6 +214,53 @@ private fun SubtaskRow(
             lineHeight = 13.sp,
             modifier = Modifier.rising(stateCue, ROW_RISE),
         )
+    }
+    if (stacked) {
+        // Its two lines close, and 8dp between rows, so a row reads as one.
+        Column(
+            modifier = rowModifier.padding(vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            // Two lines, since it is how you know which row this is.
+            Text(
+                text = subtask.label,
+                fontSize = ROW_TEXT,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Medium,
+                color = labelColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = subtask.activity,
+                    fontSize = ROW_TEXT,
+                    lineHeight = 16.sp,
+                    color = Theme.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                state()
+            }
+        }
+    } else {
+        Row(
+            modifier = rowModifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LabelAndActivity(
+                label = subtask.label,
+                activity = subtask.activity,
+                labelColor = labelColor,
+                modifier = Modifier.weight(1f),
+            )
+            state()
+        }
     }
 }
 
@@ -214,7 +282,7 @@ private fun LabelAndActivity(
         content = {
             Text(
                 text = label,
-                fontSize = 13.sp,
+                fontSize = ROW_TEXT,
                 lineHeight = 16.sp,
                 fontWeight = FontWeight.Medium,
                 color = labelColor,
@@ -223,7 +291,7 @@ private fun LabelAndActivity(
             )
             Text(
                 text = activity,
-                fontSize = 13.sp,
+                fontSize = ROW_TEXT,
                 lineHeight = 16.sp,
                 color = Theme.textTertiary,
                 maxLines = 1,

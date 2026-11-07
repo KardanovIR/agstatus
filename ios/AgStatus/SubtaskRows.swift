@@ -143,6 +143,9 @@ struct SubtaskBlock: View {
     /// The card's edge colour, which the one hairline inside it shares: both
     /// come from the card's state, so the two cannot drift.
     let rule: Color
+    /// Whether the card is stacked (`SessionCardView.stacked`): then each row
+    /// takes two lines, the task on its own (`SubtaskRow`).
+    var stacked = false
 
     var body: some View {
         let rows = ledger.rows(for: session)
@@ -154,7 +157,7 @@ struct SubtaskBlock: View {
                                            phoneRules: phoneRules)
         VStack(alignment: .leading, spacing: 0) {
             ForEach(rows) { item in
-                SubtaskRow(item: item, height: rowHeight) {
+                SubtaskRow(item: item, height: rowHeight, stacked: stacked) {
                     openSession(SessionRoute(sessionId: session.id, subtaskId: item.id))
                 }
                 // A row moves when it starts, and at no other time: it fades
@@ -220,40 +223,53 @@ struct SubtaskBlock: View {
 /// One subagent on a card: what it was asked to do, what it is doing, and its
 /// state, which stands at the trailing edge — under the badge in the rail, so
 /// the badge and the rows' marks make one column down the card's right side.
+///
+/// On a stacked card — an accessibility size, the badge leading at its top —
+/// the row takes two lines: the task on its own, two if it needs them, as a
+/// limit's name does at these sizes (`LimitMeter`), then the state and the
+/// activity, the state leading under the badge. Three across, at AX5 the task
+/// and the activity came down to four letters each, "revi…" beside "Ru…".
 private struct SubtaskRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let item: Subtask
     /// The block's row height — see `SubtaskBlock.rowHeight`.
     let height: CGFloat
+    var stacked = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.Space.xs) {
-                SubtaskTextLayout {
-                    Text(item.label)
-                        .font(.footnote.weight(.medium))
-                        // The one row that needs you is lit; the rest are the
-                        // quiet ink.
-                        .foregroundStyle(item.state == .blocked ? Theme.textPrimary : Theme.textSecondary)
-                    Text(item.activity)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.textTertiary)
-                }
-                .lineLimit(1)
-                // Written in place: a new activity or label is not news, and
-                // must never cross-fade over the old one.
-                .contentTransition(.identity)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if stacked {
+                    VStack(alignment: .leading, spacing: 2) {
+                        label
+                            .lineLimit(2)
+                        HStack(spacing: Theme.Space.xs) {
+                            stateLabel
+                            activity
+                                .lineLimit(1)
+                        }
+                    }
+                    .contentTransition(.identity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Its two lines close, and 8pt between rows, so a row
+                    // reads as one.
+                    .padding(.vertical, Theme.Space.xxs)
+                } else {
+                    HStack(spacing: Theme.Space.xs) {
+                        SubtaskTextLayout {
+                            label
+                            activity
+                        }
+                        .lineLimit(1)
+                        // Written in place: a new activity or label is not
+                        // news, and must never cross-fade over the old one.
+                        .contentTransition(.identity)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                SubtaskStateLabel(state: item.state)
-                    // Ordinary changes of class are written in place too…
-                    .transaction { $0.animation = nil }
-                    // …and into or out of blocked, or into failed, the state
-                    // re-enters, over the board's slow duration (420ms).
-                    .id(item.state.entryKey)
-                    .transition(.asymmetric(insertion: reduceMotion ? .identity : Self.stateIn,
-                                            removal: .identity))
+                        stateLabel
+                    }
+                }
             }
             .frame(minHeight: height)
             .contentShape(Rectangle())
@@ -261,6 +277,30 @@ private struct SubtaskRow: View {
         .buttonStyle(SubtaskPressStyle())
         .accessibilityLabel(SubtaskCopy.row(item))
         .accessibilityHint("Opens the session screen at this subagent")
+    }
+
+    private var label: some View {
+        Text(item.label)
+            .font(.footnote.weight(.medium))
+            // The one row that needs you is lit; the rest are the quiet ink.
+            .foregroundStyle(item.state == .blocked ? Theme.textPrimary : Theme.textSecondary)
+    }
+
+    private var activity: some View {
+        Text(item.activity)
+            .font(.footnote)
+            .foregroundStyle(Theme.textTertiary)
+    }
+
+    private var stateLabel: some View {
+        SubtaskStateLabel(state: item.state)
+            // Ordinary changes of class are written in place too…
+            .transaction { $0.animation = nil }
+            // …and into or out of blocked, or into failed, the state
+            // re-enters, over the board's slow duration (420ms).
+            .id(item.state.entryKey)
+            .transition(.asymmetric(insertion: reduceMotion ? .identity : Self.stateIn,
+                                    removal: .identity))
     }
 
     static let stateIn = AnyTransition.opacity

@@ -274,6 +274,7 @@
  * radius. A tinted band here would be a card inside a card. A card without
  * subagents carries none of this, and is today's card line for line. */
 .subs {
+  container: subs / inline-size;
   padding-top: var(--space-2xs);
   border-top: 1px solid var(--rule);
 }
@@ -428,6 +429,52 @@
 
 /* A count is its own box so a change can tick it in place (board.css). */
 .n { display: inline-block; }
+
+/* At a reader's larger text the three parts no longer share a line: at 200%
+ * on a phone the task and the activity came down to four letters each,
+ * "Find …" beside "Se…". So the task takes the whole width, two lines if it
+ * needs them, and the state and the activity share the next, the state still
+ * leading under the badge, its mark and word together. None of the three is
+ * dropped, and the iOS and Android rows do the same.
+ *
+ * From when the rows have less than 20em of their own text across: 260px at
+ * the default size, under the 270 a 320px phone gives them, so no default
+ * layout from 320px up moves. At 150% text every card's rows are under it,
+ * and at 125% those narrower than 325px: a 320px phone's, and a desktop
+ * window's whose columns run narrow, as at 1024px. The row's name is its
+ * aria-label, so a screen reader hears the same either way. */
+@container subs (width < 20em) {
+  /* Its two lines close, and 8px between rows, so a row reads as one. */
+  .sub {
+    flex-wrap: wrap;
+    row-gap: 0;
+    padding-block: var(--space-2xs);
+  }
+
+  .sub-text { display: contents; }
+
+  /* Two lines, since it is how you know which row this is: at 300% on a
+   * phone one line held "Find why the…". */
+  .sub-label {
+    order: -2;
+    flex: 0 0 100%;
+    max-width: none;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+
+  /* The column is for one line of rows; here the state takes only its own
+   * width and leaves the rest to the activity. */
+  .sub-st { flex: 0 0 auto; }
+
+  /* "+1 more · 2 done" wraps between its words rather than run out of the
+   * card, which at 300% on a phone it did by 57px. */
+  .sub-foot { white-space: normal; }
+  .foot-words { min-width: 0; }
+}
 
 /* Wraps, because it must. Every other item here is `flex: none`, so on a
  * narrow card .host and .proj were the only things that could give — and they
