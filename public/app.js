@@ -189,6 +189,20 @@
 
   const usageLevel = (pct) => (pct >= 85 ? 'high' : pct >= 60 ? 'mid' : 'low');
 
+  // On a phone a limit's name and its reading wrap (shell.css), and these are
+  // the two places they must not. A model name is one name: left to the line
+  // breaker, a 320px phone read "SESSION (GPT-" over "6-ASTRA)". A countdown
+  // is one reading: "resets in 2h" over "17m" says two hours. A reading
+  // wraps on the desktop board too, beside its label: at 561 and 640px wide,
+  // at the default size, it already read "resets in 2d" over "5h".
+  //
+  // Held by the characters typesetting keeps for it, a non-breaking hyphen
+  // and a no-break space, which draw exactly as the hyphen and space they
+  // stand in for. A span around each run moved the glyphs after it by a
+  // fraction of a pixel, at every width, wrapped or not.
+  const meterName = (text) => escape(text).replace(/(\S)-(?=\S)/g, '$1\u2011');
+  const meterReset = (text) => escape(text).replace(/(\d+[dhm]) (\d+[dhm])$/, '$1\u00a0$2');
+
   function renderUsage() {
     // Only show limits for agents that actually have sessions on the board —
     // a Claude-only evening doesn't need Codex bars. With no sessions there is
@@ -209,9 +223,9 @@
         return `
           <div class="meter">
             <div class="meter-head">
-              <span class="meter-label">${escape(w.label || w.id)}</span>
+              <span class="meter-label">${meterName(w.label || w.id)}</span>
               <span class="meter-value">${fmtPct(pct)}${
-                reset ? ` <span class="usage-reset">· ${escape(reset)}</span>` : ''
+                reset ? ` <span class="usage-reset">· ${meterReset(reset)}</span>` : ''
               }</span>
             </div>
             <div class="meter-track">

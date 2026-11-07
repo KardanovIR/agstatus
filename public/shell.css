@@ -763,21 +763,46 @@ body.detail-open > .footer { display: none; }
  * Adapted, not amputated. board.css retunes the cards; these are the shell's
  * own concessions. */
 @media (max-width: 560px) {
-  /* Half a phone's width fits the limit's name OR its number, not both. */
   .usage { gap: var(--space-xs); }
 
+  /* Two across while each block still holds a reading and its reset on one
+   * line: "34% · resets in 2h 17m" is 8.9em of the block's text, and its
+   * padding and border most of the rest, so 11em, which is 143px at the default
+   * text size, just inside the 144px a 320px phone gives each. Past that, at a
+   * reader's larger text or on a narrower screen, each block takes the row.
+   * At 200% two across left room for neither: five labels in six ran out of
+   * their blocks, under the next one or off the page. */
   .usage-block {
     flex: 1 1 calc(50% - var(--space-2xs));
-    min-width: 0;
+    min-width: min(100%, 11em);
     gap: var(--space-xs);
     padding: var(--space-xs) var(--space-sm);
     border-radius: var(--r-md);
   }
 
+  /* Half a phone's width fits the limit's name OR its number, not both, so
+   * each takes a line, and the block's width. Left at flex-start, the label
+   * was as wide as its text and its ellipsis never engaged: at the default
+   * size on a 375px phone "Current week (all models)" ran on under the Codex
+   * block, cut without one. */
   .meter-head {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 0;
+  }
+
+  /* With a line to itself, the label wraps rather than being cut, as iOS's
+   * heads take a second line at the accessibility sizes, and balanced, so its
+   * lines come out even: "CURRENT WEEK" over "(ALL MODELS)", where filling
+   * the first line left "MODELS)" under it alone. It wraps between words and
+   * never inside a hyphenated model name (app.js holds it whole), and the
+   * longest an agent reports, "(GPT-6-ASTRA)", still fits the row of a 320px
+   * phone at 300% text. Anything wider than the block, such as a window's id,
+   * breaks at the edge rather than running past it. */
+  .meter-label {
+    white-space: normal;
+    overflow-wrap: break-word;
+    text-wrap: balance;
   }
 
   .stats { gap: var(--space-2xs) var(--space-sm); }
