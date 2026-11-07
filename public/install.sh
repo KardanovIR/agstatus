@@ -75,9 +75,10 @@ again; --no-codex has to be given again:
   --url <base>      Server to use (for a self-hosted board)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
   --no-secret       Drop the webhook secret this machine has
-  --minimal         Send tool and folder names, never command text, prompts
-                    or session titles
-  --no-minimal      Send command text, prompts and session titles again
+  --minimal         Send tool and folder names, never command text, prompts,
+                    session titles or subagent tasks ("Subagent N" instead)
+  --no-minimal      Send command text, prompts, session titles and subagent
+                    tasks again
   --no-qr           Skip the QR code
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)

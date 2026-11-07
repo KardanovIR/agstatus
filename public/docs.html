@@ -186,6 +186,7 @@
           <li><a href="#api-plan-usage">Plan usage</a></li>
           <li><a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></li>
           <li><a href="#api-per-session-token-totals">Per-session token totals</a></li>
+          <li><a href="#api-subagents">Subagents</a></li>
           <li><a href="#api-session-history">Session history</a></li>
           <li><a href="#api-focus-commands">Focus commands</a></li>
           <li><a href="#api-legacy-single-tenant-endpoints">Legacy (single-tenant) endpoints</a></li>
@@ -215,7 +216,8 @@ only (Codex needs <a href="#hooks-install">the installer</a>).</li>
 <li><strong>Manual bash hook</strong> — <em>deprecated.</em> The original
 <code>hooks/claude-status-hook.sh</code>, still shipped and still working, for people
 who want to see and customize every moving part. It reports status only:
-no plan-usage bars, no card removal at session end, and no Codex support.
+no plan-usage bars, no card removal at session end, no subagent rows, and
+no Codex support.
 Prefer 1 or 2; see <a href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook</a>.</li>
 </ol>
 <p>Both hooks are deliberately non-blocking: any failure (server down, bad
@@ -268,7 +270,10 @@ no dependencies).</li>
 <li>Merges the hook registrations and env vars into <code>~/.claude/settings.json</code>,
 writing a backup to <code>settings.json.agstatus-backup</code> first. Your existing
 settings and hooks are preserved; re-running <code>init</code> replaces only the
-AgStatus entries.</li>
+AgStatus entries. There are eleven, one for each event in
+<a href="#hooks-how-events-map-to-statuses">the table below</a>, each with a 10-second
+timeout except <code>SessionEnd</code>&#39;s: Claude Code&#39;s own default is 600 seconds,
+and <code>SessionEnd</code> hooks share a budget a timeout would raise.</li>
 <li>Prints your dashboard URL and a QR code to open it on your phone.</li>
 </ol>
 <p>On macOS the installer also sets up the <a href="#hooks-focus-optional-opt-in">Focus listener</a>
@@ -318,11 +323,11 @@ wins) and are consumed before the rest is handed on. They are macOS-only, so
 </tr>
 <tr>
 <td><code>--minimal</code></td>
-<td>Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets <code>AGSTATUS_DETAIL=off</code>; later runs keep it until <code>--no-minimal</code>).</td>
+<td>Privacy mode: send tool names only, never command text or prompts, name each card after its folder, never its session title, and number subagents (&quot;Subagent 1&quot;) instead of describing them (sets <code>AGSTATUS_DETAIL=off</code>; later runs keep it until <code>--no-minimal</code>).</td>
 </tr>
 <tr>
 <td><code>--no-minimal</code></td>
-<td>Send command text, prompts and session titles again (removes <code>AGSTATUS_DETAIL=off</code>).</td>
+<td>Send command text, prompts, session titles and subagent tasks again (removes <code>AGSTATUS_DETAIL=off</code>).</td>
 </tr>
 <tr>
 <td><code>--codex</code></td>
@@ -395,13 +400,20 @@ machine: both hooks would fire and every status would post twice. Pick one
 (<code>agstatus uninstall</code> removes the CLI-installed hook and leaves the plugin
 alone). The plugin covers Claude Code only; for Codex, use
 <a href="#hooks-install">the installer</a>.</p>
+<p>The plugin&#39;s <code>hooks.json</code> registers the same events, matchers and timeouts as
+<code>agstatus init</code>, and ships with the hook script, so updating the plugin from
+<code>/plugin</code> brings both together. That is how a plugin install gets the events
+a release adds — 1.7.0&#39;s <a href="#hooks-subagents">subagent events</a> among them.</p>
 <h3 id="hooks-how-events-map-to-statuses"><a class="anchor" href="#hooks-how-events-map-to-statuses">How events map to statuses</a></h3>
-<p>The Node hook applies this mapping; the <code>PermissionRequest</code> and <code>PreToolUse</code> —
-<code>apply_patch</code> rows are Codex-only. The bash hook covers the same Claude Code
-events but predates Codex support, so it handles neither of those, and being
-frozen it still reports <code>Stop</code> as <code>idle</code> rather than <code>done</code>, renames a card
-from the working directory of every event instead of pinning the name at
-<code>SessionStart</code>, and never names a card after its session title:</p>
+<p>The Node hook applies this mapping to the session&#39;s own events — those without
+an <code>agent_id</code>. A subagent&#39;s events reach the board as rows on its card instead;
+see <a href="#hooks-subagents">Subagents</a>. A note starting &quot;Claude Code:&quot; or &quot;Codex:&quot; is
+about that agent alone. The bash hook covers only the Claude Code events it
+always did, none of the subagent ones among them, and predates Codex support.
+Being frozen, it also still reports <code>Stop</code> as <code>idle</code> rather than <code>done</code>,
+renames a card from the working directory of every event instead of pinning
+the name at <code>SessionStart</code>, never names a card after its session title, and
+puts every subagent tool call on its parent&#39;s line:</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
@@ -412,13 +424,13 @@ from the working directory of every event instead of pinning the name at
 </thead>
 <tbody><tr>
 <td><code>SessionStart</code></td>
-<td><code>idle</code></td>
-<td>New session appears as soon as Claude starts. The only event that sends <code>idle</code>, so a card wears it just for the seconds between starting an agent and submitting the first prompt.</td>
+<td><code>idle</code>, <strong>or nothing</strong></td>
+<td>New session appears as soon as Claude starts. The only event that sends <code>idle</code>, so a card wears it just for the seconds between starting an agent and submitting the first prompt. It also tells the server to drop the session&#39;s subagent rows: a process that has just started runs none. Claude Code fires it again for a compaction (<code>source: &quot;compact&quot;</code>), and that one posts nothing — an automatic compaction halfway through a turn used to flip a working card to &quot;Session started&quot;.</td>
 </tr>
 <tr>
 <td><code>UserPromptSubmit</code></td>
 <td><code>planning</code></td>
-<td>Fires the moment you submit a prompt, so the card leaves <code>blocked</code>/<code>idle</code> immediately instead of waiting for the first tool call. Shows the prompt text (truncated), minus the <code>&lt;system-reminder&gt;</code> notices Claude Code and the desktop app wrap into it — those are the host talking to the agent, not you; a prompt that is nothing but a notice, and every prompt in minimal mode, shows &quot;Processing prompt&quot;.</td>
+<td>Fires the moment you submit a prompt, so the card leaves <code>blocked</code>/<code>idle</code> immediately instead of waiting for the first tool call. Claude Code: shows the prompt text (truncated), minus the <code>&lt;system-reminder&gt;</code> notices Claude Code and the desktop app wrap into it — those are the host talking to the agent, not you; a prompt that is nothing but a notice, and every prompt in minimal mode, shows &quot;Processing prompt&quot;. A prompt made only of <code>&lt;task-notification&gt;</code> blocks is Claude Code telling the session its background subagents have finished, not you speaking: it reads &quot;Reading subagent results&quot; and starts no turn (see <a href="#hooks-subagents">Subagents</a>). Codex: always &quot;Processing prompt&quot; — the prompt text is never sent.</td>
 </tr>
 <tr>
 <td><code>PreToolUse</code> — <code>Edit</code> / <code>Write</code> / <code>MultiEdit</code> / <code>NotebookEdit</code></td>
@@ -436,19 +448,14 @@ from the working directory of every event instead of pinning the name at
 <td>Card shows the agent&#39;s own one-line description of the command (&quot;Show working tree status&quot;), falling back to the command text when none was supplied.</td>
 </tr>
 <tr>
-<td><code>PreToolUse</code> — <code>Task</code> / <code>WebSearch</code> / <code>WebFetch</code></td>
+<td><code>PreToolUse</code> — <code>Agent</code> / <code>Task</code> / <code>WebSearch</code> / <code>WebFetch</code></td>
 <td><code>planning</code></td>
-<td>Card shows what is being looked for — the subagent&#39;s task description, &quot;Searching: &lt;query&gt;&quot;, or &quot;Reading &lt;host&gt;&quot;.</td>
+<td>Card shows what is being looked for — the subagent&#39;s task description, &quot;Searching: &lt;query&gt;&quot;, or &quot;Reading &lt;host&gt;&quot;. <code>Agent</code> is the tool Claude Code launches subagents with; <code>Task</code> is its old name, kept for older versions. Until 1.7.0 the hook matched only <code>Task</code>, so no launch reached the board.</td>
 </tr>
 <tr>
-<td><code>Notification</code></td>
-<td><code>blocked</code></td>
-<td>Claude Code: permission prompts and other attention-needed events — this is what triggers a push.</td>
-</tr>
-<tr>
-<td><code>PermissionRequest</code></td>
-<td><code>blocked</code>, <strong>or nothing</strong></td>
-<td>Codex: fires whenever the model asks to escalate — which is usually answered by Codex itself, not by you. The card turns <code>blocked</code> and pushes only when a human is the reviewer; an escalation Codex approves itself changes nothing and is reported as nothing, so the card keeps the status it had. See <a href="#hooks-who-answers-an-approval">Who answers an approval</a>.</td>
+<td><code>PreToolUse</code> — <code>Workflow</code></td>
+<td><code>planning</code></td>
+<td>Claude Code&#39;s dynamic workflows: &quot;Running workflow: &lt;description&gt;&quot; when the workflow&#39;s script names one, else &quot;Running a workflow&quot;.</td>
 </tr>
 <tr>
 <td><code>PreToolUse</code> — <code>apply_patch</code></td>
@@ -456,21 +463,42 @@ from the working directory of every event instead of pinning the name at
 <td>Codex&#39;s file-edit tool; the card shows &quot;Editing files&quot;.</td>
 </tr>
 <tr>
+<td><code>Notification</code></td>
+<td><code>blocked</code>, <strong>or nothing</strong></td>
+<td>Claude Code: a human is being asked — this is what triggers a push. That covers permission prompts (<code>permission_prompt</code>), questions and requests for input (<code>elicitation_dialog</code>, <code>elicitation_url_dialog</code>, <code>agent_needs_input</code>), <code>idle_prompt</code>, <code>quota_auto_resume_stale</code> and any type the hook does not know. A permission prompt a subagent is waiting on blocks that subagent&#39;s row, and the card reads &quot;Needs approval: &lt;label&gt;&quot; (see <a href="#hooks-subagents">Subagents</a>). Types that ask nobody anything — <code>auth_success</code>, <code>elicitation_complete</code>, <code>elicitation_response</code>, <code>agent_completed</code>, <code>quota_auto_resume_fired</code>, <code>quota_auto_resume_disabled</code>, <code>plugin_notification</code> — post nothing; each used to turn a working card blocked, and push.</td>
+</tr>
+<tr>
+<td><code>PermissionRequest</code></td>
+<td><code>blocked</code>, <strong>or nothing</strong></td>
+<td>Codex: fires whenever the model asks to escalate — which is usually answered by Codex itself, not by you. The card turns <code>blocked</code> and pushes only when a human is the reviewer; an escalation Codex approves itself changes nothing and is reported as nothing, so the card keeps the status it had. See <a href="#hooks-who-answers-an-approval">Who answers an approval</a>. Claude Code: posts nothing. It fires the moment a prompt appears — for prompts answered within a second, and for prompts of background subagents that nobody sees — so the hook only notes which thread asked, for the <code>Notification</code> that follows a prompt still waiting after about six seconds.</td>
+</tr>
+<tr>
 <td><code>Stop</code></td>
 <td><code>done</code></td>
-<td>The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads &quot;Turn finished&quot;, and this is the transition an opt-in push fires on. A turn you interrupt fires no <code>Stop</code> at all, so that card keeps its last tool status until the session&#39;s next event.</td>
+<td>The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads &quot;Turn finished&quot;, and this is the transition an opt-in push fires on. A turn you interrupt fires no <code>Stop</code> at all, so that card keeps its last tool status until the session&#39;s next event. Background subagents and workflows can outlive the turn: <code>Stop</code> tells the server which are still running, and until they finish the card reads their busiest state with &quot;N subagents still running&quot; rather than <code>done</code> (see <a href="#hooks-subagents">Subagents</a>).</td>
 </tr>
 <tr>
 <td><code>SessionEnd</code></td>
 <td><em>card removed</em></td>
-<td>Claude Code only — the hook calls <code>DELETE /sessions/:id</code> so the card disappears. Codex has no session-end hook; its cards expire via the server&#39;s session TTL instead.</td>
+<td>Claude Code only — the hook calls <code>DELETE /sessions/:id</code> so the card disappears, and removes what it kept locally about the session&#39;s subagents. Codex has no session-end hook; its cards expire via the server&#39;s session TTL instead.</td>
+</tr>
+<tr>
+<td><code>SubagentStart</code> / <code>SubagentStop</code></td>
+<td><em>a row on the card</em></td>
+<td>A subagent starting and finishing (Codex: a sub-agent&#39;s turn finishing). Never the session&#39;s own status. See <a href="#hooks-subagents">Subagents</a>.</td>
+</tr>
+<tr>
+<td><code>PostToolUse</code> / <code>PostToolUseFailure</code> — <code>Agent</code> / <code>Task</code> / <code>Workflow</code></td>
+<td><em>nothing, or a failed row</em></td>
+<td>Claude Code: a launch&#39;s result. It ties the subagent to its tool call, gives a background launch its label, and notes where a workflow&#39;s run keeps its agents&#39; labels; a failed <code>Agent</code> or <code>Task</code> call marks its subagent&#39;s row failed (<code>PostToolUseFailure</code> matches only those two). Never the session&#39;s own status.</td>
 </tr>
 </tbody></table></div>
 <p>Other tools and events are ignored. Messages are capped at 120 characters.
 With <code>--minimal</code> (<code>AGSTATUS_DETAIL=off</code>) every card shows only the tool name —
 no descriptions, file names, queries, or command text — and is named after its
 folder, never its session title (a title is generated from your prompts; see
-<a href="#hooks-card-names-and-projects">Card names and projects</a>).</p>
+<a href="#hooks-card-names-and-projects">Card names and projects</a>). Its subagents are
+numbered, never described — see <a href="#hooks-subagents">Subagents</a>.</p>
 <blockquote>
 <p><strong>Why descriptions instead of commands?</strong> Agents write a short description of
 each command they run, which reads better on a phone than a shell one-liner —
@@ -571,7 +599,7 @@ readiness tests in a fresh disposable PostgreSQL cluster?&quot; — taken from
 </tr>
 <tr>
 <td><code>planning</code></td>
-<td>Thinking, reading or searching — your submitted prompt, a subagent, a web search or a fetch.</td>
+<td>Thinking, reading or searching — your submitted prompt, launching a subagent, a web search or a fetch, or reading what its background subagents reported.</td>
 </tr>
 <tr>
 <td><code>coding</code></td>
@@ -583,13 +611,21 @@ readiness tests in a fresh disposable PostgreSQL cluster?&quot; — taken from
 </tr>
 <tr>
 <td><code>blocked</code></td>
-<td>The agent has stopped and needs a human: a permission prompt, or another attention-needed notification. Every registered device is pushed on this one.</td>
+<td>The agent — or one of its subagents — has stopped and needs a human: a permission prompt, or another attention-needed notification. Every registered device is pushed on this one.</td>
 </tr>
 <tr>
 <td><code>done</code></td>
 <td>The turn is finished and the agent is waiting for your next prompt. <code>Stop</code> fires at the end of every turn, so this is the state a card rests in most of the time.</td>
 </tr>
 </tbody></table></div>
+<p>A board shows two more words, and neither is a status anything sends.
+<strong>working</strong> is a card whose own turn is over while its subagents carry on in
+the background: the boards work it out from the session&#39;s <code>subtasks</code>
+(<a href="#api-the-session-object">docs/api.md</a>), and the status underneath is the
+busiest subagent&#39;s — <code>testing</code>, <code>coding</code> or <code>planning</code>, with &quot;N subagents
+still running&quot; — which is what an app without subagent rows shows. <strong>failed</strong>
+is only ever a subagent&#39;s row. Statuses on the wire, in push notifications and in
+the session timeline stay the six above.</p>
 <p><code>Stop</code> used to report <code>idle</code>, which folded two different situations into one
 word: &quot;nothing has happened here yet&quot; and &quot;your answer is ready&quot;. A program
 cannot tell those apart; a person glancing at a phone cares about little else —
@@ -598,6 +634,113 @@ read. So <code>done</code> is now the ordinary end-of-turn state (boards colour 
 green, and a device that opted in with <code>notify_done</code> is pushed each time a turn
 finishes — see <a href="#api-device-push-endpoints">docs/api.md</a>), and <code>idle</code> is left
 to mean only what it says: a session that has not been given any work.</p>
+<h4 id="hooks-subagents"><a class="anchor" href="#hooks-subagents">Subagents</a></h4>
+<p>A session&#39;s subagents are rows on its card. A subagent is anything that runs
+under the session with an <code>agent_id</code> of its own: an Agent-tool subagent
+(foreground, background or nested), a dynamic-workflow agent, a Codex
+sub-agent thread, an in-process teammate, a <code>/fork</code>. Nested ones are listed
+flat, beside the rest. Until 1.7.0 their tool calls landed on the session&#39;s
+one line, a post apiece, so ten subagents running in parallel took turns
+overwriting it and the session&#39;s own reading was lost. Now the line stays the
+session&#39;s, and each row says what its subagent was asked to do, its state, and
+what it is doing. A board lists up to three rows on a card, two on a phone —
+the oldest, each keeping its place until it finishes, with any subagent
+waiting on approval always among them — and a footer counts the rest:
+&quot;+7 more · 15 done&quot;. The session screen lists them all.</p>
+<p><strong>When a subagent is posted.</strong> Its events arrive with the session&#39;s
+<code>session_id</code> and its own <code>agent_id</code>, and the hook posts them on the session&#39;s
+webhook as an <code>agent</code> object (<a href="#api-subagents">docs/api.md</a>), under a hash of
+that id:</p>
+<ul>
+<li>when it starts (<code>SubagentStart</code>), with its label;</li>
+<li>when its status class changes — <code>planning</code>, <code>coding</code>, <code>testing</code>,
+<code>blocked</code> — carrying the tool call that changed it, described as the
+session&#39;s own would be (&quot;Delegating: &lt;task&gt;&quot; for a launch of its own);</li>
+<li>when it finishes: <code>SubagentStop</code>, its background task&#39;s notification, or a
+failed launch;</li>
+<li>and, while its class stays the same, what it is now doing when that changed,
+<strong>at most once a minute</strong>.</li>
+</ul>
+<p>That is about four posts a subagent where there used to be one per tool call,
+some 22 each, and nothing at all while a subagent keeps doing the same thing.
+A post the board refused — a <code>429</code>, a <code>5xx</code>, a timeout — goes again with the
+next event that calls for it: the hook writes down a class, a label or a
+finish only once the board has confirmed it, so the next tool call of the same
+class repeats a lost class change, and a background task&#39;s notification
+repeats a lost stop. The once-a-minute refresh is the exception, on purpose:
+it notes its attempt before sending, so a refresh the board refused waits a
+full minute before the next, and a board that is shedding load is not asked
+again on every tool call.</p>
+<p><strong>Labels.</strong> In detail mode a row&#39;s label is what its subagent was asked to do,
+cut to 64 characters:</p>
+<ul>
+<li>an Agent-tool subagent: the task description its launch carried. Launches
+made in parallel can start in either order, so the hook takes the oldest
+pending launch as a guess and puts it right from Claude Code&#39;s own record of
+the launch (<code>agent-&lt;id&gt;.meta.json</code>, beside the subagent&#39;s transcript) at the
+subagent&#39;s first tool call, or from a background launch&#39;s result;</li>
+<li>a workflow agent: its label in the workflow run&#39;s journal;</li>
+<li>a Codex sub-agent: its nickname from its rollout (<code>agent_nickname</code>), else
+the last part of its agent path.</li>
+</ul>
+<p>With none, the board shows &quot;Subagent N&quot;, N being where it started in the
+turn&#39;s order.</p>
+<p><strong>Approvals.</strong> Claude Code&#39;s <code>Notification</code> does not say which thread is
+asking. Its <code>PermissionRequest</code> does, and fires the moment the prompt appears,
+so the hook writes itself a note there and posts nothing. The <code>Notification</code>
+that follows a prompt still unanswered after about six seconds claims the
+oldest note at least two seconds old — among those for the tool it names, when
+its message names one. A subagent&#39;s note blocks that subagent&#39;s row, and the
+card reads &quot;Needs approval: &lt;label&gt;&quot;, with &quot;+1&quot; for each other subagent
+waiting; the session&#39;s own note blocks the session, as before. A thread&#39;s
+notes go when it makes its next tool call, because its prompts were answered.
+A prompt the hook cannot pin on anyone — a sandbox network prompt, a question
+— blocks the card from the session&#39;s side, flagged <code>unattributed</code>, and while
+subagents are running the next of them to make progress clears it, as the
+next subagent tool call did before 1.7.0. Nothing reports an approval as such,
+so an approved row stays blocked until its subagent next posts. A Codex
+sub-agent asks through <code>PermissionRequest</code>, checked for auto-review exactly as
+the root&#39;s is (see <a href="#hooks-who-answers-an-approval">Who answers an approval</a>).</p>
+<p><strong>Background subagents.</strong> A turn can end while background subagents or a
+workflow still run. <code>Stop</code> then lists them, from Claude Code&#39;s
+<code>background_tasks</code>, and the card keeps their rows and reads their busiest
+state with &quot;N subagents still running&quot;: a 1.7.0 board draws it as <em>working</em>,
+not <em>done</em>, and nothing pushes done. As each finishes, Claude Code hands the
+session a prompt made of <code>&lt;task-notification&gt;</code> blocks. The hook reads each
+block&#39;s id, status and summary — never its result — finishes the matching row
+(<code>failed</code> when the block&#39;s status is failed, killed or blocked), and posts the
+prompt as &quot;Reading subagent results&quot;. The card carries that line into the
+session&#39;s report turn, and the done push goes out when that turn ends, once.</p>
+<p><strong>Failures.</strong> A row turns failed when its launch fails (<code>PostToolUseFailure</code> on
+the <code>Agent</code> call: &quot;Failed: &lt;first line of the error&gt;&quot;, or &quot;Stopped&quot; when
+you interrupted it), or when its background task&#39;s notification says it
+failed or was killed. <code>SubagentStop</code> says nothing about how a subagent ended,
+so without one of those it counts as done. Workflow agents and Codex
+sub-agents have no failure signal at all and always count as done. A failed
+row stays listed, with its reason, until the session&#39;s turn is over.</p>
+<p><strong>What the hook keeps.</strong> Every event runs in a process of its own, so knowing
+which subagents started, and what the board was last told about each, takes
+state between runs. It lives in a directory of yours under the system temp
+directory (<code>agstatus-subtasks-&lt;uid&gt;-&lt;hash&gt;</code>, mode <code>0700</code>, a <code>0600</code> file per
+subagent). The hook checks that it is a real directory, owned by you and closed
+to everyone else, before reading or writing anything there, and otherwise
+keeps no state at all. Files go after ten minutes to a day, depending on what
+they hold, and a session&#39;s whole directory at <code>SessionEnd</code>, or once it is a
+day old. Losing any of it costs a label or a post, never an event.</p>
+<p><strong>Subagents the hook never saw start</strong> are reported as before 1.7.0: their
+tool calls on the session&#39;s line, and no row. That is what an install
+gets with the new hook but the old registrations, with an unusable temp
+directory, or with Codex entries not trusted yet — and none of those can leave
+a row behind on the board.</p>
+<p><strong>In minimal mode</strong> a subagent is &quot;Subagent N&quot;. No label is read or sent; its
+activity is the tool&#39;s name when that is one of <code>Edit</code>, <code>Write</code>, <code>MultiEdit</code>,
+<code>NotebookEdit</code>, <code>apply_patch</code>, <code>Bash</code>, <code>Agent</code>, <code>Task</code>, <code>WebSearch</code>,
+<code>WebFetch</code>, <code>Workflow</code>, <code>Read</code>, <code>Glob</code>, <code>Grep</code> or <code>Skill</code>, and otherwise a fixed
+word — <code>Needs approval</code>, <code>Failed</code>, <code>Stopped</code>, <code>Blocked</code> (an MCP tool&#39;s name
+names its server, so it never goes out); and the hook reads no <code>meta.json</code>,
+journal or rollout for it. In either mode the raw <code>agent_id</code> stays on the
+machine — it can carry words of a <code>/fork</code> directive or a teammate&#39;s name — and
+so does <code>agent_type</code>.</p>
 <h4 id="hooks-card-names-and-projects"><a class="anchor" href="#hooks-card-names-and-projects">Card names and projects</a></h4>
 <p>A card&#39;s <code>name</code> comes from one of three places, in this order:</p>
 <ol>
@@ -686,10 +829,12 @@ folder and the project its repository, so <code>claude --worktree feature-x</cod
 session that never left home shows nothing extra.</p>
 <h3 id="hooks-plan-usage-bars"><a class="anchor" href="#hooks-plan-usage-bars">Plan-usage bars</a></h3>
 <p>The Node hook also feeds the dashboard&#39;s plan-limit bars. It runs on quiet
-events (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>Stop</code>, <code>Notification</code>,
-<code>PermissionRequest</code>), at most once every 5 minutes per board and source, and
-reports only percentages and reset times
-(<code>POST &lt;board&gt;/usage</code> — see <a href="#api-plan-usage">docs/api.md</a>).</p>
+events (<code>SessionStart</code>, Claude Code&#39;s <code>UserPromptSubmit</code>, <code>Stop</code>,
+<code>Notification</code>, Codex&#39;s <code>PermissionRequest</code>), at most once every 5 minutes per
+board and source, and reports only percentages and reset times
+(<code>POST &lt;board&gt;/usage</code> — see <a href="#api-plan-usage">docs/api.md</a>). The events
+1.7.0 registered do not report: the subagent events, Claude Code&#39;s
+<code>PermissionRequest</code>, which posts nothing, and Codex&#39;s <code>UserPromptSubmit</code>.</p>
 <p>A bar belongs to the board and the agent, never to a card. The server keeps
 one set of windows per board per agent, and every session of that agent
 reports into the same set, so the bars do not change when you switch cards and
@@ -735,8 +880,9 @@ guarantees <code>primary</code> is the shorter one; labels come from
 </ol>
 <p><code>PreToolUse</code> is excluded for Claude, whose report costs a network round trip
 and which fires between every tool call. Codex reads a local file, and
-<code>PreToolUse</code> is most of what it fires at all, so it reports there too — the
-throttle bounds the work either way.</p>
+<code>PreToolUse</code> is most of what it fires at all, so it reports there too, a
+sub-agent&#39;s included (otherwise the bars would freeze while a root waits on its
+sub-agents) — the throttle bounds the work either way.</p>
 <p>Set <code>AGSTATUS_USAGE=off</code> in the settings <code>env</code> block (Claude Code) or add it
 to the command prefix in <code>hooks.json</code> (Codex) to turn this off entirely. The
 bash hook reports no usage at all; a board simply shows no bars until
@@ -1082,8 +1228,20 @@ no error anywhere — until you re-run <code>/hooks</code>. Both <code>agstatus 
 the installer say so when they finish setting Codex up.</li>
 </ol>
 <p>Events wired: <code>SessionStart</code>, <code>PreToolUse</code> (matcher
-<code>^(Bash|apply_patch|Edit|Write)$</code>), <code>PermissionRequest</code>, and <code>Stop</code>, each with
-a 10 s timeout (the script itself exits within ~4 s).</p>
+<code>^(Bash|apply_patch|Edit|Write)$</code>), <code>PermissionRequest</code>, <code>Stop</code>,
+<code>UserPromptSubmit</code>, <code>SubagentStart</code> and <code>SubagentStop</code>, each with a 10 s
+timeout (the script itself exits within ~4 s). The last three are new in 1.7.0:
+<code>UserPromptSubmit</code> marks a root turn starting — the card reads &quot;Processing
+prompt&quot;, and the prompt itself is never sent — and the other two follow
+sub-agent threads, which the board lists on their root&#39;s card (see
+<a href="#hooks-subagents">Subagents</a>). Codex fires <code>SubagentStop</code> at the end of every
+sub-agent turn, so a sub-agent you re-task comes back as a row with its next
+change of state.</p>
+<p>An upgrade from 1.6 adds those three entries under the command Codex already
+trusts. Whether Codex wants entries added that way trusted again is not known,
+so <code>agstatus init</code> says so when it adds them: if <code>/hooks</code> in Codex lists an
+AgStatus entry as untrusted, trust it once. Until then each sub-agent is
+reported as before 1.7.0, on its root&#39;s line.</p>
 <p>Codex Desktop also starts short threads of its own and keeps no rollout for
 them. Examples are its suggestions (a run in the project folder, then a check
 in <code>/</code>), commit and PR messages, and inline edits. Their hook payloads carry
@@ -1115,7 +1273,7 @@ the helpers.</p>
 </tr>
 <tr>
 <td><code>AGSTATUS_DETAIL=off</code></td>
-<td>Node hook only. Send tool names instead of command text and prompts, and folder names instead of session titles (what <code>--minimal</code> sets).</td>
+<td>Node hook only. Send tool names instead of command text and prompts, folder names instead of session titles, and &quot;Subagent N&quot; instead of what each subagent was asked to do (what <code>--minimal</code> sets).</td>
 </tr>
 <tr>
 <td><code>AGSTATUS_USAGE=off</code></td>
@@ -1138,9 +1296,10 @@ the helpers.</p>
 <blockquote>
 <p><strong>Deprecated.</strong> This hook still ships and still works, and nothing here has
 stopped being true — but it is no longer where new features land, and it is
-missing three that the Node hook has: <strong>plan-usage bars</strong> (it reports no
-usage at all), <strong>card removal on <code>SessionEnd</code></strong>, and <strong>Codex support</strong> (no
-<code>PermissionRequest</code> or <code>apply_patch</code> handling). Prefer
+missing four that the Node hook has: <strong>plan-usage bars</strong> (it reports no
+usage at all), <strong>card removal on <code>SessionEnd</code></strong>, <strong>subagent rows</strong> (a
+subagent&#39;s tool calls still land on its parent&#39;s line), and <strong>Codex
+support</strong> (no <code>PermissionRequest</code> or <code>apply_patch</code> handling). Prefer
 <a href="#hooks-install">the installer</a> or the
 <a href="#hooks-claude-code-plugin">Claude Code plugin</a>; keep reading only if you want a
 hook you can read end to end in one sitting, or you would rather not have
@@ -1970,6 +2129,13 @@ requests already running finish, writes what is still queued to Postgres and
 exits, normally within a fraction of a second. If that is not done 4 s after
 the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
 enough, and Docker&#39;s default is 10 s.</p>
+<p>Schema changes are applied at boot. 1.7.0 adds one nullable column,
+<code>sessions.subtasks</code>, holding a session&#39;s <a href="#api-subagents">subagent rows</a>, so
+they survive a restart; a soft-deleted session keeps it with the rest of its
+row, and the purge above removes it with the row. Rolling back to an older
+server is safe: it never touches the column, and the next 1.7.0 start ignores
+the stored rows of any session the older server updated in between, rather
+than bring back rows it never kept current.</p>
 <h4 id="self-hosting-flagging-rows-written-before-162s-bounds"><a class="anchor" href="#self-hosting-flagging-rows-written-before-162s-bounds">Flagging rows written before 1.6.2&#39;s bounds</a></h4>
 <p>Servers before 1.6.2 stored project days with any date, and capped some
 tables by flagging old rows rather than refusing new ones, so their database
@@ -2164,8 +2330,13 @@ Repeat alerts for the same session and kind are debounced to at most one per
 minute, which bounds a burst but not a normal back-and-forth, since most turns
 take longer than that. <code>blocked</code> is the one that fires rarely and always
 deserves a look. A session that first appears already <code>done</code> doesn&#39;t notify.
-A push payload contains the same session name and message your hook already
-sent to the board — nothing more — relayed through Apple&#39;s APNs. Device registration endpoints exist in multi-tenant mode only;
+A subagent that starts waiting on a card that is already <code>blocked</code> notifies
+again, within the same once-a-minute debounce, and <code>done</code> waits for the end of
+the report turn when background subagents ran (see
+<a href="#api-push">docs/api.md</a>). A push payload contains the session name and the
+card&#39;s message — the one your hook sent, or for a waiting subagent &quot;Needs
+approval:&quot; and the label your hook sent for it — nothing more, relayed through
+Apple&#39;s APNs. Device registration endpoints exist in multi-tenant mode only;
 see <a href="#api-device-push-endpoints">docs/api.md</a>.</p>
 <h3 id="self-hosting-pointing-clients-at-your-instance"><a class="anchor" href="#self-hosting-pointing-clients-at-your-instance">Pointing clients at your instance</a></h3>
 <ul>
@@ -2230,6 +2401,113 @@ is <strong>absent</strong>, not <code>null</code>, when the board holds no total
 <em>unknown</em>, never zero. It is not part of the webhook body: it arrives on its
 own endpoint and is attached to the card on the way out, so a board that never
 receives one emits exactly the session object it always did.</p>
+<p><code>subtasks</code> lists the session&#39;s running subagents (see <a href="#api-subagents">Subagents</a>).
+Like <code>tokens</code> the key is <strong>absent</strong> when there is nothing to show — no
+subagent has reported, or the turn they ran in is over — and it comes last, so
+a session without subagents is exactly the object above, key order included.
+It is not part of the webhook body either: the server builds it from the
+subagents&#39; own posts and attaches it on the way out.</p>
+<pre><code class="language-json">&quot;subtasks&quot;: {
+  &quot;turnEnded&quot;: false,
+  &quot;running&quot;: 9,
+  &quot;blocked&quot;: 1,
+  &quot;failed&quot;: 0,
+  &quot;done&quot;: 15,
+  &quot;items&quot;: [
+    { &quot;id&quot;: &quot;3f9c1e07b2d4a85c6e1f0a92&quot;, &quot;n&quot;: 3, &quot;label&quot;: &quot;review:hook&quot;, &quot;state&quot;: &quot;testing&quot;, &quot;activity&quot;: &quot;Run hook tests with --no-file-parallelism&quot; },
+    { &quot;id&quot;: &quot;9b2e7c4d1a0f3e5b6c8d7a90&quot;, &quot;n&quot;: 9, &quot;label&quot;: &quot;verify:hook&quot;, &quot;state&quot;: &quot;blocked&quot;, &quot;activity&quot;: &quot;Approve: Run the hook suite&quot; }
+  ]
+}
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>What it holds</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>turnEnded</code></td>
+<td>boolean</td>
+<td>The parent&#39;s own reading is <code>done</code> or <code>idle</code> — its turn is over — <strong>and</strong> at least one subagent is still running or waiting. Boards draw such a card as <em>working</em>.</td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td>integer</td>
+<td>Subagents in <code>planning</code>, <code>coding</code> or <code>testing</code>: exactly the items in those states.</td>
+</tr>
+<tr>
+<td><code>blocked</code></td>
+<td>integer</td>
+<td>Subagents waiting on approval: exactly the items in <code>blocked</code>.</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>integer</td>
+<td>Subagents that failed this turn. At least the number of <code>failed</code> items; more once over 8 failed, since only the newest 8 are listed.</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>integer</td>
+<td>Subagents that finished this turn, each counted once. It only climbs within a turn — except when a failure is reported for a subagent already counted, which moves it from <code>done</code> to <code>failed</code> — and resets when the turn is over or a new prompt starts.</td>
+</tr>
+<tr>
+<td><code>items</code></td>
+<td>array</td>
+<td>Every live subagent and the failed ones, in <strong>start order</strong> (ascending <code>n</code>), at most 56.</td>
+</tr>
+<tr>
+<td><code>items[].id</code></td>
+<td>string</td>
+<td>Opaque, matches <code>^[A-Za-z0-9._:-]{1,64}$</code> — 24 lowercase hex from the bundled hook, and it may start with a digit. Stable for the subagent&#39;s life.</td>
+</tr>
+<tr>
+<td><code>items[].n</code></td>
+<td>integer</td>
+<td>The subagent&#39;s place in start order, from 1, unique on the card.</td>
+</tr>
+<tr>
+<td><code>items[].label</code></td>
+<td>string</td>
+<td>What it was asked to do, at most 64 characters; <code>Subagent &lt;n&gt;</code> when nothing is known, and always in minimal mode. Never empty.</td>
+</tr>
+<tr>
+<td><code>items[].state</code></td>
+<td>string</td>
+<td><code>planning</code>, <code>coding</code>, <code>testing</code>, <code>blocked</code> or <code>failed</code>.</td>
+</tr>
+<tr>
+<td><code>items[].activity</code></td>
+<td>string</td>
+<td>What it is doing now, at most 80 characters. May be <code>&quot;&quot;</code>.</td>
+</tr>
+</tbody></table></div>
+<p>The JSON is at most 8 KB per session: past that the server shortens the
+activities, then the labels, and never drops an item or changes a count. A
+client should still treat a <code>subtasks</code> that is <code>null</code>, not an object, or has
+no items and <code>done: 0</code> as absent, drop a malformed item and keep the rest,
+read an unknown <code>state</code> as <code>planning</code>, and derive a missing count from
+<code>items</code> — both phone apps decode a snapshot as one array, so one bad value
+must not cost the board.</p>
+<p>With subagents, a session&#39;s <code>status</code> and <code>message</code> are the <strong>board&#39;s
+reading</strong> of the parent and its subagents together, and still one of the six
+statuses:</p>
+<ul>
+<li><code>blocked</code> / &quot;Needs approval: verify:hook&quot; while a subagent waits on
+approval, naming the first to start of those waiting, with &quot;+1&quot;, &quot;+2&quot; for
+the others — unless the parent is itself blocked, which keeps its own line;</li>
+<li>after the parent&#39;s turn has ended, while subagents still work, the busiest
+of their states (<code>testing</code> over <code>coding</code> over <code>planning</code>) with
+&quot;3 subagents still running&quot;;</li>
+<li><code>planning</code> / &quot;Reading subagent results&quot; in the moment between the last
+background subagent finishing and the parent&#39;s report turn;</li>
+<li>otherwise exactly what the parent last posted. A subagent&#39;s post never
+overwrites it.</li>
+</ul>
+<p>A client that knows nothing of <code>subtasks</code> therefore still draws a correct
+card. <em>Working</em> and <em>failed</em> are readings the boards make of <code>subtasks</code>:
+neither is ever sent as a <code>status</code>, in a frame or in the session timeline.</p>
 <h3 id="api-shared-endpoints-both-modes"><a class="anchor" href="#api-shared-endpoints-both-modes">Shared endpoints (both modes)</a></h3>
 <div class="table-wrap"><table>
 <thead>
@@ -2305,21 +2583,47 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td>no</td>
 <td>Where the session runs, sent by hooks that opted in to Focus: <code>{&quot;machine&quot;: {&quot;id&quot;, &quot;name&quot;}, &quot;app&quot;: {&quot;slug&quot;, &quot;name&quot;, &quot;kind&quot;}}</code>. Omitted = carried forward; <code>null</code> = cleared (the hook opted out). <code>machine.id</code> must match <code>^[0-9a-f]{32}$</code> (a per-board hash, never a raw machine id) or the post is <code>400</code>. <code>machine.name</code> and <code>app.name</code> are trimmed and truncated to 32 chars; blank ones become <code>Machine</code> and the slug. <code>app.slug</code> is one of <code>agterm</code>, <code>iterm2</code>, <code>kitty</code>, <code>wezterm</code>, <code>terminal</code>, <code>ghostty</code>, <code>alacritty</code>, <code>warp</code>, <code>vscode</code>, <code>cursor</code>, <code>windsurf</code>, <code>jetbrains</code>, <code>zed</code>, <code>claude-desktop</code>, <code>codex-desktop</code>, <code>herdr</code>, <code>tmux</code>, <code>zellij</code>, <code>screen</code>, <code>windows-terminal</code>, <code>other</code> — anything else is stored as <code>other</code>; <code>app.kind</code> is one of <code>terminal</code>, <code>multiplexer</code>, <code>ide</code>, <code>desktop-app</code>, <code>unknown</code> — anything else becomes <code>unknown</code>. Every other key is dropped.</td>
 </tr>
+<tr>
+<td><code>agent</code></td>
+<td>object | null</td>
+<td>no</td>
+<td>Makes this a subagent&#39;s post, about one subagent of the session: <code>{&quot;id&quot;, &quot;state&quot;, &quot;kind&quot;?, &quot;label&quot;?, &quot;activity&quot;?, &quot;at&quot;?}</code>. It changes that subagent&#39;s row and never the session&#39;s own reading, and <code>status</code> and <code>message</code> mean something else on it — see <a href="#api-agent-posts">Agent posts</a>. A malformed one is a <code>400</code>; <code>null</code> or absent is the session&#39;s own post.</td>
+</tr>
+<tr>
+<td><code>turn</code></td>
+<td>object</td>
+<td>no</td>
+<td>On the session&#39;s own post only: where its turn stands, so the server knows what happens to the rows (<code>{&quot;phase&quot;: &quot;start&quot; | &quot;end&quot; | &quot;reset&quot;, &quot;running&quot;?, &quot;workflows&quot;?}</code>; see <a href="#api-turn-hints-and-unattributed-prompts">Turn hints</a>). Malformed is ignored, never a <code>400</code>, so the post itself still lands. Ignored on a subagent&#39;s post.</td>
+</tr>
+<tr>
+<td><code>unattributed</code></td>
+<td>boolean</td>
+<td>no</td>
+<td><code>true</code> on the session&#39;s own <code>blocked</code> post when the hook cannot tell which thread is asking. While subagents are running such a block is undone by the next subagent&#39;s progress (see <a href="#api-turn-hints-and-unattributed-prompts">Turn hints</a>). Anything but <code>true</code>, or on any other post, is ignored.</td>
+</tr>
 </tbody></table></div>
-<p>Control characters are stripped from all string fields. Omitted optional
-fields carry the previous value forward on update. The JSON body is capped at
-16 KB. <code>host</code> is the one nullable field: it goes out as <code>null</code> on every
-session that has none (REST and SSE alike), and it is scrubbed from the
-stored row whenever a session is dismissed, evicted, expired or its
-workspace deleted. It never appears in the session timeline or in push
-notifications.</p>
+<p>Control characters are stripped from all string fields, and no string is cut
+in the middle of a surrogate pair. Omitted optional fields carry the previous
+value forward on update. The JSON body is capped at 16 KB. <code>host</code> is the one
+nullable field: it goes out as <code>null</code> on every session that has none (REST and
+SSE alike). A session that is dismissed, evicted, expired or whose workspace is
+deleted stops being served, and its stored row, <code>host</code> and subagent rows
+included, is flagged as deleted rather than blanked. <code>host</code> never appears in
+the session timeline or in push notifications.</p>
 <p><strong>Response</strong> — <code>200 OK</code>:</p>
 <pre><code class="language-json">{ &quot;ok&quot;: true, &quot;session&quot;: { &quot;id&quot;: &quot;sess-abc&quot;, &quot;status&quot;: &quot;coding&quot;, ... } }
 </code></pre>
+<p>The one exception is a subagent&#39;s finish (<code>agent.state</code> <code>done</code> or <code>failed</code>)
+for a session that is not on the board — never seen, dismissed, evicted,
+expired or ended: nothing is stored, nothing is broadcast or pushed, and the
+answer is <code>{&quot;ok&quot;: true, &quot;session&quot;: null}</code>. A subagent&#39;s start that the
+live-row caps turn away for such a session gets the same answer (see
+<a href="#api-limits">Limits</a>).</p>
 <p><strong>Errors</strong> — <code>400</code> on missing/malformed <code>session_id</code>, invalid <code>status</code>,
-malformed <code>source</code>, or a <code>host</code> that is neither an object nor <code>null</code> or whose
-<code>machine.id</code> fails the regex; <code>401</code> on bad secret (legacy mode with
-<code>WEBHOOK_SECRET</code> set); <code>404</code> unknown
+malformed <code>source</code>, a <code>host</code> that is neither an object nor <code>null</code> or whose
+<code>machine.id</code> fails the regex, or a malformed <code>agent</code>
+(<code>{&quot;error&quot;: &quot;agent must be an object with id matching ^[A-Za-z0-9._:-]{1,64}$ and state one of planning, coding, testing, blocked, done, failed&quot;}</code>);
+<code>401</code> on bad secret (legacy mode with <code>WEBHOOK_SECRET</code> set); <code>404</code> unknown
 workspace (multi-tenant); <code>413</code> on bodies over 16 KB; <code>429</code> over the
 per-workspace rate limit (multi-tenant).</p>
 <h3 id="api-plan-usage"><a class="anchor" href="#api-plan-usage">Plan usage</a></h3>
@@ -2595,6 +2899,175 @@ usage run; the stored value carries the card in between. Older totals are
 dropped from reads and from memory, and a workspace holds at most 500 (past
 that, a new session id is refused unless its session has a card on the board,
 up to 550; see above). Deleting a workspace removes its totals with everything else.</p>
+<h3 id="api-subagents"><a class="anchor" href="#api-subagents">Subagents</a></h3>
+<p>A session&#39;s subagents — Agent-tool subagents (foreground, background or
+nested), dynamic-workflow agents, Codex sub-agent threads, in-process
+teammates — are listed on their <strong>parent&#39;s</strong> card, as rows. The bundled hook
+posts each one to the parent&#39;s webhook with an <code>agent</code> object
+(<a href="#hooks-subagents">docs/hooks.md</a> says when), and the server keeps a small,
+bounded state per session beside the parent&#39;s own reading, which a subagent&#39;s
+post never overwrites. Clients receive the <a href="#api-the-session-object"><code>subtasks</code> object</a>
+and the reading derived from the two. A hook that sends no <code>agent</code> never
+creates any of this: its sessions read exactly as before.</p>
+<h4 id="api-agent-posts"><a class="anchor" href="#api-agent-posts">Agent posts</a></h4>
+<pre><code class="language-json">{ &quot;session_id&quot;: &quot;5cef7152-ef68-481f-8a4f-463f66702bf9&quot;, &quot;name&quot;: &quot;Session organization by agent&quot;,
+  &quot;status&quot;: &quot;coding&quot;, &quot;source&quot;: &quot;claude&quot;,
+  &quot;agent&quot;: { &quot;id&quot;: &quot;3f9c1e07b2d4a85c6e1f0a92&quot;, &quot;state&quot;: &quot;coding&quot;, &quot;kind&quot;: &quot;agent&quot;,
+             &quot;label&quot;: &quot;Run echo alpha&quot;, &quot;activity&quot;: &quot;Print alpha&quot;, &quot;at&quot;: 1793138690842 } }
+</code></pre>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Must match <code>^[A-Za-z0-9._:-]{1,64}$</code>; opaque. The bundled hook sends 24 lowercase hex: a hash of the board URL, the agent (<code>claude</code> or <code>codex</code>), the session and the subagent&#39;s own id, so the raw id never leaves the machine.</td>
+</tr>
+<tr>
+<td><code>state</code></td>
+<td>enum</td>
+<td>yes</td>
+<td><code>planning</code>, <code>coding</code>, <code>testing</code> or <code>blocked</code> while it runs; <code>done</code> or <code>failed</code> once it has finished. A running state for an id the session has no row for starts one: there is no separate start.</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td>enum</td>
+<td>no</td>
+<td><code>agent</code> (Agent tool, teammate, <code>/fork</code>), <code>workflow</code> or <code>codex</code>; anything else counts as <code>agent</code>. Only reconciliation reads it (see <a href="#api-turn-hints-and-unattributed-prompts">Turn hints</a>), and clients never see it.</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>string</td>
+<td>no</td>
+<td>What the subagent was asked to do. Runs of whitespace become one space, control characters go, and it is cut to 64 characters. Absent or empty keeps the label the row has; a row with none shows <code>Subagent &lt;n&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>activity</code></td>
+<td>string</td>
+<td>no</td>
+<td>What it is doing now, cleaned the same way and cut to 80. Absent keeps the row&#39;s; <code>&quot;&quot;</code> clears it.</td>
+</tr>
+<tr>
+<td><code>at</code></td>
+<td>integer</td>
+<td>no</td>
+<td>The hook&#39;s clock when it read the event, epoch ms. It orders one subagent&#39;s posts — one older than what its row holds is ignored — and is never shown. Anything but a whole number within 7 days of the server&#39;s clock is replaced by the time the post arrived.</td>
+</tr>
+</tbody></table></div>
+<p>Unknown keys inside <code>agent</code> are dropped. On such a post the top-level fields
+are not the session&#39;s own:</p>
+<ul>
+<li><strong><code>status</code></strong> is still required, and still one of the six: it is the
+reading for servers older than 1.7.0, which drop <code>agent</code> and apply <code>status</code>
+to the card. The bundled hook sends the subagent&#39;s state while it runs and,
+once it has finished, the last of <code>planning</code>, <code>coding</code> or <code>testing</code> it was
+in — never <code>done</code>, which an older server would show, and push, in the
+middle of the turn. This server checks it and otherwise ignores it.</li>
+<li><strong><code>message</code></strong> is ignored. The bundled hook sends one only with
+<code>state: &quot;blocked&quot;</code>: the line it posted for the same prompt before 1.7.0, so
+an older server pushes the same words.</li>
+<li><strong><code>name</code></strong> names the card only when this post creates it. <code>project</code>,
+<code>source</code> and <code>host</code> carry forward or set as on any post; the bundled hook
+sends no <code>project</code> or <code>host</code> with a subagent&#39;s post.</li>
+<li>A running post for a session that is not on the board <strong>creates its
+card</strong>, with the parent&#39;s own reading empty (<code>idle</code>), so the card reads as
+its subagent does: &quot;1 subagent still running&quot;, or &quot;Needs approval: &lt;label&gt;&quot;
+while it waits. A finish for such a session creates nothing and answers
+<code>{&quot;ok&quot;: true, &quot;session&quot;: null}</code>.</li>
+</ul>
+<h4 id="api-turn-hints-and-unattributed-prompts"><a class="anchor" href="#api-turn-hints-and-unattributed-prompts">Turn hints and unattributed prompts</a></h4>
+<p>The session&#39;s own posts carry two optional hints about its rows. <code>turn</code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>phase</code></td>
+<td>enum</td>
+<td><code>start</code>: a prompt you submitted. The done count and the failed rows reset; subagents still running in the background carry over with their numbers. <code>end</code>: the parent&#39;s turn ended (<code>Stop</code>). <code>reset</code>: the session started or restarted (<code>SessionStart</code>, except a compaction) — every row goes, uncounted, since a new process has no subagents running.</td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td>string[]</td>
+<td>With <code>end</code> only: the ids of the background subagents still running, at most 64, each matching the <code>agent.id</code> rule. Absent means <em>unknown</em>: the hook leaves it out rather than send a partial list, which would close rows that are still live.</td>
+</tr>
+<tr>
+<td><code>workflows</code></td>
+<td>integer</td>
+<td>With <code>running</code> only: how many background workflows are still running, 0–1000.</td>
+</tr>
+</tbody></table></div>
+<p>At an <code>end</code> whose <code>running</code> is present and <code>workflows</code> is 0, every Agent-tool
+row the list does not name, and every workflow row, has finished — a turn
+cannot end while a foreground subagent runs — and they close <strong>uncounted</strong>,
+which keeps <code>done</code> exact rather than complete. A row waiting on approval is
+never closed this way, nor is a Codex row (Codex sends no list; each of its
+rows closes at its own finish). While a workflow runs, a row the list does not
+name stays: a workflow&#39;s agents are never listed one by one.</p>
+<p>If rows remain, or a workflow runs, the parent will take a <strong>report turn</strong> once
+they finish. From the last finish until the parent&#39;s next post the card reads
+<code>planning</code> / &quot;Reading subagent results&quot; instead of <code>done</code>, so it does not read
+done — and push done — a moment before the parent has read the results. A
+<code>Stop</code> that announces a running workflow holds the card this way even before
+any of the workflow&#39;s agents has posted. If the parent says nothing for 120 s,
+the sweep releases the hold and the card reads <code>done</code>.</p>
+<p>Once nothing is left running and nothing is awaited, the turn is over: the
+done count, the failed rows and the numbering go with it, and so does the
+<code>subtasks</code> key.</p>
+<p><code>unattributed: true</code> rides on a <code>blocked</code> post the hook could not pin on a
+thread — a permission prompt with no matching request behind it, or a
+question (<code>elicitation_dialog</code>, <code>elicitation_url_dialog</code>, <code>agent_needs_input</code>).
+While subagents are running such a block is <strong>soft</strong>: the next running post of
+any of them ends it, and the card goes back to what it read before, which is
+how 1.6.3 behaved, when the next subagent tool call overwrote the parent&#39;s
+line. With no subagent running it is an ordinary block.</p>
+<h4 id="api-how-rows-end"><a class="anchor" href="#api-how-rows-end">How rows end</a></h4>
+<ul>
+<li><strong><code>done</code></strong> removes the row and counts it, once per subagent per turn however
+often the finish is reported (a background task may notify more than once).
+A finish for a subagent the server never saw running still counts: its
+start was lost on the way.</li>
+<li><strong><code>failed</code></strong> keeps the row, as <code>failed</code>, until the turn is over. A failure
+reported for a subagent already counted done this turn corrects it — one
+fewer done, one more failed — and a running post after a failure resumes
+the row.</li>
+<li><strong>Expiry.</strong> The subtask sweep runs once a minute, in both modes. It closes a
+running row after 60 minutes without a post and a waiting one after 6 hours,
+uncounted, drops a failed row after 6 hours, and resets a done count left
+with nothing running after at most 6 hours. A later post from the same
+subagent brings its row back. Silence is not a sign of death: within a
+status class a subagent posts only what it is now doing, when that changed,
+and at most once a minute.</li>
+<li><strong>Persistence.</strong> With PostgreSQL the state is kept in the session&#39;s own row,
+in a nullable <code>subtasks</code> column added at boot, so rows, counts, numbers, a
+report hold and a soft block survive a restart. When the session goes it is
+flagged with the rest of the row, never blanked.</li>
+</ul>
+<h4 id="api-push"><a class="anchor" href="#api-push">Push</a></h4>
+<ul>
+<li>A card that turns <code>blocked</code> because a subagent is waiting pushes every
+registered device, as any blocked card does. The body is the card&#39;s line,
+&quot;Needs approval: verify:hook&quot; (&quot;Needs approval: Subagent 3&quot; in minimal mode).</li>
+<li>Another subagent starting to wait while the card is already blocked pushes
+again, unless that card pushed blocked within the last minute: a row stays
+blocked until its subagent next posts, so there would otherwise be no
+transition to push on.</li>
+<li>A <code>done</code> push (<code>notify_done</code>) fires only when the card&#39;s reading becomes
+<code>done</code>. While background subagents run after the parent&#39;s turn it reads
+their state, and in the hold &quot;Reading subagent results&quot;, so the push goes
+out once, when the report turn ends.</li>
+</ul>
 <h3 id="api-session-history"><a class="anchor" href="#api-session-history">Session history</a></h3>
 <p><code>GET /api/sessions/:id/history</code> (legacy) and
 <code>GET /w/&lt;token&gt;/api/sessions/:id/history</code> return a session&#39;s timeline —
@@ -2615,6 +3088,16 @@ another tenant&#39;s. The last 100 entries
 are kept per session (older ones are
 soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return <code>[]</code>.</p>
+<p>On a session with subagents the timeline records the card&#39;s reading (see
+<a href="#api-subagents">Subagents</a>) and nothing per subagent: a subagent starting,
+finishing or changing state is not an entry. Every &quot;N subagents still running&quot;
+reading counts as one, so a background drain of thirty subagents records that
+line once — <code>testing</code>, &quot;3 subagents still running&quot;, say — however its count
+and its busiest state change on the way down. A waiting subagent records
+&quot;Needs approval: &lt;label&gt;&quot;, and the report hold &quot;Reading subagent results&quot;. So
+thirty subagents cannot push a session&#39;s own story out of the 100 entries it
+keeps. The newest entry can therefore read <code>testing</code> while a board shows the
+card as <em>working</em>, which is a reading of the live card only.</p>
 <h3 id="api-focus-commands"><a class="anchor" href="#api-focus-commands">Focus commands</a></h3>
 <p>Focus lets a tap on a card bring the session&#39;s terminal to the front on the
 machine running it (design: <a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>).
@@ -2755,7 +3238,7 @@ new one goes out. Done and expired commands stay readable through <code>GET</cod
 </thead>
 <tbody><tr>
 <td><code>POST /webhook</code></td>
-<td>Create/update a session (see above; <code>host</code> included).</td>
+<td>Create/update a session, or a subagent&#39;s row (see above; <code>host</code> included).</td>
 <td>yes*</td>
 </tr>
 <tr>
@@ -2895,7 +3378,7 @@ workspace:</p>
 </tr>
 <tr>
 <td><code>POST /w/&lt;token&gt;/webhook</code></td>
-<td>Create/update a session (same body as legacy, <code>host</code> included). <code>200</code> with <code>{ok, session}</code>; <code>400</code> on validation errors; <code>429</code> over the rate limit.</td>
+<td>Create/update a session, or a subagent&#39;s row (same body as legacy, <code>host</code> and <code>agent</code> included). <code>200</code> with <code>{ok, session}</code>, <code>session</code> being <code>null</code> for a <a href="#api-webhook-body-and-validation">finish nothing was stored for</a>; <code>400</code> on validation errors; <code>429</code> over the rate limit.</td>
 </tr>
 <tr>
 <td><code>POST /w/&lt;token&gt;/usage</code></td>
@@ -3040,7 +3523,16 @@ data: { &quot;id&quot;: &quot;6c1f…&quot;, &quot;session_id&quot;: &quot;sess-
 <ul>
 <li><code>snapshot</code> — the full session list. Sent once on connect and again (empty)
 after <code>sessions/clear</code> or workspace deletion.</li>
-<li><code>session</code> — a session was created or updated.</li>
+<li><code>session</code> — a session was created or updated. It carries <code>subtasks</code> when
+the session has any to show, as every other read does. A subagent&#39;s post is
+sent at once when it changes the session&#39;s <code>status</code>, or when no frame for
+that session went out in the last 250 ms; otherwise a single frame follows
+once 250 ms have passed since the last one, carrying the session as it is by
+then, so ten subagents reporting within a second make at most four frames.
+Any other frame for the session supersedes one still waiting. The subtask
+sweep sends one too whenever it changes what a card shows (an expired row, a
+released report hold); its frame moves <code>updatedAt</code> by exactly 1 ms, enough
+to win a tie with a REST read without reordering the board.</li>
 <li><code>remove</code> — a session was deleted, evicted, or expired.</li>
 <li><code>usage</code> — the full plan-usage list (see <a href="#api-plan-usage">Plan usage</a>). Sent
 on connect when non-empty, and after every usage report.</li>
@@ -3224,6 +3716,59 @@ shuts down gets <code>503</code>.</p>
 <p>In both modes: <code>name</code>/<code>project</code> truncate to 120 chars, <code>message</code> to 300,
 <code>host.machine.name</code>/<code>host.app.name</code> to 32; control characters are stripped.
 Push alerts per (session, kind) are debounced to one per minute.</p>
+<p><a href="#api-subagents">Subagents</a> are bounded in both modes too:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Limit</th>
+<th>Value</th>
+<th>Behavior at the limit</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Live subagent rows per session</td>
+<td>48</td>
+<td>A subagent starting past it gets no row, and its finish still counts. Logged once per card.</td>
+</tr>
+<tr>
+<td>Live subagent rows per board</td>
+<td>256</td>
+<td>The same. A start turned away for a session not on the board makes no card: <code>{&quot;ok&quot;: true, &quot;session&quot;: null}</code>.</td>
+</tr>
+<tr>
+<td>Failed rows listed per session</td>
+<td>8</td>
+<td>The oldest leaves the list; <code>failed</code> keeps counting.</td>
+</tr>
+<tr>
+<td><code>subtasks</code> JSON per session</td>
+<td>8 KB</td>
+<td>Activities, then labels, are shortened; no item and no count is dropped.</td>
+</tr>
+<tr>
+<td>Running row without a post</td>
+<td>60 min</td>
+<td>Closed by the sweep, uncounted; the subagent&#39;s next post brings it back.</td>
+</tr>
+<tr>
+<td>Waiting or failed row without a post</td>
+<td>6 h</td>
+<td>A waiting row is closed, a failed one dropped.</td>
+</tr>
+<tr>
+<td>Report hold without a post from the parent</td>
+<td>120 s</td>
+<td>Released by the sweep: the card reads <code>done</code>.</td>
+</tr>
+<tr>
+<td>Frames from subagent posts</td>
+<td>1 per 250 ms per session</td>
+<td>The rest fold into one trailing frame.</td>
+</tr>
+</tbody></table></div>
+<p>Subagent posts share the webhook&#39;s 120 a minute in multi-tenant mode: about
+four per subagent (its start, a change of status class or two, its finish),
+plus at most one activity refresh a minute while it runs.</p>
 
 </section>
   </main>

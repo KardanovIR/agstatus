@@ -72,6 +72,13 @@ Details in [docs/hooks.md](docs/hooks.md).
 - **Claude Code + OpenAI Codex** — one hook script speaks both tools'
   hook systems; sessions from both land on the same board.
 - **Live board** — SSE-streamed updates, no polling, no refresh.
+- **Subagents on the card** — each running subagent of a session (Agent
+  tool, background, workflow, Codex sub-agent) is a row on its parent's card:
+  what it was asked to do, what it is doing, its state. One waiting on approval
+  turns the card blocked and names itself; background ones keep the card from
+  reading done until they have finished. On the web board now; the phone apps
+  get the rows with their next store builds. See
+  [docs/hooks.md](docs/hooks.md#subagents).
 - **No accounts** — a board is a capability URL with an unguessable token,
   like a Slack webhook. The server stores only a hash of it.
 - **Push when blocked** — APNs notification the moment an agent needs you;
@@ -90,8 +97,9 @@ Details in [docs/hooks.md](docs/hooks.md).
   active days is visible. iOS only for now.
 - **Demo mode** — try the iOS app with fake sessions, no server, no data sent.
 - **Privacy switch** — `--minimal` sends tool names only, never command text,
-  and names cards after their folder, never a Claude session's title (which
-  is generated from your prompts).
+  names cards after their folder, never a Claude session's title (which is
+  generated from your prompts), and numbers subagents ("Subagent 1") instead
+  of describing them.
 - **Focus (opt-in)** — tap a session on the board to bring its terminal to
   the front on the machine running it; see
   [docs/design/focus-protocol.md](docs/design/focus-protocol.md).

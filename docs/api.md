@@ -50,6 +50,68 @@ is **absent**, not `null`, when the board holds no total — and absent means
 own endpoint and is attached to the card on the way out, so a board that never
 receives one emits exactly the session object it always did.
 
+`subtasks` lists the session's running subagents (see [Subagents](#subagents)).
+Like `tokens` the key is **absent** when there is nothing to show — no
+subagent has reported, or the turn they ran in is over — and it comes last, so
+a session without subagents is exactly the object above, key order included.
+It is not part of the webhook body either: the server builds it from the
+subagents' own posts and attaches it on the way out.
+
+```json
+"subtasks": {
+  "turnEnded": false,
+  "running": 9,
+  "blocked": 1,
+  "failed": 0,
+  "done": 15,
+  "items": [
+    { "id": "3f9c1e07b2d4a85c6e1f0a92", "n": 3, "label": "review:hook", "state": "testing", "activity": "Run hook tests with --no-file-parallelism" },
+    { "id": "9b2e7c4d1a0f3e5b6c8d7a90", "n": 9, "label": "verify:hook", "state": "blocked", "activity": "Approve: Run the hook suite" }
+  ]
+}
+```
+
+| Field | Type | What it holds |
+| ----- | ---- | ------------- |
+| `turnEnded` | boolean | The parent's own reading is `done` or `idle` — its turn is over — **and** at least one subagent is still running or waiting. Boards draw such a card as *working*. |
+| `running` | integer | Subagents in `planning`, `coding` or `testing`: exactly the items in those states. |
+| `blocked` | integer | Subagents waiting on approval: exactly the items in `blocked`. |
+| `failed` | integer | Subagents that failed this turn. At least the number of `failed` items; more once over 8 failed, since only the newest 8 are listed. |
+| `done` | integer | Subagents that finished this turn, each counted once. It only climbs within a turn — except when a failure is reported for a subagent already counted, which moves it from `done` to `failed` — and resets when the turn is over or a new prompt starts. |
+| `items` | array | Every live subagent and the failed ones, in **start order** (ascending `n`), at most 56. |
+| `items[].id` | string | Opaque, matches `^[A-Za-z0-9._:-]{1,64}$` — 24 lowercase hex from the bundled hook, and it may start with a digit. Stable for the subagent's life. |
+| `items[].n` | integer | The subagent's place in start order, from 1, unique on the card. |
+| `items[].label` | string | What it was asked to do, at most 64 characters; `Subagent <n>` when nothing is known, and always in minimal mode. Never empty. |
+| `items[].state` | string | `planning`, `coding`, `testing`, `blocked` or `failed`. |
+| `items[].activity` | string | What it is doing now, at most 80 characters. May be `""`. |
+
+The JSON is at most 8 KB per session: past that the server shortens the
+activities, then the labels, and never drops an item or changes a count. A
+client should still treat a `subtasks` that is `null`, not an object, or has
+no items and `done: 0` as absent, drop a malformed item and keep the rest,
+read an unknown `state` as `planning`, and derive a missing count from
+`items` — both phone apps decode a snapshot as one array, so one bad value
+must not cost the board.
+
+With subagents, a session's `status` and `message` are the **board's
+reading** of the parent and its subagents together, and still one of the six
+statuses:
+
+- `blocked` / "Needs approval: verify:hook" while a subagent waits on
+  approval, naming the first to start of those waiting, with "+1", "+2" for
+  the others — unless the parent is itself blocked, which keeps its own line;
+- after the parent's turn has ended, while subagents still work, the busiest
+  of their states (`testing` over `coding` over `planning`) with
+  "3 subagents still running";
+- `planning` / "Reading subagent results" in the moment between the last
+  background subagent finishing and the parent's report turn;
+- otherwise exactly what the parent last posted. A subagent's post never
+  overwrites it.
+
+A client that knows nothing of `subtasks` therefore still draws a correct
+card. *Working* and *failed* are readings the boards make of `subtasks`:
+neither is ever sent as a `status`, in a frame or in the session timeline.
+
 ## Shared endpoints (both modes)
 
 | Method & path     | Purpose |
@@ -72,14 +134,18 @@ the same JSON body and upsert a session by `session_id`:
 | `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. Unlike `name`, the bundled hooks recompute it from the session's live working directory on every post, so after a `cd` the two legitimately disagree — the card keeps its original name while `project` follows the session. Per-project spend depends on that; see [Usage history and per-project spend](#usage-history-and-per-project-spend). The Node hook reports a working directory that is exactly a Claude worktree root, `<repo>/.claude/worktrees/<name>`, as `<repo>` — on the card only: the per-project usage rows still file that worktree's spend under its own folder. |
 | `source`     | string | no       | Agent kind that owns the session, e.g. `claude` or `codex` (same regex as the usage `source`). Defaults to `claude`; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board. |
 | `host`       | object \| null | no | Where the session runs, sent by hooks that opted in to Focus: `{"machine": {"id", "name"}, "app": {"slug", "name", "kind"}}`. Omitted = carried forward; `null` = cleared (the hook opted out). `machine.id` must match `^[0-9a-f]{32}$` (a per-board hash, never a raw machine id) or the post is `400`. `machine.name` and `app.name` are trimmed and truncated to 32 chars; blank ones become `Machine` and the slug. `app.slug` is one of `agterm`, `iterm2`, `kitty`, `wezterm`, `terminal`, `ghostty`, `alacritty`, `warp`, `vscode`, `cursor`, `windsurf`, `jetbrains`, `zed`, `claude-desktop`, `codex-desktop`, `herdr`, `tmux`, `zellij`, `screen`, `windows-terminal`, `other` — anything else is stored as `other`; `app.kind` is one of `terminal`, `multiplexer`, `ide`, `desktop-app`, `unknown` — anything else becomes `unknown`. Every other key is dropped. |
+| `agent`      | object \| null | no | Makes this a subagent's post, about one subagent of the session: `{"id", "state", "kind"?, "label"?, "activity"?, "at"?}`. It changes that subagent's row and never the session's own reading, and `status` and `message` mean something else on it — see [Agent posts](#agent-posts). A malformed one is a `400`; `null` or absent is the session's own post. |
+| `turn`       | object | no | On the session's own post only: where its turn stands, so the server knows what happens to the rows (`{"phase": "start" \| "end" \| "reset", "running"?, "workflows"?}`; see [Turn hints](#turn-hints-and-unattributed-prompts)). Malformed is ignored, never a `400`, so the post itself still lands. Ignored on a subagent's post. |
+| `unattributed` | boolean | no | `true` on the session's own `blocked` post when the hook cannot tell which thread is asking. While subagents are running such a block is undone by the next subagent's progress (see [Turn hints](#turn-hints-and-unattributed-prompts)). Anything but `true`, or on any other post, is ignored. |
 
-Control characters are stripped from all string fields. Omitted optional
-fields carry the previous value forward on update. The JSON body is capped at
-16 KB. `host` is the one nullable field: it goes out as `null` on every
-session that has none (REST and SSE alike), and it is scrubbed from the
-stored row whenever a session is dismissed, evicted, expired or its
-workspace deleted. It never appears in the session timeline or in push
-notifications.
+Control characters are stripped from all string fields, and no string is cut
+in the middle of a surrogate pair. Omitted optional fields carry the previous
+value forward on update. The JSON body is capped at 16 KB. `host` is the one
+nullable field: it goes out as `null` on every session that has none (REST and
+SSE alike). A session that is dismissed, evicted, expired or whose workspace is
+deleted stops being served, and its stored row, `host` and subagent rows
+included, is flagged as deleted rather than blanked. `host` never appears in
+the session timeline or in push notifications.
 
 **Response** — `200 OK`:
 
@@ -87,10 +153,18 @@ notifications.
 { "ok": true, "session": { "id": "sess-abc", "status": "coding", ... } }
 ```
 
+The one exception is a subagent's finish (`agent.state` `done` or `failed`)
+for a session that is not on the board — never seen, dismissed, evicted,
+expired or ended: nothing is stored, nothing is broadcast or pushed, and the
+answer is `{"ok": true, "session": null}`. A subagent's start that the
+live-row caps turn away for such a session gets the same answer (see
+[Limits](#limits)).
+
 **Errors** — `400` on missing/malformed `session_id`, invalid `status`,
-malformed `source`, or a `host` that is neither an object nor `null` or whose
-`machine.id` fails the regex; `401` on bad secret (legacy mode with
-`WEBHOOK_SECRET` set); `404` unknown
+malformed `source`, a `host` that is neither an object nor `null` or whose
+`machine.id` fails the regex, or a malformed `agent`
+(`{"error": "agent must be an object with id matching ^[A-Za-z0-9._:-]{1,64}$ and state one of planning, coding, testing, blocked, done, failed"}`);
+`401` on bad secret (legacy mode with `WEBHOOK_SECRET` set); `404` unknown
 workspace (multi-tenant); `413` on bodies over 16 KB; `429` over the
 per-workspace rate limit (multi-tenant).
 
@@ -308,6 +382,131 @@ dropped from reads and from memory, and a workspace holds at most 500 (past
 that, a new session id is refused unless its session has a card on the board,
 up to 550; see above). Deleting a workspace removes its totals with everything else.
 
+## Subagents
+
+A session's subagents — Agent-tool subagents (foreground, background or
+nested), dynamic-workflow agents, Codex sub-agent threads, in-process
+teammates — are listed on their **parent's** card, as rows. The bundled hook
+posts each one to the parent's webhook with an `agent` object
+([docs/hooks.md](hooks.md#subagents) says when), and the server keeps a small,
+bounded state per session beside the parent's own reading, which a subagent's
+post never overwrites. Clients receive the [`subtasks` object](#the-session-object)
+and the reading derived from the two. A hook that sends no `agent` never
+creates any of this: its sessions read exactly as before.
+
+### Agent posts
+
+```json
+{ "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9", "name": "Session organization by agent",
+  "status": "coding", "source": "claude",
+  "agent": { "id": "3f9c1e07b2d4a85c6e1f0a92", "state": "coding", "kind": "agent",
+             "label": "Run echo alpha", "activity": "Print alpha", "at": 1793138690842 } }
+```
+
+| Field      | Type    | Required | Notes |
+| ---------- | ------- | -------- | ----- |
+| `id`       | string  | yes      | Must match `^[A-Za-z0-9._:-]{1,64}$`; opaque. The bundled hook sends 24 lowercase hex: a hash of the board URL, the agent (`claude` or `codex`), the session and the subagent's own id, so the raw id never leaves the machine. |
+| `state`    | enum    | yes      | `planning`, `coding`, `testing` or `blocked` while it runs; `done` or `failed` once it has finished. A running state for an id the session has no row for starts one: there is no separate start. |
+| `kind`     | enum    | no       | `agent` (Agent tool, teammate, `/fork`), `workflow` or `codex`; anything else counts as `agent`. Only reconciliation reads it (see [Turn hints](#turn-hints-and-unattributed-prompts)), and clients never see it. |
+| `label`    | string  | no       | What the subagent was asked to do. Runs of whitespace become one space, control characters go, and it is cut to 64 characters. Absent or empty keeps the label the row has; a row with none shows `Subagent <n>`. |
+| `activity` | string  | no       | What it is doing now, cleaned the same way and cut to 80. Absent keeps the row's; `""` clears it. |
+| `at`       | integer | no       | The hook's clock when it read the event, epoch ms. It orders one subagent's posts — one older than what its row holds is ignored — and is never shown. Anything but a whole number within 7 days of the server's clock is replaced by the time the post arrived. |
+
+Unknown keys inside `agent` are dropped. On such a post the top-level fields
+are not the session's own:
+
+- **`status`** is still required, and still one of the six: it is the
+  reading for servers older than 1.7.0, which drop `agent` and apply `status`
+  to the card. The bundled hook sends the subagent's state while it runs and,
+  once it has finished, the last of `planning`, `coding` or `testing` it was
+  in — never `done`, which an older server would show, and push, in the
+  middle of the turn. This server checks it and otherwise ignores it.
+- **`message`** is ignored. The bundled hook sends one only with
+  `state: "blocked"`: the line it posted for the same prompt before 1.7.0, so
+  an older server pushes the same words.
+- **`name`** names the card only when this post creates it. `project`,
+  `source` and `host` carry forward or set as on any post; the bundled hook
+  sends no `project` or `host` with a subagent's post.
+- A running post for a session that is not on the board **creates its
+  card**, with the parent's own reading empty (`idle`), so the card reads as
+  its subagent does: "1 subagent still running", or "Needs approval: &lt;label&gt;"
+  while it waits. A finish for such a session creates nothing and answers
+  `{"ok": true, "session": null}`.
+
+### Turn hints and unattributed prompts
+
+The session's own posts carry two optional hints about its rows. `turn`:
+
+| Field       | Type     | Notes |
+| ----------- | -------- | ----- |
+| `phase`     | enum     | `start`: a prompt you submitted. The done count and the failed rows reset; subagents still running in the background carry over with their numbers. `end`: the parent's turn ended (`Stop`). `reset`: the session started or restarted (`SessionStart`, except a compaction) — every row goes, uncounted, since a new process has no subagents running. |
+| `running`   | string[] | With `end` only: the ids of the background subagents still running, at most 64, each matching the `agent.id` rule. Absent means *unknown*: the hook leaves it out rather than send a partial list, which would close rows that are still live. |
+| `workflows` | integer  | With `running` only: how many background workflows are still running, 0–1000. |
+
+At an `end` whose `running` is present and `workflows` is 0, every Agent-tool
+row the list does not name, and every workflow row, has finished — a turn
+cannot end while a foreground subagent runs — and they close **uncounted**,
+which keeps `done` exact rather than complete. A row waiting on approval is
+never closed this way, nor is a Codex row (Codex sends no list; each of its
+rows closes at its own finish). While a workflow runs, a row the list does not
+name stays: a workflow's agents are never listed one by one.
+
+If rows remain, or a workflow runs, the parent will take a **report turn** once
+they finish. From the last finish until the parent's next post the card reads
+`planning` / "Reading subagent results" instead of `done`, so it does not read
+done — and push done — a moment before the parent has read the results. A
+`Stop` that announces a running workflow holds the card this way even before
+any of the workflow's agents has posted. If the parent says nothing for 120 s,
+the sweep releases the hold and the card reads `done`.
+
+Once nothing is left running and nothing is awaited, the turn is over: the
+done count, the failed rows and the numbering go with it, and so does the
+`subtasks` key.
+
+`unattributed: true` rides on a `blocked` post the hook could not pin on a
+thread — a permission prompt with no matching request behind it, or a
+question (`elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`).
+While subagents are running such a block is **soft**: the next running post of
+any of them ends it, and the card goes back to what it read before, which is
+how 1.6.3 behaved, when the next subagent tool call overwrote the parent's
+line. With no subagent running it is an ordinary block.
+
+### How rows end
+
+- **`done`** removes the row and counts it, once per subagent per turn however
+  often the finish is reported (a background task may notify more than once).
+  A finish for a subagent the server never saw running still counts: its
+  start was lost on the way.
+- **`failed`** keeps the row, as `failed`, until the turn is over. A failure
+  reported for a subagent already counted done this turn corrects it — one
+  fewer done, one more failed — and a running post after a failure resumes
+  the row.
+- **Expiry.** The subtask sweep runs once a minute, in both modes. It closes a
+  running row after 60 minutes without a post and a waiting one after 6 hours,
+  uncounted, drops a failed row after 6 hours, and resets a done count left
+  with nothing running after at most 6 hours. A later post from the same
+  subagent brings its row back. Silence is not a sign of death: within a
+  status class a subagent posts only what it is now doing, when that changed,
+  and at most once a minute.
+- **Persistence.** With PostgreSQL the state is kept in the session's own row,
+  in a nullable `subtasks` column added at boot, so rows, counts, numbers, a
+  report hold and a soft block survive a restart. When the session goes it is
+  flagged with the rest of the row, never blanked.
+
+### Push
+
+- A card that turns `blocked` because a subagent is waiting pushes every
+  registered device, as any blocked card does. The body is the card's line,
+  "Needs approval: verify:hook" ("Needs approval: Subagent 3" in minimal mode).
+- Another subagent starting to wait while the card is already blocked pushes
+  again, unless that card pushed blocked within the last minute: a row stays
+  blocked until its subagent next posts, so there would otherwise be no
+  transition to push on.
+- A `done` push (`notify_done`) fires only when the card's reading becomes
+  `done`. While background subagents run after the parent's turn it reads
+  their state, and in the hold "Reading subagent results", so the push goes
+  out once, when the report turn ends.
+
 ## Session history
 
 `GET /api/sessions/:id/history` (legacy) and
@@ -332,6 +531,17 @@ another tenant's. The last 100 entries
 are kept per session (older ones are
 soft-deleted); dismissing or expiring a session drops its history. Unknown
 sessions return `[]`.
+
+On a session with subagents the timeline records the card's reading (see
+[Subagents](#subagents)) and nothing per subagent: a subagent starting,
+finishing or changing state is not an entry. Every "N subagents still running"
+reading counts as one, so a background drain of thirty subagents records that
+line once — `testing`, "3 subagents still running", say — however its count
+and its busiest state change on the way down. A waiting subagent records
+"Needs approval: &lt;label&gt;", and the report hold "Reading subagent results". So
+thirty subagents cannot push a session's own story out of the 100 entries it
+keeps. The newest entry can therefore read `testing` while a board shows the
+card as *working*, which is a reading of the live card only.
 
 ## Focus commands
 
@@ -455,7 +665,7 @@ new one goes out. Done and expired commands stay readable through `GET` for
 
 | Method & path          | Purpose                                        | Auth |
 | ---------------------- | ---------------------------------------------- | ---- |
-| `POST /webhook`        | Create/update a session (see above; `host` included). | yes* |
+| `POST /webhook`        | Create/update a session, or a subagent's row (see above; `host` included). | yes* |
 | `POST /usage`          | Report plan usage (see [Plan usage](#plan-usage)). | yes* |
 | `POST /usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). | yes* |
 | `POST /usage/sessions` | Report per-session token totals (see [Per-session token totals](#per-session-token-totals)). | yes* |
@@ -529,7 +739,7 @@ workspace:
 | `GET /w/<token>`                 | Dashboard UI for this workspace. |
 | `GET /w/<token>/api/sessions`    | JSON list of the workspace's sessions (newest first). |
 | `GET /w/<token>/events`          | SSE stream (see [format](#sse-event-format)). `429` past 10 concurrent connections. `?listener=<machine_id>` with an `Authorization: Bearer` header subscribes a Focus listener instead, in its own slot budget (see [presence](#listener-presence)). |
-| `POST /w/<token>/webhook`        | Create/update a session (same body as legacy, `host` included). `200` with `{ok, session}`; `400` on validation errors; `429` over the rate limit. |
+| `POST /w/<token>/webhook`        | Create/update a session, or a subagent's row (same body as legacy, `host` and `agent` included). `200` with `{ok, session}`, `session` being `null` for a [finish nothing was stored for](#webhook-body-and-validation); `400` on validation errors; `429` over the rate limit. |
 | `POST /w/<token>/usage`          | Report plan usage (see [Plan usage](#plan-usage)). |
 | `POST /w/<token>/usage/projects` | Report per-project token spend (see [Usage history](#usage-history-and-per-project-spend)). |
 | `POST /w/<token>/usage/sessions` | Report per-session token totals (see [Per-session token totals](#per-session-token-totals)). |
@@ -618,7 +828,16 @@ data: { "id": "6c1f…", "session_id": "sess-abc", "machine_id": "9f2c…", "typ
 
 - `snapshot` — the full session list. Sent once on connect and again (empty)
   after `sessions/clear` or workspace deletion.
-- `session` — a session was created or updated.
+- `session` — a session was created or updated. It carries `subtasks` when
+  the session has any to show, as every other read does. A subagent's post is
+  sent at once when it changes the session's `status`, or when no frame for
+  that session went out in the last 250 ms; otherwise a single frame follows
+  once 250 ms have passed since the last one, carrying the session as it is by
+  then, so ten subagents reporting within a second make at most four frames.
+  Any other frame for the session supersedes one still waiting. The subtask
+  sweep sends one too whenever it changes what a card shows (an expired row, a
+  released report hold); its frame moves `updatedAt` by exactly 1 ms, enough
+  to win a tie with a REST read without reordering the board.
 - `remove` — a session was deleted, evicted, or expired.
 - `usage` — the full plan-usage list (see [Plan usage](#plan-usage)). Sent
   on connect when non-empty, and after every usage report.
@@ -683,3 +902,20 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 In both modes: `name`/`project` truncate to 120 chars, `message` to 300,
 `host.machine.name`/`host.app.name` to 32; control characters are stripped.
 Push alerts per (session, kind) are debounced to one per minute.
+
+[Subagents](#subagents) are bounded in both modes too:
+
+| Limit | Value | Behavior at the limit |
+| ----- | ----- | --------------------- |
+| Live subagent rows per session | 48 | A subagent starting past it gets no row, and its finish still counts. Logged once per card. |
+| Live subagent rows per board | 256 | The same. A start turned away for a session not on the board makes no card: `{"ok": true, "session": null}`. |
+| Failed rows listed per session | 8 | The oldest leaves the list; `failed` keeps counting. |
+| `subtasks` JSON per session | 8 KB | Activities, then labels, are shortened; no item and no count is dropped. |
+| Running row without a post | 60 min | Closed by the sweep, uncounted; the subagent's next post brings it back. |
+| Waiting or failed row without a post | 6 h | A waiting row is closed, a failed one dropped. |
+| Report hold without a post from the parent | 120 s | Released by the sweep: the card reads `done`. |
+| Frames from subagent posts | 1 per 250 ms per session | The rest fold into one trailing frame. |
+
+Subagent posts share the webhook's 120 a minute in multi-tenant mode: about
+four per subagent (its start, a change of status class or two, its finish),
+plus at most one activity refresh a minute while it runs.

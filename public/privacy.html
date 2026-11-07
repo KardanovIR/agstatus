@@ -62,7 +62,7 @@
 
 <main class="prose">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: November 4, 2026</p>
+  <p class="updated">Last updated: November 7, 2026</p>
 
   <p class="lede">
     AgStatus is an open-source status board for coding agents such as Claude Code and OpenAI Codex.
@@ -94,6 +94,7 @@
         <tr><td>Status</td><td>coding</td><td>One of six fixed words</td></tr>
         <tr><td>Message</td><td>npm test</td><td>A short activity line, truncated</td></tr>
         <tr><td>Agent</td><td>claude</td><td>Which coding tool the session belongs to</td></tr>
+        <tr><td>Subagents</td><td>Run the hook tests · coding · Editing store.ts</td><td>For each subagent the session runs: what it was asked to do, its status word and a short activity line (see below)</td></tr>
         <tr><td>Timestamps</td><td>—</td><td>When each change happened, for the session timeline</td></tr>
       </tbody>
     </table>
@@ -107,11 +108,25 @@
     card's name. The conversation in that transcript stays on your machine; the one other thing
     taken from these files is the token totals described under Plan usage, with the folder names,
     session ids and dates they are filed under.</p>
-  <p>If you would rather not send command text or titles, run the installer with
-    <code>--minimal</code> — messages then contain only tool names, such as "Bash", and every card
-    is named after its folder instead of its title. It is the same switch as
-    <code>AGSTATUS_DETAIL=off</code>. It stays on when the installer is re-run to upgrade, until
-    you run it with <code>--no-minimal</code>.</p>
+  <p>When an agent runs <strong>subagents</strong> — the helpers Claude Code's Agent tool, its
+    workflows and Codex start to work on part of a task — each one is listed on its session's
+    card, and your machine sends, for each: what it was asked to do (the task description it was
+    launched with, a workflow's own label for it, or a Codex sub-agent's nickname), its status
+    word, and a short activity line like the session's own: a file name, a command's description
+    or truncated text, "Approve: …" with what it asks permission to do, or "Failed: …" with the
+    first line of its error. A subagent is identified only by an opaque key, a one-way hash of
+    its id; the id itself, the results it hands back and its conversation stay on your machine.
+    Its label can appear wherever the session's status line does: on the card while that
+    subagent waits on you ("Needs approval: Run the hook tests"), and so in the session timeline
+    and in a push notification. To tell a subagent's later events from its first, the hook keeps
+    a few small files about each one on your machine, readable only by you, in the system's
+    temporary folder; they go when the session ends, or after a day.</p>
+  <p>If you would rather not send command text, titles or subagent tasks, run the installer with
+    <code>--minimal</code> — messages then contain only tool names, such as "Bash", every card is
+    named after its folder instead of its title, and subagents are numbered ("Subagent 1",
+    "Subagent 2") instead of described. It is the same switch as <code>AGSTATUS_DETAIL=off</code>.
+    It stays on when the installer is re-run to upgrade, until you run it with
+    <code>--no-minimal</code>.</p>
   <p>A board is identified only by an unguessable random token in its URL. Anyone who has that URL
     can view the board, so treat it like a password.</p>
 
@@ -165,7 +180,8 @@
   <ul>
     <li>No accounts, email addresses, or passwords.</li>
     <li>No analytics, advertising identifiers, or third-party SDKs.</li>
-    <li>No source code, file contents, or agent conversations.</li>
+    <li>No source code, file contents, agent conversations, or the results subagents hand
+      back.</li>
     <li>No credentials or API keys of any kind.</li>
     <li>No web fonts, scripts or images loaded from anyone else's server — every page here serves
       its own, so viewing a board tells no third party that you did.</li>
@@ -175,9 +191,10 @@
   <p>Push is <strong>iOS only</strong>; the Android app has no push and contacts no notification
     service. If you turn on notifications in the iOS app, they are delivered through Apple's push
     service (APNs). A notification contains only the session name and its short status message —
-    the same text your hook already sent to your board. Your device's push token is stored with
-    your board and is removed when you turn notifications off, when the token expires, or when the
-    board is deleted.</p>
+    text your hook already sent to your board: the session's own status line or, when one of its
+    subagents is waiting on you, "Needs approval:" and that subagent's label. Your device's push
+    token is stored with your board and is removed when you turn notifications off, when the token
+    expires, or when the board is deleted.</p>
 
   <h2>What the app stores on your device</h2>
   <p>The iOS app keeps your board's URL and token in the iOS Keychain on your device. It makes
@@ -195,6 +212,9 @@
   <ul>
     <li>Sessions stop being shown or served automatically <strong>24 hours</strong> after their
       last update.</li>
+    <li>A session's subagent rows are part of the session: they stop being shown with it and are
+      flagged with it, as below. A row also closes on its own when its subagent finishes, or after
+      an hour without news — six for one waiting on your approval.</li>
     <li>Plan-usage history and the per-project token totals are kept for
       <strong>90 days</strong>. The per-session totals behind the number on a card are kept
       for <strong>7 days</strong> after their last report — a card cannot outlive that

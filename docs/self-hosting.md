@@ -169,6 +169,14 @@ exits, normally within a fraction of a second. If that is not done 4 s after
 the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
 enough, and Docker's default is 10 s.
 
+Schema changes are applied at boot. 1.7.0 adds one nullable column,
+`sessions.subtasks`, holding a session's [subagent rows](api.md#subagents), so
+they survive a restart; a soft-deleted session keeps it with the rest of its
+row, and the purge above removes it with the row. Rolling back to an older
+server is safe: it never touches the column, and the next 1.7.0 start ignores
+the stored rows of any session the older server updated in between, rather
+than bring back rows it never kept current.
+
 ### Flagging rows written before 1.6.2's bounds
 
 Servers before 1.6.2 stored project days with any date, and capped some
@@ -393,8 +401,13 @@ Repeat alerts for the same session and kind are debounced to at most one per
 minute, which bounds a burst but not a normal back-and-forth, since most turns
 take longer than that. `blocked` is the one that fires rarely and always
 deserves a look. A session that first appears already `done` doesn't notify.
-A push payload contains the same session name and message your hook already
-sent to the board — nothing more — relayed through Apple's APNs. Device registration endpoints exist in multi-tenant mode only;
+A subagent that starts waiting on a card that is already `blocked` notifies
+again, within the same once-a-minute debounce, and `done` waits for the end of
+the report turn when background subagents ran (see
+[docs/api.md](api.md#push)). A push payload contains the session name and the
+card's message — the one your hook sent, or for a waiting subagent "Needs
+approval:" and the label your hook sent for it — nothing more, relayed through
+Apple's APNs. Device registration endpoints exist in multi-tenant mode only;
 see [docs/api.md](api.md#device-push-endpoints).
 
 ## Pointing clients at your instance
