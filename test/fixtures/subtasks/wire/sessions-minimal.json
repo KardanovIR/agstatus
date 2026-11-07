@@ -1,0 +1,50 @@
+[
+  {
+    "id": "seed-minimal",
+    "name": "claude-status",
+    "status": "coding",
+    "message": "Edit",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331884,
+    "updatedAt": 1793209331890,
+    "subtasks": {
+      "turnEnded": false,
+      "running": 4,
+      "blocked": 0,
+      "failed": 0,
+      "done": 2,
+      "items": [
+        {
+          "id": "5394db0c7caa12460b2ee93c",
+          "n": 3,
+          "label": "Subagent 3",
+          "state": "testing",
+          "activity": "Bash"
+        },
+        {
+          "id": "acfaf4d87e271423e1e00c4a",
+          "n": 4,
+          "label": "Subagent 4",
+          "state": "coding",
+          "activity": "Edit"
+        },
+        {
+          "id": "7432dad7af008ed097925c74",
+          "n": 5,
+          "label": "Subagent 5",
+          "state": "planning",
+          "activity": "WebFetch"
+        },
+        {
+          "id": "3d93bcc479369cf4d295b2b6",
+          "n": 6,
+          "label": "Subagent 6",
+          "state": "coding",
+          "activity": "Write"
+        }
+      ]
+    }
+  }
+]

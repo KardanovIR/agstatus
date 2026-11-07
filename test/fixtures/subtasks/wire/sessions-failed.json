@@ -1,0 +1,43 @@
+[
+  {
+    "id": "seed-failed",
+    "name": "Prepare the 1.6.4 release",
+    "status": "coding",
+    "message": "Editing RELEASE-1.6.4.md",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331851,
+    "updatedAt": 1793209331859,
+    "subtasks": {
+      "turnEnded": false,
+      "running": 2,
+      "blocked": 0,
+      "failed": 1,
+      "done": 4,
+      "items": [
+        {
+          "id": "e64b1cceac06588757ecc96b",
+          "n": 5,
+          "label": "Run the migration tests",
+          "state": "testing",
+          "activity": "Run the store migration tests"
+        },
+        {
+          "id": "e2c73d81da1455b3eaf358cc",
+          "n": 6,
+          "label": "Audit the Android strings",
+          "state": "failed",
+          "activity": "Failed: API error (overloaded)"
+        },
+        {
+          "id": "caa9caff0545175d746dae6c",
+          "n": 7,
+          "label": "Draft release notes",
+          "state": "coding",
+          "activity": "Writing RELEASE-1.6.4.md"
+        }
+      ]
+    }
+  }
+]

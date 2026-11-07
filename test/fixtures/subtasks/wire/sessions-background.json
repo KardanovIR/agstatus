@@ -1,0 +1,36 @@
+[
+  {
+    "id": "seed-background",
+    "name": "Land the docs and CI sweep",
+    "status": "testing",
+    "message": "2 subagents still running",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331874,
+    "updatedAt": 1793209331879,
+    "subtasks": {
+      "turnEnded": true,
+      "running": 2,
+      "blocked": 0,
+      "failed": 0,
+      "done": 3,
+      "items": [
+        {
+          "id": "08fee937f71c6198e80fbc87",
+          "n": 4,
+          "label": "Run the server suite on Postgres",
+          "state": "testing",
+          "activity": "Run the root suite with --no-file-parallelism"
+        },
+        {
+          "id": "3059021926a12f41407c831d",
+          "n": 5,
+          "label": "Sweep docs for stale flags",
+          "state": "coding",
+          "activity": "Editing docs.html"
+        }
+      ]
+    }
+  }
+]
