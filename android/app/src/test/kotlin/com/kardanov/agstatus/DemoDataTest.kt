@@ -43,6 +43,30 @@ class DemoDataTest {
         }
     }
 
+    @Test
+    fun `the demo board shares projects, both agents in one, and No project last`() {
+        val sections = ProjectSections.of(SessionStore.sortedByUpdate(DemoData.initialSessions()))
+
+        assertEquals(listOf("acme-api", "claude-status", "docs", "etl-jobs", "No project"), sections.map { it.title })
+        assertTrue("a shared project", sections.any { it.sessions.size >= 2 })
+        assertTrue(
+            "Claude and Codex in one section",
+            sections.any { section -> section.sessions.map { it.source }.toSet() == setOf("claude", "codex") },
+        )
+    }
+
+    @Test
+    fun `the demo board has a moved card and two blocked for the bar to walk`() {
+        val sessions = DemoData.initialSessions()
+        val sections = ProjectSections.of(SessionStore.sortedByUpdate(sessions))
+
+        assertEquals(listOf("demo-webapp"), sessions.filter { ProjectSections.place(it) != null }.map { it.id })
+        assertEquals(2, sessions.count { it.isBlocked })
+        val first = ProjectSections.barTarget(sections, shown = null)
+        assertEquals("demo-login", first?.id)
+        assertEquals("demo-data-pipeline", ProjectSections.barTarget(sections, shown = first?.id)?.id)
+    }
+
     /** Ticks the demo from its first board, handing [check] the workflow session before and after each tick. */
     private fun replay(check: (before: Session, after: Session) -> Unit) {
         val random = Random(17)

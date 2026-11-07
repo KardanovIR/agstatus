@@ -69,6 +69,12 @@ import kotlinx.coroutines.withTimeoutOrNull
  *         --ez agstatus_demo true --es agstatus_open_usage codex \
  *         --ei agstatus_demo_limits 6 --es agstatus_demo_first_day all
  *
+ * The board grouped by project with that many more projects (1 to 12), the
+ * last of them blocked, as iOS's manyprojects scenario:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ei agstatus_demo_projects 12
+ *
  * The session screen can open at a subagent, by its ordinal (`n`), as the
  * iOS app's AGSTATUS_OPEN_SUBTASK does: the first card listing that subagent
  * opens, scrolled to it and lit. The demo starts with subagents 3 to 12:
@@ -82,6 +88,7 @@ private const val EXTRA_DEMO_STALE = "agstatus_demo_stale"
 private const val EXTRA_DEMO_FREEZE = "agstatus_demo_freeze"
 private const val EXTRA_DEMO_LIMITS = "agstatus_demo_limits"
 private const val EXTRA_DEMO_FIRST_DAY = "agstatus_demo_first_day"
+private const val EXTRA_DEMO_PROJECTS = "agstatus_demo_projects"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
 private const val EXTRA_OPEN_SUBTASK = "agstatus_open_subtask"
 private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
@@ -110,6 +117,7 @@ class MainActivity : ComponentActivity() {
             DemoData.firstDayWindows = intent.getStringExtra(EXTRA_DEMO_FIRST_DAY)
                 ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
                 .orEmpty()
+            DemoData.extraProjects = intent.getIntExtra(EXTRA_DEMO_PROJECTS, 0)
             store.startDemo(
                 agedMinutes = intent.getIntExtra(EXTRA_DEMO_STALE, 0),
                 frozen = intent.getBooleanExtra(EXTRA_DEMO_FREEZE, false),

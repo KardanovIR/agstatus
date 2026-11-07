@@ -24,13 +24,21 @@ object DemoData {
     /** The workflow session's own line, which a waiting subagent's takes over. */
     private const val REVIEW_MESSAGE = "Running the review-and-verify workflow"
 
-    /** Five sessions that look like a real evening of agent work. */
+    /**
+     * Nine sessions in five projects, two of them blocked: a real evening of
+     * agent work, and the board the project-sections mockups draw. Projects
+     * are shared, Claude's and Codex's cards sit in one section, one session
+     * has moved to another folder since it started, one has no folder at all,
+     * and two blocked cards give the needs-you bar a walk ("Show", then
+     * "Next"). Each says where it started (`homeProject`) as a current server
+     * would.
+     */
     fun initialSessions(): List<Session> {
         val now = System.currentTimeMillis()
         return listOf(
             // A workflow at full stretch — the prototype's ten subagents with
             // fifteen already done — so the board shows two rows, the footer
-            // and the session screen's list. Newest, so it leads the board.
+            // and the session screen's list. Newest, so it leads its section.
             // Its tick takes it through the rest of the turn: see advanceReview.
             Session(
                 id = REVIEW_ID,
@@ -38,6 +46,7 @@ object DemoData {
                 status = AgentStatus.PLANNING,
                 message = REVIEW_MESSAGE,
                 project = "claude-status",
+                homeProject = "claude-status",
                 createdAt = now - 38 * 60_000L,
                 updatedAt = now - 5_000L,
                 subtasks = demoSubtasks(
@@ -49,12 +58,36 @@ object DemoData {
                     done = 15,
                 ),
             ),
+            // Codex Desktop started at `/`: no folder yet, so No project,
+            // and no place on its line.
+            Session(
+                id = "demo-codex-desktop",
+                name = "Codex",
+                status = AgentStatus.PLANNING,
+                message = "Reading the brief",
+                source = "codex",
+                createdAt = now - 2 * 60_000L,
+                updatedAt = now - 8_000L,
+            ),
+            // It ran `cd web`: it keeps its place under acme-api, and its
+            // line says "in web".
+            Session(
+                id = "demo-webapp",
+                name = "Add rate limiting to /login",
+                status = AgentStatus.TESTING,
+                message = "npm test — 42 passing, 1 pending",
+                project = "web",
+                homeProject = "acme-api",
+                createdAt = now - 95 * 60_000L,
+                updatedAt = now - 14_000L,
+            ),
             Session(
                 id = "demo-api-server",
                 name = "api-server",
                 status = AgentStatus.CODING,
                 message = "Editing src/auth/token.ts",
                 project = "acme-api",
+                homeProject = "acme-api",
                 createdAt = now - 42 * 60_000L,
                 updatedAt = now - 15_000L,
                 // An IDE session whose machine's listener has gone quiet: the
@@ -64,14 +97,32 @@ object DemoData {
                     app = HostApp(slug = "vscode", name = "VS Code", kind = "ide"),
                 ),
             ),
+            // Codex beside Claude in another project: its mark tells them apart.
             Session(
-                id = "demo-webapp",
-                name = "webapp",
+                id = "demo-listener",
+                name = "agstatus-listener-windows-terminal-focus",
                 status = AgentStatus.TESTING,
-                message = "npm test — 42 passing, 1 pending",
-                project = "acme-web",
-                createdAt = now - 95 * 60_000L,
-                updatedAt = now - 70_000L,
+                message = "npm test -- focus/wt — 57 passed",
+                project = "claude-status",
+                homeProject = "claude-status",
+                source = "codex",
+                createdAt = now - 64 * 60_000L,
+                updatedAt = now - 60_000L,
+            ),
+            // The first blocked card in reading order: what the bar names first.
+            Session(
+                id = "demo-login",
+                name = "Fix the login redirect",
+                status = AgentStatus.BLOCKED,
+                message = "Approve: git push --force-with-lease",
+                project = "acme-api",
+                homeProject = "acme-api",
+                createdAt = now - 31 * 60_000L,
+                updatedAt = now - 2 * 60_000L,
+                host = SessionHost(
+                    machine = HostMachine(id = DEMO_MACBOOK_ID, name = "MacBook"),
+                    app = HostApp(slug = "agterm", name = "agterm", kind = "terminal"),
+                ),
             ),
             Session(
                 id = "demo-data-pipeline",
@@ -79,6 +130,7 @@ object DemoData {
                 status = AgentStatus.BLOCKED,
                 message = "Needs permission approval",
                 project = "etl-jobs",
+                homeProject = "etl-jobs",
                 createdAt = now - 18 * 60_000L,
                 updatedAt = now - 3 * 60_000L,
                 // The hero case: blocked in a terminal on a machine whose
@@ -96,12 +148,69 @@ object DemoData {
                 status = AgentStatus.DONE,
                 message = "All tasks complete — 12 files changed",
                 project = "docs",
+                homeProject = "docs",
                 source = "codex",
                 createdAt = now - 3 * 3_600_000L,
                 updatedAt = now - 26 * 60_000L,
             ),
-        )
+            // An untitled Codex session, named after its folder.
+            Session(
+                id = "demo-acme-codex",
+                name = "acme-api",
+                status = AgentStatus.DONE,
+                message = "Turn finished",
+                project = "acme-api",
+                homeProject = "acme-api",
+                source = "codex",
+                createdAt = now - 70 * 60_000L,
+                updatedAt = now - 41 * 60_000L,
+            ),
+        ) + extraProjectSessions(now)
     }
+
+    /**
+     * Screenshot switch for the board grouped by project, set from
+     * MainActivity's intent in a debug build before the demo starts, as iOS's
+     * manyprojects scenario: that many more sessions (1 to 12), each in a
+     * project of its own. Their names sort among the demo's own, one is too
+     * long for a phone's label line, two differ only in case, and the last is
+     * blocked, so the bar has a card far down the board to bring. Anything
+     * else leaves the demo's nine.
+     */
+    var extraProjects: Int = 0
+
+    private fun extraProjectSessions(now: Long): List<Session> {
+        val count = if (extraProjects in 1..extraProjectNames.size) extraProjects else return emptyList()
+        return extraProjectNames.take(count).mapIndexed { index, folder ->
+            val last = index == count - 1
+            Session(
+                id = "demo-project-$index",
+                name = if (last) "Rotate the staging certificates" else folder,
+                status = if (last) AgentStatus.BLOCKED else AgentStatus.IDLE,
+                message = if (last) "Approve: terraform apply" else "Waiting for a task",
+                project = folder,
+                homeProject = folder,
+                source = if (index % 3 == 2) "codex" else "claude",
+                createdAt = now - (90 + index) * 60_000L,
+                updatedAt = now - (50 + index) * 60_000L,
+            )
+        }
+    }
+
+    private val extraProjectNames = listOf(
+        "agstatus-listener-windows-terminal-focus",
+        "billing",
+        "Design-System",
+        "design-system",
+        "infra",
+        "mobile",
+        "ops-runbooks",
+        "payments",
+        "search",
+        "web",
+        "warehouse",
+        "zeta",
+    )
 
     /**
      * Every working session (planning, coding, testing) as if it last reported
