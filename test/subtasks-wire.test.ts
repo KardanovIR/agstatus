@@ -46,7 +46,9 @@ const session = (scenario: string): Json => captured(scenario)[0];
 // against these below.
 const SPEC = { label: 64, activity: 80, items: 56, failedListed: 8, liveListed: 48, bytes: 8192 };
 
-const SESSION_KEYS = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt'];
+// 1.6.5's keys in 1.6.5's order, then the project sections' homeProject, which
+// every 1.7.0 session carries (test/home-project.test.ts).
+const SESSION_KEYS = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'homeProject'];
 const SUBTASKS_KEYS = ['turnEnded', 'running', 'blocked', 'failed', 'done', 'items'];
 const ITEM_KEYS = ['id', 'n', 'label', 'state', 'activity'];
 const ITEM_STATES = ['planning', 'coding', 'testing', 'blocked', 'failed'];
@@ -115,10 +117,12 @@ describe('subtasks: the session JSON clients decode (spec 5)', () => {
 
   it('sends the documented types, and only the six statuses', () => {
     for (const s of BOARD) {
-      for (const key of ['id', 'name', 'message', 'project', 'source']) {
+      for (const key of ['id', 'name', 'message', 'project', 'source', 'homeProject']) {
         expect(typeof s[key], `${where(s)} ${key}`).toBe('string');
         expect(printable(s[key]), `${where(s)} ${key}`).toBe(true);
       }
+      // No scenario's session ever moves, so each is filed under its own folder.
+      expect(s.homeProject, where(s)).toBe(s.project);
       expect(s.id.length, where(s)).toBeGreaterThan(0);
       // `failed` and `working` are a row state and a client reading, never a session status.
       expect(STATUSES, where(s)).toContain(s.status);

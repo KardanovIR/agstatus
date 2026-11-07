@@ -108,12 +108,51 @@ export function normalizeHost(raw: unknown): Host | null {
   };
 }
 
+/**
+ * A bare UUID is never a folder name a person picked: Codex writes scratch
+ * workspaces under `.codex/visualizations/<date>/<uuid>`. This is the hook's
+ * UUID_NAME_RE (plugin/scripts/agstatus-hook.js), which keeps such a folder
+ * off a card's name, and the boards test a live project against the same
+ * pattern; test/home-project.test.ts holds both copies of the hook to it.
+ */
+export const UUID_FOLDER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A project a board can file a session under, or '' for none: '' (an agent
+ * started at `/`, a post without one) and a bare UUID. Anything else is kept
+ * exactly as sent, case included: a section is a folder name, nothing more.
+ */
+export function normalizeProject(project: string): string {
+  return UUID_FOLDER_RE.test(project) ? '' : project;
+}
+
+/**
+ * A session's home project: the one it already has, else its current project
+ * when that is usable. So the first usable folder a session reports is its
+ * home for the rest of its life, and neither a later `cd` nor a post without a
+ * project moves it, while '' and a UUID are skipped until a real folder
+ * claims the session. Both sides are normalized, so a value read back from
+ * the database is held to the same rule as one worked out here.
+ */
+export function homeProjectFor(previous: string, project: string): string {
+  return normalizeProject(previous) || normalizeProject(project);
+}
+
 export interface Session {
   id: string;
   name: string;
   status: Status;
   message: string;
+  /** Where the session is working now: the folder its latest post named. */
   project: string;
+  /**
+   * The project the boards group this session under: the first usable
+   * `project` it reported (homeProjectFor), held for the session's life so a
+   * `cd` never moves its card, and '' until a usable one arrives. Worked out
+   * here and never taken from a post: a webhook body is read field by field,
+   * and this is not one of its fields.
+   */
+  homeProject: string;
   /** Agent kind that owns the session ("claude", "codex", …). */
   source: string;
   /** Absent or null = the hook did not report a host. Stored as null. */
@@ -738,6 +777,7 @@ export class Store {
         deleted_at BIGINT,
         host TEXT,
         subtasks TEXT,
+        home_project TEXT,
         PRIMARY KEY (workspace_id, id)
       );
       CREATE TABLE IF NOT EXISTS devices (
@@ -802,6 +842,9 @@ export class Store {
     // Databases created before these columns existed.
     await pool.query('ALTER TABLE devices ADD COLUMN IF NOT EXISTS apns_server TEXT');
     await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host TEXT');
+    // Nullable: the rows an older server wrote have none, nor do those
+    // scripts/migrate-sqlite-to-postgres.js inserts; the load below derives it.
+    await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS home_project TEXT');
     // Nullable, and a column rather than a table: a session with no subagents
     // stores NULL, and scripts/migrate-sqlite-to-postgres.js inserts without it.
     await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS subtasks TEXT');
@@ -844,7 +887,7 @@ export class Store {
     // given at the retired-device query below. had_subtasks tells such a value
     // apart from no value, which the guard alone would not.
     const sessions = await pool.query(
-      `SELECT workspace_id, id, name, status, message, project, source, host, created_at, updated_at,
+      `SELECT workspace_id, id, name, status, message, project, home_project, source, host, created_at, updated_at,
               CASE WHEN length(subtasks) <= $1 THEN subtasks END AS subtasks,
               subtasks IS NOT NULL AS had_subtasks
        FROM sessions WHERE deleted_at IS NULL`,
@@ -886,12 +929,20 @@ export class Store {
         status = 'idle';
         message = '';
       }
+      const project = row.project as string;
       const session: Session = {
         id: row.id as string,
         name: row.name as string,
         status,
         message,
-        project: row.project as string,
+        project,
+        // NULL on a row only an older server has written: derived once from
+        // the row's own project, the folder the session last reported, which
+        // is the best there is for a session this server never saw start. It
+        // goes into the column with the session's next write, so loading
+        // writes nothing, and until then every load derives the same value
+        // from the same row.
+        homeProject: homeProjectFor(typeof row.home_project === 'string' ? row.home_project : '', project),
         source: (row.source as string) || 'claude',
         host,
         createdAt: Number(row.created_at),
@@ -1387,6 +1438,7 @@ export class Store {
       status === 'blocked' &&
       ([...blockedAfter].some((id) => !blockedBefore.has(id)) || (ownAfter === 'blocked' && ownBefore !== 'blocked'));
 
+    const project = input.project !== undefined ? input.project : prev?.project ?? '';
     const session: Session = {
       id: input.id,
       // An agent post names only a card it creates.
@@ -1395,7 +1447,12 @@ export class Store {
         : input.name !== undefined ? input.name || prev?.name || input.id : prev?.name || input.id,
       status,
       message,
-      project: input.project !== undefined ? input.project : prev?.project ?? '',
+      project,
+      // On every post alike, a subagent's included (the hook sends it no
+      // project, so it carries the parent's). A card the board dropped —
+      // dismissed, evicted, expired — has no prev, so it starts over, as its
+      // createdAt does.
+      homeProject: homeProjectFor(prev?.homeProject ?? '', project),
       source: input.source ?? prev?.source ?? 'claude',
       // Always a key (null, never undefined) so the wire shape is stable.
       host: input.host !== undefined ? input.host : prev?.host ?? null,
@@ -1451,12 +1508,13 @@ export class Store {
    */
   private persistSession(wsId: string, session: Session): void {
     this.exec(
-      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at, subtasks)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at, subtasks, home_project)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (workspace_id, id) DO UPDATE SET
          name = EXCLUDED.name, status = EXCLUDED.status, message = EXCLUDED.message,
          project = EXCLUDED.project, source = EXCLUDED.source, host = EXCLUDED.host,
-         updated_at = EXCLUDED.updated_at, subtasks = EXCLUDED.subtasks, deleted_at = NULL`,
+         updated_at = EXCLUDED.updated_at, subtasks = EXCLUDED.subtasks,
+         home_project = EXCLUDED.home_project, deleted_at = NULL`,
       [
         wsId,
         session.id,
@@ -1469,6 +1527,7 @@ export class Store {
         session.createdAt,
         session.updatedAt,
         session.sub ? serializeSubtaskState(session.sub, session.updatedAt) : null,
+        session.homeProject,
       ]
     );
   }
@@ -1984,9 +2043,11 @@ export class Store {
 
   /**
    * The card as it goes on the wire: a fresh object, built field by field in
-   * the order clients have always received, then `tokens` and `subtasks` when
-   * there is anything for them. A card with neither emits exactly the JSON it
-   * did before either existed, and nothing internal can ride along — the
+   * the order clients have always received, then `homeProject`, which every
+   * card carries from 1.7.0, then `tokens` and `subtasks` when there is
+   * anything for them. Every key a 1.6.5 client read keeps its place, a card
+   * with neither of the last two emits exactly the JSON it did before they
+   * existed plus `homeProject`, and nothing internal can ride along — the
    * subtask state above all, which lives on the stored object.
    *
    * `tokens` is whatever total is held under the card's (source, id). The key
@@ -2006,6 +2067,7 @@ export class Store {
       host: session.host ?? null,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
+      homeProject: session.homeProject,
     };
     const tokens = this.getSessionTokens(wsId, session.source, session.id);
     if (tokens !== null) wire.tokens = tokens;

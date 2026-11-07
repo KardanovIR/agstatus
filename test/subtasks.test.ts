@@ -411,10 +411,12 @@ describe('subtasks: validation', () => {
 });
 
 describe('subtasks: compatibility', () => {
-  it('a card without subtask state serializes exactly as before, key order included', async () => {
+  it('a card without subtask state gains no subtask key, and keeps 1.6.5\'s key order', async () => {
     const b = await board();
     const s = await b.main('plain', 'coding', 'Editing app.ts');
-    const keys = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt'];
+    // 1.6.5's keys in 1.6.5's order, and then the one key every 1.7.0 card
+    // carries, subagents or not: the project sections' homeProject.
+    const keys = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'homeProject'];
     expect(Object.keys(s!)).toEqual(keys);
     expect(Object.keys((await b.card('plain'))!)).toEqual(keys);
     // New fields from a new hook change nothing on a card with no subagents.
@@ -431,7 +433,7 @@ describe('subtasks: compatibility', () => {
     await b.main('t', 'coding', 'Working');
     await request(b.app).post(`/w/${b.token}/usage/sessions`).send({ source: 'claude', sessions: [{ session_id: 't', tokens: 1100000 }] }).expect(200);
     const s = await b.sub('t', A, 'blocked', { label: 'verify:hook' });
-    expect(Object.keys(s!)).toEqual(['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'tokens', 'subtasks']);
+    expect(Object.keys(s!)).toEqual(['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'homeProject', 'tokens', 'subtasks']);
 
     const seen: string[] = [JSON.stringify(s)];
     seen.push(JSON.stringify(await b.sub('t', A, 'done')));
@@ -773,7 +775,7 @@ describe('subtasks: the golden request bodies', () => {
 
     const unknown = await board();
     const u = await replay(unknown, 'G20-unknown-agent');
-    expect(Object.keys(u!)).toEqual(['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt']);
+    expect(Object.keys(u!)).toEqual(['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'homeProject']);
     expect(u).toMatchObject({ status: 'coding', message: 'Say hi', host: null });
 
     const soft = await board();

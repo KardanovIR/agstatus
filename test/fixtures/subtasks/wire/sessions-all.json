@@ -9,6 +9,7 @@
     "host": null,
     "createdAt": 1793209331895,
     "updatedAt": 1793209331900,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 3,
@@ -50,6 +51,7 @@
     "host": null,
     "createdAt": 1793209331890,
     "updatedAt": 1793209331895,
+    "homeProject": "search-indexer",
     "subtasks": {
       "turnEnded": false,
       "running": 3,
@@ -91,6 +93,7 @@
     "host": null,
     "createdAt": 1793209331884,
     "updatedAt": 1793209331890,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 4,
@@ -139,6 +142,7 @@
     "host": null,
     "createdAt": 1793209331880,
     "updatedAt": 1793209331884,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 0,
@@ -158,6 +162,7 @@
     "host": null,
     "createdAt": 1793209331874,
     "updatedAt": 1793209331879,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": true,
       "running": 2,
@@ -192,6 +197,7 @@
     "host": null,
     "createdAt": 1793209331859,
     "updatedAt": 1793209331874,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 0,
@@ -211,6 +217,7 @@
     "host": null,
     "createdAt": 1793209331851,
     "updatedAt": 1793209331859,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 2,
@@ -252,6 +259,7 @@
     "host": null,
     "createdAt": 1793209331845,
     "updatedAt": 1793209331851,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 3,
@@ -307,6 +315,7 @@
     "host": null,
     "createdAt": 1793209331823,
     "updatedAt": 1793209331845,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 9,
@@ -397,6 +406,7 @@
     "host": null,
     "createdAt": 1793209331671,
     "updatedAt": 1793209331823,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 30,
@@ -627,6 +637,7 @@
     "host": null,
     "createdAt": 1793209331639,
     "updatedAt": 1793209331670,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 10,
@@ -717,6 +728,7 @@
     "host": null,
     "createdAt": 1793209331631,
     "updatedAt": 1793209331639,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 2,
@@ -750,6 +762,7 @@
     "source": "claude",
     "host": null,
     "createdAt": 1793209331627,
-    "updatedAt": 1793209331630
+    "updatedAt": 1793209331630,
+    "homeProject": "claude-status"
   }
 ]

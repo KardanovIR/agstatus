@@ -9,6 +9,7 @@
     "host": null,
     "createdAt": 1793209331895,
     "updatedAt": 1793209331900,
+    "homeProject": "claude-status",
     "subtasks": {
       "turnEnded": false,
       "running": 3,

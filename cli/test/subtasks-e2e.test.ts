@@ -266,7 +266,8 @@ const K = (b: Board, session: string, agentId: string) =>
 
 // ---- the board, read back -----------------------------------------------------------
 
-const SESSION_KEYS = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt'];
+// 1.6.5's keys in 1.6.5's order, then the project sections' homeProject.
+const SESSION_KEYS = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'homeProject'];
 const SUBTASKS_KEYS = ['turnEnded', 'running', 'blocked', 'failed', 'done', 'items'];
 const ITEM_KEYS = ['id', 'n', 'label', 'state', 'activity'];
 
@@ -282,6 +283,9 @@ async function card(b: Board, id: string): Promise<Json> {
   expect(found, `no card for ${id}`).toBeDefined();
   const c = found!;
   expect(Object.keys(c)).toEqual('subtasks' in c ? [...SESSION_KEYS, 'subtasks'] : SESSION_KEYS);
+  // The folder the hook reported, pinned by the server: the subagents' own
+  // posts name none, and leave it where the parent's put it.
+  expect(c.homeProject, `homeProject of ${id}`).toBe(path.basename(b.cwd));
   if ('subtasks' in c) {
     expect(Object.keys(c.subtasks)).toEqual(SUBTASKS_KEYS);
     for (const item of c.subtasks.items) expect(Object.keys(item)).toEqual(ITEM_KEYS);
