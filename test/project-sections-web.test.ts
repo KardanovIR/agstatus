@@ -440,3 +440,264 @@ describe('project sections', () => {
     expect(document.activeElement).toBe(card(b, 'a1').querySelector('[data-open]'));
   });
 });
+
+// ---- The needs-you bar ------------------------------------------------------
+
+const bar = () => document.getElementById('needs') as HTMLButtonElement;
+const said = () => document.getElementById('needs-said')!.textContent;
+/** What the bar shows, part by part, as drawn. */
+const barShows = () => ({
+  count: bar().querySelector('.needs-n')?.textContent,
+  name: bar().querySelector('.needs-name')?.textContent,
+  where: bar().querySelector('.needs-where')?.textContent ?? null,
+  verb: bar().querySelector('.needs-verb')?.textContent,
+});
+const titleOf = (b: Board, id: string) => card(b, id).querySelector('[data-open]');
+const blocked = (id: string, minutesAgo: number, homeProject: string, over: Record<string, unknown> = {}) =>
+  at(id, minutesAgo, { homeProject, status: 'blocked', message: 'Approve: git push', ...over });
+
+describe('the needs-you bar', () => {
+  it('is absent while nothing is blocked, and done never counts', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api', status: 'done' }), at('c', 2, { homeProject: 'docs' })]);
+    expect(bar().hidden).toBe(true);
+    expect(bar().childElementCount).toBe(0);
+    expect(document.body.classList.contains('needs-up')).toBe(false);
+  });
+
+  it('appears with the first block, naming it and its project, as one button', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api', name: 'Fix the login redirect' }), at('c', 2, { homeProject: 'docs' })]);
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix the login redirect' }));
+    expect(bar().hidden).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(true);   // from the bottom edge (shell.css)
+    expect(document.body.classList.contains('needs-up')).toBe(true);   // the page padded
+    expect(barShows()).toEqual({ count: '1', name: 'Fix the login redirect', where: '·in acme-api', verb: 'Show' });
+    expect(bar().querySelector('.needs-word')!.textContent).toBe('blocked');
+    expect(bar().querySelector('.needs-alarm svg.state-mark')).not.toBe(null);
+    // One button, named as iOS names it, with the hint as its description.
+    expect(bar().tagName).toBe('BUTTON');
+    expect(bar().type).toBe('button');
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Fix the login redirect, in acme-api');
+    expect(document.getElementById(bar().getAttribute('aria-describedby')!)!.textContent).toBe('Shows that session');
+    expect(bar().querySelector('button, a, [tabindex]')).toBe(null);
+  });
+
+  it('names a session in No project by its agent, and never repeats its name', async () => {
+    const b = await boardOf([
+      blocked('n', 1, '', { project: '', name: 'Reading the brief', source: 'codex' }),
+    ]);
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Reading the brief, Codex');
+    expect(barShows().where).toBe('·Codex');
+    b.emit('session', blocked('n', 0, '', { project: '', name: 'Codex', source: 'codex' }));
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Codex');
+    expect(barShows().where).toBe(null);
+    b.emit('session', blocked('n', 0, 'acme-api', { name: 'acme-api', source: 'codex' }));
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: acme-api');
+  });
+
+  // Reading order is the grid's: sections in order, then cards in order.
+  it('names the first blocked card in reading order, and counts every blocked card', async () => {
+    const b = await boardOf([
+      blocked('z', 1, 'zeta', { name: 'In zeta' }), at('a1', 2, { homeProject: 'alpha' }),
+      blocked('a2', 3, 'alpha', { name: 'In alpha' }), at('d', 4, { homeProject: 'docs', status: 'done' }),
+    ]);
+    expect(barShows()).toEqual({ count: '2', name: 'In alpha', where: '·in alpha', verb: 'Show' });
+  });
+
+  it('brings the card it names, focuses its title and rings it, then names the next, round to the first', async () => {
+    const b = await boardOf([
+      blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' }), at('c', 2, { homeProject: 'claude-status' }),
+      blocked('e', 3, 'etl-jobs', { name: 'Nightly backfill' }),
+    ]);
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+    expect(card(b, 'a').classList.contains('is-ringed')).toBe(true);
+    expect(barShows()).toEqual({ count: '2', name: 'Nightly backfill', where: '·in etl-jobs', verb: 'Next' });
+    expect(bar().getAttribute('aria-label')).toBe('2 blocked: Nightly backfill, in etl-jobs');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(card(b, 'a').classList.contains('is-ringed')).toBe(false);   // two seconds
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'e'));
+    expect(card(b, 'e').classList.contains('is-ringed')).toBe(true);
+    expect(barShows().name).toBe('Fix the login redirect');            // round to the first
+    expect(barShows().verb).toBe('Next');
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+    // One ring at a time.
+    expect(card(b, 'e').classList.contains('is-ringed')).toBe(false);
+  });
+
+  it('keeps naming a lone blocked card after a press, and says Show', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+    expect(barShows().verb).toBe('Show');
+    expect(barShows().count).toBe('1');
+  });
+
+  it('keeps its words for a block elsewhere, and counts it', async () => {
+    const b = await boardOf([blocked('m', 1, 'middle', { name: 'In middle' }), at('a', 2, { homeProject: 'alpha' })]);
+    b.emit('session', blocked('a', 0, 'alpha', { name: 'In alpha' }));
+    expect(barShows()).toEqual({ count: '2', name: 'In middle', where: '·in middle', verb: 'Show' });
+  });
+
+  // A press reads the board as last drawn.
+  it('passes over a card unblocked or gone since it was named', async () => {
+    const b = await boardOf([
+      blocked('a', 1, 'acme-api', { name: 'A' }), blocked('b', 2, 'billing', { name: 'B' }),
+      blocked('c', 3, 'claude-status', { name: 'C' }),
+    ]);
+    b.click(bar());                                   // brings A, names B
+    expect(barShows().name).toBe('B');
+    b.emit('session', at('b', 0, { homeProject: 'billing', name: 'B', status: 'coding' }));
+    expect(barShows()).toEqual({ count: '2', name: 'C', where: '·in claude-status', verb: 'Next' });
+    b.emit('remove', { id: 'c' });
+    expect(barShows()).toEqual({ count: '1', name: 'A', where: '·in acme-api', verb: 'Show' });
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+  });
+
+  it('takes the ring away sooner when its card is unblocked', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), blocked('e', 2, 'etl-jobs')]);
+    b.click(bar());
+    expect(card(b, 'a').classList.contains('is-ringed')).toBe(true);
+    await vi.advanceTimersByTimeAsync(500);
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    expect(card(b, 'a').classList.contains('is-ringed')).toBe(false);
+  });
+
+  it('keeps the ring through a repaint of its card', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api')]);
+    b.click(bar());
+    b.emit('session', blocked('a', 1, 'acme-api', { message: 'Approve: git push --force' }));
+    expect(card(b, 'a').querySelector('.message')!.textContent).toBe('Approve: git push --force');
+    expect(card(b, 'a').classList.contains('is-ringed')).toBe(true);
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+  });
+
+  it('leaves when the last block clears, inert while it goes, and hands its focus to the card it brought', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    b.click(bar());
+    bar().focus();
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    expect(bar().classList.contains('leaving')).toBe(true);
+    expect(bar().hasAttribute('inert')).toBe(true);
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(true);
+    expect(bar().hasAttribute('aria-label')).toBe(false);
+    expect(document.body.classList.contains('needs-up')).toBe(false);
+    // And a block after that is a new bar: Show, from the top.
+    b.emit('session', blocked('c', 0, 'docs', { name: 'Docs' }));
+    expect(bar().hidden).toBe(false);
+    expect(barShows()).toEqual({ count: '1', name: 'Docs', where: '·in docs', verb: 'Show' });
+  });
+
+  it('hands its focus to the card it named, if it was never pressed', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    bar().focus();
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+  });
+
+  it('comes back at once for a block that lands while it leaves', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    expect(bar().classList.contains('leaving')).toBe(true);
+    b.emit('session', blocked('c', 0, 'docs'));
+    expect(bar().classList.contains('leaving')).toBe(false);
+    expect(bar().hasAttribute('inert')).toBe(false);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(false);
+  });
+
+  it('goes with the board, when a snapshot empties it', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api')]);
+    b.emit('snapshot', []);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(true);
+  });
+
+  // A keyboard reaches the bar before the cards it leads to, as a real
+  // button, which answers Enter and Space itself.
+  it('is a stop on the keyboard\'s way, ahead of the grid, only while it shows', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
+    expect(bar().hidden).toBe(true);   // not focusable while hidden
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    expect(bar().tabIndex).toBe(0);
+    expect(bar().compareDocumentPosition(b.grid()) & 4).toBe(4);   // the grid follows it
+    bar().focus();
+    expect(document.activeElement).toBe(bar());
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+  });
+});
+
+describe('a new block, aloud', () => {
+  it('says a block that lands while the board watches, after half a second', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api', name: 'Fix the login redirect' })]);
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix the login redirect' }));
+    expect(said()).toBe('');
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Fix the login redirect, in acme-api, needs you');
+    const region = document.getElementById('needs-said')!;
+    expect(region.getAttribute('aria-live')).toBe('polite');
+  });
+
+  it('says nothing on load, or for the blocks a reconnect brings', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api')]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(said()).toBe('');
+    b.emit('snapshot', [blocked('a', 1, 'acme-api'), blocked('b', 1, 'billing')]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(said()).toBe('');
+  });
+
+  it('says a new session that arrives blocked', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
+    b.emit('session', blocked('n', 0, 'billing', { name: 'Charge the card' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Charge the card, in billing, needs you');
+  });
+
+  it('says blocks that land together as one sentence', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' }), at('b', 2, { homeProject: 'billing' })]);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    await vi.advanceTimersByTimeAsync(15);
+    b.emit('session', blocked('b', 0, 'billing'));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('2 sessions need you');
+  });
+
+  it('says nothing for a block answered within the half second', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('');
+  });
+
+  it('says one session at most once a minute', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api', name: 'Fix it' })]);
+    const region = document.getElementById('needs-said')!;
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix it' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Fix it, in acme-api, needs you');
+    region.textContent = '';
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', name: 'Fix it', status: 'coding' }));
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix it' }));   // again, 0.7 s on
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('');
+    await vi.advanceTimersByTimeAsync(60_000);
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', name: 'Fix it', status: 'coding' }));
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix it' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Fix it, in acme-api, needs you');
+  });
+
+  it('says nothing for a frame about a card that was blocked already', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api')]);
+    b.emit('session', blocked('a', 0, 'acme-api', { message: 'Approve: something else' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('');
+  });
+});

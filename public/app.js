@@ -40,6 +40,8 @@
   const copyBtn = document.getElementById('copy-btn');
   const authEl = document.getElementById('auth-note');
   const detailEl = document.getElementById('detail');
+  const needsEl = document.getElementById('needs');
+  const saidEl = document.getElementById('needs-said');
 
   let webhookUrl = '';
   const state = new Map();
@@ -411,6 +413,7 @@
     dropLabels();
     gridEl.classList.remove('has-subs');
     paint(gridEl, html);
+    renderNeeds();   // nothing blocked on a board with no cards
   }
 
   // ---- plan usage limit bars ------------------------------------------------
@@ -960,7 +963,7 @@
     const list = arrange();
     renderStats(list);
     renderUsage(); // session changes can change which sources' bars are shown
-    if (list.length === 0) { renderEmpty(); return; }
+    if (list.length === 0) { renderEmpty(); renderNeeds(); return; }
 
     // Whatever message block was showing is not a card, so it goes first.
     if (cards.size === 0 && gridEl.firstChild) paint(gridEl, '');
@@ -1026,6 +1029,269 @@
     // Each card keeps its own height while any of them carries subagent rows
     // (board.css), so a short card does not stretch beside a tall one.
     gridEl.classList.toggle('has-subs', withSubs);
+    renderNeeds();
+  }
+
+  // ---- Needs you ------------------------------------------------------------
+  //
+  // The board's one alarm since 1.7.0: a bar along the bottom edge while any
+  // session is blocked, naming one and the project it is in, "2 BLOCKED ·
+  // Fix the login redirect · in acme-api · Show". One button: a press brings
+  // that card into view under its stuck label, moves focus to its title and
+  // rings the title for two seconds; with more than one blocked the bar then
+  // names the next in reading order, and says Next, round to the first. iOS,
+  // the web and Android draw the same bar (docs/design/project-sections.md).
+  //
+  // Reading order is the grid's own: sections in order, cards in order, row
+  // by row. A press reads the board as last drawn, so a card dismissed or
+  // unblocked meanwhile is passed over. A card that becomes blocked never
+  // moves (the board's order); the bar is the way to it.
+
+  const RING_MS = 2000;
+  // The bar's memory: the card it names, whether it has been pressed since
+  // it appeared, the card it last brought and the one ringing now, and the
+  // reading order last drawn.
+  const bar = { target: null, pressed: false, brought: null, ring: null, order: [] };
+
+  const reducedMotion = () => typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /** The blocked cards in reading order, as last drawn: ids. */
+  const blockedDrawn = () => [...gridEl.querySelectorAll('.card[data-status="blocked"]')].map((el) => el.dataset.id);
+
+  /**
+   * What the bar and the voice say a session is: its name, and where. Where
+   * is its project, or for a session in No project its agent; and nothing
+   * where that would only repeat the name, as a card's own place does not
+   * ("acme-api", untitled, in acme-api).
+   */
+  function needsWhat(s) {
+    const key = sectionKey(s);
+    const where = key === NO_PROJECT ? agentName(s.source) : key;
+    return { name: s.name, place: where === s.name ? '' : key === NO_PROJECT ? where : `in ${key}` };
+  }
+
+  /** The first of `ids` after `from` in the order last drawn, round to the start. */
+  function after(ids, from) {
+    const at = bar.order.indexOf(from);
+    if (at < 0) return ids[0];
+    for (let i = 1; i <= bar.order.length; i += 1) {
+      const id = bar.order[(at + i) % bar.order.length];
+      if (ids.includes(id)) return id;
+    }
+    return ids[0];
+  }
+
+  function needsHTML(count, s, verb) {
+    const { name, place } = needsWhat(s);
+    return `<span class="needs-alarm">${STATE_MARK.blocked || ''}<span class="needs-n">${count}</span>`
+      + '<span class="needs-word">blocked</span></span>'
+      + `<span class="needs-what"><span class="needs-name">${escape(name)}</span>${
+        place ? `<span class="needs-where"><span class="needs-sep">·</span>${escape(place)}</span>` : ''}</span>`
+      + `<span class="needs-verb">${verb}</span>`;
+  }
+
+  /** The bar as the board stands: shown, named and worded, or leaving. */
+  function renderNeeds() {
+    const ids = blockedDrawn();
+    const order = [...gridEl.querySelectorAll('.card')].map((el) => el.dataset.id);
+    // Gone sooner than two seconds when its card is no longer blocked.
+    if (bar.ring && !ids.includes(bar.ring.id)) clearRing();
+    if (ids.length === 0) {
+      hideNeeds(bar.brought || bar.target);
+      bar.target = null;
+      bar.pressed = false;
+      bar.order = order;
+      return;
+    }
+    // It goes on naming the card it names while that is blocked, so its
+    // words do not change under the reader's eye for a block elsewhere.
+    if (!ids.includes(bar.target)) bar.target = bar.target ? after(ids, bar.target) : ids[0];
+    bar.order = order;
+    const s = state.get(bar.target);
+    const verb = bar.pressed && ids.length > 1 ? 'Next' : 'Show';
+    const { name, place } = needsWhat(s);
+    const label = `${ids.length} blocked: ${name}${place ? `, ${place}` : ''}`;
+    if (needsEl.getAttribute('aria-label') !== label) needsEl.setAttribute('aria-label', label);
+    if (paint(needsEl, needsHTML(ids.length, s, verb))) fitNeeds();
+    showNeeds();
+  }
+
+  // Enters from the bottom edge when the first block lands and leaves when
+  // none remain: motion for news, and in place under reduced motion, where
+  // board.css takes every animation to nothing. Leaving, it is inert, so it
+  // can be neither pressed nor reached while it goes.
+  let leaveTimer = 0;
+  function showNeeds() {
+    clearTimeout(leaveTimer);
+    if (!needsEl.hidden && !needsEl.classList.contains('leaving')) return;
+    const fresh = needsEl.hidden;
+    needsEl.classList.remove('leaving');
+    needsEl.removeAttribute('inert');
+    needsEl.hidden = false;
+    if (fresh) needsEl.classList.add('entering');
+    document.body.classList.add('needs-up');
+    padForNeeds();
+  }
+
+  function hideNeeds(last) {
+    if (needsEl.hidden || needsEl.classList.contains('leaving')) return;
+    // A reader on the bar is not dropped to the top of the page: they go to
+    // the card it last brought, or else last named, if that is still here.
+    if (needsEl.contains(document.activeElement)) {
+      const rec = last ? cards.get(last) : null;
+      const title = rec && rec.el.querySelector('[data-open]');
+      if (title) title.focus({ preventScroll: true });
+    }
+    needsEl.classList.remove('entering');
+    needsEl.classList.add('leaving');
+    needsEl.setAttribute('inert', '');
+    const gone = () => {
+      clearTimeout(leaveTimer);
+      if (!needsEl.classList.contains('leaving')) return;
+      needsEl.classList.remove('leaving');
+      needsEl.hidden = true;
+      paint(needsEl, '');
+      needsEl.removeAttribute('aria-label');
+      document.body.classList.remove('needs-up');
+    };
+    // Its animation's end, or a moment past it where none runs.
+    leaveTimer = setTimeout(gone, reducedMotion() ? 0 : 400);
+  }
+
+  needsEl.addEventListener('animationend', (e) => {
+    if (e.animationName === 'needs-in') needsEl.classList.remove('entering');
+  });
+  needsEl.addEventListener('animationcancel', (e) => {
+    if (e.animationName === 'needs-in') needsEl.classList.remove('entering');
+  });
+
+  /**
+   * The page is padded by the bar's height while it shows, so nothing ends
+   * under it, and a jump clears it: measured, since it takes one line or two
+   * and grows with the reader's text.
+   */
+  function padForNeeds() {
+    if (needsEl.hidden || !needsEl.offsetHeight) return;
+    document.body.style.setProperty('--needs-h', `${needsEl.offsetHeight}px`);
+  }
+
+  /**
+   * Fits the bar to its line as the spec orders it: where room runs out the
+   * word BLOCKED goes first (the mark and the count stay), then the project,
+   * and then the name is cut at its end (shell.css). On a phone the session
+   * has a line of its own, where the word would make it no room, so there
+   * the word goes only if it crowds its own line.
+   */
+  function fitNeeds() {
+    needsEl.classList.remove('drop-word', 'drop-where');
+    const name = needsEl.querySelector('.needs-name');
+    const alarm = needsEl.querySelector('.needs-alarm');
+    if (!name || !alarm || !needsEl.clientWidth) return;
+    const cut = () => name.scrollWidth > name.clientWidth;
+    const crowded = alarm.scrollWidth > alarm.clientWidth;
+    if (!cut() && !crowded) return;
+    const room = name.clientWidth;
+    needsEl.classList.add('drop-word');
+    if (!cut()) return;
+    if (!crowded && name.clientWidth <= room) needsEl.classList.remove('drop-word');
+    needsEl.classList.add('drop-where');
+  }
+
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => { fitNeeds(); padForNeeds(); }).observe(needsEl);
+  }
+
+  function clearRing() {
+    if (!bar.ring) return;
+    clearTimeout(bar.ring.timer);
+    const rec = cards.get(bar.ring.id);
+    if (rec) rec.el.classList.remove('is-ringed');
+    bar.ring = null;
+  }
+
+  /**
+   * Brings a card into view: no scroll if it is already in view, below
+   * whatever label is stuck and above the bar; else it lands under its own
+   * stuck label (its scroll margin, shell.css), smoothly unless motion is
+   * reduced. Focus moves to its title, whose description reads the state and
+   * the message, and the title is ringed for two seconds in a neutral ink:
+   * the focus ring's green would say done on a blocked card, and a mouse
+   * press leaves no focus ring at all.
+   */
+  function bring(id) {
+    const rec = cards.get(id);
+    if (!rec) return;
+    const el = rec.el;
+    const label = gridEl.querySelector('.section-label');
+    const top = label ? label.offsetHeight : 0;
+    const bottom = needsEl.hidden ? 0 : needsEl.offsetHeight;
+    const r = el.getBoundingClientRect();
+    const inView = r.top >= top && r.bottom <= window.innerHeight - bottom;
+    if (!inView && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    }
+    const title = el.querySelector('[data-open]');
+    if (title) title.focus({ preventScroll: true });
+    bar.brought = id;
+    clearRing();
+    el.classList.add('is-ringed');
+    bar.ring = { id, timer: setTimeout(clearRing, RING_MS) };
+  }
+
+  needsEl.addEventListener('click', () => {
+    const ids = blockedDrawn();
+    if (ids.length === 0) return;
+    const id = ids.includes(bar.target) ? bar.target : after(ids, bar.target);
+    bring(id);
+    bar.pressed = true;
+    bar.target = ids.length > 1 ? ids[(ids.indexOf(id) + 1) % ids.length] : id;
+    renderNeeds();
+  });
+
+  // ---- A new block, aloud
+  //
+  // Said through the polite region beside the bar, as iOS says it with
+  // VoiceOver: "Fix the login redirect, in acme-api, needs you". Speech
+  // nobody asked for has to be earned, so only a block that arrives while
+  // the board is watching is said: a session frame that turns a card
+  // blocked, or brings one new and blocked. Never a snapshot, which is the
+  // page loading or the stream coming back with blocks that were standing
+  // before the board looked; never a fetch. A session said is not said
+  // again within a minute, the server's own wait before it pushes the same
+  // block twice. Blocks that land within half a second are said together,
+  // "2 sessions need you", since a second sentence would cut the first off.
+
+  const SAID_MS = 60000;
+  const GATHER_MS = 500;
+  const saidAt = new Map();        // session id → when its block was said
+  let gathered = [];
+  let gatherTimer = 0;
+
+  function gatherBlock(id) {
+    const now = Date.now();
+    for (const [k, t] of saidAt) if (now - t >= SAID_MS) saidAt.delete(k);
+    if (saidAt.has(id) || gathered.includes(id)) return;
+    gathered.push(id);
+    if (!gatherTimer) gatherTimer = setTimeout(sayBlocks, GATHER_MS);
+  }
+
+  function sayBlocks() {
+    gatherTimer = 0;
+    // Only those still blocked: one answered within the half second is not news.
+    const still = gathered.map((id) => state.get(id)).filter((s) => s && s.status === 'blocked');
+    gathered = [];
+    if (still.length === 0) return;
+    const now = Date.now();
+    for (const s of still) saidAt.set(s.id, now);
+    let sentence = `${still.length} sessions need you`;
+    if (still.length === 1) {
+      const { name, place } = needsWhat(still[0]);
+      sentence = `${name}${place ? `, ${place}` : ''}, needs you`;
+    }
+    // Emptied first, so the same words a minute later are a change too.
+    saidEl.textContent = '';
+    setTimeout(() => { saidEl.textContent = sentence; }, 100);
   }
 
   async function refreshSessions() {
@@ -1454,7 +1720,9 @@
 
     es.addEventListener('session', (e) => {
       const s = JSON.parse(e.data);
+      const was = state.get(s.id);
       state.set(s.id, s);
+      if (s.status === 'blocked' && !(was && was.status === 'blocked')) gatherBlock(s.id);
       pruneFocus();
       renderGrid();
       if (screen && screen.id === s.id) paintScreenSubs();

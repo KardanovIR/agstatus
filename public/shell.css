@@ -188,6 +188,7 @@ main {
 body.detail-open > main,
 body.detail-open > .usage,
 body.detail-open > .stats,
+body.detail-open > .needs,
 body.detail-open > .footer { display: none; }
 
 .detail {
@@ -817,6 +818,146 @@ body.detail-open > .footer { display: none; }
   color: var(--text-3);
 }
 
+/* ---- Needs you ----------------------------------------------------------
+ * The board's one alarm (app.js, "Needs you"): fixed to the bottom edge while
+ * any session is blocked, and gone when none is. One button, at least 44px
+ * tall, its words above the safe-area inset and its ground running under it
+ * to the edge. "(!) 2 BLOCKED   Fix the login redirect · in acme-api   Show":
+ * the mark, count and word in the blocked ink, the session in the primary
+ * ink, the project and the verb in the secondary. Nothing else is coloured;
+ * the ground is a card's, on a hairline, with no glow and no motion but its
+ * arrival and departure. Its content lines up with the board's own gutters. */
+.needs {
+  --state: var(--st-blocked);
+  --gutter: var(--space-md);
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  /* Over the cards and the stuck labels (board.css). */
+  z-index: 2;
+  appearance: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'alarm what verb';
+  align-items: center;
+  column-gap: var(--space-md);
+  min-height: 44px;
+  margin: 0;
+  padding: var(--space-sm) max(var(--gutter), env(safe-area-inset-right))
+    calc(var(--space-sm) + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
+  background: var(--ink-900);
+  border: 0;
+  border-top: 1px solid var(--ink-800);
+  border-radius: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--t-sm);
+  line-height: var(--lh-tight);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease);
+}
+
+.needs:hover { background: var(--ink-850); }
+.needs:hover .needs-verb { color: var(--text-1); }
+
+/* Inside the bar: a ring outside it would be cut off by the window's edges. */
+.needs:focus-visible {
+  outline-offset: -4px;
+  border-radius: 0;
+}
+
+/* The badge's face, so the bar's word and a blocked card's are one word. */
+.needs-alarm {
+  grid-area: alarm;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--state);
+}
+
+.needs-n { font-variant-numeric: tabular-nums; }
+
+.needs-what {
+  grid-area: what;
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* The one reading: the session, in the face a card's name is set in. Cut at
+ * its end, and only once the word and the project have gone (app.js). */
+.needs-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-read);
+  font-size: var(--t-md);
+  font-weight: 600;
+}
+
+.needs-where {
+  flex: none;
+  color: var(--text-2);
+}
+
+.needs-sep {
+  margin: 0 var(--space-xs);
+  color: var(--text-3);
+}
+
+.needs-verb {
+  grid-area: verb;
+  color: var(--text-2);
+}
+
+.needs.drop-word .needs-word,
+.needs.drop-where .needs-where { display: none; }
+
+/* It enters from the bottom edge and leaves by it, and appears and goes in
+ * place under reduced motion (board.css). */
+@keyframes needs-in {
+  from { transform: translateY(100%); }
+}
+
+@keyframes needs-out {
+  to { transform: translateY(100%); }
+}
+
+.needs.entering { animation: needs-in var(--d-slow) var(--ease) both; }
+.needs.leaving { animation: needs-out var(--d-mid) var(--ease) both; }
+
+/* While it shows, the page ends above it rather than under it: its measured
+ * height (app.js), the safe-area inset included, then the usual air. */
+body.needs-up:not(.detail-open) { padding-bottom: calc(var(--needs-h, 3.5rem) + var(--space-2xl)); }
+
+/* The card the bar brought: it lands under its stuck label, 8px clear of it
+ * (board.css's --label-h), and clear of the bar when it would land below. */
+#grid > .card {
+  scroll-margin-top: calc(var(--label-h) + var(--space-xs));
+  scroll-margin-bottom: calc(var(--needs-h, 0px) + var(--space-xs));
+}
+
+/* Its title, ringed for two seconds in a neutral ink: the focus ring's green
+ * would say done on a blocked card, and a press with a mouse draws no focus
+ * ring at all. It outranks the focus ring while it lasts. */
+.card.is-ringed .name-open {
+  outline: 2px solid var(--text-2);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
 /* ---- Footer -------------------------------------------------------------
  * The webhook URL, which is setup rather than triage. It used to be fixed to
  * the bottom of the viewport behind a blur, which cost every card 104px of
@@ -986,6 +1127,24 @@ body.detail-open > .footer { display: none; }
 
   /* The URL is the long thing in the row and the button must stay reachable. */
   .footer code { flex: 1 1 100%; }
+
+  /* The bar takes two lines on a phone, the alarm and its verb over the
+   * session, which gets a line of its own; the phone's 12px gutters. */
+  .needs {
+    --gutter: var(--space-sm);
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: 'alarm verb' 'what what';
+    row-gap: var(--space-2xs);
+    padding-top: var(--space-xs);
+    padding-bottom: calc(var(--space-xs) + env(safe-area-inset-bottom));
+  }
+
+  body.needs-up:not(.detail-open) { padding-bottom: calc(var(--needs-h, 4.5rem) + var(--space-xl)); }
+}
+
+/* The wide board's 24px gutters. */
+@media (min-width: 1100px) {
+  .needs { --gutter: var(--space-lg); }
 }
 
 /* Same rule as board.css applies to the cards: a target you cannot hover is a
