@@ -2,9 +2,12 @@
 //  BoardLayout.swift
 //  AgStatus
 //
-//  How the board arranges itself: which agents get a section, which of four
-//  arrangements a width allows, which form an agent's head takes at the width
-//  it is given, and which side a card sits on where cards run two across.
+//  How the board arranges itself: which project each card is under and the
+//  order the projects come in, which agents get a head and whether the heads
+//  are pinned, which of two arrangements a width allows, which form a head
+//  takes at the width it is given, which side a card sits on where cards run
+//  two across, the order a reader meets the cards in, and which card the
+//  needs-you bar names.
 //
 //  Values only — no views. Everything here is arithmetic on a measured width
 //  and on the store's own array, which is what lets it be checked by the
@@ -15,123 +18,200 @@
 import CoreGraphics
 import Foundation
 
-// MARK: - AgentGroup
+// MARK: - ProjectKey
 
-/// One agent's section: its sessions, and its plan limits when it reports any.
+/// Which section a card is under: a folder, by its name in exact case, or no
+/// usable folder at all.
+///
+/// "No project" is a case of its own rather than a reserved name, so a folder
+/// that somebody really did call "No project" is a section like any other,
+/// and a folder called "codex" is never mistaken for the Codex head or for a
+/// session whose id is "codex" (`JumpTarget`).
+enum ProjectKey: Hashable {
+    case folder(String)
+    case noProject
+
+    /// The section key of the wire contract (docs/design/project-sections.md):
+    /// the folder the server pinned for the session's life (`homeProject`);
+    /// else, from a server too old to pin one, the live folder; else no
+    /// project. Neither `''` nor a UUID-shaped name is a folder, wherever it
+    /// comes from (`Session.isFolderName`): a 1.7 server never pins either,
+    /// and a pinned value that somehow is one is read as no pin at all.
+    ///
+    /// So a card moves between sections at most once, out of No project when
+    /// its first real folder arrives. On an older server it follows the live
+    /// folder instead, and a `cd` does move it: the honest fallback, since
+    /// that server knows nothing better.
+    static func of(_ session: Session) -> ProjectKey {
+        if Session.isFolderName(session.homeProject) { return .folder(session.homeProject) }
+        if Session.isFolderName(session.project) { return .folder(session.project) }
+        return .noProject
+    }
+
+    /// The folder's name, exact case; nil for No project.
+    var folder: String? {
+        if case .folder(let name) = self { return name }
+        return nil
+    }
+
+    /// What its label says: the folder's name, or the board's own words.
+    var title: String { folder ?? "No project" }
+
+    /// Whether this section comes before `other`: the order every client
+    /// draws, and the one thing about sections that has to agree across
+    /// them.
+    ///
+    /// By name, case ignored, with exact case breaking a tie — `AgStatus`
+    /// before `agstatus` — and No project always last. Never by activity,
+    /// state or arrival: a section that moved up the board because one of its
+    /// cards got busy would be a card moving on a change of state, which is
+    /// the one thing this board does not do. A new project takes its place in
+    /// the alphabet, and the sections after it move down as its first card
+    /// arrives.
+    ///
+    /// Compared as UTF-16 code units, the lowercased name first: what
+    /// JavaScript's `<` does on `toLowerCase()` and Kotlin's `compareTo` on
+    /// `lowercase()`. Not `localizedStandardCompare`, whose order changes with
+    /// the reader's locale and puts `agstatus` before `AgStatus`.
+    func precedes(_ other: ProjectKey) -> Bool {
+        switch (self, other) {
+        case (.noProject, _):
+            return false
+        case (.folder, .noProject):
+            return true
+        case let (.folder(a), .folder(b)):
+            let foldedA = Array(a.lowercased().utf16)
+            let foldedB = Array(b.lowercased().utf16)
+            if foldedA != foldedB { return foldedA.lexicographicallyPrecedes(foldedB) }
+            return Array(a.utf16).lexicographicallyPrecedes(Array(b.utf16))
+        }
+    }
+}
+
+extension Session {
+    /// The section this card is under (`ProjectKey.of`).
+    var projectKey: ProjectKey { .of(self) }
+
+    /// Where the session works now, when that is news: its live folder, when
+    /// that is a folder, and neither its project's nor its own name — which
+    /// is to say when the session has moved. The card then reads "in web".
+    ///
+    /// Under the project's label a card no longer says "in acme-api": the
+    /// label already does, for every card beneath it. That includes a titled
+    /// session, which 1.6.5 always gave its folder, and a worktree root,
+    /// which reports its repository and is grouped under it.
+    var movedTo: String? {
+        guard Session.isFolderName(project), project != projectKey.folder, project != name else { return nil }
+        return project
+    }
+}
+
+// MARK: - ProjectSection
+
+/// One project's section: its folder and its sessions.
 ///
 /// Derived on every render from the store's flat array and never stored, so
 /// grouping cannot drift from the list it describes — and the store's own
 /// ordering, its dismiss-and-restore and its refresh are left exactly as they
 /// were. It carries every field of every session it holds, which is why a
-/// head is not handed one (`AgentSummary`).
-struct AgentGroup: Identifiable, Equatable {
-    /// The agent's key as sessions carry it ("claude", "codex", …).
-    let source: String
-    /// This agent's sessions in the store's order, filtered and NEVER
-    /// re-sorted. A card keeps its place: the store freezes a card's position
-    /// when its state changes, and a second sort here would quietly undo that.
+/// label is not handed one (`SectionLabel`).
+struct ProjectSection: Identifiable, Equatable {
+    let key: ProjectKey
+    /// This project's sessions in the store's order, filtered and NEVER
+    /// re-sorted. A card keeps its place: the store puts a new session on
+    /// top and freezes everyone else's position, and a sort here would
+    /// quietly undo that. So a new session goes on top of its section, and a
+    /// card that becomes blocked stays where it is: the bar is the way to it.
     let sessions: [Session]
-    /// Nil when the agent reports no limits — a third-party agent, or usage
-    /// reporting switched off — and also when it reported an empty list, which
-    /// tolerant decoding allows and which leaves nothing to draw.
-    let usage: UsageInfo?
 
-    var id: String { source }
-    /// What the phone's list knows this group by. Not the bare source key: a
-    /// list is scrolled to a card by the card's session id, and a session
-    /// whose id happened to equal an agent's key would send that scroll to
-    /// the top of the agent's section instead.
-    var section: JumpTarget { .section(source) }
-    var name: String { UsageInfo.displayName(for: source) }
-    var windows: [UsageWindow] { usage?.windows ?? [] }
+    /// What the list and the stack know a section by: a case of its own,
+    /// which no session id and no head can equal.
+    var id: JumpTarget { .section(key) }
 
-    /// How many of its sessions are waiting on a person.
-    ///
-    /// `done` is deliberately not counted. Codex has no session-end hook, so
-    /// its finished cards rest on the board for a day, and a standing "6 done"
-    /// in the head would be a tally of nothing.
-    var blocked: Int {
-        sessions.reduce(0) { $0 + ($1.status == .blocked ? 1 : 0) }
-    }
+    /// What its label draws of it.
+    var label: SectionLabel { SectionLabel(key: key, count: sessions.count) }
 
-    /// The first blocked card as the eye meets it in a single column.
-    var firstBlocked: Session? {
-        sessions.first { $0.status == .blocked }
-    }
-
-    /// The agents on the board, sorted by key.
-    ///
-    /// By key and never by activity, so an agent's place does not move while
-    /// the same agents are on the board — a column that changed sides because
-    /// its agent got busier would be a card moving on a change of state, which
-    /// is the one thing this board has decided not to do.
-    ///
-    /// With no sessions there is nothing to disambiguate and your limits still
-    /// matter between runs, so every agent that reports limits gets a head.
-    /// That is the rule the limit bars already followed.
-    static func make(sessions: [Session], usage: [UsageInfo]) -> [AgentGroup] {
-        let reports = Dictionary(usage.filter { !$0.windows.isEmpty }.map { ($0.source, $0) }) { first, _ in first }
-        let bySource = Dictionary(grouping: sessions, by: \.source)
-        let sources = bySource.isEmpty ? Array(reports.keys) : Array(bySource.keys)
-        return sources.sorted().map { source in
-            AgentGroup(source: source, sessions: bySource[source] ?? [], usage: reports[source])
+    /// The board's sections, in the shared order (`ProjectKey.precedes`).
+    /// Every section holds at least one card: a project is on the board while
+    /// it has a session, and its label goes with its last card.
+    static func make(sessions: [Session]) -> [ProjectSection] {
+        var keys: [ProjectKey] = []
+        var members: [ProjectKey: [Session]] = [:]
+        for session in sessions {
+            let key = session.projectKey
+            if members[key] == nil { keys.append(key) }
+            members[key, default: []].append(session)
         }
+        return keys.sorted { $0.precedes($1) }.map { ProjectSection(key: $0, sessions: members[$0] ?? []) }
     }
+}
 
-    /// What its head draws of it.
-    var summary: AgentSummary {
-        AgentSummary(source: source, sessions: sessions.count, blocked: blocked, windows: windows)
-    }
+/// A section's label as it is drawn: whose it is and how many cards it
+/// holds. Nothing else of its section.
+///
+/// The section itself changes with every hook event on any of its cards; a
+/// label handed it would run again for a message it does not draw. Handed
+/// this and compared as a value (`ProjectLabel`'s `==`), it runs when a card
+/// arrives or leaves, and otherwise not at all. No token total and no blocked
+/// count, on purpose: Claude's and Codex's tokens are not one measure, and
+/// the bar is the alarm.
+struct SectionLabel: Equatable {
+    let key: ProjectKey
+    let count: Int
 
-    /// What its place on the agent line draws of it, and all a head needs of
-    /// the heads beside it.
-    var alarm: AgentAlarm { AgentAlarm(source: source, blocked: blocked) }
+    var title: String { key.title }
+    var isNoProject: Bool { key == .noProject }
+    var countText: String { "\(count) session\(count == 1 ? "" : "s")" }
+    /// "acme-api, 3 sessions": one heading, so the rotor walks the projects.
+    var spoken: String { "\(title), \(countText)" }
 }
 
 // MARK: - What a head draws
 
-/// An agent as its head draws it: who it is, how many sessions it has, how
-/// many of them are blocked, and its limits. Nothing else of its group.
+/// An agent as its head draws it: who it is, how many sessions it has, and
+/// its limits. Nothing else.
 ///
-/// A head used to be handed the group itself. The board rebuilds every group
-/// on every pass, and a group carries its sessions, so on every hook event
-/// every head on the board was a new value and ran again — and measured every
+/// A head used to be handed the agent's group of sessions. The board rebuilds
+/// every value on every pass, and a group carries its sessions, so on every
+/// hook event every head was a new value and ran again — and measured every
 /// reset time in every one of its meters again — for a message changing on a
-/// card that it does not draw. Handed this and compared as a value
-/// (`AgentHead`'s `==`), a head runs when one of these changes, and otherwise
-/// not at all.
+/// card it does not draw. Handed this and compared as a value (`AgentHead`'s
+/// `==`), a head runs when one of these changes, and otherwise not at all.
+///
+/// No blocked count any more. The heads gave the alarm up to the needs-you
+/// bar, so a card becoming blocked is not a head's news either, and red in a
+/// head can only be a limit past 85%.
 struct AgentSummary: Identifiable, Equatable {
     let source: String
     /// How many sessions it has on the board.
     let sessions: Int
-    /// How many of them are waiting on a person (`AgentGroup.blocked`).
-    let blocked: Int
     let windows: [UsageWindow]
 
-    var id: String { source }
-    var section: JumpTarget { .section(source) }
+    /// A case of its own, as a section's and a card's are, so the three can
+    /// never be taken for one another.
+    var id: JumpTarget { .head(source) }
     var name: String { UsageInfo.displayName(for: source) }
-    var alarm: AgentAlarm { AgentAlarm(source: source, blocked: blocked) }
+
+    /// The agents that get a head, sorted by key.
+    ///
+    /// Those with sessions on the board. By key and never by activity, so a
+    /// head's place does not move while the same agents are on the board.
+    /// With no sessions there is nothing to tell apart and your limits still
+    /// matter between runs, so every agent that reports limits gets a head:
+    /// the rule the limit bars always followed. A report with no windows,
+    /// which tolerant decoding allows, is no report.
+    static func make(sessions: [Session], usage: [UsageInfo]) -> [AgentSummary] {
+        let reports = Dictionary(usage.filter { !$0.windows.isEmpty }.map { ($0.source, $0) }) { first, _ in first }
+        var counts: [String: Int] = [:]
+        for session in sessions { counts[session.source, default: 0] += 1 }
+        let sources = counts.isEmpty ? Array(reports.keys) : Array(counts.keys)
+        return sources.sorted().map { source in
+            AgentSummary(source: source, sessions: counts[source] ?? 0, windows: reports[source]?.windows ?? [])
+        }
+    }
 }
 
-/// An agent as its name and alarm draw it: who it is, and how many of its
-/// sessions are waiting on a person — an alarm, when that is any.
-///
-/// All the agent line draws of each agent, and all a head needs of the heads
-/// beside it (`AgentHead.peers`). Narrower than `AgentSummary` on purpose: a
-/// window filling in one agent's head, or a session arriving under it, is
-/// nothing the line or a neighbouring head draws.
-struct AgentAlarm: Identifiable, Equatable {
-    let source: String
-    let blocked: Int
-
-    var id: String { source }
-    var name: String { UsageInfo.displayName(for: source) }
-}
-
-// MARK: - Windows
-
-extension Array where Element == AgentGroup {
+extension Array where Element == AgentSummary {
     /// The most limit windows any one of these agents reports: what the
     /// tallest of their heads has to hold. A phone's pinned row is as tall as
     /// its tallest head, so this is the count `BoardArrangement.headsScroll`
@@ -145,36 +225,29 @@ extension Array where Element == AgentGroup {
 ///
 ///     fit = how many `minColumn` columns the board holds
 ///     fit < 2, or a short
-///     screen              → narrow: sessions in one list under named groups,
-///                           the heads pinned two across — or scrolling with
-///                           their groups (`headsScroll`) from a third agent,
-///                           and from the first on a short screen, at an
-///                           accessibility text size, or when a head would
-///                           hold a fifth limit window
-///     2 ≤ agents ≤ fit    → columns: one column per agent
-///     one agent           → stackedOne: its head full width, cards two across
-///     otherwise           → stackedMany: agents stacked full width, cards two
-///                           across, the heads scrolling with them
+///     screen              → list: one list of sections under sticky labels
+///     otherwise           → stacked: sections stacked full width, cards two
+///                           across inside each
 ///
-/// The arrangement is decided by MEASURED width and never by horizontal size
-/// class. An iPad in Split View or Slide Over is a regular-width device
-/// showing a phone-width board, and a size class would give it two 150pt
-/// columns.
+/// One wide arrangement for any number of projects. It is 1.6.5's "more
+/// agents than fit" board keyed by project, and the agent columns retired with
+/// the agent sections: a column per project could hold two or three of them,
+/// and a board of nine would have needed both arrangements anyway.
+///
+/// Decided by MEASURED width and never by horizontal size class. An iPad in
+/// Split View or Slide Over is a regular-width device showing a phone-width
+/// board, and a size class would give it two 150pt columns.
 ///
 /// Height is the one thing a size class is asked: a compact vertical size
 /// class is a phone held sideways. Most iPhones are wide enough on their side
 /// for two columns, but a 6.9" one leaves the board about 300pt of height
-/// between the navigation bar and the streak, and two pinned heads with their
-/// limits took half of that, over a card and a third. Columns are not the
-/// phone's anyway: only the list can be swiped, and the swipe is how a phone
-/// has always dismissed a card. So a short screen keeps the list, as 1.5.0
-/// did in every orientation, with only the agent line pinned. An iPad's
-/// vertical size class is regular in every orientation and every split.
+/// between the navigation bar and the streak, and only the list can be swiped,
+/// which is how a phone has always dismissed a card. So a short screen keeps
+/// the list, as 1.5.0 did in every orientation. An iPad's vertical size class
+/// is regular in every orientation and every split.
 enum BoardArrangement: Equatable {
-    case narrow
-    case columns
-    case stackedOne
-    case stackedMany
+    case list
+    case stacked
 
     /// The narrowest a column may be. At 340pt a card with a Focus button
     /// leaves the name about 211pt — some twenty characters a line. That
@@ -188,9 +261,9 @@ enum BoardArrangement: Equatable {
     ///
     /// A third agent's head went on a row of its own, and with limits the
     /// pinned heads ran to almost half of a 6.9" screen, leaving two and a
-    /// half cards under them. So from a third agent the phone does what a
-    /// wide board does with more agents than fit: one pinned line keeps every
-    /// agent's name and alarm, and each full head scrolls with its group.
+    /// half cards under them. So from a third agent the heads lead the list
+    /// and scroll away, and only the label of the section under you is
+    /// pinned.
     static let narrowPinnedHeads = 2
 
     /// The most limit windows the phone pins in one head.
@@ -205,66 +278,66 @@ enum BoardArrangement: Equatable {
     /// row 373pt, 63% of an SE's board with a card and a fifth under it.
     ///
     /// So from a fifth window in any head the phone does what it does from a
-    /// third agent: the agent line keeps every agent's name and alarm pinned,
-    /// and each full head opens its group in the list. Nothing is left out —
-    /// every window is in that head, a row each across the whole width.
-    ///
-    /// Not four of them pinned and "+2 more". Which four would be the
-    /// report's first, leaving out a model's week that can be the one about
-    /// to run out, or the fullest, which would move bars in and out of the
-    /// head as the percentages pass each other.
+    /// third agent: the heads open the list, each across the whole width and
+    /// every window in it, and scroll away. Not four of them pinned and "+2
+    /// more": which four would be the report's first, leaving out a model's
+    /// week that can be the one about to run out, or the fullest, which would
+    /// move bars in and out of the head as the percentages pass each other.
     ///
     /// A count, not a measured height. A head's height is the text's to
-    /// decide — Dynamic Type, an alarm going under its name — and a board that
-    /// measured its heads would draw them before it could decide not to, at
-    /// every launch: the frame late that the root reader exists to avoid.
+    /// decide, and a board that measured its heads would draw them before it
+    /// could decide not to, at every launch: the frame late that the root
+    /// reader exists to avoid.
     static let narrowPinnedWindows = 4
 
-    /// Whether the heads scroll with their sections, one pinned `AgentLine`
-    /// standing in for them. Columns, and a lone agent's strip, always pin
-    /// their heads.
+    /// The most strips a wide board pins, one to a row. A lone agent's strip
+    /// is pinned whatever it holds; two are pinned at a standard text size
+    /// with at most `narrowPinnedWindows` windows each, two rows of about 80pt
+    /// over a board of 746. From a third, or at an accessibility size, the
+    /// strips lead the scroll instead.
+    static let widePinnedHeads = 2
+
+    /// Whether the heads scroll away at the top of the board, leaving nothing
+    /// pinned above it. The agent line that used to stand in for them
+    /// retired with their alarms: the needs-you bar is the alarm, and there
+    /// are no agent sections left for its names to take you to.
     ///
-    /// `largeText` is an accessibility text size. There a phone's two pinned
-    /// heads, with every limit in each, took most of the screen: on a 6.9"
-    /// phone at AX4 they and the group label left the cards about 90pt. So
-    /// the narrow board pins the agent line from the first agent, as it does
-    /// from the third at other sizes, and the heads scroll with their groups.
+    /// The phone's rule is 1.6.5's. Pinned two across while there are at most
+    /// two agents with at most four windows each, at a standard text size,
+    /// upright. `largeText` is an accessibility text size: there a phone's two
+    /// pinned heads, every limit in each, took most of the screen — on a 6.9"
+    /// phone at AX4 they left the cards about 90pt. `compactHeight` is a phone
+    /// held sideways, short of height in the same way at every text size.
     ///
-    /// `compactHeight` is a phone held sideways, short of height in the same
-    /// way at every text size: the same answer, for the same reason.
-    ///
-    /// `windows` is the most limit windows any one of the agents reports
-    /// (`mostWindows`). Past `narrowPinnedWindows` the narrow board pins the
-    /// agent line from the first agent, as large text does, and for the same
-    /// reason: the heads would take the room the cards are for.
-    ///
-    /// Columns and a lone agent's strip keep their heads whatever the count.
-    /// There a head has a column or the whole width to itself: it gives a
-    /// window one row beside its value, or lays them three to five across, so
-    /// six come to 264pt at the default size: 41% of an iPad mini's board held
-    /// sideways, the shortest full-screen one. Larger text, and a short Stage
-    /// Manager window, take more.
+    /// A wide board's strips have the whole width each, so a window gets a
+    /// track of its own beside the others and six come to two rows of a
+    /// strip. A lone agent's is always pinned; two are while
+    /// `widePinnedHeads` allows.
     static func headsScroll(_ arrangement: BoardArrangement, agents: Int, windows: Int = 0,
                             largeText: Bool = false, compactHeight: Bool = false) -> Bool {
         switch arrangement {
-        case .narrow:
+        case .list:
             agents > narrowPinnedHeads
                 || (agents > 0 && (largeText || compactHeight || windows > narrowPinnedWindows))
-        case .stackedMany: true
-        case .columns, .stackedOne: false
+        case .stacked:
+            agents > widePinnedHeads
+                || (agents == widePinnedHeads && (largeText || windows > narrowPinnedWindows))
         }
     }
 
-    /// Between two agents. Twice the gap between two cards, on purpose:
-    /// proximity is what says which cards belong to which head, so nothing has
-    /// to be drawn around them.
-    static let agentGutter = Theme.Space.lg
+    /// Between two projects, and what `fit` keeps between two columns. Twice
+    /// the gap between two cards, on purpose: proximity is what says which
+    /// cards belong to which label, so nothing has to be drawn around them.
+    static let sectionGap = Theme.Space.lg
 
-    /// Between two cards, down a column or across a pair.
+    /// Between two cards, down a side or across a pair.
     static let cardGap = Theme.Space.sm
 
-    /// Between two heads that are not standing over columns: the phone's rows
-    /// of two, and an empty board's row of limits. As the limit blocks shipped.
+    /// From a label's name to its first card.
+    static let labelGap = Theme.Space.xs
+
+    /// Between two heads: the phone's rows of two, a wide board's strips, and
+    /// an empty board's row of limits. As the limit blocks shipped.
     static let headGap: CGFloat = 10
 
     /// Above the heads, under the navigation bar: the same wherever they are
@@ -272,10 +345,10 @@ enum BoardArrangement: Equatable {
     /// them, so heads that move between the two are not moved down the screen.
     static let headsTop: CGFloat = 10
 
-    /// How many `minColumn` columns fit in `width`, gutters included. Never
-    /// less than one: a board always has room for a list.
+    /// How many `minColumn` columns fit in `width`, a section's gap between
+    /// each. Never less than one: a board always has room for a list.
     static func fit(width: CGFloat, minColumn: CGFloat = minColumn) -> Int {
-        max(1, Int(((max(0, width) + agentGutter) / (minColumn + agentGutter)).rounded(.down)))
+        max(1, Int(((max(0, width) + sectionGap) / (minColumn + sectionGap)).rounded(.down)))
     }
 
     /// `minColumn` is a parameter because the caller scales it with Dynamic
@@ -284,23 +357,20 @@ enum BoardArrangement: Equatable {
     ///
     /// `compactHeight` is a compact vertical size class, a phone held
     /// sideways, and it keeps the list whatever the width (see above).
-    static func resolve(width: CGFloat, agents: Int, minColumn: CGFloat = minColumn,
+    static func resolve(width: CGFloat, minColumn: CGFloat = minColumn,
                         compactHeight: Bool = false) -> BoardArrangement {
-        let fit = fit(width: width, minColumn: minColumn)
-        if fit < 2 || compactHeight { return .narrow }
-        if agents >= 2 && agents <= fit { return .columns }
-        return agents <= 1 ? .stackedOne : .stackedMany
+        fit(width: width, minColumn: minColumn) < 2 || compactHeight ? .list : .stacked
     }
 
     /// The width of one of `count` equal tracks sharing `width`.
     ///
     /// Every track on the board is this number, applied as a fixed frame —
-    /// the pinned heads and the columns beneath them alike. Two rows that each
-    /// asked for "equal shares" would agree only while nothing in either had a
-    /// larger minimum, and one unshrinkable line in one card would be enough
-    /// to pull a column out from under its head. The same arithmetic on both
-    /// sides cannot disagree.
-    static func track(width: CGFloat, count: Int, gap: CGFloat = agentGutter) -> CGFloat {
+    /// heads two across and the two sides of a section alike. Two rows that
+    /// each asked for "equal shares" would agree only while nothing in either
+    /// had a larger minimum, and one unshrinkable line in one card would be
+    /// enough to pull a side out of line with the next section's. The same
+    /// arithmetic everywhere cannot disagree.
+    static func track(width: CGFloat, count: Int, gap: CGFloat = sectionGap) -> CGFloat {
         let count = max(1, count)
         return max(0, (width - gap * CGFloat(count - 1)) / CGFloat(count))
     }
@@ -308,17 +378,18 @@ enum BoardArrangement: Equatable {
     /// Whether a card is a whole column wide at the reader's text size,
     /// `minColumn` scaled as the caller scales it.
     ///
-    /// Columns and pairs are, by construction: `fit` admits a second column
-    /// only once each is that wide (checked in `verify`). The list is a column
-    /// only where its width is one — an iPad's full width, or a phone held
-    /// sideways at the smaller accessibility sizes (635 to 800pt against a
-    /// column of 527 at AX1 and 629 at AX2; the 6.9" at AX3 too), and never a
-    /// phone in portrait. At an accessibility size this decides whether a card
-    /// keeps its rail beside its text (SessionCardView's `stacked`), so a
-    /// phone turned at those sizes can change a card's arrangement.
+    /// A stacked board's two sides are, by construction: `fit` admits a
+    /// second column only once each is that wide (checked in `verify`). The
+    /// list is a column only where its width is one — an iPad's full width,
+    /// or a phone held sideways at the smaller accessibility sizes (635 to
+    /// 800pt against a column of 527 at AX1 and 629 at AX2; the 6.9" at AX3
+    /// too), and never a phone in portrait. At an accessibility size this
+    /// decides whether a card keeps its rail beside its text
+    /// (SessionCardView's `stacked`), so a phone turned at those sizes can
+    /// change a card's arrangement.
     static func cardIsColumnWide(_ arrangement: BoardArrangement, width: CGFloat,
                                  minColumn: CGFloat = minColumn) -> Bool {
-        arrangement != .narrow || width >= minColumn
+        arrangement == .stacked || width >= minColumn
     }
 }
 
@@ -330,20 +401,19 @@ enum BoardArrangement: Equatable {
 /// knows — not by a reader inside the head, which would decide a frame late,
 /// and not by size class, for the reason `BoardArrangement` gives.
 enum HeadForm: Equatable {
-    /// Half a phone. The value drops under its label; the alarm keeps its
-    /// mark, its number and its arrow and gives up the word; the session count
+    /// Half a phone. The value drops under its label, the session count
     /// goes, and an agent with no limits to show is one line.
     case narrow
     /// A phone's full width, or a third of a tablet: one row per window, label
     /// left and value right, as the limit blocks shipped.
     case regular
-    /// A wide column. Three windows fit across, so the head is two rows
-    /// instead of four — fifty points handed back to the list, and far less
-    /// bar for the alarm to be seen against.
+    /// A wide head that is not a strip — an iPad held upright, an idle row
+    /// of two or three. Three windows fit across, so the head is two rows
+    /// instead of four.
     case across
     /// A head with the whole board to itself: who it is on the left, the
-    /// limits in one strip beside it. The same height with or without an
-    /// alarm, whatever the window count.
+    /// limits in one strip beside it, the same height whatever the window
+    /// count up to a row's worth.
     case strip
 
     /// The head's own horizontal padding, each side. Layout is measured
@@ -367,10 +437,10 @@ enum HeadForm: Equatable {
     static let stripTrackMin: CGFloat = 150
     static let stripGap = Theme.Space.lg
 
-    /// `canStrip` is whether this head stands alone on its row. A column's
-    /// head never takes the strip however wide the column: beside another
-    /// head, an identity block on the left would put two agents' names at
-    /// different places in their tracks.
+    /// `canStrip` is whether this head stands alone on its row. A head beside
+    /// another never takes the strip however wide its track: an identity
+    /// block on the left would put two agents' names at different places in
+    /// their tracks.
     ///
     /// `scale` is the Dynamic Type factor, 1 at the default size, so the
     /// thresholds grow with the text that has to fit inside them.
@@ -394,12 +464,12 @@ enum HeadForm: Equatable {
 
 /// Which side each card sits on where cards run two across.
 ///
-/// Two across is drawn as two columns that each keep their cards, not as a
-/// grid filled in reading order. In a grid, dismissing one card slides every
-/// card after it one cell along — half of them across the screen to the other
-/// side. Here a card is given a side once, so a dismissal moves the cards
-/// beneath it up and never across: the same promise the rest of the board
-/// makes, that a card keeps its place.
+/// Two across is drawn as two sides that each keep their cards, not as a grid
+/// filled in reading order. In a grid, dismissing one card slides every card
+/// after it one cell along — half of them across the screen to the other
+/// side. Here a card is given a side once, inside its own section, so a
+/// dismissal moves the cards beneath it up and never across: the same promise
+/// the rest of the board makes, that a card keeps its place.
 ///
 /// Kept by the board view for as long as it shows one board, and never
 /// persisted. Like the store's own ordering it belongs to this device.
@@ -421,28 +491,29 @@ struct CardSides: Equatable {
     /// Pure, so the view can draw from the answer in the same pass that it
     /// stores it, and no frame ever shows a card that has not been placed.
     ///
-    /// Each agent is walked top to bottom, and a card with no side yet takes
-    /// the side holding fewer of that agent's PRESENT cards, leading on a tie.
-    /// A first fill therefore alternates, exactly as the design drew it, and a
-    /// later arrival lands on the shorter side — which is what re-balances two
-    /// columns after dismissals without moving anybody already there.
+    /// Each section is walked top to bottom, and a card with no side yet
+    /// takes the side holding fewer of that section's PRESENT cards, leading
+    /// on a tie. A first fill therefore alternates, and a later arrival lands
+    /// on the shorter side — which is what re-balances a section after
+    /// dismissals without moving anybody already there.
     ///
     /// Entries are kept when a card leaves. A dismiss that fails on the server
     /// puts the card back where it was in the list, and it has to come back on
-    /// the side it left as well.
-    func resolved(for groups: [AgentGroup]) -> CardSides {
+    /// the side it left as well. A card that moves to another section — once,
+    /// out of No project — keeps the side it was given there: given once.
+    func resolved(for sections: [ProjectSection]) -> CardSides {
         var next = self
-        for group in groups {
+        for section in sections {
             var leading = 0
             var trailing = 0
-            for session in group.sessions {
+            for session in section.sessions {
                 switch assigned[session.id] {
                 case .leading: leading += 1
                 case .trailing: trailing += 1
                 case nil: break
                 }
             }
-            for session in group.sessions where assigned[session.id] == nil {
+            for session in section.sessions where assigned[session.id] == nil {
                 if trailing < leading {
                     next.assigned[session.id] = .trailing
                     trailing += 1
@@ -459,23 +530,107 @@ struct CardSides: Equatable {
     func cards(_ sessions: [Session], on side: Side) -> [Session] {
         sessions.filter { self[$0.id] == side }
     }
+}
 
-    /// The first blocked card as the eye meets it two across: topmost, then
-    /// leftmost.
+// MARK: - ReadingOrder
+
+/// The cards as a reader meets them, which is the order the needs-you bar
+/// walks.
+enum ReadingOrder {
+    /// Sections in their order, then each section's cards in theirs: top to
+    /// bottom in the list, and two across row by row, the leading side first.
     ///
-    /// Topmost is approximated by position within its own side, with the
-    /// leading side winning a tie: the blocked card third down on one side is
-    /// taken to be above the one fourth down on the other. It needs no
-    /// measured frames — which would arrive a pass late and make the jump
-    /// depend on what happened to be laid out.
-    func firstBlocked(in sessions: [Session]) -> Session? {
-        let candidates = Side.allCases.compactMap { side -> (row: Int, session: Session)? in
-            let column = cards(sessions, on: side)
-            guard let row = column.firstIndex(where: { $0.status == .blocked }) else { return nil }
-            return (row, column[row])
+    /// A row is a card's position down its own side, the leading side winning
+    /// a tie: the third card on one side is taken to be above the fourth on
+    /// the other. It needs no measured frames, which would arrive a pass late
+    /// and make the bar depend on what happened to be laid out.
+    static func make(_ sections: [ProjectSection], arrangement: BoardArrangement,
+                     sides: CardSides) -> [Session] {
+        sections.flatMap { section -> [Session] in
+            guard arrangement == .stacked else { return section.sessions }
+            let leading = sides.cards(section.sessions, on: .leading)
+            let trailing = sides.cards(section.sessions, on: .trailing)
+            var rows: [Session] = []
+            for row in 0..<max(leading.count, trailing.count) {
+                if row < leading.count { rows.append(leading[row]) }
+                if row < trailing.count { rows.append(trailing[row]) }
+            }
+            return rows
         }
-        // `min(by:)` keeps the first of equals, and `allCases` lists leading first.
-        return candidates.min { $0.row < $1.row }?.session
+    }
+
+    /// The 'next after' step: the first blocked card after the card `id` in
+    /// `order`, round to the first. With `id` nil, or no longer on the board,
+    /// the first blocked card of all. With one blocked, that card again.
+    static func nextBlocked(after id: String?, in order: [Session]) -> Session? {
+        func isBlocked(_ session: Session) -> Bool { session.status == .blocked }
+        guard let id, let index = order.firstIndex(where: { $0.id == id }) else {
+            return order.first(where: isBlocked)
+        }
+        return (order[(index + 1)...] + order[...index]).first(where: isBlocked)
+    }
+}
+
+// MARK: - The needs-you bar
+
+/// What the needs-you bar says, and the card it brings.
+///
+/// The board's one alarm, present only while a session is blocked. `done` is
+/// never counted: Codex has no session-end hook, so its finished cards rest on
+/// the board for a day, and a standing "6 done" would be a tally of nothing.
+struct NeedsYou: Equatable {
+    /// What the bar draws, and nothing else: the blocked count, the session
+    /// it names and where that session is, and whether a press brings this
+    /// one or the next. Not the session, whose message and tokens change on
+    /// events that are none of the bar's business, and not its id, which a
+    /// press reads from the board as last drawn.
+    struct Face: Equatable {
+        let count: Int
+        let name: String
+        /// "in acme-api"; for a session in No project its agent's name
+        /// instead; nil where that would only repeat the name.
+        let place: String?
+        /// "Next" rather than "Show": the bar has brought a blocked card,
+        /// and this is another one.
+        let next: Bool
+
+        /// "2 blocked: Fix the login redirect, in acme-api".
+        var spoken: String { "\(count) blocked: \(name)\(place.map { ", \($0)" } ?? "")" }
+    }
+
+    let face: Face
+    /// The card a press brings into view.
+    let target: String
+
+    /// The bar for a board read in `order`, having last brought the card
+    /// `after` — nil until it is first pressed. Nil while nothing is blocked.
+    ///
+    /// It names the first blocked card in reading order, and after a press
+    /// the next one, round to the first. A card that has left the board since
+    /// leaves the bar naming the first again, as a board with no press; one
+    /// that is still there but no longer blocked is where the walk goes on
+    /// from.
+    static func make(order: [Session], after: String?) -> NeedsYou? {
+        let count = order.reduce(0) { $0 + ($1.status == .blocked ? 1 : 0) }
+        guard count > 0, let target = ReadingOrder.nextBlocked(after: after, in: order) else { return nil }
+        let pressed = after.map { id in order.contains { $0.id == id } } ?? false
+        let words = Self.words(for: target)
+        return NeedsYou(face: Face(count: count, name: words.name, place: words.place, next: pressed && count > 1),
+                        target: target.id)
+    }
+
+    /// A blocked session as the bar and the spoken alarm name it: its name,
+    /// or its agent's for a session that has none, and its project — "in
+    /// acme-api" — or, in No project, its agent: the Codex Desktop session
+    /// that started at `/` is "Reading the brief · Codex". Never the live
+    /// folder: the project is the section the reader goes looking under.
+    static func words(for session: Session) -> (name: String, place: String?) {
+        let agent = UsageInfo.displayName(for: session.source)
+        let name = session.name.isEmpty ? agent : session.name
+        switch session.projectKey {
+        case .folder(let folder): return (name, "in \(folder)")
+        case .noProject: return (name, name == agent ? nil : agent)
+        }
     }
 }
 
@@ -512,7 +667,7 @@ struct SubtaskSlots: Equatable {
     /// rules: by `BoardArrangement`, never by device — an iPad in Split View
     /// is a phone, and an iPhone in landscape that fits two columns is not.
     static func slots(for arrangement: BoardArrangement) -> Int {
-        arrangement == .narrow ? 2 : 3
+        arrangement == .list ? 2 : 3
     }
 
     private var ledgers: [String: Ledger] = [:]
@@ -621,10 +776,10 @@ struct SubtaskSlots: Equatable {
 extension Array {
     /// The array cut into rows of `count`, the last one short if it has to be.
     ///
-    /// Heads, limit windows and the agent line are all laid out as explicit
-    /// rows of fixed-width tracks rather than in a flexible grid, so that the
-    /// width of a track is a number this file chose and not one the grid
-    /// arrived at.
+    /// Heads and their limit windows are laid out as explicit rows of
+    /// fixed-width tracks rather than in a flexible grid, so that the width
+    /// of a track is a number this file chose and not one the grid arrived
+    /// at.
     func rows(of count: Int) -> [[Element]] {
         let count = Swift.max(1, count)
         return stride(from: 0, to: self.count, by: count).map {
@@ -635,159 +790,260 @@ extension Array {
 
 // MARK: - JumpTarget
 
-/// Where an alarm or a name on the agent line can send the scroll view.
+/// What the board's scroll view and VoiceOver are sent to, and what its list
+/// and its stack know their pieces by.
 ///
-/// Its own type so that an agent's section can never collide with a session:
-/// both would otherwise be bare strings, and nothing stops an agent being
-/// called what a session id happens to be.
+/// Its own type, a case for each kind of piece, so none can be taken for
+/// another. As bare strings they could: nothing stops a folder being called
+/// what an agent is called or what a session id happens to be, and "codex" is
+/// all three on many boards.
 enum JumpTarget: Hashable {
+    /// A session's card: where the needs-you bar sends the scroll view, and
+    /// VoiceOver after it.
     case card(String)
-    case section(String)
+    /// An agent's head.
+    case head(String)
+    /// A project's section.
+    case section(ProjectKey)
 }
 
 // MARK: - Checks
 
 #if DEBUG
 extension BoardArrangement {
-    /// The layout rule, the head's thresholds and the side ledger, checked
-    /// when demo mode starts in a debug build — beside `Streak.verifyDerivation`
-    /// and for the same reason. This project has no test target, and these are
-    /// the parts of the board a screenshot proves least: a capture shows that
-    /// one width with one set of agents came out right, and says nothing about
-    /// the width one point narrower, or about what a dismissal does to the
-    /// cards that stay.
+    /// The board's rules, checked when demo mode starts in a debug build —
+    /// beside `Streak.verifyDerivation` and for the same reason. This project
+    /// has no test target, and these are the parts of the board a screenshot
+    /// proves least: a capture shows that one width with one set of projects
+    /// came out right, and says nothing about the width one point narrower,
+    /// about the order of names it did not hold, or about what a `cd`, a
+    /// dismissal or a message does to the cards that stay.
     static func verify() {
-        // The rule, at the board widths of the devices it was drawn for — a
-        // 6.1" phone (361), a 6.9" phone (408), an iPad in Split View (646),
-        // and an iPad full screen in portrait (1000), 11" landscape (1178) and
-        // 13" landscape (1344) — against zero to four agents.
-        let phone: [BoardArrangement] = [.narrow, .narrow, .narrow, .narrow, .narrow]
-        let twoFit: [BoardArrangement] = [.stackedOne, .stackedOne, .columns, .stackedMany, .stackedMany]
-        let threeFit: [BoardArrangement] = [.stackedOne, .stackedOne, .columns, .columns, .stackedMany]
-        let table: [(width: CGFloat, fit: Int, expected: [BoardArrangement])] = [
-            (361, 1, phone),
-            (408, 1, phone),
-            (646, 1, phone),
-            (1000, 2, twoFit),
-            (1178, 3, threeFit),
-            (1344, 3, threeFit),
-        ]
-        for row in table {
-            assert(fit(width: row.width) == row.fit, "fit at \(row.width)")
-            for (agents, expected) in row.expected.enumerated() {
-                assert(resolve(width: row.width, agents: agents) == expected,
-                       "\(agents) agents at \(row.width)")
-            }
-        }
+        verifySectionKeys()
+        verifyArrangements()
+        verifyHeadForms()
+        verifySidesAndReading()
+        verifyNews()
+        verifyMatrix()
+        verifySubtaskSlots()
+    }
 
-        // Which heads are pinned. A phone pins two and no more; from a third
-        // agent it pins the agent line, as a wide board with more agents than
-        // fit does. Where there are columns, every head stands over its own.
-        let scrolls: [(width: CGFloat, expected: [Bool])] = [
-            (361, [false, false, false, true, true]),
-            (408, [false, false, false, true, true]),
-            (646, [false, false, false, true, true]),
-            (1000, [false, false, false, true, true]),
-            (1344, [false, false, false, false, true]),
-        ]
-        for row in scrolls {
-            for (agents, expected) in row.expected.enumerated() {
-                let arrangement = resolve(width: row.width, agents: agents)
-                assert(headsScroll(arrangement, agents: agents) == expected,
-                       "heads scroll with \(agents) agents at \(row.width)")
-            }
-        }
-        // At an accessibility text size the phone pins the agent line from
-        // the first agent; columns, and a lone agent's strip, keep their heads.
-        assert(!headsScroll(.narrow, agents: 0, largeText: true), "large text, no agents")
-        assert(headsScroll(.narrow, agents: 1, largeText: true), "large text, one agent")
-        assert(headsScroll(.narrow, agents: 2, largeText: true), "large text, two agents")
-        assert(!headsScroll(.columns, agents: 2, largeText: true), "large text, columns")
-        assert(!headsScroll(.stackedOne, agents: 1, largeText: true), "large text, one strip")
+    private static func card(_ id: String, _ source: String = "claude", _ status: AgentStatus = .coding,
+                             home: String = "", project: String = "", name: String? = nil) -> Session {
+        Session(id: id, name: name ?? id, status: status, message: "", project: project, homeProject: home,
+                source: source, createdAt: 0, updatedAt: 0)
+    }
 
+    private static func report(_ source: String, windows: Int = 1) -> UsageInfo {
+        UsageInfo(source: source,
+                  windows: (0..<windows).map { UsageWindow(id: "w\($0)", label: "w", usedPct: 10, resetsAt: nil) },
+                  updatedAt: 0)
+    }
+
+    /// Which section a card is under, the order sections come in, and the
+    /// place a card says it has moved to.
+    private static func verifySectionKeys() {
+        // What is a folder: the hook's UUID pattern, either case, and nothing
+        // else that merely looks close.
+        let uuid = "0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b"
+        assert(!Session.isFolderName("") && !Session.isFolderName(uuid), "empty, and a UUID")
+        assert(!Session.isFolderName(uuid.uppercased()), "a UUID in capitals")
+        assert(Session.isFolderName(String(uuid.dropLast())) && Session.isFolderName(uuid + "c"), "35, 37 characters")
+        assert(Session.isFolderName(String(uuid.dropLast()) + "g"), "not hex")
+        assert(Session.isFolderName("0f3c2a1e66b4d-4e8f-9a7b-1c2d3e4f5a6b"), "a hyphen out of place")
+        assert(Session.isFolderName(String(repeating: "é", count: 18)), "36 bytes that are not a UUID")
+        assert(Session.isFolderName("acme-api") && Session.isFolderName("No project") && Session.isFolderName("/"),
+               "names")
+
+        // The shared vector, which the web's and Android's tests assert too:
+        // as the live folders an older server sends, as the pins a 1.7 one
+        // does, and from every starting point, since the order must not
+        // depend on which card arrived first.
+        let vector = ["zeta", "", "Alpha", "alpha", "beta", "AgStatus", "agstatus", uuid]
+        let expected: [ProjectKey] = [.folder("AgStatus"), .folder("agstatus"), .folder("Alpha"), .folder("alpha"),
+                                      .folder("beta"), .folder("zeta"), .noProject]
+        for shift in vector.indices {
+            let names = Array(vector[shift...] + vector[..<shift])
+            let live = names.enumerated().map { card("v\($0.offset)", project: $0.element) }
+            assert(ProjectSection.make(sessions: live).map(\.key) == expected, "the shared vector, live, from \(shift)")
+            let pinned = names.enumerated().map { card("v\($0.offset)", home: $0.element, project: $0.element) }
+            assert(ProjectSection.make(sessions: pinned).map(\.key) == expected, "the shared vector, pinned, from \(shift)")
+        }
+        assert(ProjectSection.make(sessions: [card("a", project: ""), card("b", project: uuid)]).map(\.label.count)
+               == [2], "'' and a UUID are one bucket")
+        assert(ProjectKey.noProject.title == "No project" && ProjectKey.folder("No project") != .noProject,
+               "a folder called No project is a folder")
+        // Digits and punctuation by code unit, after the case is folded.
+        let mixed = ["web", "2fa", "my_app", "my-app", "Myapp", "ÉTÉ", "zeta"]
+        assert(ProjectSection.make(sessions: mixed.map { card($0, project: $0) }).map(\.key)
+               == ["2fa", "my-app", "my_app", "Myapp", "web", "zeta", "ÉTÉ"].map(ProjectKey.folder),
+               "code units, case folded first")
+
+        // The section keeps the store's order, and a new card leads it.
+        let store = [card("n", home: "api"), card("x", home: "web"), card("o", home: "api"), card("p", home: "api")]
+        let sections = ProjectSection.make(sessions: store)
+        assert(sections.map(\.key) == [.folder("api"), .folder("web")], "by name")
+        assert(sections[0].sessions.map(\.id) == ["n", "o", "p"], "the store's order, never re-sorted")
+        assert(sections[0].label == SectionLabel(key: .folder("api"), count: 3)
+               && sections[1].label.countText == "1 session" && sections[0].label.spoken == "api, 3 sessions",
+               "labels")
+        assert(ProjectSection.make(sessions: []).isEmpty, "an idle board has no sections")
+
+        // A cd never re-groups. The pin holds through every move, and the
+        // card says where it went instead.
+        var mover = card("m", home: "acme-api", project: "acme-api", name: "Add rate limiting to /login")
+        assert(mover.projectKey == .folder("acme-api") && mover.movedTo == nil, "at home: nothing to add")
+        let before = ProjectSection.make(sessions: [mover, card("q", home: "web", project: "web")])
+        for folder in ["web", "src", "", uuid, "acme-api"] {
+            mover.project = folder
+            assert(mover.projectKey == .folder("acme-api"), "a cd to \(folder) keeps the section")
+            assert(ProjectSection.make(sessions: [mover, card("q", home: "web", project: "web")]).map(\.key)
+                   == before.map(\.key), "and the board's sections")
+        }
+        mover.project = "web"
+        assert(mover.movedTo == "web", "in web")
+        mover.project = uuid
+        assert(mover.movedTo == nil, "a UUID is not a place")
+        // A folder-named card that moved into a folder of its own name says
+        // nothing, nor does a worktree root, which reports its repository.
+        assert(card("u", home: "api", project: "web", name: "web").movedTo == nil, "not the name again")
+        assert(card("t", home: "claude-status", project: "claude-status", name: "feature-x").movedTo == nil,
+               "a worktree under its repository")
+        assert(card("w", home: "claude-status", project: "ios", name: "feature-x").movedTo == "ios", "a worktree that moved")
+        // From an older server, with no pin: the live folder, which moves.
+        var unpinned = card("o", project: "acme-api")
+        unpinned.project = "web"
+        assert(unpinned.projectKey == .folder("web") && unpinned.movedTo == nil, "no pin: the live folder")
+        // Out of No project once, when the server pins the first real folder.
+        var desktop = card("d", "codex", project: "", name: "Codex")
+        assert(desktop.projectKey == .noProject && desktop.movedTo == nil, "Codex at /")
+        desktop.project = uuid
+        assert(desktop.projectKey == .noProject, "a scratch folder is still none")
+        desktop.homeProject = "acme-api"
+        desktop.project = "acme-api"
+        assert(desktop.projectKey == .folder("acme-api"), "claimed by a real folder")
+        desktop.project = "ios"
+        assert(desktop.projectKey == .folder("acme-api") && desktop.movedTo == "ios", "and kept")
+        // A pin that is not a folder, which no 1.7 server sends, is no pin.
+        assert(card("z", home: uuid, project: "web").projectKey == .folder("web"), "a UUID pin is no pin")
+    }
+
+    /// The arrangement rule and the heads' pin rule, at the board widths of
+    /// the devices they were drawn for.
+    private static func verifyArrangements() {
+        // The threshold itself: two 340pt columns and one 24pt gap.
+        assert(fit(width: 703) == 1 && fit(width: 704) == 2, "two columns from 704")
+        assert(fit(width: 0) == 1 && fit(width: -20) == 1, "never less than one")
+        assert(fit(width: 1344) == 3 && resolve(width: 1344) == .stacked, "three fit, one arrangement")
+        // Large text raises the bar instead of squeezing the columns.
+        assert(resolve(width: 1000, minColumn: 340 * 1.55) == .list, "scaled column")
         // A phone held sideways keeps the list, at the widths a phone has on
-        // its side — a 6.1" phone (702), a 6.3" one (718), a 6.9" one (800) —
-        // where the width alone would give it columns. And it pins the agent
-        // line from the first agent, as large text does.
+        // its side, where the width alone would give it two columns.
         for width: CGFloat in [702, 718, 800] {
-            for agents in 0...4 {
-                assert(resolve(width: width, agents: agents, compactHeight: true) == .narrow,
-                       "\(agents) agents held sideways at \(width)")
-            }
+            assert(resolve(width: width, compactHeight: true) == .list, "held sideways at \(width)")
         }
-        assert(resolve(width: 800, agents: 2) == .columns, "by its width alone, columns")
-        assert(!headsScroll(.narrow, agents: 0, compactHeight: true), "sideways, no agents")
-        assert(headsScroll(.narrow, agents: 1, compactHeight: true), "sideways, one agent")
-        assert(headsScroll(.narrow, agents: 2, compactHeight: true), "sideways, two agents")
+        assert(resolve(width: 800) == .stacked, "by its width alone, stacked")
 
-        // A head with more limit windows than a phone pins. From a fifth
-        // window in any head the narrow board pins the agent line, as it does
-        // from a third agent; four stay pinned, and so do the demo's three
-        // (the App Store's). Six is the most one report carries
-        // (MAX_USAGE_WINDOWS in src/store.ts). At an SE or a mini (343), a
-        // 6.1" phone (361), a 6.9" one (408) and a 320pt Slide Over window
-        // (288), for one agent and for two.
+        // The phone pins two heads and no more, and none at an accessibility
+        // size or on its side: 1.6.5's rule, unchanged.
+        assert(!headsScroll(.list, agents: 0), "no agents, nothing to pin")
+        assert(!headsScroll(.list, agents: 1) && !headsScroll(.list, agents: 2) && headsScroll(.list, agents: 3),
+               "two across")
+        assert(headsScroll(.list, agents: 1, largeText: true) && headsScroll(.list, agents: 2, largeText: true),
+               "large text")
+        assert(headsScroll(.list, agents: 1, compactHeight: true) && !headsScroll(.list, agents: 0, compactHeight: true),
+               "sideways")
+        // A head with more limit windows than a phone pins: from a fifth in
+        // any head, at an SE or a mini (343), a 6.1" phone (361), a 6.9" one
+        // (408) and a 320pt Slide Over window (288), for one agent and two.
         for width: CGFloat in [343, 361, 408, 288] {
+            assert(resolve(width: width) == .list, "\(width) is a list")
             for agents in 1...2 {
-                let arrangement = resolve(width: width, agents: agents)
-                assert(arrangement == .narrow, "\(agents) agents at \(width) are a list")
                 for windows in 0...6 {
-                    assert(headsScroll(arrangement, agents: agents, windows: windows) == (windows > 4),
+                    assert(headsScroll(.list, agents: agents, windows: windows) == (windows > 4),
                            "\(windows) windows, \(agents) agents at \(width)")
                 }
             }
         }
-        assert(!headsScroll(.narrow, agents: 0, windows: 6), "no agents, nothing pinned")
-        assert(headsScroll(.narrow, agents: 3, windows: 0), "a third agent, whatever its windows")
-        // A wide board keeps its heads whatever the count: a column's head
-        // gives a window one row or lays three across, a strip three to five.
-        assert(!headsScroll(.columns, agents: 2, windows: 6), "columns, six windows")
-        assert(!headsScroll(.stackedOne, agents: 1, windows: 6), "one strip, six windows")
+        // A wide board's strips: a lone agent's always, two at a standard
+        // size with four windows each at most, never a third.
+        for windows in 0...6 {
+            assert(!headsScroll(.stacked, agents: 1, windows: windows), "one strip, \(windows) windows")
+            assert(!headsScroll(.stacked, agents: 1, windows: windows, largeText: true), "one strip, large text")
+            assert(headsScroll(.stacked, agents: 2, windows: windows) == (windows > 4), "two strips, \(windows) windows")
+            assert(headsScroll(.stacked, agents: 3, windows: windows), "three strips")
+        }
+        assert(headsScroll(.stacked, agents: 2, largeText: true), "two strips at large text")
+        assert(!headsScroll(.stacked, agents: 0), "no strips")
 
-        // The threshold itself: two 340pt columns and one gutter.
-        assert(fit(width: 703) == 1 && fit(width: 704) == 2, "two columns from 704")
-        assert(fit(width: 0) == 1 && fit(width: -20) == 1, "never less than one")
-        // Large text raises the bar instead of squeezing the columns.
-        assert(resolve(width: 1000, agents: 2, minColumn: 340 * 1.5) == .narrow, "scaled column")
-
-        // A card is a column wide in columns and pairs, by `fit`, and in the
-        // list only where the list's width is one. At AX1 a column is 527pt
-        // (title3 at 31 over 20), so no card on a phone in portrait is, nor in
-        // a Slide Over window; a 6.9" phone held sideways (800) is. At AX5
-        // (55 over 20) a 13" iPad's portrait list still is and an 11" one's is
-        // not.
+        // A card is a column wide two across, by `fit`, and in the list only
+        // where the list's width is one. At AX1 a column is 527pt (title3 at
+        // 31 over 20), so no card on a phone in portrait is, nor in a Slide
+        // Over window; a 6.9" phone held sideways (800) is. At AX5 (55 over
+        // 20) a 13" iPad's portrait list still is and an 11" one's is not.
         let ax1 = minColumn * 31 / 20, ax5 = minColumn * 55 / 20
         for width: CGFloat in [288, 343, 370, 408] {
-            assert(!cardIsColumnWide(.narrow, width: width, minColumn: ax1), "a phone's card at AX1, \(width)")
+            assert(!cardIsColumnWide(.list, width: width, minColumn: ax1), "a phone's card at AX1, \(width)")
         }
-        assert(cardIsColumnWide(.narrow, width: 800, minColumn: ax1), "a sideways 6.9\" list at AX1")
-        assert(cardIsColumnWide(.narrow, width: 1000, minColumn: ax5), "13\" portrait list at AX5")
-        assert(!cardIsColumnWide(.narrow, width: 802, minColumn: ax5), "11\" portrait list at AX5")
-        assert(cardIsColumnWide(.columns, width: 1344, minColumn: ax1), "columns at AX1")
+        assert(cardIsColumnWide(.list, width: 800, minColumn: ax1), "a sideways 6.9\" list at AX1")
+        assert(cardIsColumnWide(.list, width: 1000, minColumn: ax5), "13\" portrait list at AX5")
+        assert(!cardIsColumnWide(.list, width: 802, minColumn: ax5), "11\" portrait list at AX5")
+        assert(cardIsColumnWide(.stacked, width: 1344, minColumn: ax1), "two across at AX1")
         for width in stride(from: CGFloat(704), through: 1400, by: 1) where fit(width: width) >= 2 {
-            assert(track(width: width, count: fit(width: width)) >= minColumn, "a track is a column at \(width)")
-            assert(track(width: width, count: 2, gap: cardGap) >= minColumn, "a pair is a column at \(width)")
+            assert(track(width: width, count: 2, gap: cardGap) >= minColumn, "a side is a column at \(width)")
         }
 
-        // Tracks: the gutters come out first, and what is left is shared.
+        // Tracks: the gaps come out first, and what is left is shared.
         assert(track(width: 1344, count: 2) == 660, "two tracks")
-        assert(track(width: 1344, count: 3) == 432, "three tracks")
         assert(track(width: 408, count: 2, gap: headGap) == 199, "half a phone")
         assert(track(width: 1344, count: 2, gap: cardGap) == 666, "two across")
         assert(track(width: 408, count: 0) == 408, "no tracks is one track")
 
-        // Head forms. The thresholds are inside the head, 30 in from its edge.
+        // Rows.
+        assert([1, 2, 3].rows(of: 2) == [[1, 2], [3]], "a short last row")
+        assert([1, 2, 3].rows(of: 3) == [[1, 2, 3]] && [1, 2, 3].rows(of: 0) == [[1], [2], [3]], "rows")
+        assert([Int]().rows(of: 2).isEmpty, "no rows of nothing")
+
+        // Which agents get a head, and what one is handed.
+        let board = [card("d", "codex"), card("a", "claude"), card("c", "codex", .blocked), card("b", "claude"),
+                     card("e", "gemini", .done)]
+        let heads = AgentSummary.make(sessions: board, usage: [report("codex"), report("claude", windows: 2),
+                                                               report("cursor"), report("gemini", windows: 0)])
+        assert(heads.map(\.source) == ["claude", "codex", "gemini"], "by key, and only agents with sessions")
+        assert(heads.map(\.sessions) == [2, 2, 1] && heads.map(\.windows.count) == [2, 1, 0], "counts and limits")
+        assert(heads.mostWindows == 2, "the tallest head")
+        let idle = AgentSummary.make(sessions: [], usage: [report("codex"), report("claude"), report("gemini", windows: 0)])
+        assert(idle.map(\.source) == ["claude", "codex"], "no sessions: every agent that reports limits")
+        assert(AgentSummary.make(sessions: [], usage: []).isEmpty, "nothing at all")
+        assert(AgentSummary.make(sessions: [card("g", "gemini")], usage: []).mostWindows == 0, "no limits, no windows")
+
+        // The pieces never collide: a folder, an agent and a session all
+        // called "codex", and a folder called "No project" beside the bucket.
+        let clash = [card("codex", "codex", home: "codex", project: "codex"),
+                     card("No project", "claude", home: "No project", project: "No project"),
+                     card("x", "claude", project: "")]
+        let clashing = ProjectSection.make(sessions: clash)
+        assert(clashing.map(\.key) == [.folder("codex"), .folder("No project"), .noProject], "three sections")
+        let targets = clash.map { JumpTarget.card($0.id) } + clashing.map(\.id)
+            + AgentSummary.make(sessions: clash, usage: []).map(\.id)
+        assert(Set(targets).count == targets.count && targets.count == 8, "every target distinct")
+        assert(JumpTarget.card("codex") != .head("codex") && JumpTarget.head("codex") != .section(.folder("codex")),
+               "codex three ways")
+    }
+
+    /// Head forms. The thresholds are inside the head, 30 in from its edge.
+    private static func verifyHeadForms() {
         assert(HeadForm.resolve(outer: 199, canStrip: false) == .narrow, "half a phone")
         assert(HeadForm.resolve(outer: 408, canStrip: true) == .regular, "a phone's width")
         assert(HeadForm.resolve(outer: 330, canStrip: false) == .narrow, "300 inside is still narrow")
         assert(HeadForm.resolve(outer: 331, canStrip: false) == .regular, "301 inside is regular")
         assert(HeadForm.resolve(outer: 432, canStrip: false) == .regular, "a third of a 13\" iPad")
-        assert(HeadForm.resolve(outer: 488, canStrip: false) == .regular, "half an iPad in portrait")
         assert(HeadForm.resolve(outer: 549, canStrip: false) == .regular, "519 inside")
         assert(HeadForm.resolve(outer: 550, canStrip: false) == .across, "520 inside")
-        assert(HeadForm.resolve(outer: 660, canStrip: false) == .across, "half a 13\" iPad")
+        assert(HeadForm.resolve(outer: 802, canStrip: true) == .across, "an 11\" iPad upright: across")
         assert(HeadForm.resolve(outer: 835, canStrip: true) == .across, "805 inside")
         assert(HeadForm.resolve(outer: 836, canStrip: true) == .strip, "806 inside")
+        assert(HeadForm.resolve(outer: 1000, canStrip: true) == .strip, "a 13\" iPad upright: a strip")
         assert(HeadForm.resolve(outer: 1344, canStrip: true) == .strip, "the full board")
         assert(HeadForm.resolve(outer: 1344, canStrip: false) == .across, "never a strip beside another head")
         assert(HeadForm.resolve(outer: 660, canStrip: false, scale: 1.3) == .regular, "scaled thresholds")
@@ -795,104 +1051,295 @@ extension BoardArrangement {
         assert(HeadForm.stripTracks(available: 664, windows: 6) == 3, "six windows make two rows")
         assert(HeadForm.stripTracks(available: 100, windows: 3) == 1, "always one track")
         assert(HeadForm.stripTracks(available: 1008, windows: 0) == 1, "no windows is still one track")
+    }
 
-        // Groups.
-        func session(_ id: String, _ source: String, _ status: AgentStatus = .coding) -> Session {
-            Session(id: id, name: id, status: status, message: "", project: "",
-                    source: source, createdAt: 0, updatedAt: 0)
-        }
-        func report(_ source: String, windows: Int = 1) -> UsageInfo {
-            UsageInfo(source: source,
-                      windows: (0..<windows).map { UsageWindow(id: "w\($0)", label: "w", usedPct: 10, resetsAt: nil) },
-                      updatedAt: 0)
-        }
-        let board = [session("d", "codex"), session("a", "claude"), session("c", "codex", .blocked),
-                     session("b", "claude"), session("e", "gemini", .done)]
-        let groups = AgentGroup.make(sessions: board,
-                                     usage: [report("codex"), report("claude"), report("cursor"),
-                                             report("gemini", windows: 0)])
-        assert(groups.map(\.source) == ["claude", "codex", "gemini"], "by key, and only agents with sessions")
-        assert(groups[1].sessions.map(\.id) == ["d", "c"], "the store's order, never re-sorted")
-        assert(groups[0].usage?.source == "claude" && groups[2].usage == nil, "an empty report is no report")
-        assert(groups.map(\.blocked) == [0, 1, 0], "done is not counted")
-        assert(groups[1].firstBlocked?.id == "c", "first blocked in a column")
-        // What a head and the agent line are handed. A card's message is
-        // nothing either draws; a card becoming blocked is, for its own agent.
-        let reports = [report("codex"), report("claude", windows: 2)]
-        let quiet = AgentGroup.make(sessions: board, usage: reports)
-        var edited = board
-        edited[1].message = "Editing src/auth/token.ts"
-        let messaged = AgentGroup.make(sessions: edited, usage: reports)
-        assert(messaged != quiet && messaged.map(\.summary) == quiet.map(\.summary), "a message is no head's news")
-        edited[3].status = .blocked
-        let oneBlocked = AgentGroup.make(sessions: edited, usage: reports)
-        assert(oneBlocked[0].summary != quiet[0].summary && oneBlocked[1].summary == quiet[1].summary,
-               "a blocked card is its own agent's")
-        assert(oneBlocked.map(\.alarm) == [AgentAlarm(source: "claude", blocked: 1),
-                                           AgentAlarm(source: "codex", blocked: 1),
-                                           AgentAlarm(source: "gemini", blocked: 0)], "the alarms")
-        assert(quiet[0].summary.sessions == 2 && quiet[0].summary.windows.count == 2, "counts and limits")
-        let idle = AgentGroup.make(sessions: [], usage: [report("codex"), report("claude"),
-                                                         report("gemini", windows: 0)])
-        assert(idle.map(\.source) == ["claude", "codex"], "no sessions: every agent that reports limits")
-        assert(AgentGroup.make(sessions: [], usage: []).isEmpty, "nothing at all")
+    /// Sides, counted per section, and the order the bar walks.
+    private static func verifySidesAndReading() {
+        // A first fill alternates down each section.
+        let five = (1...5).map { card("s\($0)", home: "api") }
+        let filled = CardSides().resolved(for: ProjectSection.make(sessions: five))
+        assert(five.map { filled[$0.id] } == [.leading, .trailing, .leading, .trailing, .leading], "first fill alternates")
+        assert(filled.resolved(for: ProjectSection.make(sessions: five)) == filled, "settled")
 
-        // What the window rule is given: the most windows any one agent
-        // reports, not a sum.
-        assert(groups.mostWindows == 1, "one window each, and an empty report is none")
-        let tall = AgentGroup.make(sessions: board,
-                                   usage: [report("codex", windows: 6), report("claude", windows: 3)])
-        assert(tall.mostWindows == 6, "the tallest head")
-        assert(AgentGroup.make(sessions: [session("g", "gemini")], usage: []).mostWindows == 0,
-               "no limits, no windows")
-
-        // Rows.
-        assert([1, 2, 3].rows(of: 2) == [[1, 2], [3]], "a short last row")
-        assert([1, 2, 3].rows(of: 3) == [[1, 2, 3]] && [1, 2, 3].rows(of: 0) == [[1], [2], [3]], "rows")
-        assert([Int]().rows(of: 2).isEmpty, "no rows of nothing")
-
-        // Sides. A first fill alternates down each agent.
-        let five = (1...5).map { session("s\($0)", "claude") }
-        let filled = CardSides().resolved(for: AgentGroup.make(sessions: five, usage: []))
-        assert(five.map { filled[$0.id] } == [.leading, .trailing, .leading, .trailing, .leading],
-               "first fill alternates")
-        assert(filled.resolved(for: AgentGroup.make(sessions: five, usage: [])) == filled, "settled")
-
-        // Removing a card never changes another card's side.
+        // Removing a card never changes another card's side, and it comes
+        // back to the side it left, as a failed dismiss needs.
         for removed in five {
             let rest = five.filter { $0.id != removed.id }
-            let after = filled.resolved(for: AgentGroup.make(sessions: rest, usage: []))
+            let after = filled.resolved(for: ProjectSection.make(sessions: rest))
             assert(rest.allSatisfy { after[$0.id] == filled[$0.id] }, "others stay when \(removed.id) leaves")
-            // …and it comes back to the side it left, as a failed dismiss needs.
-            let restored = after.resolved(for: AgentGroup.make(sessions: five, usage: []))
+            let restored = after.resolved(for: ProjectSection.make(sessions: five))
             assert(restored[removed.id] == filled[removed.id], "\(removed.id) returns to its side")
         }
-
-        // An arrival takes the shorter side of what is PRESENT: with s1 and s3
-        // gone the leading side holds one card and the trailing side two.
+        // An arrival takes the shorter side of what is PRESENT: with s1 and
+        // s3 gone the leading side holds one card and the trailing side two.
         let thinned = five.filter { $0.id != "s1" && $0.id != "s3" }
-        let arrived = filled.resolved(for: AgentGroup.make(sessions: [session("new", "claude")] + thinned,
-                                                           usage: []))
+        let arrived = filled.resolved(for: ProjectSection.make(sessions: [card("new", home: "api")] + thinned))
         assert(arrived["new"] == .leading, "an arrival takes the shorter side")
-        // Each agent keeps its own count.
-        let mixed = [session("x1", "claude"), session("y1", "codex"), session("x2", "claude")]
-        let both = CardSides().resolved(for: AgentGroup.make(sessions: mixed, usage: []))
-        assert(both["x1"] == .leading && both["x2"] == .trailing && both["y1"] == .leading,
-               "sides are counted per agent")
+        // Each section keeps its own count.
+        let mixed = [card("x1", home: "api"), card("y1", home: "web"), card("x2", home: "api"), card("y2", home: "web")]
+        let both = CardSides().resolved(for: ProjectSection.make(sessions: mixed))
+        assert(both["x1"] == .leading && both["x2"] == .trailing && both["y1"] == .leading && both["y2"] == .trailing,
+               "sides are counted per section")
+        // A card that moves section keeps the side it was given.
+        var moving = mixed
+        moving[1].homeProject = "api"
+        let moved = both.resolved(for: ProjectSection.make(sessions: moving))
+        assert(moving.allSatisfy { moved[$0.id] == both[$0.id] }, "given once")
 
-        // Two across, the first blocked card is the higher one, leading on a tie.
-        let lower = [session("p1", "claude"), session("p2", "claude"),
-                     session("p3", "claude", .blocked), session("p4", "claude", .blocked)]
-        let lowerSides = CardSides().resolved(for: AgentGroup.make(sessions: lower, usage: []))
-        assert(lowerSides.firstBlocked(in: lower)?.id == "p3", "a tie goes to the leading side")
-        let higher = [session("q1", "claude"), session("q2", "claude", .blocked),
-                      session("q3", "claude", .blocked)]
-        let higherSides = CardSides().resolved(for: AgentGroup.make(sessions: higher, usage: []))
-        assert(higherSides.firstBlocked(in: higher)?.id == "q2", "the higher card, whichever side")
-        assert(higherSides.firstBlocked(in: [session("z", "claude")]) == nil, "nothing blocked")
+        // Reading order: sections in order; in the list, top to bottom; two
+        // across, row by row with the leading side first. With s2 gone the
+        // sides are [s1, s3, s5] and [s4], so s4 is read second.
+        let unbalanced = five.filter { $0.id != "s2" }
+        let sections = ProjectSection.make(sessions: unbalanced + [card("w1", home: "web"), card("n1")])
+        let sides = filled.resolved(for: sections)
+        assert(ReadingOrder.make(sections, arrangement: .list, sides: sides).map(\.id)
+               == ["s1", "s3", "s4", "s5", "w1", "n1"], "the list: down each section")
+        assert(ReadingOrder.make(sections, arrangement: .stacked, sides: sides).map(\.id)
+               == ["s1", "s4", "s3", "s5", "w1", "n1"], "two across: row by row, leading first")
 
-        verifySubtaskSlots()
+        // The 'next after' step walks the blocked cards in that order and
+        // wraps round; with one, it stays on it; with none, there is none.
+        let blocked = Set(["s3", "s4", "n1"])
+        let order = ReadingOrder.make(sections, arrangement: .stacked, sides: sides).map { session -> Session in
+            var copy = session
+            if blocked.contains(session.id) { copy.status = .blocked }
+            return copy
+        }
+        func next(_ id: String?) -> String? { ReadingOrder.nextBlocked(after: id, in: order)?.id }
+        assert(next(nil) == "s4" && next("s4") == "s3" && next("s3") == "n1" && next("n1") == "s4", "the walk wraps")
+        assert(next("s1") == "s4" && next("s5") == "n1" && next("gone") == "s4", "from any card, or from none")
+        assert(ReadingOrder.nextBlocked(after: nil, in: unbalanced) == nil, "nothing blocked")
+        let lone = [card("a"), card("b", "claude", .blocked), card("c")]
+        assert(ReadingOrder.nextBlocked(after: "b", in: lone)?.id == "b", "one blocked: itself again")
     }
+
+    /// What is whose news. A label, a head and the bar are handed only what
+    /// they draw, so an event that changes none of it changes none of them,
+    /// and they do not run (`ProjectLabel`, `AgentHead`, `NeedsYouBar`).
+    private static func verifyNews() {
+        let usage = [report("claude", windows: 3), report("codex", windows: 2)]
+        func drawn(_ board: [Session], after: String? = nil)
+            -> (labels: [SectionLabel], heads: [AgentSummary], bar: NeedsYou.Face?) {
+            let sections = ProjectSection.make(sessions: board)
+            let sides = CardSides().resolved(for: sections)
+            let order = ReadingOrder.make(sections, arrangement: .stacked, sides: sides)
+            return (sections.map(\.label), AgentSummary.make(sessions: board, usage: usage),
+                    NeedsYou.make(order: order, after: after)?.face)
+        }
+        let board = [card("login", "claude", .blocked, home: "acme-api", project: "acme-api", name: "Fix the login redirect"),
+                     card("limit", "claude", home: "acme-api", project: "web", name: "Add rate limiting to /login"),
+                     card("api", "codex", .done, home: "acme-api", project: "acme-api", name: "acme-api"),
+                     card("etl", "claude", .blocked, home: "etl-jobs", project: "etl-jobs", name: "Nightly backfill for March"),
+                     card("desk", "codex", .planning, name: "Codex")]
+        let quiet = drawn(board)
+        assert(quiet.bar == NeedsYou.Face(count: 2, name: "Fix the login redirect", place: "in acme-api", next: false),
+               "the bar names the first blocked card and its project")
+        assert(quiet.bar?.spoken == "2 blocked: Fix the login redirect, in acme-api", "and says it")
+        assert(quiet.labels.map(\.spoken) == ["acme-api, 3 sessions", "etl-jobs, 1 session", "No project, 1 session"],
+               "the labels")
+
+        // A message, a timestamp and a token figure — what most hook events
+        // carry — on every card, the blocked one the bar names included.
+        for index in board.indices {
+            var messaged = board
+            messaged[index].message = "Editing src/auth/token.ts"
+            messaged[index].updatedAt += 60_000
+            messaged[index].tokens = 48_200
+            let after = drawn(messaged)
+            assert(after.labels == quiet.labels && after.heads == quiet.heads && after.bar == quiet.bar,
+                   "a message on \(board[index].id) is no label's, head's or bar's news")
+            // A cd too, now that it never moves a card — except the one with
+            // no folder yet, whose first real one is its one move.
+            guard !board[index].homeProject.isEmpty else { continue }
+            messaged[index].project = "src"
+            let moved = drawn(messaged)
+            assert(moved.labels == quiet.labels && moved.heads == quiet.heads && moved.bar == quiet.bar,
+                   "nor is a cd on \(board[index].id)")
+        }
+        // A card becoming blocked is the bar's news, and only the bar's: the
+        // heads have no alarm to change, and a label no count of it.
+        var blocking = board
+        blocking[1].status = .blocked
+        let blocked = drawn(blocking)
+        assert(blocked.labels == quiet.labels && blocked.heads == quiet.heads, "a block is no label's or head's news")
+        assert(blocked.bar?.count == 3, "and is the bar's")
+        // An arrival is its own label's news and its agent's head's count.
+        let arrived = drawn([card("new", "codex", home: "etl-jobs")] + board)
+        assert(arrived.labels[0] == quiet.labels[0] && arrived.labels[1].count == 2 && arrived.labels[2] == quiet.labels[2],
+               "an arrival is its own section's")
+        assert(arrived.heads[0] == quiet.heads[0] && arrived.heads[1].sessions == quiet.heads[1].sessions + 1,
+               "and its own agent's")
+        // A press makes the bar name the next one; it then says Next.
+        assert(drawn(board, after: "login").bar == NeedsYou.Face(count: 2, name: "Nightly backfill for March",
+                                                                 place: "in etl-jobs", next: true), "Next")
+        assert(drawn(board, after: "etl").bar?.name == "Fix the login redirect", "round to the first")
+        // A card the bar brought that has since gone: the first again, Show.
+        assert(drawn(board, after: "dismissed").bar == quiet.bar, "gone: as if never pressed")
+        // With one blocked the verb stays Show.
+        var one = board
+        one[3].status = .coding
+        assert(drawn(one, after: "login").bar?.next == false && drawn(one, after: "login").bar?.name
+               == "Fix the login redirect", "one blocked: Show, the same card")
+        // No project: the agent's name stands in for the project, and is not
+        // said twice for a session that is named after its agent.
+        var desk = board
+        desk[0].status = .coding
+        desk[3].status = .coding
+        desk[4].status = .blocked
+        assert(drawn(desk).bar == NeedsYou.Face(count: 1, name: "Codex", place: nil, next: false), "Codex at /")
+        desk[4].name = "Reading the brief"
+        assert(drawn(desk).bar?.place == "Codex", "a named one gets its agent")
+        desk[4].name = ""
+        assert(drawn(desk).bar?.name == "Codex" && drawn(desk).bar?.place == nil, "an unnamed one is its agent's")
+        // A moved card is named under its project, not where it went.
+        var moved = board
+        moved[0].project = "web"
+        assert(drawn(moved).bar?.place == "in acme-api", "the project, not the live folder")
+        // Nothing blocked, no bar; and done is never counted.
+        let calm = board.map { session -> Session in
+            var copy = session
+            if copy.status == .blocked { copy.status = .coding }
+            return copy
+        }
+        assert(drawn(calm).bar == nil, "no bar")
+    }
+
+    /// Every board the rules have to hold on: the six widths and the
+    /// sideways phones, at five text sizes, with zero to twelve projects and
+    /// one to three agents.
+    private static func verifyMatrix() {
+        // The factor `minColumn` grows by at each size, title3's size over its
+        // default 20pt, and whether it is an accessibility size.
+        let sizes: [(name: String, scale: CGFloat, large: Bool)] = [
+            ("default", 1, false), ("xxxL", 26.0 / 20, false), ("AX1", 31.0 / 20, true),
+            ("AX3", 43.0 / 20, true), ("AX5", 55.0 / 20, true),
+        ]
+        let L = BoardArrangement.list, S = BoardArrangement.stacked
+        // Each board's width inside its gutters, whether it is a phone on its
+        // side, and the arrangement at each size above.
+        let boards: [(device: String, width: CGFloat, sideways: Bool, expected: [BoardArrangement])] = [
+            ("6.1\" phone", 361, false, [L, L, L, L, L]),
+            ("6.1\" phone on its side", 702, true, [L, L, L, L, L]),
+            ("6.9\" phone", 408, false, [L, L, L, L, L]),
+            ("6.9\" phone on its side", 800, true, [L, L, L, L, L]),
+            ("iPad in Split View", 646, false, [L, L, L, L, L]),
+            ("11\" iPad upright", 802, false, [S, L, L, L, L]),
+            ("11\" iPad on its side", 1178, false, [S, S, S, L, L]),
+            ("13\" iPad upright", 1000, false, [S, S, L, L, L]),
+            ("13\" iPad on its side", 1344, false, [S, S, S, L, L]),
+        ]
+        // Whether the heads are pinned for one, two and three agents, with
+        // at most four windows a head and then with five.
+        func pinned(_ arrangement: BoardArrangement, large: Bool, sideways: Bool) -> (four: [Bool], five: [Bool]) {
+            switch (arrangement, large, sideways) {
+            case (.list, false, false): ([true, true, false], [false, false, false])
+            case (.list, _, _): ([false, false, false], [false, false, false])
+            case (.stacked, false, _): ([true, true, false], [true, false, false])
+            case (.stacked, true, _): ([true, false, false], [true, false, false])
+            }
+        }
+        // Twelve folder names, chosen to exercise the order — mixed case, a
+        // digit, a hyphen — and the order they must come out in.
+        let names = ["web", "Alpha", "api", "agstatus", "AgStatus", "docs", "etl-jobs", "zeta", "beta", "ios", "2fa",
+                     "infra"]
+        let sorted = ["2fa", "AgStatus", "agstatus", "Alpha", "api", "beta", "docs", "etl-jobs", "infra", "ios", "web",
+                      "zeta"]
+        let sources = ["claude", "codex", "gemini"]
+
+        // What a board holds depends on its arrangement and not on how it
+        // came to have it, so each one is checked once however many widths
+        // and sizes lead to it — the whole cross product is still walked.
+        var checked = Set<[Int]>()
+        for board in boards {
+            for (size, arrangement) in zip(sizes, board.expected) {
+                let column = minColumn * size.scale
+                let resolved = resolve(width: board.width, minColumn: column, compactHeight: board.sideways)
+                let at = "\(board.device) at \(size.name)"
+                assert(resolved == arrangement, "the arrangement of a \(at)")
+                if arrangement == .stacked {
+                    assert(track(width: board.width, count: 2, gap: cardGap) >= column, "a side is a column on a \(at)")
+                }
+                let pins = pinned(arrangement, large: size.large, sideways: board.sideways)
+                for agents in 1...3 {
+                    for (windows, expected) in [(4, pins.four[agents - 1]), (5, pins.five[agents - 1])] {
+                        assert(headsScroll(arrangement, agents: agents, windows: windows, largeText: size.large,
+                                           compactHeight: board.sideways) == !expected,
+                               "\(agents) heads with \(windows) windows on a \(at)")
+                    }
+                }
+                for projects in 0...12 {
+                    for agents in 1...3
+                    where checked.insert([projects, agents, arrangement == .list ? 0 : 1]).inserted {
+                        verifyBoard(projects: projects, agents: agents, arrangement: arrangement,
+                                    names: names, sorted: sorted, sources: sources, at: at)
+                    }
+                }
+            }
+        }
+    }
+
+    /// One board of the matrix: `projects` folders with one to three cards
+    /// each, two cards in No project with none or an odd number, every
+    /// fourth card blocked, the agents taking turns.
+    private static func verifyBoard(projects: Int, agents: Int, arrangement: BoardArrangement,
+                                    names: [String], sorted: [String], sources: [String], at: String) {
+        var sessions: [Session] = []
+        func add(home: String) {
+            let n = sessions.count
+            sessions.append(card("s\(n)", sources[n % agents], n % 4 == 1 ? .blocked : .coding,
+                                 home: home, project: home))
+        }
+        for index in 0..<projects {
+            for _ in 0...(index % 3) { add(home: names[index]) }
+        }
+        let unfiled = projects == 0 || projects % 2 == 1
+        if unfiled { add(home: ""); add(home: "") }
+        let label = "\(projects) projects, \(agents) agents, a \(at)"
+
+        let sections = ProjectSection.make(sessions: sessions)
+        let named = sorted.filter { names.prefix(projects).contains($0) }.map(ProjectKey.folder)
+        assert(sections.map(\.key) == named + (unfiled ? [.noProject] : []), "sections in order: \(label)")
+        assert(sections.map(\.label.count).reduce(0, +) == sessions.count, "every card counted once: \(label)")
+        for section in sections {
+            assert(section.sessions.map(\.id) == sessions.filter { $0.projectKey == section.key }.map(\.id),
+                   "the store's order inside \(section.key.title): \(label)")
+        }
+
+        let sides = CardSides().resolved(for: sections)
+        for section in sections {
+            assert(section.sessions.enumerated().allSatisfy { sides[$0.element.id] == ($0.offset % 2 == 0 ? .leading : .trailing) },
+                   "a first fill alternates in \(section.key.title): \(label)")
+        }
+        let order = ReadingOrder.make(sections, arrangement: arrangement, sides: sides)
+        assert(order.count == sessions.count && Set(order.map(\.id)).count == sessions.count,
+               "every card read once: \(label)")
+        // On a first fill, row by row is the section's own order.
+        assert(order.map(\.id) == sections.flatMap(\.sessions).map(\.id), "read section by section: \(label)")
+
+        let blocked = order.filter { $0.status == .blocked }.map(\.id)
+        var after: String?
+        var walked: [String] = []
+        for step in 0..<max(1, blocked.count) {
+            let bar = NeedsYou.make(order: order, after: after)
+            assert((bar == nil) == blocked.isEmpty, "a bar while something is blocked: \(label)")
+            guard let bar else { break }
+            assert(bar.face.count == blocked.count && bar.face.next == (step > 0 && blocked.count > 1),
+                   "the bar's count and verb: \(label)")
+            walked.append(bar.target)
+            after = bar.target
+        }
+        assert(walked == blocked, "the bar walks every blocked card in reading order: \(label)")
+        if let first = blocked.first {
+            assert(NeedsYou.make(order: order, after: after)?.target == first, "and round to the first: \(label)")
+        }
+
+        let heads = AgentSummary.make(sessions: sessions, usage: [])
+        assert(heads.count == Set(sessions.map(\.source)).count && heads.map(\.sessions).reduce(0, +) == sessions.count,
+               "a head for every agent on the board: \(label)")
+        let targets = sessions.map { JumpTarget.card($0.id) } + sections.map(\.id) + heads.map(\.id)
+        assert(Set(targets).count == targets.count, "distinct targets: \(label)")
+    }
+
 
     /// The slot rule for a card's subagents — the other half of "a row keeps
     /// its place", and like the side ledger, a thing no single capture can

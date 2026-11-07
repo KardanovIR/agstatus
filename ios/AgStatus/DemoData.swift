@@ -516,8 +516,13 @@ enum DemoData {
     ///                           the toolbar's connection lamp, in that
     ///                           state, where the DEMO badge would be;
     ///                           connecting is drawn as reconnecting)
-    ///   AGSTATUS_JUMP           <source> (BoardView: presses that agent's
-    ///                           alarm once the board is laid out)
+    ///   AGSTATUS_PRESS_BAR      <n> (BoardView: presses the needs-you bar n
+    ///                           times once the board is laid out: 1 brings
+    ///                           the first blocked card, 2 the next)
+    ///   AGSTATUS_AX_DUMP        1 (BoardView: logs what VoiceOver is offered,
+    ///                           category `ax`, after any presses — see
+    ///                           `AccessibilityDump` for the simulator
+    ///                           setting it needs)
     ///   AGSTATUS_ANNOUNCE_BLOCKS 1 (BoardView: says a new block aloud as if
     ///                           VoiceOver were running, which in the
     ///                           simulator it never is; the log category
@@ -1232,7 +1237,7 @@ enum DemoData {
     /// demo mode starts in a debug build.
     ///
     /// A server older than 1.7.0 sends no such key, and its cards must decode
-    /// as they always did, their live folder intact. The tolerance
+    /// as they always did and be grouped by their live folder. The tolerance
     /// is the rest of this file's: one odd value must never cost a card, let
     /// alone the snapshot carrying it. The web's and Android's tests take the
     /// same cases.
@@ -1241,22 +1246,22 @@ enum DemoData {
         func session(_ json: String) -> Session? {
             try? decoder.decode(Session.self, from: Data(json.utf8))
         }
-        // Absent, null, a number, an object: no pin, and the card decodes as
-        // it did, its live folder intact.
+        // Absent, null, a number, an object: no pin, the card decodes, and it
+        // is grouped by where it is.
         for raw in [#"{"id":"s","project":"web"}"#, #"{"id":"s","project":"web","homeProject":null}"#,
                     #"{"id":"s","project":"web","homeProject":7}"#, #"{"id":"s","project":"web","homeProject":{}}"#] {
             assert(session(raw)?.homeProject == "", "no pin: \(raw)")
-            assert(session(raw)?.project == "web", "the live folder: \(raw)")
+            assert(session(raw)?.projectKey == .folder("web"), "the live folder: \(raw)")
         }
-        // A pin, and a cd since: the two fields part company.
+        // A pin, and a cd since: the section is the pin, the place the cd.
         let pinned = session(#"{"id":"s","name":"Add rate limiting to /login","project":"web","homeProject":"acme-api"}"#)
-        assert(pinned?.homeProject == "acme-api" && pinned?.project == "web", "pinned, and moved")
-        // Neither the server's word for no folder nor a UUID is a folder.
-        let uuid = "0F3C2A1E-6B4D-4E8F-9A7B-1C2D3E4F5A6B"
-        assert(!Session.isFolderName("") && !Session.isFolderName(uuid) && !Session.isFolderName(uuid.lowercased()),
-               "no folder")
-        assert(Session.isFolderName("acme-api") && Session.isFolderName(String(uuid.dropLast()))
-               && Session.isFolderName(String(uuid.dropLast()) + "G"), "folders")
+        assert(pinned?.homeProject == "acme-api" && pinned?.projectKey == .folder("acme-api")
+               && pinned?.movedTo == "web", "pinned, and moved")
+        // The server's word for no folder, and a UUID the hook passed on.
+        let desktop = session(#"{"id":"s","name":"Codex","source":"codex","project":"","homeProject":""}"#)
+        assert(desktop?.projectKey == ProjectKey.noProject, "Codex at /")
+        let scratch = session(#"{"id":"s","source":"codex","project":"0F3C2A1E-6B4D-4E8F-9A7B-1C2D3E4F5A6B"}"#)
+        assert(scratch?.projectKey == ProjectKey.noProject && scratch?.movedTo == nil, "a scratch folder")
         // Round trip: the pin survives this client, and no pin stays none.
         if let pinned, let data = try? JSONEncoder().encode(pinned) {
             assert((try? decoder.decode(Session.self, from: data)) == pinned, "homeProject round trip")

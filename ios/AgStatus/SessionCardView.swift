@@ -13,17 +13,17 @@ struct SessionCardView: View {
     /// Whether the board gives this card a whole column at that text size.
     @Environment(\.cardIsColumnWide) private var columnWide
     let session: Session
-    /// Whose session this is, spelled as its section's head spells it.
-    ///
-    /// The card no longer shows it. It used to carry the agent in a chip on
-    /// its meta line, and now says it by where it sits — under that agent's
-    /// head, in that agent's column — which a screen reader cannot see. So the
-    /// name is still handed in, and goes into the card's label and nowhere on
-    /// its face.
+    /// Whose session this is, spelled as the agent's head spells it, and
+    /// taken from the session itself: a project's section holds every agent's
+    /// cards. The face carries the agent's mark (`agentMark`); the name goes
+    /// into the card's label, which is what a screen reader hears.
     let agentName: String
-    /// Set by the board when an alarm brings this card into view, so that
-    /// VoiceOver lands on the card and not on the alarm that was pressed.
+    /// Set by the board when the needs-you bar brings this card into view, so
+    /// that VoiceOver lands on the card and not on the bar that was pressed.
     let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
+    /// The room between the agent's mark and the first fact, growing with
+    /// the text as the mark does.
+    @ScaledMetric(relativeTo: .caption) private var markGap: CGFloat = 4
 
     /// An active card that has heard nothing for this long is stale: most
     /// likely a dead agent — killed mid-turn, an interrupted turn, which fires
@@ -57,12 +57,13 @@ struct SessionCardView: View {
     /// reading, and beside the text it stood at the top. Focus goes under, at
     /// the trailing edge it held, over the line that reports on it.
     ///
-    /// The step the board takes too: from an accessibility size a phone pins
-    /// the agent line (`BoardArrangement.headsScroll`); below it, beside the
-    /// text fits every phone with room over. Where the board gives the card a
-    /// column at the reader's size — an iPad's columns, its full width, and a
-    /// phone held sideways at the smaller accessibility sizes — the rail fits
-    /// beside the text, and stays there (`cardIsColumnWide`).
+    /// The step the board takes too: from an accessibility size a phone's
+    /// heads stop being pinned (`BoardArrangement.headsScroll`); below it,
+    /// beside the text fits every phone with room over. Where the board gives
+    /// the card a column at the reader's size — an iPad's two across, its
+    /// full width, and a phone held sideways at the smaller accessibility
+    /// sizes — the rail fits beside the text, and stays there
+    /// (`cardIsColumnWide`).
     private var stacked: Bool { typeSize.isAccessibilitySize && !columnWide }
 
     var body: some View {
@@ -259,7 +260,7 @@ struct SessionCardView: View {
         // state — the card's one reading — and what it last said (the value).
         // Combined, it read every line of this column in turn, and the state,
         // drawn in the rail outside it, came after the name, the message and
-        // the whole meta line: an alarm's jump landed on the half of the card
+        // the whole meta line: a jump landed on the half of the card
         // without it. The badge's word is hidden, so it is not read twice.
         //
         // The meta line is the lean-in, and waits where VoiceOver keeps one:
@@ -267,7 +268,9 @@ struct SessionCardView: View {
         // nothing else in this column, so whatever is added to the column has
         // to be added here as well.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(session.name.isEmpty ? agentName : "\(agentName), \(session.name)")
+        // "Claude, Fix the login redirect"; a Codex Desktop session that
+        // started at / is named after its agent, and is "Codex" once.
+        .accessibilityLabel(namedForAgent ? agentName : "\(agentName), \(session.name)")
         .accessibilityValue(spokenState(stale: stale, now: now))
         .accessibilityAddTraits(.isButton)
         // The tap, stated, so a double-tap opens history wherever the
@@ -276,11 +279,12 @@ struct SessionCardView: View {
         .accessibilityHint("Opens this session's history")
         .accessibilityFocused(jumpFocus, equals: .card(session.id))
         .accessibilityCustomContent(.machine, machineFact.map { Text($0) })
+        .accessibilityCustomContent(.project, projectFact.map { Text($0) })
         .accessibilityCustomContent(.directory, directoryFact.map { Text($0) })
         .accessibilityCustomContent(.updated, Text(Self.spokenRelativeTime(from: session.updatedDate, to: now)))
         .accessibilityCustomContent(.tokens, session.tokensLabel.map { Text($0) })
         // Voice Control: "Tap data-pipeline", with or without its agent.
-        .accessibilityInputLabels(session.name.isEmpty ? [agentName] : [session.name, "\(agentName) \(session.name)"])
+        .accessibilityInputLabels(namedForAgent ? [agentName] : [session.name, "\(agentName) \(session.name)"])
         .accessibilityActions {
             if let host = session.host, store.isMachineOnline(host.machine.id) {
                 Button("Bring to front on \(store.machineLabel(for: host))") {
@@ -306,22 +310,23 @@ struct SessionCardView: View {
         }
     }
 
-    /// Machine, when, how much — three different facts. The machine is the
-    /// one the card never showed; it was buried in the Focus control's label,
-    /// so two sessions of the same project on two machines were
-    /// indistinguishable at a glance.
+    /// Whose, machine, when, how much — four different facts. The agent's
+    /// mark leads, always (`agentMark`), outside everything that gives way.
+    /// The machine is the one the card never showed until 1.6; it was buried
+    /// in the Focus control's label, so two sessions of the same project on
+    /// two machines were indistinguishable at a glance.
     ///
-    /// The agent used to lead this line, in a chip. It is gone: the card now
-    /// sits under its agent's head, and a chip repeating the section's title
-    /// on every card in the section was the loudest thing on the line saying
-    /// the least.
+    /// The agent's mark is back on the line because the sections are
+    /// projects: Claude's and Codex's cards share them, and the mark is what
+    /// tells them apart at a glance. A mark and not the CLAUDE chip 1.6.4
+    /// drew, which was the loudest thing on the line saying the least.
     ///
     /// No spacing of its own. The optional facts carry the separator that
     /// FOLLOWS them, and the tokens figure the one before it, so whatever
-    /// drops out takes its dot with it. With the chip gone the optional facts
-    /// are first on the line, and a stack that spaced its children would
-    /// leave a gap — and the old leading "·" — in front of the time whenever
-    /// they collapsed to nothing.
+    /// drops out takes its dot with it. After the mark the optional facts are
+    /// first on the line, and a stack that spaced its children would leave a
+    /// gap — and a leading "·" — in front of the time whenever they collapsed
+    /// to nothing.
     ///
     /// Above the default text size the time and the tokens figure can outgrow
     /// a narrow card by themselves. Both are fixed, because a cut number reads
@@ -332,8 +337,47 @@ struct SessionCardView: View {
     /// sizes, where the line is a phone's width less the card's. The first
     /// candidate is the one line as it always was, chosen whenever it fits,
     /// and at the default size and below this is not a cascade at all.
-    @ViewBuilder
     private func metaLine(now: Date, stale: Bool) -> some View {
+        // Top-aligned: the mark is a line of the same caption text, so its
+        // baseline is the first line's whichever candidate is drawn.
+        HStack(alignment: .top, spacing: 0) {
+            agentMark
+            factsLine(now: now, stale: stale)
+        }
+    }
+
+    /// The agent's neutral mark: an asterisk for Claude, a hexagon for Codex,
+    /// a diamond for any other (`Theme.agentSymbol`). Never a colour, and it
+    /// never drops: it is outside the facts' cascade, the one thing on the
+    /// line nothing else can push off it. In the facts' ink, a step brighter,
+    /// so it reads as who before it reads as one more fact. Hidden from
+    /// VoiceOver, which hears the agent first in the card's label.
+    ///
+    /// As wide as the widest of the three marks, whichever this one is: an
+    /// asterisk, a hexagon and a diamond are three glyphs of three widths,
+    /// and the facts after them start at one place on every card. Measured
+    /// from the glyphs themselves rather than set as a number, which at the
+    /// accessibility sizes cut the hexagon down to a "C".
+    private var agentMark: some View {
+        ZStack(alignment: .leading) {
+            ForEach(Self.marks, id: \.self) { mark in
+                Text(Image(systemName: mark)).hidden()
+            }
+            Text(Image(systemName: Theme.agentSymbol(for: session.source)))
+                .foregroundStyle(Theme.textSecondary)
+        }
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.trailing, markGap)
+        .accessibilityHidden(true)
+    }
+
+    /// Every mark an agent can have (`Theme.agentSymbol`).
+    private static let marks = ["claude", "codex", "other"].map(Theme.agentSymbol(for:))
+
+    @ViewBuilder
+    private func factsLine(now: Date, stale: Bool) -> some View {
         if typeSize > .large, let tokensLabel = session.tokensLabel {
             // Each candidate measures what it draws. A stale card's one-line
             // fallback is a candidate of its own: nested inside the first, it
@@ -534,8 +578,8 @@ struct SessionCardView: View {
     /// up to four lines; the rest is one tap away. There two lines of name held
     /// 23 characters of a 44-character title at AX4 on a 375pt phone, and the
     /// trade left the message one line: "Approve: …" on the blocked card whose
-    /// message is the reason it needs you. The agent line is what a phone pins
-    /// at those sizes, so the list has the height.
+    /// message is the reason it needs you. A phone pins no heads at those
+    /// sizes, so the list has the height.
     @ViewBuilder
     private var nameAndMessage: some View {
         if typeSize.isAccessibilitySize {
@@ -574,17 +618,8 @@ struct SessionCardView: View {
             .lineLimit(lines)
     }
 
-    /// Whether the name is a title the agent gave the session, rather than
-    /// the folder it started in.
-    ///
-    /// No field says so — the board sends one `name` either way — so this
-    /// goes by what each looks like: a title is words, and a folder name or a
-    /// worktree slug is one. Codex sessions are never titled, and nor is a
-    /// Claude CLI session until somebody runs `/rename`.
-    private var isTitled: Bool { session.name.contains(" ") }
-
     /// The optional start of the meta line: the machine this session runs on,
-    /// and the working directory when it has diverged from the card's name.
+    /// and where it is working when it has moved (`placeFact`).
     ///
     /// The two as ONE cascade rather than two independent decisions. They
     /// were separate once: the machine pinned with `.fixedSize()` and the
@@ -594,24 +629,20 @@ struct SessionCardView: View {
     /// overflows, and the card went past the edge of the screen.
     ///
     /// One cascade always has a fitting option, and its order is the
-    /// priority, stated once, and nothing here is ever cut to an ellipsis.
-    ///
-    /// Which of the two goes first depends on what the name is. Under a
-    /// folder name the directory goes first: it is where an untitled session
-    /// has moved to, usually the same repo the name already says, and the
-    /// name still tells you which card this is. Under a title it is the
-    /// machine that goes first. A title says what the session is doing and
-    /// not where, and "in <repo>" was added to the line for exactly that —
-    /// yet with the directory dropped first, whether a phone showed the repo
-    /// came down to how long the machine's name was: "Mac" left room for it,
-    /// "MacBook Pro" did not. The machine is not lost when it goes: it is in
-    /// the long-press menu's "Bring to front on …" and in the offline note.
+    /// priority, stated once, the same on every card: machine and place, then
+    /// the machine, then the place, then nothing. Nothing here is ever cut to
+    /// an ellipsis. It used to put the machine first under a title and the
+    /// place first under a folder name, because a titled card always said
+    /// "in <repo>" and that was the only place it said it. The project's
+    /// label says it now, and the place is news only of a move, so the one
+    /// order serves both. The machine is not lost when it goes: it is in the
+    /// long-press menu's "Bring to front on …" and in the offline note.
     ///
     /// The last candidate is `FitsAsNothing`, not `EmptyView()` — see its
     /// note. With EmptyView last, the cascade fell back to the machine even
     /// where the machine did not fit, so "always has a fitting option" was
-    /// not true. In a 340pt column that is the difference between a line that
-    /// fits and a card that overflows its column into the next agent's.
+    /// not true. In a 340pt side that is the difference between a line that
+    /// fits and a card that overflows its side into the other.
     ///
     /// Spelled out case by case rather than with an `if` inside the
     /// ViewThatFits: a false condition contributes no candidate at all, as
@@ -620,33 +651,14 @@ struct SessionCardView: View {
     @ViewBuilder
     private var metaLead: some View {
         let machine = machineFact
-        // The directory appears whenever it says something the name does not.
-        // The name is the session's title when the agent has one (the Claude
-        // app titles every session, `/rename` titles one in the CLI) and the
-        // folder it started in otherwise, held for the session's life;
-        // `project` follows the live directory, with a Claude worktree root
-        // reported as its repository rather than the folder name the app made
-        // up. So a titled card reads "in <repo>" — where that work is
-        // happening, which a title does not say — a card at a worktree root
-        // reads "feature-x · in my-repo" from its first event, and any other
-        // untitled card shows the directory only once the session has moved.
-        // Either way it is context, never identity.
-        let place = directoryFact.map { "in \($0)" }
+        let place = placeFact.map { "in \($0)" }
         switch (machine, place) {
         case let (machine?, place?):
-            if isTitled {
-                ViewThatFits(in: .horizontal) {
-                    metaFacts([machine, place])
-                    metaFacts([place])
-                    metaFacts([machine])
-                    FitsAsNothing()
-                }
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    metaFacts([machine, place])
-                    metaFacts([machine])
-                    FitsAsNothing()
-                }
+            ViewThatFits(in: .horizontal) {
+                metaFacts([machine, place])
+                metaFacts([machine])
+                metaFacts([place])
+                FitsAsNothing()
             }
         case let (machine?, nil):
             ViewThatFits(in: .horizontal) {
@@ -661,22 +673,6 @@ struct SessionCardView: View {
         case (nil, nil):
             EmptyView()
         }
-    }
-
-    /// The directory, whenever it says something the name does not.
-    ///
-    /// The name is the session's title when the agent has one (the Claude app
-    /// titles every session, `/rename` titles one in the CLI) and the folder it
-    /// started in otherwise, held for the session's life; `project` follows
-    /// the live directory, with a Claude worktree root reported as its
-    /// repository rather than the folder name the app made up. So a titled
-    /// card reads "in <repo>" — where that work is happening, which a title
-    /// does not say — a card at a worktree root reads "feature-x · in my-repo"
-    /// from its first event, and any other untitled card shows the directory
-    /// only once the session has moved. Either way it is context, never
-    /// identity.
-    private var place: String? {
-        !session.project.isEmpty && session.project != session.name ? "in \(session.project)" : nil
     }
 
     /// Facts in a row, each followed by its separator.
@@ -871,15 +867,33 @@ struct SessionCardView: View {
 
     // MARK: - VoiceOver
 
+    /// Whether the session's name says no more than its agent's: none at
+    /// all, or the agent's own, which the hook gives a session with no
+    /// folder.
+    private var namedForAgent: Bool {
+        session.name.isEmpty || session.name.caseInsensitiveCompare(agentName) == .orderedSame
+    }
+
     /// The machine this session runs on, as the board names it.
     private var machineFact: String? {
         session.host.map { store.machineLabel(for: $0) }
     }
 
-    /// The working directory, when it says something the name does not (see
-    /// `metaLead`).
+    /// Where the session has moved to, when it has: its live folder, real
+    /// and neither its project's nor its own name (`Session.movedTo`). The
+    /// face says "in web"; under its project's label a card that has not
+    /// moved says nothing, the label having said it for every card under it.
+    private var placeFact: String? { session.movedTo }
+
+    /// The project the card is grouped under, for More Content; nothing in
+    /// No project, where there is no folder to name.
+    private var projectFact: String? { session.projectKey.folder }
+
+    /// The live folder, for More Content, only where it differs from the
+    /// project — which, unlike the face's place, it says even when it is the
+    /// card's own name.
     private var directoryFact: String? {
-        !session.project.isEmpty && session.project != session.name ? session.project : nil
+        Session.isFolderName(session.project) && session.project != projectFact ? session.project : nil
     }
 
     /// The card's one reading as VoiceOver says it: the state the badge draws;
@@ -898,9 +912,11 @@ struct SessionCardView: View {
 }
 
 /// The meta line's facts by name, in its order, for VoiceOver's More Content
-/// rotor. Computed rather than stored: the key type is not Sendable.
+/// rotor, the card's project among them now that its section says it rather
+/// than its face. Computed rather than stored: the key type is not Sendable.
 private extension AccessibilityCustomContentKey {
     static var machine: Self { Self("Machine", id: "machine") }
+    static var project: Self { Self("Project", id: "project") }
     static var directory: Self { Self("Directory", id: "directory") }
     static var updated: Self { Self("Updated", id: "updated") }
     static var tokens: Self { Self("Tokens", id: "tokens") }
@@ -1164,22 +1180,24 @@ private struct OpenSessionKey: EnvironmentKey {
     static let defaultValue = BoardAction<SessionRoute>(name: "none") { _ in }
 }
 
-/// Something a card, a head or the agent line asks the board to do with a key
-/// — open a session's history or an agent's usage, which the board pushes onto
-/// its own path; bring an agent's section or its first blocked card into view.
+/// Something a card, a head or the needs-you bar asks the board to do with a
+/// key — open a session's history or an agent's usage, which the board pushes
+/// onto its own path; open a card's subagents in place; bring the blocked card
+/// the bar names into view.
 ///
 /// Equal to any action of the same name, whatever closure it carries. The
 /// board makes a fresh one on every pass, and a closure is never equal to the
 /// last: written into the environment as a bare closure it changed on every
 /// hook event, so every card and head under the board ran its body again and
 /// every card was measured again, for an event that was not theirs. Equal, the
-/// environment has nothing to pass on, and a head has nothing new to compare
-/// (`AgentHead`'s `==`). Every pass's closure does the same thing, from what
-/// the board holds rather than from the pass that made it — its path, or the
-/// board as last drawn — so the one a view captured first does what the
-/// newest would.
+/// environment has nothing to pass on, and a head or the bar has nothing new
+/// to compare (`AgentHead`'s `==`, `NeedsYouSlot`). Every pass's closure does
+/// the same thing, from what the board holds rather than from the pass that
+/// made it — its path, or the board as last drawn — so the one a view
+/// captured first does what the newest would.
 ///
-/// Keyed by whatever the action is for: a session's route, an agent's source.
+/// Keyed by whatever the action is for: a session's route, an agent's source,
+/// nothing at all for the bar.
 struct BoardAction<Key>: Equatable {
     let name: String
     let run: (Key) -> Void

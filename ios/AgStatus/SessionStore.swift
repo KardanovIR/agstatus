@@ -904,7 +904,7 @@ final class SessionStore {
         DemoData.verifyFocusDecoding()
         DemoData.verifyTokenDecoding()
         // The folder a session started in, which the board groups by: a
-        // server too old to send it costs no card.
+        // server too old to send it costs no card, and groups by the live one.
         DemoData.verifyProjectDecoding()
         DemoData.verifyPairing()
         // Subagents: one bad item must never cost a card, let alone the
@@ -924,8 +924,9 @@ final class SessionStore {
         // project, this is where it gets checked.
         Streak.verifyDerivation()
         // The same argument for the layout rule: a capture proves one width
-        // with one set of agents, and nothing about the width a point
-        // narrower or about what a dismissal does to the cards that stay.
+        // with one set of projects, and nothing about the width a point
+        // narrower, the order of names it did not hold, or what a cd, a
+        // dismissal or a message does to the cards that stay.
         BoardArrangement.verify()
         #endif
         sessions = Self.sortedByUpdate(DemoData.initialSessions())

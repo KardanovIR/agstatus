@@ -5,7 +5,8 @@ import os
 #endif
 
 /// The live board: one glanceable card per agent session, in one section per
-/// agent.
+/// project, under the agents' heads, with one needs-you bar at the bottom
+/// while anything is blocked.
 struct BoardView: View {
     @Environment(SessionStore.self) private var store
     @Environment(NotificationManager.self) private var notifications
@@ -18,8 +19,8 @@ struct BoardView: View {
 
     /// Which side each card sits on where cards run two across. Kept here and
     /// not in the container that draws them: containers are swapped when the
-    /// board is rotated or an agent arrives, and a card's side has to outlive
-    /// the swap.
+    /// board is rotated or the text size changes, and a card's side has to
+    /// outlive the swap.
     @State private var sides = CardSides()
     /// Which subagents stand in which row slots of each card — see
     /// `SubtaskSlots`. Here beside `sides` for the same reason: every frame
@@ -29,24 +30,27 @@ struct BoardView: View {
     /// The cards whose subagent lists the reader opened in place. A card stays
     /// open until it is folded, or loses its subagents, or leaves the board.
     @State private var expandedSubtasks: Set<String> = []
-    /// The card an alarm last brought into view, for as long as its ring shows.
+    /// The card the needs-you bar last brought into view, for as long as its
+    /// ring shows.
     @State private var jumped: String?
     /// Counts the jumps. The ring's two seconds run from the LAST press, and a
-    /// second press on the same alarm leaves `jumped` holding an equal id,
-    /// which would restart nothing.
+    /// second press that brings the same card leaves `jumped` holding an equal
+    /// id, which would restart nothing.
     @State private var jumpStamp = 0
-    /// Where VoiceOver goes after a jump: the card an alarm brought into view,
-    /// or the head a name on the agent line did. A scroll that left the cursor
-    /// on the alarm or the name would have moved nothing for that reader. One
-    /// state for both, keyed as the scroll targets are, so a card and an agent
-    /// cannot be taken for each other. Never read in a body: VoiceOver writes
-    /// it on every swipe across a card or a head.
+    /// The card the bar brought last, which the bar then names the next
+    /// blocked card after (`NeedsYou.make`). Nil until it is pressed, and
+    /// again once nothing is blocked.
+    @State private var barAfter: String?
+    /// Where VoiceOver goes after a jump: the card the bar brought into view.
+    /// A scroll that left the cursor on the bar would have moved nothing for
+    /// that reader. Keyed as the scroll targets are. Never read in a body:
+    /// VoiceOver writes it on every swipe across a card.
     @AccessibilityFocusState private var jumpFocus: JumpTarget?
     /// Which of the phone's List rows exist, and the one a jump is waiting
     /// for (`JumpLanding`).
     @State private var landing = JumpLanding()
-    /// The plan and the scroll view the board was last drawn with, which the
-    /// jumps read (`DrawnBoard`).
+    /// The plan and the scroll view the board was last drawn with, which a
+    /// press of the bar reads (`DrawnBoard`).
     @State private var drawn = DrawnBoard()
     /// Redraws every minute so the "resets in …" countdowns stay honest. One
     /// clock for the whole board, handed to every head: heads now live both
@@ -66,23 +70,23 @@ struct BoardView: View {
     /// The narrowest a column may be, growing with the reader's text size.
     ///
     /// Scaled so that large text steps the board DOWN an arrangement — an iPad
-    /// drops from columns to the stack, then to the list — instead of holding
-    /// its columns and cutting every name in them. At the default size it is
-    /// exactly `BoardArrangement.minColumn`, and the head's thresholds scale
-    /// by the same factor (`BoardPlan.scale`).
+    /// drops from two across to the list — instead of holding two columns and
+    /// cutting every name in them. At the default size it is exactly
+    /// `BoardArrangement.minColumn`, and the head's thresholds scale by the
+    /// same factor (`BoardPlan.scale`).
     @ScaledMetric(relativeTo: .title3) private var minColumn = BoardArrangement.minColumn
     /// The connection lamp, 9pt at the default size, growing with the text
     /// as the DEMO badge that stands in its place does, to 15pt; past that the
     /// long press shows it large with its word (`connectionDot`).
     @ScaledMetric(relativeTo: .caption2) private var lampMetric: CGFloat = 9
 
-    /// At an accessibility size a phone pins the agent line, not its heads:
-    /// `BoardArrangement.headsScroll`.
+    /// At an accessibility size a phone's heads lead the list and scroll
+    /// away rather than staying pinned: `BoardArrangement.headsScroll`.
     @Environment(\.dynamicTypeSize) private var typeSize
 
     /// Compact on a phone held sideways, and only there: it keeps the list,
-    /// with the agent line pinned. The one size class the board reads, and it
-    /// is never asked about width (`BoardArrangement`).
+    /// with nothing pinned above it. The one size class the board reads, and
+    /// it is never asked about width (`BoardArrangement`).
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     /// A block is said aloud only while the app is in front (`announceBlocks`).
@@ -100,7 +104,7 @@ struct BoardView: View {
             // It is the width inside the safe area, which is the width the
             // content actually gets — on a phone in landscape as well.
             GeometryReader { geo in
-                // One reader for whichever container is live, so an alarm
+                // One reader for whichever container is live, so the bar
                 // does not need to know whether it is scrolling a List or a
                 // ScrollView.
                 ScrollViewReader { scroller in
@@ -110,8 +114,8 @@ struct BoardView: View {
             .background(Theme.background.ignoresSafeArea())
             // Both destinations live at the root, on a view that is always
             // there. The session one used to hang off the List — but the List
-            // is now one of three containers that replace each other when the
-            // board is rotated or an agent arrives, and a destination declared
+            // is one of two containers that replace each other when the board
+            // is rotated or the text size changes, and a destination declared
             // on a container that has just been swapped out is gone from under
             // the screen it pushed.
             //
@@ -124,9 +128,10 @@ struct BoardView: View {
                 SessionHistoryView(sessionId: route.sessionId, subtaskId: route.subtaskId)
             }
             // Actions, not bare closures, so that one hook event runs only its
-            // own card, not every card and head under the board
-            // (`BoardAction`). A head also has to be handed only what it draws
-            // to stay as it was (`AgentHead`'s `==`).
+            // own card, not every card, head and label under the board
+            // (`BoardAction`). A head, a label and the bar also have to be
+            // handed only what they draw to stay as they were (`AgentHead`'s
+            // `==`, `ProjectLabel`, `NeedsYouSlot`).
             .environment(\.openSession, BoardAction(name: "history") { path.append($0) })
             .environment(\.openUsage, BoardAction(name: "usage") { path.append(UsageDetailRoute(source: $0)) })
             // The reader's own act, so it is the one change to a card's rows
@@ -196,7 +201,7 @@ struct BoardView: View {
             // same answer — so the first frame a card appears in already has
             // it on its side, and every later frame finds it there.
             .onChange(of: store.sessions.map(\.id), initial: true) {
-                sides = sides.resolved(for: groups)
+                sides = sides.resolved(for: sections)
             }
             // A card that loses its subagents, or leaves the board, is folded:
             // its next subagents start a list of their own.
@@ -215,22 +220,27 @@ struct BoardView: View {
             .onChange(of: store.isDemo) { startOver() }
             // The ring says "this is the blocked card you asked for". Once the
             // card is no longer blocked it would be saying something untrue.
-            // A card that has just become blocked is said aloud.
+            // With nothing blocked the bar goes, and the next one to come
+            // starts from the first. A card that has just become blocked is
+            // said aloud.
             .onChange(of: blockedCards) { old, new in
                 if let jumped, !new.ids.contains(jumped) { self.jumped = nil }
+                if new.ids.isEmpty { barAfter = nil }
                 announceBlocks(from: old, to: new)
             }
             .task(id: jumpStamp) { await fadeRing() }
         }
     }
 
-    /// The board itself: what is pinned, what scrolls, and the streak beneath.
+    /// The board itself: what is pinned, what scrolls, the needs-you bar and
+    /// the streak beneath.
     private func board(_ plan: BoardPlan, scroller: ScrollViewProxy) -> some View {
         // Before anything this pass draws can be pressed.
         drawn.plan = plan
         drawn.scroller = scroller
         return VStack(spacing: 0) {
-            if !plan.groups.isEmpty && store.connection != .boardGone && !plan.idleHeadsScroll {
+            if !plan.heads.isEmpty && store.connection != .boardGone
+                && !(plan.idle ? plan.idleHeadsScroll : plan.headsScroll) {
                 pinned(plan)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -256,12 +266,21 @@ struct BoardView: View {
                         // — two rows, a footer that opens the session screen
                         // — exactly where the board is one list. By measured
                         // width, as everything here is: an iPad in Split View
-                        // gets the phone's rules, and an iPhone in landscape
-                        // that fits two columns does not.
+                        // gets the phone's rules, and so does a phone held
+                        // sideways, which keeps its list.
                         .environment(\.subtaskSlots, plan.subtasks)
-                        .environment(\.subtasksOpenScreen, plan.arrangement == .narrow)
+                        .environment(\.subtasksOpenScreen, plan.arrangement == .list)
                 }
             }
+
+            // The board's one alarm, between the board and the streak, and
+            // only while something is blocked (`NeedsYouBar`). Outside the
+            // scroll view, so whatever the reader has scrolled to, it stays
+            // in view.
+            NeedsYouSlot(face: store.connection == .boardGone ? nil : plan.needsYou?.face,
+                         oneLine: plan.wide || plan.compactHeight,
+                         onPress: barAction)
+                .equatable()
 
             // Pinned under the list rather than inside it: the streak is
             // about the board, not about any card, and a row that scrolled
@@ -290,13 +309,14 @@ struct BoardView: View {
         // had moved, and it was armed over the whole board: a card that
         // changed in the same update — the snapshot and the limits arrive
         // together on a reconnect — cross-faded its old text into its new.
-        .motion(.snappy, value: plan.groups.map { $0.windows.map(\.id) })
+        .motion(.snappy, value: plan.heads.map { $0.windows.map(\.id) })
         .motion(.snappy, value: store.streak)
         #if DEBUG
         .frame(maxWidth: Self.widthForScreenshots.map { $0 + 2 * Theme.Space.md })
         #endif
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task { await jumpForScreenshots() }
+        .task { await pressBarForScreenshots() }
+        .task { await dumpAccessibilityForScreenshots() }
         // The body draws from `subtaskSlots.resolved(…)` and this stores the
         // same answer, as `sides` is stored: so the frame a row first appears
         // in already has it in its slot. Resolving is idempotent, so storing
@@ -308,12 +328,13 @@ struct BoardView: View {
         }
     }
 
-    /// Forgets every card's side, slots and open list, for a board that is no
-    /// longer the one they were kept for.
+    /// Forgets every card's side, slots and open list, and where the bar had
+    /// got to, for a board that is no longer the one they were kept for.
     private func startOver() {
-        sides = CardSides().resolved(for: groups)
+        sides = CardSides().resolved(for: sections)
         subtaskSlots = SubtaskSlots()
         expandedSubtasks = []
+        barAfter = nil
     }
 
     /// Debug-only deep links so screenshot automation can reach the pushed
@@ -389,26 +410,42 @@ struct BoardView: View {
             .map { CGFloat($0) }
     #endif
 
-    /// AGSTATUS_JUMP=<source> presses that agent's alarm once the board has
-    /// been laid out, because simctl cannot tap and the jump is the one piece
-    /// of this layout that only exists after a touch.
-    private func jumpForScreenshots() async {
+    /// AGSTATUS_PRESS_BAR=<n> presses the needs-you bar n times once the
+    /// board has been laid out — 1 brings the first blocked card, 2 the next —
+    /// because simctl cannot tap and the jump is the one piece of this layout
+    /// that only exists after a touch.
+    private func pressBarForScreenshots() async {
         #if DEBUG
-        guard let source = ProcessInfo.processInfo.environment["AGSTATUS_JUMP"],
-              !source.isEmpty else { return }
+        guard let presses = ProcessInfo.processInfo.environment["AGSTATUS_PRESS_BAR"].flatMap(Int.init),
+              presses > 0 else { return }
         // Demo sessions are seeded synchronously, so the board is drawn with
         // them from its first pass; the wait is for the scroll view to have a
         // first layout to scroll.
         try? await Task.sleep(for: .milliseconds(600))
-        jump(to: source)
+        for press in 0..<presses {
+            if press > 0 { try? await Task.sleep(for: .milliseconds(900)) }
+            pressBar()
+        }
+        #endif
+    }
+
+    /// AGSTATUS_AX_DUMP=1 logs what VoiceOver is offered once the board has
+    /// settled, after any AGSTATUS_PRESS_BAR presses (`AccessibilityDump`).
+    private func dumpAccessibilityForScreenshots() async {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["AGSTATUS_AX_DUMP"] == "1" else { return }
+        let presses = ProcessInfo.processInfo.environment["AGSTATUS_PRESS_BAR"].flatMap(Int.init) ?? 0
+        try? await Task.sleep(for: .milliseconds(2500 + 900 * presses))
+        AccessibilityDump.log(focused: jumpFocus.map { "\($0)" })
         #endif
     }
 
     // MARK: - Plan
 
-    /// The agents on the board, each with its sessions and its limits.
-    private var groups: [AgentGroup] {
-        AgentGroup.make(sessions: store.sessions, usage: store.usage)
+    /// The projects on the board, in the shared order, each with its
+    /// sessions in the store's order.
+    private var sections: [ProjectSection] {
+        ProjectSection.make(sessions: store.sessions)
     }
 
     /// Everything one pass of layout decides, from the width it was given.
@@ -417,138 +454,114 @@ struct BoardView: View {
         #if DEBUG
         if let clamp = Self.widthForScreenshots { width = min(width, clamp) }
         #endif
-        let groups = groups
+        let sections = sections
         let compactHeight = verticalSizeClass == .compact
-        let arrangement = BoardArrangement.resolve(width: width, agents: groups.count, minColumn: minColumn,
-                                                   compactHeight: compactHeight)
+        let arrangement = BoardArrangement.resolve(width: width, minColumn: minColumn, compactHeight: compactHeight)
+        let sides = sides.resolved(for: sections)
+        let order = ReadingOrder.make(sections, arrangement: arrangement, sides: sides)
         return BoardPlan(
             width: width,
             scale: minColumn / BoardArrangement.minColumn,
-            groups: groups,
+            heads: AgentSummary.make(sessions: store.sessions, usage: store.usage),
+            sections: sections,
             arrangement: arrangement,
             wide: BoardArrangement.fit(width: width, minColumn: minColumn) >= 2,
             idle: store.sessions.isEmpty,
             largeText: typeSize.isAccessibilitySize,
             compactHeight: compactHeight,
-            sides: sides.resolved(for: groups),
+            sides: sides,
             // Nothing opens in place under the phone's rules, whatever the
             // reader opened before the board narrowed — the flag is kept, and
             // a board that widens again finds the card still open.
             subtasks: subtaskSlots.resolved(for: store.sessions,
                                             slots: SubtaskSlots.slots(for: arrangement),
-                                            expanded: arrangement == .narrow ? [] : expandedSubtasks)
+                                            expanded: arrangement == .list ? [] : expandedSubtasks),
+            order: order,
+            needsYou: NeedsYou.make(order: order, after: barAfter)
         )
     }
 
     // MARK: - Pinned
 
     /// What stays above the scroll view: the agents' heads, where the limit
-    /// bars already sat. The list scrolls beneath, so what is pinned never
-    /// leaves the screen — and with it, every agent's alarm.
+    /// bars always sat, while there is room to pin them
+    /// (`BoardArrangement.headsScroll`). Otherwise they lead the scroll and
+    /// nothing is pinned up here: the label of the section under you is, in
+    /// the list, and the alarm is the bar at the bottom.
     @ViewBuilder
     private func pinned(_ plan: BoardPlan) -> some View {
         if plan.idle {
             // Nothing running. The heads are the limits again and nothing
             // more: side by side as the limit blocks were, up to three across
             // where there is room and two where there is not.
-            headRows(plan, perRow: plan.wide ? min(plan.groups.count, 3) : 2,
-                     gap: BoardArrangement.headGap, level: plan.wide)
+            headRows(plan, perRow: plan.wide ? min(plan.heads.count, 3) : 2, level: plan.wide)
                 .padding(.horizontal, Theme.Space.md)
                 .padding(.top, BoardArrangement.headsTop)
                 .padding(.bottom, 2)
-        } else if plan.headsScroll {
-            // More agents than this board pins heads for: on a wide board more
-            // than fit, on a phone more than two — or, on a phone held
-            // sideways, at an accessibility text size, or with a fifth limit
-            // window in a head, any at all. Their heads scroll with their
-            // sections; this one line is what stays.
-            agentLine(plan)
         } else {
             switch plan.arrangement {
-            case .narrow:
+            case .list:
                 // Two across, each keeping its own height; the only agent
-                // takes the whole row. A third agent no longer gets a row of
-                // its own here — see `BoardArrangement.narrowPinnedHeads` —
-                // and no head here holds more than four limit windows:
+                // takes the whole row. No third head, and no head holding
+                // more than four limit windows: `narrowPinnedHeads`,
                 // `narrowPinnedWindows`.
-                headRows(plan, perRow: 2, gap: BoardArrangement.headGap, level: false)
+                headRows(plan, perRow: 2, level: false)
                     .padding(.horizontal, Theme.Space.md)
                     .padding(.top, BoardArrangement.headsTop)
                     .padding(.bottom, 2)
-            case .columns:
-                // The same tracks as the columns beneath, from the same
-                // arithmetic and inside the same gutters, so a head cannot
-                // stand anywhere but over its own cards.
-                headRows(plan, perRow: plan.groups.count, gap: BoardArrangement.agentGutter,
-                         level: true)
+            case .stacked:
+                // Full-width strips, one to a row: never side by side over two
+                // sides of cards that mix agents, which would read as "left is
+                // Claude". One always, two at a standard size
+                // (`widePinnedHeads`).
+                headRows(plan, perRow: 1, level: false, canStrip: true)
                     .padding(.horizontal, Theme.Space.md)
                     .padding(.top, BoardArrangement.headsTop)
                     .padding(.bottom, 2)
-            case .stackedOne:
-                // One agent: there is nothing to put beside it, so its head
-                // runs the full width, still pinned, as its limits were when
-                // they were only bars.
-                headRows(plan, perRow: 1, gap: 0, level: false, canStrip: true)
-                    .padding(.horizontal, Theme.Space.md)
-                    .padding(.top, BoardArrangement.headsTop)
-                    .padding(.bottom, 2)
-            case .stackedMany:
-                // Always `headsScroll`, and drawn above. The case is here
-                // for the switch to be exhaustive, and draws the same line.
-                agentLine(plan)
             }
         }
     }
 
-    /// One pinned line for every agent: its name, which takes you to its
-    /// section, and its alarm, which takes you to its first blocked card.
-    private func agentLine(_ plan: BoardPlan) -> some View {
-        AgentLine(groups: plan.groups.map(\.alarm),
-                  width: plan.width,
-                  scale: plan.scale,
-                  onSection: sectionAction,
-                  onJump: jumpAction)
-            .equatable()
-            .padding(.horizontal, Theme.Space.md)
-    }
-
     /// The heads in rows of `perRow`, every one a fixed track wide
-    /// (`HeadRows`).
-    private func headRows(_ plan: BoardPlan, perRow: Int, gap: CGFloat, level: Bool,
-                          canStrip: Bool = false) -> some View {
-        HeadRows(heads: plan.groups.map(\.summary),
+    /// (`HeadRows`). `alone` is for pinned rows: a head with a row to itself
+    /// takes the fuller line where it fits. Heads that lead the scroll keep
+    /// the form their width gives them, as they did in 1.6.5, and say when
+    /// an agent reports no limits.
+    private func headRows(_ plan: BoardPlan, perRow: Int, level: Bool, canStrip: Bool = false,
+                          alone: Bool = true, showsNoLimits: Bool? = nil) -> some View {
+        HeadRows(heads: plan.heads,
                  perRow: perRow,
                  width: plan.width,
-                 gap: gap,
                  level: level,
                  canStrip: canStrip,
-                 showsNoLimits: plan.arrangement != .narrow,
+                 showsNoLimits: showsNoLimits ?? (plan.arrangement != .list),
                  scale: plan.scale,
-                 now: now,
-                 jumpFocus: $jumpFocus,
-                 onJump: jumpAction)
+                 alone: alone,
+                 now: now)
             .equatable()
+    }
+
+    /// The heads where they lead the scroll: each across the whole width, one
+    /// to a row, every window in it.
+    private func leadingHeads(_ plan: BoardPlan) -> some View {
+        headRows(plan, perRow: 1, level: false, canStrip: true, alone: false, showsNoLimits: true)
     }
 
     // MARK: - Sessions
 
     /// The cards, in whichever container the width calls for.
     ///
-    /// Three containers, and they replace each other outright. A change of
+    /// Two containers, and they replace each other outright. A change of
     /// arrangement is never cross-faded: two boards drawn over one another for
     /// a third of a second is the overlapping-text defect `scrollChrome`
-    /// already describes, at the size of the whole screen. The same holds
-    /// inside the list when its agents change — see `groupedList`.
+    /// already describes, at the size of the whole screen.
     @ViewBuilder
     private func sessionBoard(_ plan: BoardPlan) -> some View {
         switch plan.arrangement {
-        case .narrow:
-            scrollChrome(groupedList(plan))
+        case .list:
+            scrollChrome(sectionList(plan))
                 .transition(.identity)
-        case .columns:
-            scrollChrome(columnBoard(plan))
-                .transition(.identity)
-        case .stackedOne, .stackedMany:
+        case .stacked:
             scrollChrome(stackedBoard(plan))
                 .transition(.identity)
         }
@@ -566,6 +579,11 @@ struct BoardView: View {
             // each other for the length of the transition — it read as a rendering
             // bug, which is what it was. Motion on this board should mean a card
             // arrived, left or moved; a message changing in place is not news.
+            //
+            // A new project's section arrives with its first card, and goes
+            // with its last, in that motion. The one move between sections, a
+            // card leaving No project when its first folder arrives, changes
+            // no order and so is drawn, not animated.
             .motion(.snappy, value: store.sessions.map(\.id))
             .safeAreaInset(edge: .bottom) {
                 if showsPushTip {
@@ -578,89 +596,63 @@ struct BoardView: View {
     /// on a phone held sideways, the sessions stay one list, because the list
     /// is the only container that can be swiped, and the swipe is how a phone
     /// has always dismissed a card.
-    private func groupedList(_ plan: BoardPlan) -> some View {
+    ///
+    /// A section per project, its label pinned while its cards scroll under
+    /// it, in every mode, text size and orientation: with the agents sharing
+    /// sections, the label is the only thing on screen that says which
+    /// project these cards are. Where the heads cannot be pinned they are the
+    /// first row, and scroll away.
+    private func sectionList(_ plan: BoardPlan) -> some View {
         List {
             if plan.headsScroll {
-                // Three agents or more, or any number on a phone held sideways,
-                // at an accessibility text size, or with a fifth limit window
-                // in a head: the agent line is pinned above, and each agent's
-                // full head opens its group and
-                // scrolls with it, as the sections of a wide board do. No
-                // pinned group name as well — it would stand directly over a
-                // head saying the same name, which is the repetition one agent
-                // already avoids.
-                ForEach(plan.groups, id: \.section) { group in
-                    reportsLanding(AgentHead(group: group.summary,
-                                             width: plan.width,
-                                             canStrip: true,
-                                             scale: plan.scale,
-                                             now: now,
-                                             jumpFocus: $jumpFocus,
-                                             onJump: jumpAction)
-                                       .equatable(),
-                                   as: group.section)
-                        // Where the agent line's names send the list. A row
-                        // is the one thing in a List that can be scrolled to.
-                        .id(JumpTarget.section(group.source))
+                // A section of its own, without a header, so the first
+                // project's label is flush under it as it is under pinned
+                // heads, and nothing of the heads is ever pinned.
+                Section {
+                    leadingHeads(plan)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
-                        // The wide board's spacing: the first head 10pt under
-                        // the agent line, a head 24pt under the card before it
-                        // (6 of that is the card's own), and 8pt above its
-                        // first card (the card brings 6). No swipe: a head is
-                        // not something to dismiss.
-                        .listRowInsets(EdgeInsets(top: group.id == plan.groups.first?.id ? 10 : 18,
-                                                  leading: Theme.Space.md, bottom: 2,
-                                                  trailing: Theme.Space.md))
-                    ForEach(group.sessions) { session in
-                        row(session, in: group)
-                    }
+                        // 10pt under the navigation bar, where the pinned
+                        // heads stand; no swipe, a head is not something to
+                        // dismiss.
+                        .listRowInsets(EdgeInsets(top: BoardArrangement.headsTop, leading: Theme.Space.md,
+                                                  bottom: 2, trailing: Theme.Space.md))
                 }
-            } else if plan.groups.count > 1 {
-                ForEach(plan.groups, id: \.section) { group in
-                    Section {
-                        ForEach(group.sessions) { session in
-                            row(session, in: group)
-                        }
-                    } header: {
-                        // A plain list pins its section headers by itself.
-                        // What it does not do is draw them our way: the
-                        // system insets a header, capitalises it, and rules a
-                        // line under it. The label brings its own ground and
-                        // its own padding, so all three are turned off.
-                        GroupLabel(group: group, leads: group.id == plan.groups.first?.id)
-                            .listRowInsets(EdgeInsets())
-                            .textCase(nil)
+                .listSectionSeparator(.hidden)
+                .modifier(FlushSection())
+            }
+            ForEach(plan.sections) { section in
+                Section {
+                    ForEach(section.sessions) { session in
+                        row(session)
                     }
-                    .listSectionSeparator(.hidden)
-                    .modifier(FlushSection())
+                } header: {
+                    // A plain list pins its section headers by itself. What it
+                    // does not do is draw them our way: the system insets a
+                    // header, capitalises it, and rules a line under it. The
+                    // label brings its own ground and its own padding, so all
+                    // three are turned off.
+                    ProjectLabel(label: section.label, inset: Theme.Space.md + 2)
+                        .equatable()
+                        .listRowInsets(EdgeInsets())
+                        .textCase(nil)
                 }
-            } else {
-                // One agent has its head directly above: a second name would
-                // only repeat it. No Section at all, because an empty header
-                // still takes its height — and this is the board most people
-                // look at every day, which should not gain a gap for a
-                // feature it is not using.
-                ForEach(plan.groups, id: \.section) { group in
-                    ForEach(group.sessions) { session in
-                        row(session, in: group)
-                    }
-                }
+                .listSectionSeparator(.hidden)
+                .modifier(FlushSection())
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .modifier(OpaquePinnedLabels(pinned: plan.groups.count > 1 && !plan.headsScroll))
+        .modifier(OpaquePinnedLabels())
         .environment(\.cardsSwipeToDismiss, true)
-        // The list is rebuilt, not morphed, when the set of agents changes:
-        // one agent is a flat run of rows and two are sections, and animating
-        // between those drew every card twice for a fifth of a second and
-        // dropped the list back to its top.
+        // The list is rebuilt, not morphed, when its heads go from pinned to
+        // leading it: animated, the heads' row slid in while every card under
+        // it was drawn twice for a fifth of a second.
         .settles(on: plan.shape)
     }
 
-    private func row(_ session: Session, in group: AgentGroup) -> some View {
-        reportsLanding(card(session, in: group), as: .card(session.id))
+    private func row(_ session: Session) -> some View {
+        reportsLanding(card(session), as: .card(session.id))
             // No invisible full-card NavigationLink any more. It was
             // an overlay across the whole card, which meant it sat on
             // top of the Focus and Resume controls and could swallow
@@ -681,92 +673,66 @@ struct BoardView: View {
             }
     }
 
-    /// One column per agent, under the head pinned over it.
+    /// Projects stacked full width, cards two across inside each, under the
+    /// heads' strips: the wide board's one arrangement, whatever the number
+    /// of projects.
     ///
     /// Eager stacks, not lazy ones. A hosted board holds fifty cards at most,
     /// which is nothing to lay out — and a stack that knows every card's
     /// height is what makes a jump land exactly, a removal close its gap
     /// properly, and the scroll offset hold still when a card far above
-    /// changes height.
-    private func columnBoard(_ plan: BoardPlan) -> some View {
-        ScrollView {
-            HStack(alignment: .top, spacing: BoardArrangement.agentGutter) {
-                ForEach(plan.groups) { group in
-                    cardStack(group.sessions, in: group)
-                        .frame(width: plan.track, alignment: .top)
-                        // Read one agent at a time. Left to itself VoiceOver
-                        // goes across the columns row by row, which deals the
-                        // agents' cards into one another.
-                        .accessibilityElement(children: .contain)
-                        .accessibilityLabel("\(group.name) sessions")
-                }
-            }
-            .padding(.horizontal, Theme.Space.md)
-            .padding(.top, Self.scrollTop - Self.cardLead)
-            .padding(.bottom, Self.scrollBottom)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .settles(on: plan.shape)
-        }
-    }
-
-    /// Agents stacked full width, cards two across: one agent under its pinned
-    /// head, or several, each under a head that scrolls with it.
+    /// changes height. Eager stacks cannot pin a header, so here a label
+    /// scrolls with its section; the bar has already named the project, and
+    /// the card its agent.
     private func stackedBoard(_ plan: BoardPlan) -> some View {
-        let many = plan.arrangement == .stackedMany
-        return ScrollView {
-            // 24pt between two agents' sections, of which each head carries
-            // the last 4 as its own — see `cardStack`.
-            VStack(alignment: .leading, spacing: many ? BoardArrangement.agentGutter - Self.sectionLead : 0) {
-                ForEach(plan.groups) { group in
-                    // No spacing here: the cards bring the 8pt that separates
-                    // them from their head.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if plan.headsScroll {
+                    leadingHeads(plan)
+                        .padding(.top, BoardArrangement.headsTop)
+                        .padding(.bottom, 2)
+                }
+                ForEach(plan.sections) { section in
                     VStack(alignment: .leading, spacing: 0) {
-                        if many {
-                            AgentHead(group: group.summary,
-                                      width: plan.width,
-                                      canStrip: true,
-                                      scale: plan.scale,
-                                      now: now,
-                                      jumpFocus: $jumpFocus,
-                                      onJump: jumpAction)
-                                .equatable()
-                                .padding(.top, Self.sectionLead)
-                                .id(JumpTarget.section(group.source))
-                        }
-                        // Two columns that each keep their cards — see CardSides.
+                        // 24pt between two projects, twice the 12 between two
+                        // cards; the first stands as far under what is above
+                        // it as a label does in the list. No space under the
+                        // name: the first card brings the 8.
+                        ProjectLabel(label: section.label,
+                                     top: section.id == plan.sections.first?.id ? 18 : BoardArrangement.sectionGap,
+                                     bottom: 0)
+                            .equatable()
+                        // Two sides that each keep their cards — see CardSides.
                         HStack(alignment: .top, spacing: BoardArrangement.cardGap) {
                             ForEach(CardSides.Side.allCases, id: \.self) { side in
-                                cardStack(plan.sides.cards(group.sessions, on: side), in: group)
+                                cardStack(plan.sides.cards(section.sessions, on: side))
                                     .frame(width: plan.side, alignment: .top)
                             }
                         }
                     }
+                    // Read one project at a time. Left to itself VoiceOver
+                    // goes across the sides row by row, which is the reading
+                    // order, but would run on into the next project's cards
+                    // without saying so.
                     .accessibilityElement(children: .contain)
-                    .accessibilityLabel("\(group.name) sessions")
+                    .accessibilityLabel(section.key.folder.map { "\($0) sessions" } ?? "Sessions with no project")
+                    .id(section.id)
                 }
             }
             .padding(.horizontal, Theme.Space.md)
-            // A section's head stands a little further below the agent line
-            // than a card stands below a head: the line is a rule across the
-            // screen, and a box hard under a rule reads as hanging from it.
-            .padding(.top, many ? 10 - Self.sectionLead : Self.scrollTop - Self.cardLead)
             .padding(.bottom, Self.scrollBottom)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .settles(on: plan.shape)
         }
     }
 
-    /// The first card sits 8pt under what is pinned (2 of it is the pinned
-    /// area's own), as the list's first row always has.
-    private static let scrollTop: CGFloat = 6
     private static let scrollBottom: CGFloat = 18
 
-    /// How far below the top edge a jump leaves what it brought there: a card
-    /// by the gap that separates it from a head, a section by half of that.
+    /// How far below the top edge a jump leaves the card it brought there:
+    /// the gap that separates a card from what is above it.
     private static let cardLead = Theme.Space.xs
-    private static let sectionLead = Theme.Space.xxs
 
-    /// One agent's cards in a column, 12pt apart.
+    /// One side of a section's cards, 12pt apart.
     ///
     /// Each card carries `cardLead` of that gap as padding ABOVE itself, inside
     /// the view a jump scrolls to, and the stack supplies the rest. That is
@@ -783,22 +749,25 @@ struct BoardView: View {
     /// whether it stands 8pt up or 30. An id in an overlay evidently answers
     /// with the frame of the view it is laid over.
     ///
-    /// So a stack of cards begins with 8pt of air, and whatever holds one
-    /// allows for that: see the top padding of the two containers.
-    private func cardStack(_ sessions: [Session], in group: AgentGroup) -> some View {
+    /// So a side begins with 8pt of air, which is also the label's 8 above
+    /// the first card.
+    private func cardStack(_ sessions: [Session]) -> some View {
         VStack(spacing: BoardArrangement.cardGap - Self.cardLead) {
             ForEach(sessions) { session in
-                card(session, in: group)
+                card(session)
                     .padding(.top, Self.cardLead)
                     .id(JumpTarget.card(session.id))
             }
         }
     }
 
-    private func card(_ session: Session, in group: AgentGroup) -> some View {
-        SessionCardView(session: session, agentName: group.name, jumpFocus: $jumpFocus)
+    private func card(_ session: Session) -> some View {
+        // Its own agent's name, from the session: a section mixes agents, so
+        // the card is the one thing that can say whose it is.
+        SessionCardView(session: session, agentName: UsageInfo.displayName(for: session.source),
+                        jumpFocus: $jumpFocus)
             .overlay {
-                // A ring only where one is news: the card the alarm just
+                // A ring only where one is news: the card the bar just
                 // brought into view. Neutral ink — a green ring on a card
                 // that is not done would be a colour claiming a state.
                 if jumped == session.id {
@@ -813,66 +782,43 @@ struct BoardView: View {
 
     // MARK: - Jump
 
-    /// What an alarm does: brings its agent's first blocked card into view.
+    /// What the bar does: brings the blocked card it names into view.
     ///
-    /// The same action on every pass, so that a head or the agent line holding
-    /// it compares equal (`AgentHead`'s `==`) — and so it takes nothing from
-    /// the pass that made it. A head runs again only when something it draws
-    /// changes, so the action an alarm holds may be several events old, and a
-    /// plan carried in it would be as old: the blocked card it named gone,
-    /// another blocked in its place, the count the same. It reads the board as
-    /// last drawn instead (`drawn`).
-    private var jumpAction: BoardAction<String> {
-        BoardAction(name: "jump") { jump(to: $0) }
+    /// The same action on every pass, so that the bar holding it compares
+    /// equal (`NeedsYouSlot`) — and so it takes nothing from the pass that
+    /// made it. The bar runs again only when something it draws changes, so
+    /// the action it holds may be several events old, and a plan carried in
+    /// it would be as old: the card it named gone, another blocked in its
+    /// place, the count the same. It reads the board as last drawn instead.
+    private var barAction: BoardAction<Void> {
+        BoardAction(name: "needs-you") { _ in pressBar() }
     }
 
-    /// What a name on the agent line does: scrolls its agent's section to the
-    /// top. Like `jumpAction`, from the board as last drawn.
-    private var sectionAction: BoardAction<String> {
-        BoardAction(name: "section") { source in
-            guard let plan = drawn.plan, let scroller = drawn.scroller else { return }
-            withAnimation(jumpAnimation) {
-                scroller.scrollTo(JumpTarget.section(source), anchor: .top)
-            }
-            // "Codex, show its sessions" moves the reader as well as the
-            // board: to the head, which names the section.
-            moveVoiceOver(to: .section(source), in: plan)
-        }
-    }
-
-    /// An alarm's jump, on the board as last drawn.
-    private func jump(to source: String) {
-        guard let plan = drawn.plan, let scroller = drawn.scroller else { return }
-        jump(to: source, in: plan, scroller: scroller)
-    }
-
-    /// Brings `source`'s first blocked card into view and marks it.
+    /// Brings the card the bar names into view, rings it, and moves VoiceOver
+    /// onto it; the bar then names the next blocked card.
     ///
-    /// This is the other half of "a card keeps its place". A card that becomes
-    /// blocked is recoloured where it stands, which may be a screen down, so
-    /// the alarm in its agent's head has to be the way to it.
-    private func jump(to source: String, in plan: BoardPlan, scroller: ScrollViewProxy) {
-        guard let group = plan.groups.first(where: { $0.source == source }) else { return }
-        let target: Session?
-        switch plan.arrangement {
-        case .narrow, .columns:
-            target = group.firstBlocked
-        case .stackedOne, .stackedMany:
-            target = plan.sides.firstBlocked(in: group.sessions)
-        }
-        guard let target else { return }
+    /// This is the other half of "a card keeps its place". A card that
+    /// becomes blocked is recoloured where it stands, which may be a screen
+    /// down, so the bar is the way to it. Read from the board as last drawn,
+    /// so a card dismissed or unblocked since is not the one brought.
+    private func pressBar() {
+        guard let plan = drawn.plan, let scroller = drawn.scroller, let target = plan.needsYou?.target else { return }
         withAnimation(jumpAnimation) {
             switch plan.arrangement {
-            case .narrow:
+            case .list:
                 // List rows answer to their session's own id.
-                scroller.scrollTo(target.id, anchor: listAnchor(plan))
-            case .columns, .stackedOne, .stackedMany:
-                scroller.scrollTo(JumpTarget.card(target.id), anchor: .top)
+                scroller.scrollTo(target, anchor: listAnchor)
+            case .stacked:
+                // 8pt below what is pinned: the card's own lead (`cardStack`).
+                scroller.scrollTo(JumpTarget.card(target), anchor: .top)
             }
-            jumped = target.id
+            jumped = target
             jumpStamp += 1
         }
-        moveVoiceOver(to: .card(target.id), in: plan)
+        // Outside the animation: the bar's words change in place, and are
+        // never cross-faded.
+        barAfter = target
+        moveVoiceOver(to: .card(target), in: plan)
     }
 
     /// A jump's scroll: .snappy, drawn in one step under Reduce Motion as
@@ -880,16 +826,16 @@ struct BoardView: View {
     /// to go to whatever the jump brings into view, and a row still sliding in
     /// at the edge of the screen when the cursor arrives is one it may scroll
     /// again on its own, to show it whole, against the scroll in flight. Drawn
-    /// in one step, the card or head is already where the jump leaves it.
+    /// in one step, the card is already where the jump leaves it.
     private var jumpAnimation: Animation? {
         UIAccessibility.isReduceMotionEnabled || UIAccessibility.isVoiceOverRunning ? nil : .snappy
     }
 
-    /// Moves VoiceOver to what a jump has just brought into view: a card for
-    /// an alarm, a head for a name on the agent line.
+    /// Moves VoiceOver to the card a press of the bar has just brought into
+    /// view.
     ///
-    /// The wide board's stacks are eager, so every card and head already has
-    /// its element and the cursor is sent at once. The phone's List is lazy: a
+    /// The wide board's stacks are eager, so every card already has its
+    /// element and the cursor is sent at once. The phone's List is lazy: a
     /// row more than about a screen away has not been made when the jump
     /// fires, and a request then has nothing to land on — and since the focus
     /// state would already hold the target, setting it again later would be
@@ -897,7 +843,7 @@ struct BoardView: View {
     /// `landing`, and the row takes the cursor when the scroll lays it out
     /// (`reportsLanding`).
     private func moveVoiceOver(to target: JumpTarget, in plan: BoardPlan) {
-        if plan.arrangement == .narrow && !landing.isLaidOut(target) {
+        if plan.arrangement == .list && !landing.isLaidOut(target) {
             landing.wait(for: target)
         } else {
             landing.stopWaiting()
@@ -920,10 +866,11 @@ struct BoardView: View {
 
     /// Where a jumped-to row comes to rest in the List.
     ///
-    /// The design wants it at the top, clear of the group's name stuck there.
-    /// A List gives no way to say "38pt down": it does not honour a fractional
-    /// anchor (0.1 moved the row to two fifths of the way down, in the
-    /// simulator), and a row is the only thing in it that can be scrolled to.
+    /// The design wants it at the top, clear of its project's label stuck
+    /// there. A List gives no way to say "48pt down": it does not honour a
+    /// fractional anchor (0.1 moved the row to two fifths of the way down, in
+    /// the simulator), and a row is the only thing in it that can be scrolled
+    /// to.
     ///
     /// What it does do, on iOS 26, is treat its own pinned header as the top:
     /// `.top` brings the row to rest directly under the label, the card 6pt
@@ -933,19 +880,16 @@ struct BoardView: View {
     /// It has only been seen on 26. An older list that put the row at the
     /// very top would hide the card's name behind the label — the one outcome
     /// a jump must not have, since the name is what you jumped to read. So
-    /// before 26, with several agents, the row goes to the centre, which no
-    /// version can put under anything. With one agent there is no label, nor
-    /// wherever the heads scroll (three agents or more, a phone held sideways,
-    /// an accessibility text size, a fifth limit window), which leaves nothing
-    /// pinned inside the list — and there the top is simply the top.
-    private func listAnchor(_ plan: BoardPlan) -> UnitPoint {
-        if plan.groups.count < 2 || plan.headsScroll { return .top }
+    /// before 26 the row goes to the centre, which no version can put under
+    /// anything. Every section has a label now, so there is no list without
+    /// one to allow for.
+    private var listAnchor: UnitPoint {
         if #available(iOS 26.0, *) { return .top }
         return .center
     }
 
-    /// The ring is an answer to a tap, not a state: it goes after a couple of
-    /// seconds, or sooner if another alarm is pressed.
+    /// The ring is an answer to a press, not a state: it goes after a couple
+    /// of seconds, or sooner if the bar is pressed again.
     private func fadeRing() async {
         guard jumped != nil else { return }
         #if DEBUG
@@ -991,9 +935,9 @@ struct BoardView: View {
     private static let blockGathering: Duration = .milliseconds(500)
 
     /// Says aloud that a card has just become blocked — an agent waiting on
-    /// you, the board's main event. A sighted reader sees its head's alarm
-    /// appear. A reader with VoiceOver has only this, unless push is on and
-    /// its banner says it (`AppDelegate`).
+    /// you, the board's main event. A sighted reader sees the needs-you bar
+    /// rise, or its count change. A reader with VoiceOver has only this,
+    /// unless push is on and its banner says it (`AppDelegate`).
     ///
     /// Speech nobody asked for has to be earned, so this is kept as rare as
     /// the state it reports, the rarest on the board. Only a block that
@@ -1065,13 +1009,17 @@ struct BoardView: View {
         AccessibilityNotification.Announcement(line).post()
     }
 
-    /// "Claude: data-pipeline needs you", or "2 sessions need you" — whose
-    /// session and which, as a card is read.
+    /// "Fix the login redirect, in acme-api, needs you", or "2 sessions need
+    /// you": which session and where, as the bar names it. Its project rather
+    /// than its agent, now that the sections are projects and the card's
+    /// agent is a mark on it; in No project its agent instead, as on the bar
+    /// (`NeedsYou.words`), and "Codex needs you" for a session named after
+    /// its agent.
     private static func blockSentence(for sessions: [Session]) -> String? {
         guard let session = sessions.first else { return nil }
         guard sessions.count == 1 else { return "\(sessions.count) sessions need you" }
-        let agent = UsageInfo.displayName(for: session.source)
-        return session.name.isEmpty ? "\(agent) needs you" : "\(agent): \(session.name) needs you"
+        let words = NeedsYou.words(for: session)
+        return words.place.map { "\(words.name), \($0), needs you" } ?? "\(words.name) needs you"
     }
 
     /// Why a block would go unsaid now, or nil when it can be said.
@@ -1181,8 +1129,8 @@ struct BoardView: View {
 
     /// 44pt to hit, laid out as the word: the reach is padding inside the
     /// label, where the button's hit shape includes it, cancelled by the same
-    /// padding outside — the alarm's way (`AlarmButton.reach`). Drawn as it
-    /// was, it was 16pt tall.
+    /// padding outside, so the tip's line is laid out around the word alone.
+    /// Drawn as it was, it was 16pt tall.
     private var pushTipEnable: some View {
         Button {
             withMotion { pushTipShown = true }
@@ -1254,9 +1202,9 @@ struct BoardView: View {
         ScrollView {
             VStack(spacing: 0) {
                 idleHeads(plan)
-                emptyMessage(hasAgents: !plan.groups.isEmpty,
+                emptyMessage(hasAgents: !plan.heads.isEmpty,
                              compact: verticalSizeClass == .compact,
-                             underHeads: plan.idleHeadsScroll && !plan.groups.isEmpty)
+                             underHeads: plan.idleHeadsScroll && !plan.heads.isEmpty)
             }
         }
         .refreshable { await store.refresh() }
@@ -1295,20 +1243,14 @@ struct BoardView: View {
     /// An idle board's heads where they cannot be pinned (`idleHeadsScroll`):
     /// at the top of what scrolls, each the whole width, as the list's own
     /// scrolling heads are, so a name has its line to itself. With nothing
-    /// running nothing is blocked, so there is no alarm to jump from.
+    /// running nothing is blocked, so there is no bar.
     @ViewBuilder
     private func idleHeads(_ plan: BoardPlan) -> some View {
-        if plan.idleHeadsScroll && !plan.groups.isEmpty {
-            VStack(alignment: .leading, spacing: BoardArrangement.headGap) {
-                ForEach(plan.groups) { group in
-                    AgentHead(group: group.summary, width: plan.width, canStrip: true,
-                              scale: plan.scale, now: now, jumpFocus: $jumpFocus, onJump: jumpAction)
-                        .equatable()
-                }
-            }
-            .padding(.horizontal, Theme.Space.md)
-            .padding(.top, BoardArrangement.headsTop)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        if plan.idleHeadsScroll && !plan.heads.isEmpty {
+            leadingHeads(plan)
+                .padding(.horizontal, Theme.Space.md)
+                .padding(.top, BoardArrangement.headsTop)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1407,7 +1349,7 @@ struct BoardView: View {
     /// that scroll in here and on a phone held sideways, where it pushed the
     /// spinner off the screen; under pinned heads in portrait it stays 160.
     private func connectingState(_ plan: BoardPlan) -> some View {
-        let short = verticalSizeClass == .compact || (plan.idleHeadsScroll && !plan.groups.isEmpty)
+        let short = verticalSizeClass == .compact || (plan.idleHeadsScroll && !plan.heads.isEmpty)
         return ScrollView {
             VStack(spacing: 0) {
                 idleHeads(plan)
@@ -1655,7 +1597,82 @@ struct BoardView: View {
 }
 
 #if DEBUG
+/// What VoiceOver is offered on screen, written to the log: each element's
+/// label, value, traits, hint, Voice Control names and More Content, inside
+/// the containers that name them, with its frame. VoiceOver does not run in
+/// the Simulator, so this is how a debug build shows the headings, the "Plan
+/// limits" container, a card's label and the bar's. Where a jump sent the
+/// focus it cannot show: with no assistive technology running, an
+/// accessibility focus state keeps nothing.
+///
+/// SwiftUI builds the tree only for an app that accessibility has been
+/// switched on for: `xcrun simctl spawn <udid> defaults write
+/// com.apple.Accessibility ApplicationAccessibilityEnabled -bool true` once
+/// per simulator. Read it with `xcrun simctl spawn <udid> log stream --level
+/// info --predicate 'subsystem == "com.kardanov.agstatus" AND category ==
+/// "ax"'`.
+enum AccessibilityDump {
+    @MainActor
+    static func log(focused: String?) {
+        let windows = UIApplication.shared.connectedScenes.flatMap { ($0 as? UIWindowScene)?.windows ?? [] }
+        var lines = ["focus target: \(focused ?? "none"), \(windows.count) window(s)"]
+        for window in windows { walk(window, depth: 0, into: &lines) }
+        for line in lines { Logger.ax.info("\(line, privacy: .public)") }
+    }
+
+    private static func walk(_ object: Any, depth: Int, into lines: inout [String]) {
+        guard let node = object as? NSObject, depth < 40 else { return }
+        if let view = node as? UIView, view.isHidden || view.alpha == 0 { return }
+        let indent = String(repeating: "  ", count: depth)
+        if node.isAccessibilityElement {
+            var parts = [node.accessibilityLabel ?? "(no label)"]
+            if let value = node.accessibilityValue, !value.isEmpty { parts.append("value: \(value)") }
+            let traits = node.accessibilityTraits
+            if traits.contains(.header) { parts.append("[heading]") }
+            if traits.contains(.button) { parts.append("[button]") }
+            if let hint = node.accessibilityHint, !hint.isEmpty { parts.append("hint: \(hint)") }
+            if let input = node.accessibilityUserInputLabels, !input.isEmpty {
+                parts.append("voice control: \(input.joined(separator: " / "))")
+            }
+            if node.responds(to: NSSelectorFromString("accessibilityCustomContent")),
+               let content = node.value(forKey: "accessibilityCustomContent") as? [AXCustomContent] {
+                let more = content.map { "\($0.label): \($0.value)" }
+                if !more.isEmpty { parts.append("more: \(more.joined(separator: "; "))") }
+            }
+            let frame = node.accessibilityFrame
+            parts.append("@\(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))x\(Int(frame.height))")
+            lines.append(indent + parts.joined(separator: " | "))
+            return
+        }
+        var children: [Any] = node.accessibilityElements ?? []
+        if children.isEmpty {
+            let count = node.accessibilityElementCount()
+            if count != NSNotFound && count > 0 {
+                children = (0..<count).compactMap { node.accessibilityElement(at: $0) }
+            } else if let view = node as? UIView {
+                // Plain views are read in reading order, top to bottom and
+                // then leading to trailing, which is what VoiceOver does with
+                // views that name no order of their own: the List's rows and
+                // headers among them.
+                children = view.subviews.sorted { a, b in
+                    let fa = a.accessibilityFrame, fb = b.accessibilityFrame
+                    return fa.minY != fb.minY ? fa.minY < fb.minY : fa.minX < fb.minX
+                }
+            }
+        }
+        var next = depth
+        if let label = node.accessibilityLabel, !label.isEmpty {
+            lines.append(indent + "<\(label)>")
+            next += 1
+        }
+        for child in children { walk(child, depth: next, into: &lines) }
+    }
+}
+
 extension Logger {
+    /// The accessibility tree, written by `AccessibilityDump`.
+    static let ax = Logger(subsystem: Bundle.main.bundleIdentifier ?? "AgStatus", category: "ax")
+
     /// Blocks said aloud, or why not (`BoardView.announceBlocks`), beside the
     /// demo's own record of each card its tick blocked — so a run can show
     /// every new block said once, and once only. Debug builds only. At the
@@ -1688,8 +1705,9 @@ private struct BoardStatusItem<Content: View>: ToolbarContent {
 
 // MARK: - Head rows
 
-/// The heads in rows of `perRow`, every one a fixed track wide: the pinned
-/// heads, and an idle board's.
+/// The heads in rows of `perRow`, every one a fixed track wide: wherever heads
+/// are drawn — pinned two across on a phone, as strips on a wide board, at the
+/// top of what scrolls when they cannot be pinned, and on an idle board.
 ///
 /// `level` draws a row as one band: each head stretches to the tallest in
 /// its row. Where the heads are not level, a short last row — one head
@@ -1697,13 +1715,17 @@ private struct BoardStatusItem<Content: View>: ToolbarContent {
 /// phone board is a line of its own and not half of an empty row. (With
 /// sessions running, a phone never pins a third head: `headsScroll`.)
 ///
+/// One container for VoiceOver, "Plan limits": the heads are where the
+/// limits are, and no longer the headings of the board, which are its
+/// projects (`ProjectLabel`).
+///
 /// A view of its own, made with `.equatable()`, rather than rows drawn in the
 /// board's body. Drawn there, the rows were drawn again on every pass, and
 /// every head in them was laid out again with them although none had run:
 /// each meter's reset cascade measured anew, some 190 asks a hook event for a
 /// phone's two heads (counted in a macOS harness built from this source).
-/// Equal, the rows and their heads are left as they were. Equal on every input
-/// but the focus binding, as a head is (`AgentHead`'s `==`).
+/// Equal, the rows and their heads are left as they were. Equal on every
+/// input, as a head is (`AgentHead`'s `==`).
 ///
 /// It costs something once a minute. On the board clock's tick every head
 /// runs anyway, for its countdowns, and in the same harness the phone's two
@@ -1716,19 +1738,20 @@ private struct HeadRows: View, Equatable {
     let perRow: Int
     /// The board's width, which a head alone on a row that is not level has.
     let width: CGFloat
-    let gap: CGFloat
     let level: Bool
     let canStrip: Bool
     let showsNoLimits: Bool
     let scale: CGFloat
+    /// Whether a head alone on a row that is not level takes the fuller line
+    /// by fit (`AgentHead.alone`).
+    let alone: Bool
     let now: Date
-    let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
-    let onJump: BoardAction<String>
 
     var body: some View {
+        let gap = BoardArrangement.headGap
         let track = BoardArrangement.track(width: width, count: perRow, gap: gap)
-        VStack(alignment: .leading, spacing: BoardArrangement.headGap) {
-            ForEach(heads.rows(of: perRow), id: \.first?.source) { row in
+        VStack(alignment: .leading, spacing: gap) {
+            ForEach(heads.rows(of: perRow), id: \.first?.id) { row in
                 HStack(alignment: .top, spacing: gap) {
                     ForEach(row) { head in
                         AgentHead(group: head,
@@ -1737,11 +1760,8 @@ private struct HeadRows: View, Equatable {
                                   showsNoLimits: showsNoLimits,
                                   fillsHeight: level,
                                   scale: scale,
-                                  alone: !level && row.count == 1,
-                                  peers: row.filter { $0.blocked > 0 && $0.id != head.id }.map(\.alarm),
-                                  now: now,
-                                  jumpFocus: jumpFocus,
-                                  onJump: onJump)
+                                  alone: alone && !level && row.count == 1,
+                                  now: now)
                             .equatable()
                     }
                 }
@@ -1750,19 +1770,8 @@ private struct HeadRows: View, Equatable {
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-
-    static func == (lhs: HeadRows, rhs: HeadRows) -> Bool {
-        lhs.heads == rhs.heads
-            && lhs.perRow == rhs.perRow
-            && lhs.width == rhs.width
-            && lhs.gap == rhs.gap
-            && lhs.level == rhs.level
-            && lhs.canStrip == rhs.canStrip
-            && lhs.showsNoLimits == rhs.showsNoLimits
-            && lhs.scale == rhs.scale
-            && lhs.now == rhs.now
-            && lhs.onJump == rhs.onJump
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Plan limits")
     }
 }
 
@@ -1777,13 +1786,16 @@ private struct BoardPlan {
     let width: CGFloat
     /// The Dynamic Type factor: 1 at the default text size.
     let scale: CGFloat
-    let groups: [AgentGroup]
+    /// The agents that get a head.
+    let heads: [AgentSummary]
+    /// The projects, in the shared order.
+    let sections: [ProjectSection]
     let arrangement: BoardArrangement
     /// Whether two columns fit the width. An idle board asks it to choose
-    /// between two heads across and three. It is the width's answer and not
-    /// the arrangement's: a phone held sideways keeps its sessions in a list,
-    /// but its idle heads take the one row its width allows, which is the row
-    /// a short screen wants.
+    /// between two heads across and three, and the bar whether to try one
+    /// line. It is the width's answer and not the arrangement's: a phone
+    /// held sideways keeps its sessions in a list, but its idle heads take
+    /// the one row its width allows, which is the row a short screen wants.
     let wide: Bool
     /// No sessions: the heads are the limits and nothing else.
     let idle: Bool
@@ -1794,14 +1806,18 @@ private struct BoardPlan {
     let sides: CardSides
     /// Every card's subagent rows, resolved for this pass's slot count.
     let subtasks: SubtaskSlots
+    /// Every card as a reader meets it (`ReadingOrder`): what the bar walks.
+    let order: [Session]
+    /// What the bar says and the card it brings; nil while nothing is blocked.
+    let needsYou: NeedsYou?
 
-    /// Whether the heads scroll with their sections under one pinned agent
-    /// line. Never on an idle board: there are no sections for an agent line
-    /// to name. Where an idle board's pinned heads would not fit, they scroll
-    /// inside the empty state instead (`idleHeadsScroll`).
+    /// Whether the heads lead the scroll instead of being pinned. Never on an
+    /// idle board, whose heads are all there is: where its pinned heads would
+    /// not fit, they scroll inside the empty state instead
+    /// (`idleHeadsScroll`).
     var headsScroll: Bool {
-        !idle && BoardArrangement.headsScroll(arrangement, agents: groups.count,
-                                              windows: groups.mostWindows,
+        !idle && BoardArrangement.headsScroll(arrangement, agents: heads.count,
+                                              windows: heads.mostWindows,
                                               largeText: largeText, compactHeight: compactHeight)
     }
 
@@ -1827,20 +1843,14 @@ private struct BoardPlan {
     /// nothing on a 390pt one; with five, 29pt on the 390pt phones, under the
     /// height of its first line, and 41pt on the 402pt ones, which held it.
     /// The count cannot tell those apart, so past four the heads scroll on
-    /// both, as past `narrowPinnedWindows` a phone's pinned heads give way to
-    /// the agent line, and on a 402pt phone with five the sentence is then a
-    /// scroll away.
-    ///
-    /// No agent line: an idle board has no sections for its names to send
-    /// you to, and nothing blocked.
+    /// both, as past `narrowPinnedWindows` a phone's pinned heads do, and on
+    /// a 402pt phone with five the sentence is then a scroll away.
     var idleHeadsScroll: Bool {
         idle && (largeText || (compactHeight
-            && (!wide || groups.mostWindows > BoardArrangement.narrowPinnedWindows)))
+            && (!wide || heads.mostWindows > BoardArrangement.narrowPinnedWindows)))
     }
 
-    /// One agent's column, and the head over it.
-    var track: CGFloat { BoardArrangement.track(width: width, count: groups.count) }
-    /// One side of a pair of cards.
+    /// One side of a section's cards.
     var side: CGFloat { BoardArrangement.track(width: width, count: 2, gap: BoardArrangement.cardGap) }
 
     /// Whether each card is a whole column wide at the reader's text size. At
@@ -1854,40 +1864,35 @@ private struct BoardPlan {
     /// The board's shape. A change of it is drawn, not animated — see
     /// `settles(on:)`.
     var shape: Shape {
-        Shape(arrangement: arrangement, tracks: arrangement == .columns ? groups.count : 0, idle: idle,
-              headsScroll: headsScroll || idleHeadsScroll, agents: groups.map(\.source))
+        Shape(arrangement: arrangement, idle: idle, headsScroll: headsScroll || idleHeadsScroll,
+              agents: heads.map(\.source))
     }
 
     struct Shape: Hashable {
         let arrangement: BoardArrangement
-        /// How many columns, where there are columns. A third agent arriving
-        /// keeps the arrangement and still re-cuts every track on the board.
-        let tracks: Int
         let idle: Bool
-        /// Pinned heads or the agent line. A phone turned on its side keeps
-        /// its list, but trades the one for the other, and its list's groups
-        /// go from named sections to heads among the rows. On an idle board,
-        /// pinned heads or heads scrolling in the empty state
-        /// (`idleHeadsScroll`), which a fifth limit window can swap: animated,
-        /// the outgoing row slid up under the toolbar and "Nothing running"
-        /// slid down through the incoming heads.
+        /// Pinned heads, or heads leading the scroll. A phone turned on its
+        /// side keeps its list, but its heads go from pinned to the list's
+        /// first row. On an idle board, pinned heads or heads scrolling in
+        /// the empty state (`idleHeadsScroll`), which a fifth limit window
+        /// can swap: animated, the outgoing row slid up under the toolbar and
+        /// "Nothing running" slid down through the incoming heads.
         let headsScroll: Bool
         /// Which agents are on the board. One arriving or leaving changes
-        /// every head and every group even where the arrangement and the
-        /// track count stay as they were — two agents becoming two different
-        /// agents, or the phone's list going from one group to two.
+        /// every head's width where they stand two across, and the pinned
+        /// area's height.
         let agents: [String]
     }
 }
 
 /// The plan the board was last drawn from, and the scroll view it was drawn
-/// in: what an alarm or a name on the agent line acts on when pressed.
+/// in: what a press of the needs-you bar acts on.
 ///
-/// Not the plan of the pass that handed out the action. A head and the agent
-/// line run again only when something they draw changes, so the action they
-/// hold can be several events old, and the cards that pass's plan named may
-/// have moved, gone or been joined since (`BoardView.jumpAction`). Every pass
-/// writes this before anything it draws can be pressed.
+/// Not the plan of the pass that handed out the action. The bar runs again
+/// only when something it draws changes, so the action it holds can be
+/// several events old, and the cards that pass's plan named may have moved,
+/// gone or been joined since (`BoardView.barAction`). Every pass writes this
+/// before anything it draws can be pressed.
 ///
 /// A class held in @State and deliberately not observable, as `JumpLanding`
 /// is: the board writes it on every pass, and none of that is anything to
@@ -1902,7 +1907,7 @@ private final class DrawnBoard {
 /// for.
 ///
 /// A List makes a row only as it scrolls into view, so a card two screens
-/// down has no accessibility element when its alarm is pressed. The jump
+/// down has no accessibility element when the bar is pressed. The jump
 /// leaves its target here; the row, laid out by the scroll, finds itself
 /// named and takes the cursor (`BoardView.reportsLanding`). A row already
 /// laid out takes it at once, which is what the set is for: a row already on
@@ -1972,6 +1977,191 @@ private extension View {
     /// card's news, so it is simply drawn.
     func settles(on shape: BoardPlan.Shape) -> some View {
         transaction(value: shape) { $0.animation = nil }
+    }
+}
+
+// MARK: - Needs-you bar
+
+/// Where the needs-you bar comes and goes: nothing while no session is
+/// blocked, the bar while one is.
+///
+/// It enters from the bottom edge when the first block lands and leaves when
+/// none remain, and that is the only motion it has: under Reduce Motion it
+/// appears and goes in place (`motion`), and its words change in place. The
+/// animation is the slot's own, never the board's: a card turning blocked in
+/// the same update must not cross-fade its word into the new one.
+///
+/// A view of its own, made with `.equatable()`, and handed only what the bar
+/// draws: a hook event that changes none of it — a message, a token figure,
+/// another card's state — leaves the bar as it was, and does not lay it out
+/// again (`HeadRows` says why the container has to be a view of its own).
+private struct NeedsYouSlot: View, Equatable {
+    let face: NeedsYou.Face?
+    let oneLine: Bool
+    let onPress: BoardAction<Void>
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let face {
+                NeedsYouBar(face: face, oneLine: oneLine, onPress: onPress)
+                    // From behind the streak, which is drawn after it.
+                    .transition(.move(edge: .bottom))
+            }
+        }
+        .motion(.snappy, value: face != nil)
+    }
+}
+
+/// The board's one alarm: how many sessions are blocked, which one, in which
+/// project, and the way to it. "(!) 2 BLOCKED · Fix the login redirect · in
+/// acme-api · Show".
+///
+/// One button, the whole bar, at least 44pt tall. It is never hue alone: the
+/// blocked card's solid mark and its word lead it, the bar stands where
+/// nothing else on the board does, and it is there only while somebody is
+/// waiting on you. It wears the blocked card's own surface and, along its top,
+/// the blocked card's edge — no colour that is not already the board's.
+///
+/// One line where that fits, on a board two columns wide or a phone held
+/// sideways, which is short of height before it is short of width; on a
+/// phone upright, two, the alarm over the session. When room runs out the
+/// word BLOCKED goes first, the mark and the count staying, then the project,
+/// then the name is cut at its end.
+private struct NeedsYouBar: View {
+    let face: NeedsYou.Face
+    /// Whether it may take one line (`BoardView.board`).
+    let oneLine: Bool
+    let onPress: BoardAction<Void>
+
+    var body: some View {
+        Button {
+            onPress(())
+        } label: {
+            Group {
+                if oneLine {
+                    ViewThatFits(in: .horizontal) {
+                        oneLine(word: true, place: true)
+                        oneLine(word: false, place: true)
+                        oneLine(word: false, place: false)
+                        twoLines
+                    }
+                } else {
+                    twoLines
+                }
+            }
+            .padding(.horizontal, Theme.Space.md)
+            .padding(.vertical, Theme.Space.xs)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(NeedsYouStyle())
+        // "2 blocked: Fix the login redirect, in acme-api", and what a press
+        // does. Not .updatesFrequently: a new block is said aloud on its own
+        // (`BoardView.announceBlocks`).
+        .accessibilityLabel(face.spoken)
+        .accessibilityHint("Shows that session")
+        // Voice Control: "Show blocked", or "Tap Blocked". The label is a
+        // sentence whose count and name move while it is being said.
+        .accessibilityInputLabels(["Show blocked", "Blocked"])
+        // The words change in place, never cross-faded into the next ones.
+        .transaction(value: face) { $0.animation = nil }
+    }
+
+    /// The bar on one line: the alarm, the session, the verb at the end.
+    private func oneLine(word: Bool, place: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+            alarm(word: word)
+            session(place: place)
+                .fixedSize()
+            Spacer(minLength: Theme.Space.xs)
+            verb
+        }
+    }
+
+    /// The bar on two lines: the alarm and the verb, and under them the
+    /// session. Each line gives way on its own.
+    private var twoLines: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+            ViewThatFits(in: .horizontal) {
+                alarmLine(word: true)
+                alarmLine(word: false)
+            }
+            ViewThatFits(in: .horizontal) {
+                session(place: true)
+                    .fixedSize()
+                // The name alone, cut at its end where even that is too long.
+                session(place: false)
+            }
+        }
+    }
+
+    private func alarmLine(word: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+            alarm(word: word)
+            Spacer(minLength: Theme.Space.xs)
+            verb
+        }
+    }
+
+    /// The mark, the count and the word, in the blocked ink: the blocked
+    /// card's own badge, counted. A fixed token: "2 BLOC…" reads as a bug.
+    private func alarm(word: Bool) -> some View {
+        HStack(spacing: Theme.Space.xxs) {
+            Image(systemName: Theme.symbol(for: .blocked))
+            Text("\(face.count)")
+                .monospacedDigit()
+            if word {
+                Text(AgentStatus.blocked.label.uppercased())
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .kerning(0.5)
+        .foregroundStyle(Theme.color(for: .blocked))
+        .lineLimit(1)
+        .fixedSize()
+    }
+
+    /// The session in the primary ink, and where it is in the secondary.
+    private func session(place: Bool) -> some View {
+        var line = Text(face.name)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Theme.textPrimary)
+        if place, let location = face.place {
+            line = line + Text(" · \(location)")
+                .font(.subheadline)
+                .foregroundStyle(Theme.textSecondary)
+        }
+        return line
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    /// What a press does: brings the card it names, or after a press the
+    /// next blocked one. A word, in the secondary ink, at the far end.
+    private var verb: some View {
+        Text(face.next ? "Next" : "Show")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(Theme.textSecondary)
+            .lineLimit(1)
+            .fixedSize()
+    }
+}
+
+/// The bar's ground: the blocked card's surface, and its edge along the top,
+/// over the board. Under the finger the words dim and nothing else changes:
+/// the bar is already the loudest thing on the board, and a pressed state
+/// that added a surface would make it louder at the one moment it has been
+/// heard.
+private struct NeedsYouStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.55 : 1)
+            .background(Theme.cardSurface(for: .blocked))
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Theme.cardEdge(for: .blocked))
+                    .frame(height: 1)
+            }
     }
 }
 
@@ -2163,7 +2353,7 @@ private struct StreakBar: View {
 ///
 /// A plain list stands every section header 22pt clear of whatever is above
 /// it — measured in the simulator, and written down nowhere. That is 22pt of
-/// nothing between the heads and the first group's name, and again before
+/// nothing between the heads and the first project's name, and again before
 /// every later one, on a board where 12pt is the gap between two cards. The
 /// label already carries the space it wants, so the system's is taken out.
 ///
@@ -2173,7 +2363,7 @@ private struct StreakBar: View {
 /// Before 26 the nearest thing is the section spacing, which on 26.5 closes
 /// the gap between sections and leaves the first header's alone. Nothing older
 /// than 26 was available to run this on, so on iOS 17 and 18 expect the first
-/// group's name to stand up to 22pt lower than drawn, and no worse.
+/// project's name to stand up to 22pt lower than drawn, and no worse.
 private struct FlushSection: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
@@ -2184,28 +2374,25 @@ private struct FlushSection: ViewModifier {
     }
 }
 
-/// Keeps a pinned group name opaque while it hands over to the next one.
+/// Keeps a pinned project label opaque while it hands over to the next one.
 ///
 /// iOS 26 fades a pinned section header out as the following header pushes it
 /// off, and the fade takes the header's own background with it. For the length
-/// of that hand-over the last card of the outgoing group showed straight
+/// of that hand-over the last card of the outgoing section showed straight
 /// through its name — "Claude 3" printed over "8m ago · 1.4M", two lines of
-/// text on one, and exactly where the alarm's jump leaves the list when it
+/// text on one, and exactly where the bar's jump leaves the list when it
 /// bottoms out. The hard edge style puts the system's own opaque band behind
 /// whatever is pinned at the top, so the name may dim as it leaves but nothing
-/// is read through it.
+/// is read through it. Every section has a label now, so the list always
+/// has one to pin.
 ///
 /// Checked on 26.5, the only runtime here. Before 26 a plain list's pinned
 /// headers are pushed off without fading, so the label's own ground is enough
 /// and there is nothing to switch on.
 private struct OpaquePinnedLabels: ViewModifier {
-    /// Whether the list has group names to pin at all. With one agent there
-    /// are none, and the hard edge would leave an empty band where one stood.
-    let pinned: Bool
-
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.scrollEdgeEffectStyle(pinned ? .hard : .automatic, for: .top)
+            content.scrollEdgeEffectStyle(.hard, for: .top)
         } else {
             content
         }
