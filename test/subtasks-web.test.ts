@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import { JSDOM } from 'jsdom';
 import { loadBoard, session, online, type Board } from './board-harness';
 import { PIN_TIME, pinnedSessions } from './fixtures/web/pinned-sessions';
 
 /*
  * Subagents on the web board (1.7.0): the rows inside a card, the footer, the
  * WORKING reading, the session screen's subtasks section, and the promise
- * that a card without subagents is exactly the card 1.6.5 drew.
+ * that a card without subagents is exactly the card 1.6.5 drew, but for the
+ * meta line that 1.7.0's project sections change.
  *
  * Frames are the session JSON of docs/api.md: `subtasks` is optional, its
  * items are live and failed rows in start order, and its counts are exact.
@@ -89,7 +91,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('a card without subagents is the 1.6.5 card', () => {
+describe('a card without subagents is the 1.6.5 card, but for its meta line', () => {
   const PINNED = fs.readFileSync(path.join(__dirname, 'fixtures', 'web', 'cards-1.6.5.html'), 'utf8');
 
   async function pinnedBoard(subtasks?: unknown) {
@@ -101,13 +103,53 @@ describe('a card without subagents is the 1.6.5 card', () => {
     return b;
   }
 
+  /** Each card's markup by id, its meta line apart: { rest, meta }. */
+  function cardsIn(root: ParentNode) {
+    const out = new Map<string, { rest: string; meta: string }>();
+    for (const el of root.querySelectorAll('article.card')) {
+      const meta = el.querySelector('.meta')!.outerHTML;
+      out.set((el as HTMLElement).dataset.id!, { rest: el.outerHTML.replace(meta, '<!-- meta -->'), meta });
+    }
+    return out;
+  }
+  const pinned = () => cardsIn(new JSDOM(`<div>${PINNED}</div>`).window.document);
+
   // cards-1.6.5.html is what master's board drew for these sessions,
   // byte for byte; see pinned-sessions.ts. Nothing about subagents may leak
   // into a card that has none: no hairline, no group, no class, no zero.
-  it('draws the same markup, byte for byte', async () => {
+  //
+  // 1.7.0 also groups the board by project (project-sections-web.test.ts),
+  // which puts a label above each section and changes one thing on every
+  // card, on its meta line; everything else is held to 1.6.5's markup.
+  it('draws the same card, byte for byte, outside its meta line', async () => {
     const b = await pinnedBoard();
-    expect(b.grid().innerHTML).toBe(PINNED);
+    const now = cardsIn(b.grid());
+    const then = pinned();
+    expect([...now.keys()].sort()).toEqual([...then.keys()].sort());
+    for (const [id, card] of then) expect(now.get(id)!.rest, id).toBe(card.rest);
     expect(b.grid().classList.contains('has-subs')).toBe(false);
+  });
+
+  // The line changes in two ways and no others: the agent's mark leads it,
+  // plain, its name hidden for a screen reader and in a tooltip, where the
+  // bordered CLAUDE chip and the separator after it were; and "in <folder>"
+  // goes from every card, because each of these sessions is in its own
+  // folder's section and has not moved.
+  it('leads the meta line with the agent\'s mark, and keeps every other fact as it was', async () => {
+    const b = await pinnedBoard();
+    const now = cardsIn(b.grid());
+    for (const [id, card] of pinned()) {
+      // In 1.6.5 the chip came first, so every fact had a separator before
+      // it: the place goes with its own, then the chip with the one after it.
+      const expected = card.meta
+        .replace(/<span class="meta-sep">·<\/span><span class="proj"[^>]*>[^<]*<\/span>/, '')
+        .replace(/<span class="source">(<svg[\s\S]*?<\/svg>)([A-Z]+)<\/span><span class="meta-sep">·<\/span>/, (_, svg, word) => {
+          const name = word.charAt(0) + word.slice(1).toLowerCase();
+          return `<span class="meta-agent" title="${name}">${svg}<span class="sr-only">${name},</span></span>`;
+        });
+      expect(expected, `${id}: the fixture still has a chip`).not.toContain('class="source"');
+      expect(now.get(id)!.meta, id).toBe(expected);
+    }
   });
 
   // An older server sends no key; a broken one must not cost the card.
@@ -121,8 +163,10 @@ describe('a card without subagents is the 1.6.5 card', () => {
     ['an empty list with nothing done', { turnEnded: true, running: 0, items: [], done: 0 }],
     ['a list of nothing usable', { items: [null, 7, { id: 'bad id!', label: 'x', state: 'coding' }, { id: key(1) }], done: 0 }],
   ])('treats %s as no subagents', async (_name, subtasks) => {
+    // Read before the second board loads: the two share the stubbed globals.
+    const plain = (await pinnedBoard()).grid().innerHTML;
     const b = await pinnedBoard(subtasks);
-    expect(b.grid().innerHTML).toBe(PINNED);
+    expect(b.grid().innerHTML).toBe(plain);
     expect(b.grid().classList.contains('has-subs')).toBe(false);
   });
 });

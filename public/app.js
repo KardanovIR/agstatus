@@ -129,10 +129,15 @@
   const statusClass = (v) => (DISPLAY_STATUSES.includes(v) ? `status-${v}` : '');
   const stateMark = (v) => STATE_MARK[DISPLAY_STATUSES.includes(v) ? v : 'idle'] || '';
 
-  const sourceChip = (source) => {
-    const key = String(source || 'claude').toLowerCase();
-    const mark = key.startsWith('codex') ? ICON.codex : ICON.claude;
-    return `<span class="source">${mark}${escape((SOURCE_NAMES[key] || key).toUpperCase())}</span>`;
+  // The agent behind a session or a usage block: its name, and its neutral
+  // mark, the asterisk for Claude, the hexagon for Codex and the diamond for
+  // any other (marks.js). A session from before `source` existed is Claude's.
+  // Until 1.7.0 every agent that was not Codex wore Claude's asterisk.
+  const agentKey = (source) => String(source || 'claude').toLowerCase();
+  const agentName = (source) => SOURCE_NAMES[agentKey(source)] || agentKey(source);
+  const agentMark = (source) => {
+    const key = agentKey(source);
+    return (key === 'claude' ? ICON.claude : key.startsWith('codex') ? ICON.codex : ICON.agent) || '';
   };
 
   // ---- Painting -------------------------------------------------------------
@@ -247,9 +252,163 @@
     return order.map((id) => state.get(id));
   }
 
+  // ---- Project sections -----------------------------------------------------
+  //
+  // The board is grouped by project (docs/design/project-sections.md): a
+  // section per project under a label that sticks while its cards pass, the
+  // sections in one fixed order, and inside each the board's own order,
+  // filtered and never re-sorted, so a new session goes on top of its section.
+  //
+  // A project is the folder a session started in, which the server pins for
+  // the session's life as `homeProject`, so a later cd never moves a card. A
+  // server too old to send it leaves the live folder, `project`. A session
+  // with no usable folder, '' or a bare UUID (the hook's own test for a name
+  // nobody chose), goes in No project, always last.
+  //
+  // The labels are full-row headings inside the one grid, not containers, so
+  // no card ever changes parent: Focus (paintFocus), the history route's
+  // focus return (sessionOpener) and the reconciler all keep finding cards
+  // where they always were.
+
+  const UUID_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // No folder is ever named '', so it cannot collide with a real section.
+  const NO_PROJECT = '';
+
+  /** A folder name a person chose: not empty, and not a bare UUID. */
+  const realFolder = (v) => typeof v === 'string' && v !== '' && !UUID_NAME_RE.test(v);
+
+  /** Which section a session's card is in: the wire contract's section key. */
+  const sectionKey = (s) => (typeof s.homeProject === 'string' && s.homeProject !== ''
+    ? s.homeProject
+    : realFolder(s.project) ? s.project : NO_PROJECT);
+
+  /**
+   * The order every client draws sections in: by name ignoring case, exact
+   * case breaking a tie (AgStatus before agstatus), No project last. Never by
+   * activity, state or arrival. Code-unit comparisons of the names lowered,
+   * then of the names themselves, rather than localeCompare, whose answers
+   * vary with the browser's locale and ICU: iOS and Android must reach the
+   * same order from the same names.
+   */
+  function compareSections(a, b) {
+    if (a === b) return 0;
+    if (a === NO_PROJECT) return 1;
+    if (b === NO_PROJECT) return -1;
+    const la = a.toLowerCase();
+    const lb = b.toLowerCase();
+    if (la !== lb) return la < lb ? -1 : 1;
+    return a < b ? -1 : 1;
+  }
+
+  /** The board's sessions as sections, in order: [{ key, sessions }]. */
+  function sectionsOf(list) {
+    const by = new Map();
+    for (const s of list) {
+      const key = sectionKey(s);
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(s);
+    }
+    return [...by.keys()].sort(compareSections).map((key) => ({ key, sessions: by.get(key) }));
+  }
+
+  // Live labels, keyed by section: { el }. Beside `cards`, never in it, so
+  // no folder name can be taken for a session id.
+  const labels = new Map();
+
+  /**
+   * A label's inside: the name in exact case and the count, on one line, and
+   * nothing else, since a label is not a control (no mark, colour, limit,
+   * token total or alarm). Heard as one heading, "acme-api, 3 sessions", so
+   * a screen reader's headings list walks the projects. The line drawn for
+   * the eye is hidden from it, because fitLabel may cut what it shows.
+   */
+  function labelHTML(key, count) {
+    const sessions = `${count} session${count === 1 ? '' : 's'}`;
+    const name = key === NO_PROJECT ? 'No project' : key;
+    return `<span class="section-line" aria-hidden="true">`
+      + `<span class="section-name" title="${escape(name)}">${escape(name)}</span>`
+      + `<span class="section-count">${sessions}</span></span>`
+      + `<span class="sr-only">${escape(name)}, ${sessions}</span>`;
+  }
+
+  /**
+   * Fits a label to its one line, as iOS fits its own: where room runs short
+   * the count goes first, before any letter of the name, and then the name is
+   * cut in the middle, "agstatus-list…and-presence", keeping both ends, where
+   * a folder's distinguishing part often is. Measured, because CSS can cut
+   * text only at an end; split by code point, never inside one.
+   *
+   * Asked whenever a label is painted, and again when it changes size (the
+   * window's width, or the reader's text size, which a label's height
+   * follows) and when the webfonts arrive. Where nothing is laid out it has
+   * no room to measure, and leaves the name whole for CSS to end-cut.
+   */
+  function fitLabel(el) {
+    const line = el.querySelector('.section-line');
+    const name = el.querySelector('.section-name');
+    const count = el.querySelector('.section-count');
+    const room = line ? line.clientWidth : 0;
+    if (!room || !name || !count) return;
+    const full = name.getAttribute('title') || '';
+    if (name.textContent !== full) name.textContent = full;
+    count.hidden = false;
+    const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
+    if (name.scrollWidth + gap + count.offsetWidth <= room) return;
+    count.hidden = true;
+    if (name.scrollWidth <= room) return;
+    const chars = Array.from(full);
+    const cut = (k) => `${chars.slice(0, Math.ceil(k / 2)).join('')}\u2026${
+      chars.slice(chars.length - Math.floor(k / 2)).join('')}`;
+    // The most characters that fit around the ellipsis, by halving.
+    let lo = 0;
+    let hi = chars.length - 1;
+    while (lo < hi) {
+      const k = Math.ceil((lo + hi) / 2);
+      name.textContent = cut(k);
+      if (name.scrollWidth <= room) lo = k; else hi = k - 1;
+    }
+    name.textContent = cut(lo);
+  }
+
+  const labelSizes = typeof ResizeObserver === 'function'
+    ? new ResizeObserver((entries) => { for (const e of entries) fitLabel(e.target); })
+    : null;
+  if (document.fonts && typeof document.fonts.addEventListener === 'function') {
+    document.fonts.addEventListener('loadingdone', () => { for (const { el } of labels.values()) fitLabel(el); });
+  }
+
+  /** The label for a section, made the first time it is drawn; and whether it was painted. */
+  function labelFor(key, count) {
+    let label = labels.get(key);
+    if (!label) {
+      const el = document.createElement('h2');
+      // It arrives with its section's first card, and as that card does.
+      el.className = `section-label${key === NO_PROJECT ? ' is-none' : ''} entering`;
+      if (key !== NO_PROJECT) el.dataset.section = key;
+      const settle = (e) => { if (e.animationName === 'card-in') el.classList.remove('entering'); };
+      el.addEventListener('animationend', settle);
+      el.addEventListener('animationcancel', settle);
+      if (labelSizes) labelSizes.observe(el);
+      label = { el };
+      labels.set(key, label);
+    }
+    return { el: label.el, painted: paint(label.el, labelHTML(key, count)) };
+  }
+
+  /** A label leaving the board, by section; or every one, with no key. */
+  function dropLabels(key) {
+    for (const [k, { el }] of labels) {
+      if (key !== undefined && k !== key) continue;
+      if (labelSizes) labelSizes.unobserve(el);
+      el.remove();
+      labels.delete(k);
+    }
+  }
+
   /** A message in place of the grid; clears the reconciler with it. */
   function setGridMessage(html) {
     cards.clear();
+    dropLabels();
     gridEl.classList.remove('has-subs');
     paint(gridEl, html);
   }
@@ -333,11 +492,14 @@
       // the entire point of the block. The button stretches over the block
       // with an ::after overlay, so the whole card is still one big target and
       // the numbers stay readable as content.
-      const label = escape(SOURCE_NAMES[u.source] || u.source);
+      //
+      // The name carries the agent's mark, the legend for the marks that lead
+      // every card's meta line now that Claude and Codex share sections.
+      const label = escape(agentName(u.source));
       blocks.push(`
         <section class="usage-block" data-source="${escape(u.source)}">
           <h2 class="usage-src"><button class="usage-open" type="button" data-source="${escape(u.source)}"
-            >${label}<span class="usage-more" aria-hidden="true">›</span></button></h2>
+            ><span class="usage-name">${agentMark(u.source)}${label}</span><span class="usage-more" aria-hidden="true">›</span></button></h2>
           ${bars.join('')}
         </section>`);
     }
@@ -639,28 +801,35 @@
   }
 
   // The facts under the title, in the order you would ask for them: which
-  // agent, which machine, how long ago, how much.
+  // agent, which machine, where, how long ago, how much.
   //
-  // `project` is shown only when it differs from the name. The hook once built
-  // one value and sent it under both keys, so the old meta line repeated the
-  // card's own title on every card, forever. They answer different questions
-  // now: `name` is the session's title when the agent has one (the Claude app
-  // titles every session, `/rename` titles one in the CLI) and the folder it
-  // started in otherwise, while `project` follows the live directory — with a
-  // Claude worktree root reported as its repository, never as the folder name
-  // the app made up. So a titled card reads "in <repo>", which is where that
-  // work is happening. An untitled one grows the directory once the session
-  // has moved, and also from its first event at a worktree root, where the
-  // name is the worktree's own folder and the project its repository
-  // ("feature-x · in my-repo"); any other untitled session that never left
-  // home shows nothing extra.
+  // The agent is a mark, plain, leading the line: Claude and Codex share
+  // sections since 1.7.0, and the mark tells their cards apart where the
+  // bordered CLAUDE chip used to. It is the legend the usage blocks above
+  // give it. Its name is there for a screen reader, with the comma that
+  // parts it from the machine inside the same hidden text (Chrome sets a
+  // detached one apart as a word of its own), and for the pointer, as a
+  // tooltip. Never a colour: colour on this board means state.
+  //
+  // The place, "in <folder>", shows only once a session has moved: when its
+  // live folder is a real one and differs from both its section, which the
+  // label above already names, and its name. `name` is the session's title
+  // when the agent has one and the folder it started in otherwise, and
+  // `project` follows the live directory, a Claude worktree root reported as
+  // its repository. So a session that ran `cd web` reads "in web", and an
+  // untitled one at a worktree root, named for the worktree's folder, reads
+  // "in <repo>" until its section knows the repo. On a server too old to
+  // send `homeProject` the section is the live folder, and no card says it.
   function cardMeta(s) {
+    const name = agentName(s.source);
+    const agent = `<span class="meta-agent" title="${escape(name)}">${agentMark(s.source)}`
+      + `<span class="sr-only">${escape(name)},</span></span>`;
     const facts = [];
     if (s.host && s.host.machine) {
       const host = machineLabel(s.host);
       facts.push(`<span class="host" title="${escape(host)}">${escape(host)}</span>`);
     }
-    if (s.project && s.project !== s.name) {
+    if (realFolder(s.project) && s.project !== sectionKey(s) && s.project !== s.name) {
       facts.push(`<span class="proj" title="${escape(s.project)}">in ${escape(s.project)}</span>`);
     }
     // Left empty on purpose: paintTimes fills it, here and on the 15s tick, so
@@ -684,8 +853,10 @@
     if (typeof s.tokens === 'number') {
       facts.push(`<span class="tok">${escape(fmtTokens(s.tokens))} tokens</span>`);
     }
-    return `<div class="meta">${sourceChip(s.source)}`
-      + facts.map((f) => `<span class="meta-sep">·</span>${f}`).join('')
+    // The mark is set apart from the first fact by the line's gap, as the
+    // mockups draw it ("✳ MacBook Pro · 2m ago"), not by a separator.
+    return `<div class="meta">${agent}`
+      + facts.map((f, i) => `${i ? '<span class="meta-sep">·</span>' : ''}${f}`).join('')
       + '</div>';
   }
 
@@ -794,7 +965,6 @@
     // Whatever message block was showing is not a card, so it goes first.
     if (cards.size === 0 && gridEl.firstChild) paint(gridEl, '');
 
-    let anchor = null;
     let withSubs = false;
     for (const s of list) {
       if (subtasksOf(s)) withSubs = true;
@@ -817,18 +987,41 @@
         cards.set(s.id, rec);
       }
       patchCard(rec, s);
-      // Ordering in one pass. insertBefore on a node already in place would
-      // still reparent it, which restarts nothing but is work for nothing.
-      const next = anchor ? anchor.nextSibling : gridEl.firstChild;
-      if (next !== rec.el) gridEl.insertBefore(rec.el, next);
-      anchor = rec.el;
     }
 
+    // Ordering in one pass: each section's label, then its cards. A node is
+    // moved only when it is not already where it belongs; insertBefore on a
+    // node in place would still reparent it, which is work for nothing. A
+    // node that does move (a card whose section changed, or whatever stood
+    // between) takes focus with it out of the document, so the control that
+    // had it before the pass gets it back after, without scrolling the page.
+    const held = gridEl.contains(document.activeElement) ? document.activeElement : null;
+    let anchor = null;
+    const place = (el) => {
+      const next = anchor ? anchor.nextSibling : gridEl.firstChild;
+      if (next !== el) gridEl.insertBefore(el, next);
+      anchor = el;
+    };
+    const drawn = new Set();
+    const painted = [];
+    for (const { key, sessions } of sectionsOf(list)) {
+      drawn.add(key);
+      const label = labelFor(key, sessions.length);
+      if (label.painted) painted.push(label.el);
+      place(label.el);
+      for (const s of sessions) place(cards.get(s.id).el);
+    }
+
+    // A section that emptied takes its label with it.
+    for (const key of [...labels.keys()]) if (!drawn.has(key)) dropLabels(key);
+    // In place now, so there is a line to measure.
+    for (const el of painted) fitLabel(el);
     for (const [id, rec] of cards) {
       if (state.has(id)) continue;
       rec.el.remove();
       cards.delete(id);
     }
+    if (held && held.isConnected && document.activeElement !== held) held.focus({ preventScroll: true });
 
     // Each card keeps its own height while any of them carries subagent rows
     // (board.css), so a short card does not stretch beside a tall one.

@@ -220,7 +220,8 @@ body {
   }
 }
 
-.card.entering {
+.card.entering,
+.section-label.entering {
   animation: card-in var(--d-slow) var(--ease) both;
 }
 
@@ -289,6 +290,109 @@ body {
  * which the landing page loads without this file. */
 #grid.has-subs { align-items: start; }
 
+/* ---- Project sections ---------------------------------------------------
+ * The board is grouped by project (app.js, "Project sections"): a label per
+ * section, a full row of the one grid, and under it that section's cards.
+ * Spacing does the grouping, as it does on iOS: 24px between sections, 8px
+ * from a label to its first card, the grid's own gap between cards, and
+ * nothing boxed. Here and not in card.css, which the landing page loads for
+ * a .grid of its own that has no sections.
+ *
+ * A label sticks to the top of the window, on the page's own ground, while
+ * its cards pass under it, and the next label slides over it: every label
+ * sticks within the one grid, and a later one paints over an earlier one.
+ * A label is one line at every width and text size, so each is exactly as
+ * tall as the one it covers. */
+#grid {
+  /* A label's line, and what the label takes at the top of the window,
+   * which a jump to a card clears (shell.css). */
+  --label-line: calc(var(--t-md) * var(--lh-tight));
+  --label-h: calc(var(--label-line) + 2 * var(--space-xs));
+}
+
+.section-label {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: 0;
+  /* Over the cards, which are positioned too (card.css). */
+  z-index: 1;
+  /* 24px after the cards above, with the grid's 12px gap, and 8px before
+   * the cards below. */
+  margin: var(--space-sm) 0 calc(var(--space-xs) - var(--space-sm));
+  padding: var(--space-xs) 0;
+  background: var(--ink-950);
+  font-family: var(--font-read);
+  font-size: var(--t-md);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  color: var(--text-1);
+}
+
+.section-label:first-child { margin-top: 0; }
+
+/* One line, whatever wraps inside it: the line's own box clips, not the
+ * label's, whose padding would show the top of a second. */
+.section-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-xs);
+  height: var(--label-line);
+  overflow: hidden;
+}
+
+/* The name in exact case. It gives way after the count, and then in the
+ * middle (app.js fitLabel, which measures); the ellipsis here only cuts its
+ * end before there is anything to measure. */
+.section-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The count, quiet, in the board's figures. On a line too narrow for both
+ * it wraps under the name, where the line's one-line height hides it, until
+ * fitLabel takes it away: the count goes before any letter of the name. */
+.section-count {
+  flex: none;
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* No project is the board's words, not a folder's name. */
+.section-label.is-none .section-name {
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* The agent's mark, leading every card's meta line (app.js cardMeta): the
+ * asterisk, the hexagon or the diamond, in the line's own quiet ink, as a
+ * plain mark. It replaced the bordered agent chip, which card.css keeps for
+ * the landing page's cards. 12px at the default text size, in rem so it
+ * grows with the facts beside it, and set 2px low so it centres on them. */
+.meta-agent { flex: none; }
+
+.meta-agent svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  vertical-align: -0.125rem;
+}
+
+/* A usage block's name carries its agent's mark too: the legend for the
+ * marks on the cards. */
+.usage-name svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.375rem;
+  vertical-align: -0.125rem;
+}
+
 /* ---- Empty state --------------------------------------------------------
  * Teaches the interface rather than announcing its own emptiness. */
 .empty {
@@ -332,4 +436,6 @@ body {
 @media (min-width: 1100px) {
   body { padding: var(--space-lg) var(--space-lg) var(--space-2xl); }
   .grid { gap: var(--space-md); }
+  /* The same 24 and 8 around a label, with the grid's 16px gap. */
+  .section-label { margin: var(--space-xs) 0 calc(var(--space-xs) - var(--space-md)); }
 }

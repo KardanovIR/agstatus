@@ -96,6 +96,10 @@
   const ICON = {
     claude: stroked('', '<path d="M8 2.4v11.2M3.15 5.2l9.7 5.6M3.15 10.8l9.7-5.6"/>'),
     codex: stroked('', '<path d="M8 1.9 13.3 4.95v6.1L8 14.1 2.7 11.05v-6.1Z"/>'),
+    // Any other agent: a diamond, as tall as the hexagon. It used to wear
+    // Claude's asterisk, which said something about the session that was
+    // not true. Like the two above, neutral ink and never a colour.
+    agent: stroked('', '<path d="M8 1.9 14.1 8 8 14.1 1.9 8Z"/>'),
     // Two overlapping windows. The one behind is drawn only where the front one
     // does not cover it, so the two never cross at 15px.
     focus: stroked('',

@@ -5,6 +5,9 @@
  * sessions, at PIN_TIME, with machine m1 online — so the board must still
  * draw them byte for byte, whatever 1.7.0 added beside them. It was 1.6.3's
  * until 1.7.0 was replayed onto 1.6.5, whose cards gained their stale form.
+ * 1.7.0's project sections change each card's meta line and nothing else on
+ * it (the agent's mark for the chip, and no "in <folder>" for a session that
+ * has not moved), which subtasks-web.test.ts spells out against this file.
  */
 export const PIN_TIME = Date.UTC(2026, 9, 28, 12, 0, 0);
 
