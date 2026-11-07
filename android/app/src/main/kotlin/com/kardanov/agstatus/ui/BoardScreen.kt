@@ -3,13 +3,20 @@ package com.kardanov.agstatus.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.view.accessibility.AccessibilityManager
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,6 +59,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
@@ -62,12 +70,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.semantics.contentDescription
@@ -99,7 +116,9 @@ import kotlin.math.abs
  * Each project is a section: a label that sticks while its cards pass under
  * it, then its cards, in the store's stable order. Sections run in name order
  * (ProjectSections.ORDER) and never move because one got busy. The usage
- * bars stay pinned above the list.
+ * bars stay pinned above the list, and while anything is blocked the
+ * needs-you bar is the screen's bottom bar: the board's one alarm, and the way
+ * to the card that needs you.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -122,10 +141,13 @@ fun BoardScreen(
     val isDemo = connection == SessionStore.Connection.DEMO
     val boardGone = connection == SessionStore.Connection.BOARD_GONE
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val view = LocalView.current
+    val density = LocalDensity.current
     // A card that moves has news: the list is keyed by session id, so a card
     // only animates when the board actually reordered. Nulling the specs is
     // how a device that asked for less motion gets the same reorder with no
-    // travel.
+    // travel. The bar's entrance and the jump follow it too.
     val reduceMotion = rememberReduceMotion()
 
     // Built on every frame from the flat list, never stored.
@@ -140,6 +162,75 @@ fun BoardScreen(
     val drawn = remember { DrawnBoard() }
     val drawnInPlace = remember(sections) { drawn.moves(sections) }
     SideEffect { drawn.record(sections) }
+
+    // The needs-you bar's walk: the card it last brought, Saveable, so turning
+    // the phone does not start the walk over. The card it brought keeps the
+    // focus requester; for two seconds it also wears the ring.
+    var shown by rememberSaveable { mutableStateOf<String?>(null) }
+    var focusTarget by remember { mutableStateOf<String?>(null) }
+    var ringed by remember { mutableStateOf<String?>(null) }
+    val jumpFocus = remember { FocusRequester() }
+    val labelHeight = remember { MeasuredHeight() }
+    // What the board brings into view for focus, the bar's and a keyboard's
+    // alike, is the room under the stuck label: a focused card is never left
+    // with its top under a label.
+    val underLabel = remember(density) {
+        UnderLabelBringIntoView { labelHeight.px + with(density) { RING_CLEARANCE.toPx() } }
+    }
+    val reading = remember(sections, shown) {
+        ProjectSections.barTarget(sections, shown)?.let { target ->
+            BarReading(
+                blocked = sections.sumOf { section -> section.sessions.count { it.isBlocked } },
+                target = target,
+                walks = ProjectSections.barWalks(sections, shown),
+            )
+        }
+    }
+    // Nothing blocked: the walk is over, and the next block starts with Show.
+    LaunchedEffect(reading == null) {
+        if (reading == null) shown = null
+    }
+    LaunchedEffect(ringed) {
+        if (ringed == null) return@LaunchedEffect
+        delay(RING_HOLD_MILLIS)
+        ringed = null
+    }
+
+    val currentSections by rememberUpdatedState(sections)
+    // A press reads the board as last drawn: a card dismissed or unblocked
+    // since the bar named it is passed over for the next.
+    val pressBar: () -> Unit = press@{
+        val drawnSections = currentSections
+        val target = ProjectSections.barTarget(drawnSections, shown) ?: return@press
+        val index = ProjectSections.listIndex(drawnSections, target.id)
+        if (index < 0) return@press
+        shown = target.id
+        focusTarget = target.id
+        ringed = null
+        scope.launch {
+            // Under its label: the label that sticks over a card in its
+            // section's middle, or its own over a section's first card, with
+            // room for the ring.
+            val offset = -(labelHeight.px + with(density) { RING_CLEARANCE.roundToPx() })
+            // It snaps with animations off, and while TalkBack runs, which
+            // reads the card it lands on rather than the scroll.
+            if (reduceMotion || touchExploration(context)) {
+                listState.scrollToItem(index, offset)
+            } else {
+                listState.animateScrollToItem(index, offset)
+            }
+            ringed = target.id
+            // The card is composed now: the scroll measured it. Moving focus
+            // there takes TalkBack and a keyboard with it. Should the card not
+            // take it, TalkBack is still told where the press went.
+            withFrameNanos { }
+            val focused = runCatching { jumpFocus.requestFocus() }.getOrDefault(false)
+            if (!focused && touchExploration(context)) {
+                @Suppress("DEPRECATION")
+                view.announceForAccessibility("${ProjectSections.cardLead(target)}, blocked")
+            }
+        }
+    }
 
     var refreshing by remember { mutableStateOf(false) }
     val refresh: () -> Unit = {
@@ -218,6 +309,13 @@ fun BoardScreen(
                 },
             )
         },
+        bottomBar = {
+            NeedsYouBar(
+                reading = reading.takeUnless { boardGone },
+                reduceMotion = reduceMotion,
+                onPress = pressBar,
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -257,61 +355,94 @@ fun BoardScreen(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         val now by rememberTickingClock(30_000L)
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            state = listState,
-                            // No spacing of its own: each label and card
-                            // carries its share (SectionChrome's spacing).
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                        ) {
-                            for (section in sections) {
-                                stickyHeader(key = section.key, contentType = "label") {
-                                    ProjectLabel(
-                                        section = section,
-                                        // A label that goes takes no fade:
-                                        // its last card has already gone, by a
-                                        // swipe or to another section.
-                                        modifier = Modifier.listMotion(
-                                            item = this,
-                                            moves = !reduceMotion && section.key !in drawnInPlace,
-                                            fadesOut = false,
-                                        ),
-                                    )
-                                }
-                                val last = section.sessions.last().id
-                                items(section.sessions, key = { it.id }, contentType = { "card" }) { session ->
-                                    val current by rememberUpdatedState(session)
-                                    val dismissState = rememberSwipeToDismissBoxState(
-                                        confirmValueChange = { value ->
-                                            if (value == SwipeToDismissBoxValue.EndToStart) {
-                                                scope.launch { store.dismiss(current) }
-                                                true
-                                            } else {
-                                                false
-                                            }
-                                        },
-                                    )
-                                    SwipeToDismissBox(
-                                        state = dismissState,
-                                        modifier = Modifier
-                                            .listMotion(item = this, moves = !reduceMotion && session.id !in drawnInPlace)
-                                            .padding(bottom = if (session.id == last) SECTION_GAP else CARD_GAP),
-                                        enableDismissFromStartToEnd = false,
-                                        enableDismissFromEndToStart = true,
-                                        backgroundContent = { DismissBackground(dismissState) },
-                                    ) {
-                                        SessionCard(
-                                            session = session,
-                                            nowMillis = now,
-                                            machines = machines,
-                                            focus = focus[session.id],
-                                            subtaskLedger = subtaskSlots[session.id],
-                                            onCommand = { type -> store.sendCommand(session.id, type) },
-                                            onOpenHistory = { subtaskId -> onOpenHistory(session.id, subtaskId) },
-                                            modifier = Modifier.clickable {
-                                                onOpenHistory(session.id, null)
+                        val touchMode = LocalInputModeManager.current.inputMode == InputMode.Touch
+                        CompositionLocalProvider(LocalBringIntoViewSpec provides underLabel) {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                state = listState,
+                                // No spacing of its own: each label and card
+                                // carries its share (SectionChrome's spacing).
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                            ) {
+                                for (section in sections) {
+                                    stickyHeader(key = section.key, contentType = "label") {
+                                        ProjectLabel(
+                                            section = section,
+                                            // A label that goes takes no fade:
+                                            // its last card has already gone, by a
+                                            // swipe or to another section.
+                                            modifier = Modifier
+                                                .listMotion(
+                                                    item = this,
+                                                    moves = !reduceMotion && section.key !in drawnInPlace,
+                                                    fadesOut = false,
+                                                )
+                                                .onSizeChanged { labelHeight.px = it.height },
+                                        )
+                                    }
+                                    val last = section.sessions.last().id
+                                    items(section.sessions, key = { it.id }, contentType = { "card" }) { session ->
+                                        val current by rememberUpdatedState(session)
+                                        val dismissState = rememberSwipeToDismissBoxState(
+                                            confirmValueChange = { value ->
+                                                if (value == SwipeToDismissBoxValue.EndToStart) {
+                                                    scope.launch { store.dismiss(current) }
+                                                    true
+                                                } else {
+                                                    false
+                                                }
                                             },
                                         )
+                                        // On at once, and gone at once if the card
+                                        // is unblocked; it lets go of its own accord
+                                        // with a fade, unless animations are off.
+                                        val ringOn = ringed == session.id && session.isBlocked
+                                        val ring by animateFloatAsState(
+                                            targetValue = if (ringOn) 1f else 0f,
+                                            animationSpec = if (ringOn || reduceMotion || ringed == session.id) {
+                                                snap()
+                                            } else {
+                                                tween(RING_FADE_MILLIS)
+                                            },
+                                            label = "jumpRing",
+                                        )
+                                        // Only the card the bar brought takes focus
+                                        // from code. A tap's card is focusable only
+                                        // from a keyboard (clickable), so in touch
+                                        // mode, which TalkBack is, it is made
+                                        // focusable for the jump.
+                                        val takesFocus = if (session.id == focusTarget) {
+                                            Modifier
+                                                .focusRequester(jumpFocus)
+                                                .then(if (touchMode) Modifier.focusable() else Modifier)
+                                        } else {
+                                            Modifier
+                                        }
+                                        SwipeToDismissBox(
+                                            state = dismissState,
+                                            modifier = Modifier
+                                                .listMotion(item = this, moves = !reduceMotion && session.id !in drawnInPlace)
+                                                .padding(bottom = if (session.id == last) SECTION_GAP else CARD_GAP),
+                                            enableDismissFromStartToEnd = false,
+                                            enableDismissFromEndToStart = true,
+                                            backgroundContent = { DismissBackground(dismissState) },
+                                        ) {
+                                            SessionCard(
+                                                session = session,
+                                                nowMillis = now,
+                                                machines = machines,
+                                                focus = focus[session.id],
+                                                subtaskLedger = subtaskSlots[session.id],
+                                                onCommand = { type -> store.sendCommand(session.id, type) },
+                                                onOpenHistory = { subtaskId -> onOpenHistory(session.id, subtaskId) },
+                                                modifier = Modifier
+                                                    .jumpRing { ring }
+                                                    .then(takesFocus)
+                                                    .clickable {
+                                                        onOpenHistory(session.id, null)
+                                                    },
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -383,6 +514,37 @@ private class DrawnBoard {
     }
 }
 
+/**
+ * Brings what takes focus into the room under the stuck label rather than
+ * the whole list. The default brings a focused card wholly into view, so a
+ * card taller than the room under the label was pushed up until its top and
+ * the bar's ring went under the label. Here a card in that room stays where
+ * it is, one taller than the room has its top just under the label, and one
+ * above or below moves the least that brings it into the room.
+ */
+private class UnderLabelBringIntoView(private val top: () -> Float) : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+        val start = top().coerceIn(0f, containerSize)
+        val leading = offset - start
+        val trailing = offset + size - containerSize
+        return when {
+            leading >= 0f && trailing <= 0f -> 0f
+            size > containerSize - start -> leading
+            leading < 0f -> leading
+            else -> trailing
+        }
+    }
+}
+
+/** A label's height, as last laid out, for a jump to land under it. Plain: reading it recomposes nothing. */
+private class MeasuredHeight {
+    var px = 0
+}
+
+/** TalkBack, or another service that explores by touch, is on. */
+private fun touchExploration(context: Context): Boolean =
+    (context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager)
+        ?.isTouchExplorationEnabled == true
 
 /** Drag distance at which the dismiss background reaches full opacity. */
 private const val DISMISS_REVEAL_PX = 220f

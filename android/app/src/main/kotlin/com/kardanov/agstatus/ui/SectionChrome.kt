@@ -1,28 +1,55 @@
 package com.kardanov.agstatus.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -30,15 +57,19 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.ProjectSection
 import com.kardanov.agstatus.ProjectSections
+import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.Theme
 import java.util.Locale
 
 /**
  * The chrome of the board grouped by project (docs/design/project-sections.md):
- * the label over each section and the agents' marks. What they say is worked
- * out in ProjectSections (Models.kt), so it can be tested; these only draw it.
+ * the label over each section, the needs-you bar along the bottom edge, the
+ * agents' marks, and the ring a card the bar brought wears for two seconds.
+ * What they say is worked out in ProjectSections (Models.kt), so it can be
+ * tested; these only draw it.
  */
 
 // MARK: - Spacing
@@ -205,12 +236,240 @@ internal fun ProjectLabel(section: ProjectSection, modifier: Modifier = Modifier
     }
 }
 
+// MARK: - Needs-you bar
+
+/** What the bar says. [walks] is whether its verb is "Next" rather than "Show". */
+internal data class BarReading(
+    val blocked: Int,
+    val target: Session,
+    val walks: Boolean,
+) {
+    val where: String? get() = ProjectSections.barWhere(target)
+    val said: String get() = ProjectSections.barDescription(blocked, target)
+}
+
+/** The board's ease (public/tokens.css `--ease`) and its `--d-mid`, as the subagent rows move. */
+private val BarEase = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
+private const val BAR_MOVE_MILLIS = 220
+
+/**
+ * The needs-you bar: the board's one alarm, the screen's bottom bar, present
+ * only while a session is blocked. "(!) 2 BLOCKED · Fix the login redirect ·
+ * in acme-api · Show". The mark, the count and the word are in the blocked
+ * ink, the session in primary ink, the place and the verb in secondary. It
+ * names the card a press brings; after a press the next one, and its verb is
+ * "Next" ([BarReading.walks]).
+ *
+ * One line on a wide screen, and on a phone two, the alarm over the session.
+ * When room runs out it gives up, in order: the word BLOCKED (the mark and the
+ * count stay), the place, then the end of the name. The whole bar is one
+ * button, at least 48dp tall, and TalkBack hears "2 blocked: Fix the login
+ * redirect, in acme-api", then "double-tap to show that session".
+ *
+ * It enters from the bottom edge as the first block lands and leaves when none
+ * remain; with animations off it appears and goes in place. Its words change
+ * in place, never cross-faded. While it leaves it keeps the last thing it said.
+ */
+@Composable
+internal fun NeedsYouBar(reading: BarReading?, reduceMotion: Boolean, onPress: () -> Unit) {
+    // A plain holder, not state: what the bar said last, for it to say while it leaves.
+    val last = remember { LastReading() }
+    if (reading != null) last.value = reading
+    AnimatedVisibility(
+        visible = reading != null,
+        enter = if (reduceMotion) {
+            EnterTransition.None
+        } else {
+            expandVertically(tween(BAR_MOVE_MILLIS, easing = BarEase), expandFrom = Alignment.Top)
+        },
+        exit = if (reduceMotion) {
+            ExitTransition.None
+        } else {
+            shrinkVertically(tween(BAR_MOVE_MILLIS, easing = BarEase), shrinkTowards = Alignment.Top)
+        },
+    ) {
+        val shown = reading ?: last.value ?: return@AnimatedVisibility
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Theme.card)
+                .clickable(role = Role.Button, onClickLabel = "show that session", onClick = onPress)
+                .semantics { contentDescription = shown.said },
+        ) {
+            HorizontalDivider(thickness = 1.dp, color = Theme.cardBorder)
+            BarContent(
+                reading = shown,
+                modifier = Modifier
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                    .defaultMinSize(minHeight = 47.dp)
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .clearAndSetSemantics {},
+            )
+        }
+    }
+}
+
+/** What the bar said last. Updating it must not recompose. */
+private class LastReading {
+    var value: BarReading? = null
+}
+
+@Composable
+private fun BarContent(reading: BarReading, modifier: Modifier = Modifier) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        // A phone's width is two lines, as on iOS; a wide screen's one.
+        val oneLine = maxWidth >= 600.dp
+        val verb = @Composable {
+            Text(
+                text = if (reading.walks) "Next" else "Show",
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                fontWeight = FontWeight.Medium,
+                color = Theme.textSecondary,
+                maxLines = 1,
+            )
+        }
+        if (oneLine) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FirstFitting(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Alarm(reading.blocked, word = true)
+                        BarGap()
+                        NameAndWhere(reading.target.displayName, reading.where)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Alarm(reading.blocked, word = false)
+                        BarGap()
+                        NameAndWhere(reading.target.displayName, reading.where)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Alarm(reading.blocked, word = false)
+                        BarGap()
+                        BarName(reading.target.displayName)
+                    }
+                }
+                BarGap()
+                verb()
+            }
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FirstFitting(Modifier.weight(1f)) {
+                        Alarm(reading.blocked, word = true)
+                        Alarm(reading.blocked, word = false)
+                    }
+                    BarGap()
+                    verb()
+                }
+                FirstFitting {
+                    NameAndWhere(reading.target.displayName, reading.where)
+                    BarName(reading.target.displayName)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The alarm: blocked's own mark, the count, and the word, all in the blocked
+ * ink. The mark grows with the reader's text, so at 200% it is not a dot
+ * beside a word twice its height.
+ */
+@Composable
+private fun Alarm(blocked: Int, word: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Icon(
+            imageVector = Theme.iconFor(AgentStatus.BLOCKED),
+            contentDescription = null,
+            tint = Theme.blocked,
+            modifier = Modifier.size(textDp(15.sp)),
+        )
+        Text(
+            text = if (word) "$blocked BLOCKED" else "$blocked",
+            fontSize = 12.sp,
+            lineHeight = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.6.sp,
+            style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
+            color = Theme.blocked,
+            maxLines = 1,
+        )
+    }
+}
+
+/** The session, then where it is, which goes first when the line is short. */
+@Composable
+private fun NameAndWhere(name: String, where: String?) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        BarName(name)
+        if (where != null) {
+            Text(
+                text = " · $where",
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                color = Theme.textSecondary,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** The session's name, cut at its end only when nothing else is left to give. */
+@Composable
+private fun BarName(name: String) {
+    Text(
+        text = name,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        fontWeight = FontWeight.Medium,
+        color = Theme.textPrimary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
+}
+
+@Composable
+private fun BarGap() = Spacer(Modifier.size(10.dp))
+
+// MARK: - Ring
+
+/** How long a card the bar brought wears its ring, as a subagent row the card's tap arrived at keeps its lit ground. */
+internal const val RING_HOLD_MILLIS = 2_000L
+
+/** How the ring lets go: at once with animations off. */
+internal const val RING_FADE_MILLIS = 600
+
+/**
+ * The ring a card the bar brought wears: 2dp in a neutral ink, 2dp clear of
+ * the card's edge so it never reads as the blocked card's own brighter edge.
+ * Not a colour, because colour on this board is state, and no glow. Drawn
+ * outside the card's bounds, which the list does not clip across, and read
+ * in the draw phase alone, so its fade recomposes nothing.
+ */
+internal fun Modifier.jumpRing(alpha: () -> Float): Modifier = drawWithContent {
+    drawContent()
+    val shown = alpha()
+    if (shown <= 0f) return@drawWithContent
+    val stroke = 2.dp.toPx()
+    val outset = 2.dp.toPx() + stroke / 2
+    drawRoundRect(
+        color = Theme.textSecondary.copy(alpha = shown),
+        topLeft = Offset(-outset, -outset),
+        size = Size(size.width + 2 * outset, size.height + 2 * outset),
+        cornerRadius = CornerRadius(16.dp.toPx() + outset),
+        style = Stroke(width = stroke),
+    )
+}
+
+/** What the ring needs below the label a card lands under, so none of it is behind the label. */
+internal val RING_CLEARANCE = 6.dp
+
 // MARK: - Layout
 
 /**
  * The first child whose one line fits the width offered, else the last, which
  * is then measured at that width so it can cut itself short: the count before
- * the name goes, then the name's middle. Fit is asked of each child's
+ * the name, the place before the name's end. Fit is asked of each child's
  * intrinsic width, so only the chosen one is measured, and so the last one can
  * be measured at the real width rather than its own.
  */
