@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import { loadBoard, session, type Board } from './board-harness';
 
 /*
@@ -473,10 +475,12 @@ describe('the needs-you bar', () => {
     expect(barShows()).toEqual({ count: '1', name: 'Fix the login redirect', where: '·in acme-api', verb: 'Show' });
     expect(bar().querySelector('.needs-word')!.textContent).toBe('blocked');
     expect(bar().querySelector('.needs-alarm svg.state-mark')).not.toBe(null);
-    // One button, named as iOS names it, with the hint as its description.
+    // One button, named as iOS names it and then by the verb it shows, so
+    // its name holds every word of its label (WCAG 2.5.3), with the hint as
+    // its description.
     expect(bar().tagName).toBe('BUTTON');
     expect(bar().type).toBe('button');
-    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Fix the login redirect, in acme-api');
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Fix the login redirect, in acme-api, Show');
     expect(document.getElementById(bar().getAttribute('aria-describedby')!)!.textContent).toBe('Shows that session');
     expect(bar().querySelector('button, a, [tabindex]')).toBe(null);
   });
@@ -485,13 +489,13 @@ describe('the needs-you bar', () => {
     const b = await boardOf([
       blocked('n', 1, '', { project: '', name: 'Reading the brief', source: 'codex' }),
     ]);
-    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Reading the brief, Codex');
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Reading the brief, Codex, Show');
     expect(barShows().where).toBe('·Codex');
     b.emit('session', blocked('n', 0, '', { project: '', name: 'Codex', source: 'codex' }));
-    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Codex');
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Codex, Show');
     expect(barShows().where).toBe(null);
     b.emit('session', blocked('n', 0, 'acme-api', { name: 'acme-api', source: 'codex' }));
-    expect(bar().getAttribute('aria-label')).toBe('1 blocked: acme-api');
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: acme-api, Show');
   });
 
   // Reading order is the grid's: sections in order, then cards in order.
@@ -512,7 +516,7 @@ describe('the needs-you bar', () => {
     expect(document.activeElement).toBe(titleOf(b, 'a'));
     expect(card(b, 'a').classList.contains('is-ringed')).toBe(true);
     expect(barShows()).toEqual({ count: '2', name: 'Nightly backfill', where: '·in etl-jobs', verb: 'Next' });
-    expect(bar().getAttribute('aria-label')).toBe('2 blocked: Nightly backfill, in etl-jobs');
+    expect(bar().getAttribute('aria-label')).toBe('2 blocked: Nightly backfill, in etl-jobs, Next');
     await vi.advanceTimersByTimeAsync(2000);
     expect(card(b, 'a').classList.contains('is-ringed')).toBe(false);   // two seconds
     b.click(bar());
@@ -699,5 +703,66 @@ describe('a new block, aloud', () => {
     b.emit('session', blocked('a', 0, 'acme-api', { message: 'Approve: something else' }));
     await vi.advanceTimersByTimeAsync(700);
     expect(said()).toBe('');
+  });
+});
+
+// jsdom lays nothing out, so the stylesheets are held to what the browser
+// needs from them, as pages.test.ts holds the card's.
+describe('the stylesheets behind the sections and the bar', () => {
+  const read = (file: string) => fs.readFileSync(path.resolve(__dirname, '..', 'public', file), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const rule = (css: string, selector: string) => {
+    const m = new RegExp(`\\n${selector.replace(/[.()[\]:>]/g, '\\$&')} \\{([^}]*)\\}`).exec(css);
+    if (!m) throw new Error(`no rule for ${selector}`);
+    return m[1];
+  };
+  const board = read('board.css');
+  const shell = read('shell.css');
+
+  it('sticks each label to the top on the page\'s own opaque ground, over the cards', () => {
+    const r = rule(board, '.section-label');
+    expect(r).toMatch(/position:\s*sticky/);
+    expect(r).toMatch(/top:\s*0/);
+    expect(r).toMatch(/background:\s*var\(--ink-950\)/);
+    expect(r).toMatch(/z-index:\s*1\b/);
+    expect(r).toMatch(/grid-column:\s*1 \/ -1/);
+  });
+
+  // The landing page loads card.css without board.css or shell.css, and
+  // must draw exactly what it drew.
+  it('keeps the sections, the mark and the bar out of the sheet the landing page loads', () => {
+    const card = read('card.css');
+    for (const name of ['section-', 'meta-agent', 'usage-name', 'needs', 'is-ringed']) {
+      expect(card, name).not.toContain(name);
+    }
+    const landing = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'landing.html'), 'utf8');
+    expect(landing).not.toContain('board.css');
+    expect(landing).not.toContain('shell.css');
+  });
+
+  // Focus that lands under the stuck label or the fixed bar is hidden from
+  // the reader who moved it there (WCAG 2.4.11).
+  it('keeps whatever is scrolled into view clear of the stuck label and the bar', () => {
+    expect(rule(board, 'html:has(body:not(.detail-open) .section-label)')).toMatch(/scroll-padding-top:\s*calc\(var\(--label-h\)/);
+    expect(rule(shell, 'html:has(body.needs-up:not(.detail-open))')).toMatch(/scroll-padding-bottom:\s*calc\(var\(--needs-h/);
+    expect(rule(shell, 'body.needs-up:not(.detail-open)')).toMatch(/padding-bottom:\s*calc\(var\(--needs-h/);
+  });
+
+  it('fixes the bar to the bottom edge above the safe-area inset, at least 44px tall', () => {
+    const r = rule(shell, '.needs');
+    expect(r).toMatch(/position:\s*fixed/);
+    expect(r).toMatch(/bottom:\s*0/);
+    expect(r).toMatch(/min-height:\s*44px/);
+    expect(r).toMatch(/env\(safe-area-inset-bottom\)/);
+  });
+
+  // Motion for news only, and only on the compositor.
+  it('moves the bar by transform alone, and the board stills it under reduced motion', () => {
+    for (const name of ['needs-in', 'needs-out']) {
+      const frames = new RegExp(`@keyframes ${name} \\{([\\s\\S]*?)\\n\\}`).exec(shell)![1];
+      expect(frames, name).toMatch(/transform/);
+      expect(frames, name).not.toMatch(/\b(top|bottom|height|margin|padding)\s*:/);
+    }
+    expect(board).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*animation-duration:\s*0\.01ms/);
   });
 });

@@ -352,10 +352,17 @@
     const room = line ? line.clientWidth : 0;
     if (!room || !name || !count) return;
     const full = name.getAttribute('title') || '';
-    if (name.textContent !== full) name.textContent = full;
-    count.hidden = false;
     const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
-    if (name.scrollWidth + gap + count.offsetWidth <= room) return;
+    // Read first: a label drawn whole that still fits needs no write, so a
+    // window being resized lays the page out once for all of them, not once
+    // for each.
+    const whole = name.textContent === full && !count.hidden;
+    if (whole && name.scrollWidth + gap + count.offsetWidth <= room) return;
+    if (!whole) {
+      name.textContent = full;
+      count.hidden = false;
+      if (name.scrollWidth + gap + count.offsetWidth <= room) return;
+    }
     count.hidden = true;
     if (name.scrollWidth <= room) return;
     const chars = Array.from(full);
@@ -1111,7 +1118,11 @@
     const s = state.get(bar.target);
     const verb = bar.pressed && ids.length > 1 ? 'Next' : 'Show';
     const { name, place } = needsWhat(s);
-    const label = `${ids.length} blocked: ${name}${place ? `, ${place}` : ''}`;
+    // iOS's words, and then the verb the bar shows, so that its name holds
+    // every word of its label (WCAG 2.5.3): a speech user who says "click
+    // Show" or "click Next", as iOS Voice Control answers to "Show blocked",
+    // reaches it.
+    const label = `${ids.length} blocked: ${name}${place ? `, ${place}` : ''}, ${verb}`;
     if (needsEl.getAttribute('aria-label') !== label) needsEl.setAttribute('aria-label', label);
     if (paint(needsEl, needsHTML(ids.length, s, verb))) fitNeeds();
     showNeeds();
@@ -1168,12 +1179,13 @@
 
   /**
    * The page is padded by the bar's height while it shows, so nothing ends
-   * under it, and a jump clears it: measured, since it takes one line or two
-   * and grows with the reader's text.
+   * under it, and whatever is scrolled into view stops clear of it (the
+   * root's scroll padding, shell.css): measured, since it takes one line or
+   * two and grows with the reader's text. On the root, where both read it.
    */
   function padForNeeds() {
     if (needsEl.hidden || !needsEl.offsetHeight) return;
-    document.body.style.setProperty('--needs-h', `${needsEl.offsetHeight}px`);
+    document.documentElement.style.setProperty('--needs-h', `${needsEl.offsetHeight}px`);
   }
 
   /**
@@ -1212,12 +1224,12 @@
 
   /**
    * Brings a card into view: no scroll if it is already in view, below
-   * whatever label is stuck and above the bar; else it lands under its own
-   * stuck label (its scroll margin, shell.css), smoothly unless motion is
-   * reduced. Focus moves to its title, whose description reads the state and
-   * the message, and the title is ringed for two seconds in a neutral ink:
-   * the focus ring's green would say done on a blocked card, and a mouse
-   * press leaves no focus ring at all.
+   * whatever label is stuck and above the bar; else it lands 8px under its
+   * own stuck label (the root's scroll padding, board.css), smoothly unless
+   * motion is reduced. Focus moves to its title, whose description reads
+   * the state and the message, and the title is ringed for two seconds in a
+   * neutral ink: the focus ring's green would say done on a blocked card,
+   * and a mouse press leaves no focus ring at all.
    */
   function bring(id) {
     const rec = cards.get(id);

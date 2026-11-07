@@ -303,12 +303,19 @@ body {
  * sticks within the one grid, and a later one paints over an earlier one.
  * A label is one line at every width and text size, so each is exactly as
  * tall as the one it covers. */
-#grid {
-  /* A label's line, and what the label takes at the top of the window,
-   * which a jump to a card clears (shell.css). */
+html {
+  /* A label's line, and what the label takes at the top of the window. */
   --label-line: calc(var(--t-md) * var(--lh-tight));
   --label-h: calc(var(--label-line) + 2 * var(--space-xs));
 }
+
+/* Whatever is scrolled into view, a control taking keyboard focus or the
+ * card the needs-you bar brings, stops 8px clear of the stuck label above
+ * it, and of the bar below it while that shows (shell.css). Without this a
+ * reader tabbing back up landed on a title under the label, and one tabbing
+ * down on a Focus button under the bar. Only on the board: a screen that
+ * takes over the page has no label to clear. */
+html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(--label-h) + var(--space-xs)); }
 
 .section-label {
   grid-column: 1 / -1;

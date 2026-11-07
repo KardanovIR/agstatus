@@ -939,15 +939,12 @@ body.detail-open > .footer { display: none; }
 .needs.leaving { animation: needs-out var(--d-mid) var(--ease) both; }
 
 /* While it shows, the page ends above it rather than under it: its measured
- * height (app.js), the safe-area inset included, then the usual air. */
+ * height (app.js), the safe-area inset included, then the usual air. And
+ * whatever is scrolled into view stops 8px above it, as board.css stops it
+ * below the stuck label: a control taking keyboard focus is never hidden
+ * under the bar, and the card a press brings lands clear of both. */
 body.needs-up:not(.detail-open) { padding-bottom: calc(var(--needs-h, 3.5rem) + var(--space-2xl)); }
-
-/* The card the bar brought: it lands under its stuck label, 8px clear of it
- * (board.css's --label-h), and clear of the bar when it would land below. */
-#grid > .card {
-  scroll-margin-top: calc(var(--label-h) + var(--space-xs));
-  scroll-margin-bottom: calc(var(--needs-h, 0px) + var(--space-xs));
-}
+html:has(body.needs-up:not(.detail-open)) { scroll-padding-bottom: calc(var(--needs-h, 3.5rem) + var(--space-xs)); }
 
 /* Its title, ringed for two seconds in a neutral ink: the focus ring's green
  * would say done on a blocked card, and a press with a mouse draws no focus
