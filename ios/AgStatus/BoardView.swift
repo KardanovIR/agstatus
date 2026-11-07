@@ -2013,8 +2013,18 @@ private extension View {
 ///
 /// A view of its own, made with `.equatable()`, and handed only what the bar
 /// draws: a hook event that changes none of it — a message, a token figure,
-/// another card's state — leaves the bar as it was, and does not lay it out
-/// again (`HeadRows` says why the container has to be a view of its own).
+/// another card's state — does not run it (`HeadRows` says why the container
+/// has to be a view of its own).
+///
+/// Nor does such an event lay its insides out again, which takes the fixed
+/// height as well. The board's stack is laid out again whenever a card in
+/// the phone's list changes height, and asks each of its children for its
+/// size at several heights to learn how far it gives; every one was a new
+/// question to the bar, and its cascades answered it afresh, some 18 size
+/// asks and 8 placements a hook event, counted in the running app on a 6.9"
+/// simulator. Held to its own height, the bar is asked one way and answers
+/// from what it measured: none. The pinned heads' rows are held the same
+/// way, which is why they never showed it.
 private struct NeedsYouSlot: View, Equatable {
     let face: NeedsYou.Face?
     let lines: NeedsYouBar.Lines
@@ -2024,6 +2034,7 @@ private struct NeedsYouSlot: View, Equatable {
         VStack(spacing: 0) {
             if let face {
                 NeedsYouBar(face: face, lines: lines, onPress: onPress)
+                    .fixedSize(horizontal: false, vertical: true)
                     // From behind the streak, which is drawn after it.
                     .transition(.move(edge: .bottom))
             }
