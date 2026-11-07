@@ -208,6 +208,45 @@
   // Live cards, keyed by session id: { el, inner }.
   const cards = new Map();
 
+  // ---- The board's order ----------------------------------------------------
+  //
+  // Cards keep their place. The first paint is newest first; after that a
+  // session the board has not seen goes on top, and every other card stays
+  // where it was whatever it reports, blocked included. Until 1.7.0 the grid
+  // re-sorted by last update on every frame, so the card under the reader's
+  // eye jumped to the top on each tool call its agent made, and every card
+  // above it moved down one. Android's SessionStore.stableOrder, ported:
+  // the ids on show keep their order with fresh data, and the unseen ones
+  // join at the top, newest first among themselves.
+  //
+  // Worked out from `state` on every render rather than kept in step with
+  // each handler, so nothing that adds, replaces or drops a session can
+  // leave the two disagreeing.
+  let order = [];                  // session ids, top first
+  // A card being dismissed: the card below it, and its index, so a DELETE
+  // that fails puts it back where it was rather than on top as if new. The
+  // card below, not the index, because frames arriving during the DELETE
+  // shift indexes (Android's dismiss does the same).
+  const returning = new Map();     // session id → { below: id | null, at }
+
+  /** `state` in the board's order, which this brings up to date. */
+  function arrange() {
+    const kept = order.filter((id) => state.has(id));
+    const known = new Set(kept);
+    const unseen = [...state.values()].filter((s) => !known.has(s.id));
+    const added = unseen.filter((s) => !returning.has(s.id)).sort((a, b) => b.updatedAt - a.updatedAt);
+    const next = [...added.map((s) => s.id), ...kept];
+    for (const s of unseen) {
+      const back = returning.get(s.id);
+      if (!back) continue;
+      returning.delete(s.id);
+      const below = back.below === null ? next.length : next.indexOf(back.below);
+      next.splice(below >= 0 ? below : Math.min(back.at, next.length), 0, s.id);
+    }
+    order = next;
+    return order.map((id) => state.get(id));
+  }
+
   /** A message in place of the grid; clears the reconciler with it. */
   function setGridMessage(html) {
     cards.clear();
@@ -747,7 +786,7 @@
   }
 
   function renderGrid() {
-    const list = Array.from(state.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+    const list = arrange();
     renderStats(list);
     renderUsage(); // session changes can change which sources' bars are shown
     if (list.length === 0) { renderEmpty(); return; }
@@ -812,6 +851,8 @@
   }
 
   async function dismissSession(id) {
+    const at = order.indexOf(id);
+    if (at >= 0) returning.set(id, { below: at + 1 < order.length ? order[at + 1] : null, at });
     state.delete(id);
     // The card is going now, so its focus state and pending timers go with it:
     // waiting for the server's `remove` leaves them alive for as long as the SSE
@@ -828,6 +869,9 @@
     } catch {
       await refreshSessions();
     }
+    // Gone for good, or back in its place by now. Either way a later post
+    // that brings it back is a new card, and goes on top.
+    returning.delete(id);
   }
 
   // ---- Focus: bring a session's terminal to the front on its machine -------
@@ -1161,6 +1205,8 @@
   // Deleted/expired workspace: stop reconnecting and say so.
   function renderGone() {
     state.clear();
+    order = [];
+    returning.clear();
     machines.clear();
     for (const id of focus.keys()) setFocus(id, null);
     subs.clear();
