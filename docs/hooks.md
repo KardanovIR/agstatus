@@ -538,15 +538,34 @@ stay apart before they have titles. The per-project token totals still file a
 worktree's spend under the worktree folder; see
 [Where the tokens went](#where-the-tokens-went).
 
-The split is visible on the cards. Every board — web, iOS and Android —
-prints the project beside the name only when the two differ. A titled card
-nearly always differs, so it reads as where that work is happening ("Fix the
-login bug · in backend"); an untitled card grows the directory once the
-session has moved — exactly when that is worth saying. It also shows it from
-the first event at a Claude worktree root, where the name is the worktree's own
-folder and the project its repository, so `claude --worktree feature-x` with no
-`/rename` reads "feature-x · in my-repo" without having moved. Any other
-session that never left home shows nothing extra.
+**What the boards group by.** From 1.7.0 the boards — web, iOS and Android —
+show a section per project, and a session's project is the folder it
+*started* in: the server remembers the first usable `project` it hears for
+each session, as its `homeProject`, and keeps it for the session's life (see
+[the session object](api.md#the-session-object)). So the live `project`
+never moves a card: a session that starts in `acme-api` and runs `cd web`
+stays in the acme-api section. The hook sends nothing new for this — the
+server works it out from what it already gets — so the grouping is right on
+every machine as soon as the server is, with no reinstall. A Claude worktree
+root counts as its repository, as its `project` does. A session with no
+usable folder (an agent macOS started at `/`, a folder named by a bare UUID,
+a raw webhook post without a `project`) sits in **No project**, the last
+section, and leaves it once, when its first real folder arrives. A session
+started inside a subfolder, say `ios/`, lives under that subfolder's name.
+Sections run in name order and never reorder because one got busy. A
+section is a folder name and nothing more: two checkouts called `api` share
+one, and one repository checked out under two names makes two.
+
+The split is visible on the cards. From 1.7.0 every board prints the live
+folder, "in web", only when it is a real folder that differs from both the
+card's section and its name: when the session has moved away from where it
+started. A session that never left home shows nothing extra, titled or not,
+since its section already says where it is; one titled "Fix the login bug"
+that ran `cd web` says "in web" under its acme-api label. A session at a
+Claude worktree root sits in its repository's section, so
+`claude --worktree feature-x` with no `/rename` is a card called "feature-x"
+under my-repo. (Up to 1.6.5 the boards printed the project whenever it
+differed from the name, so a titled card nearly always carried it.)
 
 ## Plan-usage bars
 

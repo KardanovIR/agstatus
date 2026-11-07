@@ -35,4 +35,18 @@ describe('the two copies of the privacy policy', () => {
       expect(text, `${name} does not say minimal mode numbers subagents`).toContain('"Subagent 1"');
     }
   });
+
+  // 1.7.0 groups the board by project, and the server keeps the first folder
+  // name each session reports (homeProject) for as long as the session lasts.
+  // It is worked out from what is already sent, and both copies say both.
+  it('both say the server keeps the first project folder name, and that nothing more is sent for it', () => {
+    for (const [name, text] of copies) {
+      const flat = text.replace(/\s+/g, ' ');
+      expect(flat, `${name} does not say the server keeps the first folder name`)
+        .toContain('the server remembers the first project folder name it receives for each session');
+      expect(flat, `${name} does not say nothing more is sent for it`).toContain('your machine sends nothing more for it');
+      expect(flat, `${name} does not say it goes with the session`)
+        .toContain('The project folder name a session is grouped under is part of the session');
+    }
+  });
 });

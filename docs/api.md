@@ -27,6 +27,7 @@ The server runs in one of two modes:
   },
   "createdAt": 1752096000000,
   "updatedAt": 1752096030000,
+  "homeProject": "my-repo",
   "tokens": 1284000
 }
 ```
@@ -42,6 +43,32 @@ turn and `idle` only at `SessionStart`, so `idle` is close to unseen on a live
 board and `done` is where a card rests between prompts. `host` says where the session runs
 (see the [webhook table](#webhook-body-and-validation)); it is `null` for
 the many sessions whose hook has not opted in, and the key is always present.
+
+`homeProject` is the project the boards file the session under, and the
+server works it out itself: the first usable `project` the session
+reported, kept for the rest of its life. A session that starts in
+`acme-api` and runs `cd web` keeps `"homeProject": "acme-api"` while
+`project` says `web`. An empty `project` and a bare UUID (a session the OS
+started at `/`, a Codex scratch folder) are not usable, so such a session
+has `"homeProject": ""` until a post names a real folder, which then claims
+it; a post without a `project` changes nothing. The key is always present,
+and it is never read from a webhook body: a `homeProject` posted there is
+ignored. It is stored with the session, so it survives a restart of a
+server with [Postgres](self-hosting.md#persistence-postgresql); a server
+without a database forgets it with the card. A session the board dropped
+(dismissed, evicted, expired) starts over if it posts again, as its
+`createdAt` does. Since 1.7.0.
+
+The boards key their project sections by it: `homeProject` when it is
+non-empty; otherwise `project`, when that is non-empty and not a UUID, which
+covers servers older than 1.7.0 that send no `homeProject`; otherwise the
+**No project** section. A UUID here is what the bundled hook takes for one:
+32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
+Sections run in name order, case-insensitive with exact case breaking a tie
+(`AgStatus` before `agstatus`), No project last; activity, state and arrival
+never reorder them. A section is a folder name and nothing more: the same
+name on two machines is one section, and one repository checked out under
+two names is two.
 
 `tokens` is the lifetime token total this session's agent reports for it (see
 [Per-session token totals](#per-session-token-totals)). Unlike `host` the key
@@ -131,7 +158,7 @@ the same JSON body and upsert a session by `session_id`:
 | `status`     | enum   | yes      | One of `idle`, `planning`, `coding`, `testing`, `blocked`, `done`. |
 | `name`       | string | no       | Human-readable title. Defaults to `session_id` if omitted (and never yet set — on update an omitted `name` carries the stored one forward). Truncated to 120 chars. The bundled Node hook sends a Claude Code session's own title when it has one (the Claude desktop app titles every session, `/rename` titles one in the CLI; never in minimal mode), otherwise the folder it pinned at `SessionStart` — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent's name (`Claude`, `Codex`) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later `SessionStart` for the same id, so `/compact`, `/clear` and `--resume` leave it alone, while a renamed session renames its card. See [Card names and projects](hooks.md#card-names-and-projects). |
 | `message`    | string | no       | Short description of the current activity (shown on the card). Truncated to 300 chars. |
-| `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. Unlike `name`, the bundled hooks recompute it from the session's live working directory on every post, so after a `cd` the two legitimately disagree — the card keeps its original name while `project` follows the session. Per-project spend depends on that; see [Usage history and per-project spend](#usage-history-and-per-project-spend). The Node hook reports a working directory that is exactly a Claude worktree root, `<repo>/.claude/worktrees/<name>`, as `<repo>` — on the card only: the per-project usage rows still file that worktree's spend under its own folder. |
+| `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. Unlike `name`, the bundled hooks recompute it from the session's live working directory on every post, so after a `cd` the two legitimately disagree — the card keeps its original name while `project` follows the session. Per-project spend depends on that; see [Usage history and per-project spend](#usage-history-and-per-project-spend). The Node hook reports a working directory that is exactly a Claude worktree root, `<repo>/.claude/worktrees/<name>`, as `<repo>` — on the card only: the per-project usage rows still file that worktree's spend under its own folder. The server keeps the first usable one as the session's [`homeProject`](#the-session-object), which no later post moves. |
 | `source`     | string | no       | Agent kind that owns the session, e.g. `claude` or `codex` (same regex as the usage `source`). Defaults to `claude`; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board. |
 | `host`       | object \| null | no | Where the session runs, sent by hooks that opted in to Focus: `{"machine": {"id", "name"}, "app": {"slug", "name", "kind"}}`. Omitted = carried forward; `null` = cleared (the hook opted out). `machine.id` must match `^[0-9a-f]{32}$` (a per-board hash, never a raw machine id) or the post is `400`. `machine.name` and `app.name` are trimmed and truncated to 32 chars; blank ones become `Machine` and the slug. `app.slug` is one of `agterm`, `iterm2`, `kitty`, `wezterm`, `terminal`, `ghostty`, `alacritty`, `warp`, `vscode`, `cursor`, `windsurf`, `jetbrains`, `zed`, `claude-desktop`, `codex-desktop`, `herdr`, `tmux`, `zellij`, `screen`, `windows-terminal`, `other` — anything else is stored as `other`; `app.kind` is one of `terminal`, `multiplexer`, `ide`, `desktop-app`, `unknown` — anything else becomes `unknown`. Every other key is dropped. |
 | `agent`      | object \| null | no | Makes this a subagent's post, about one subagent of the session: `{"id", "state", "kind"?, "label"?, "activity"?, "at"?}`. It changes that subagent's row and never the session's own reading, and `status` and `message` mean something else on it — see [Agent posts](#agent-posts). A malformed one is a `400`; `null` or absent is the session's own post. |
@@ -143,8 +170,8 @@ in the middle of a surrogate pair. Omitted optional fields carry the previous
 value forward on update. The JSON body is capped at 16 KB. `host` is the one
 nullable field: it goes out as `null` on every session that has none (REST and
 SSE alike). A session that is dismissed, evicted, expired or whose workspace is
-deleted stops being served, and its stored row, `host` and subagent rows
-included, is flagged as deleted rather than blanked. `host` never appears in
+deleted stops being served, and its stored row, `host`, `homeProject` and
+subagent rows included, is flagged as deleted rather than blanked. `host` never appears in
 the session timeline or in push notifications.
 
 **Response** — `200 OK`:

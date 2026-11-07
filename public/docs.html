@@ -818,15 +818,33 @@ fallback for <code>name</code> stays the worktree&#39;s own, so several worktree
 stay apart before they have titles. The per-project token totals still file a
 worktree&#39;s spend under the worktree folder; see
 <a href="#hooks-where-the-tokens-went">Where the tokens went</a>.</p>
-<p>The split is visible on the cards. Every board — web, iOS and Android —
-prints the project beside the name only when the two differ. A titled card
-nearly always differs, so it reads as where that work is happening (&quot;Fix the
-login bug · in backend&quot;); an untitled card grows the directory once the
-session has moved — exactly when that is worth saying. It also shows it from
-the first event at a Claude worktree root, where the name is the worktree&#39;s own
-folder and the project its repository, so <code>claude --worktree feature-x</code> with no
-<code>/rename</code> reads &quot;feature-x · in my-repo&quot; without having moved. Any other
-session that never left home shows nothing extra.</p>
+<p><strong>What the boards group by.</strong> From 1.7.0 the boards — web, iOS and Android —
+show a section per project, and a session&#39;s project is the folder it
+<em>started</em> in: the server remembers the first usable <code>project</code> it hears for
+each session, as its <code>homeProject</code>, and keeps it for the session&#39;s life (see
+<a href="#api-the-session-object">the session object</a>). So the live <code>project</code>
+never moves a card: a session that starts in <code>acme-api</code> and runs <code>cd web</code>
+stays in the acme-api section. The hook sends nothing new for this — the
+server works it out from what it already gets — so the grouping is right on
+every machine as soon as the server is, with no reinstall. A Claude worktree
+root counts as its repository, as its <code>project</code> does. A session with no
+usable folder (an agent macOS started at <code>/</code>, a folder named by a bare UUID,
+a raw webhook post without a <code>project</code>) sits in <strong>No project</strong>, the last
+section, and leaves it once, when its first real folder arrives. A session
+started inside a subfolder, say <code>ios/</code>, lives under that subfolder&#39;s name.
+Sections run in name order and never reorder because one got busy. A
+section is a folder name and nothing more: two checkouts called <code>api</code> share
+one, and one repository checked out under two names makes two.</p>
+<p>The split is visible on the cards. From 1.7.0 every board prints the live
+folder, &quot;in web&quot;, only when it is a real folder that differs from both the
+card&#39;s section and its name: when the session has moved away from where it
+started. A session that never left home shows nothing extra, titled or not,
+since its section already says where it is; one titled &quot;Fix the login bug&quot;
+that ran <code>cd web</code> says &quot;in web&quot; under its acme-api label. A session at a
+Claude worktree root sits in its repository&#39;s section, so
+<code>claude --worktree feature-x</code> with no <code>/rename</code> is a card called &quot;feature-x&quot;
+under my-repo. (Up to 1.6.5 the boards printed the project whenever it
+differed from the name, so a titled card nearly always carried it.)</p>
 <h3 id="hooks-plan-usage-bars"><a class="anchor" href="#hooks-plan-usage-bars">Plan-usage bars</a></h3>
 <p>The Node hook also feeds the dashboard&#39;s plan-limit bars. It runs on quiet
 events (<code>SessionStart</code>, Claude Code&#39;s <code>UserPromptSubmit</code>, <code>Stop</code>,
@@ -2381,6 +2399,7 @@ under <a href="#api-legacy-single-tenant-endpoints">Legacy endpoints</a> apply.<
   },
   &quot;createdAt&quot;: 1752096000000,
   &quot;updatedAt&quot;: 1752096030000,
+  &quot;homeProject&quot;: &quot;my-repo&quot;,
   &quot;tokens&quot;: 1284000
 }
 </code></pre>
@@ -2395,6 +2414,30 @@ turn and <code>idle</code> only at <code>SessionStart</code>, so <code>idle</cod
 board and <code>done</code> is where a card rests between prompts. <code>host</code> says where the session runs
 (see the <a href="#api-webhook-body-and-validation">webhook table</a>); it is <code>null</code> for
 the many sessions whose hook has not opted in, and the key is always present.</p>
+<p><code>homeProject</code> is the project the boards file the session under, and the
+server works it out itself: the first usable <code>project</code> the session
+reported, kept for the rest of its life. A session that starts in
+<code>acme-api</code> and runs <code>cd web</code> keeps <code>&quot;homeProject&quot;: &quot;acme-api&quot;</code> while
+<code>project</code> says <code>web</code>. An empty <code>project</code> and a bare UUID (a session the OS
+started at <code>/</code>, a Codex scratch folder) are not usable, so such a session
+has <code>&quot;homeProject&quot;: &quot;&quot;</code> until a post names a real folder, which then claims
+it; a post without a <code>project</code> changes nothing. The key is always present,
+and it is never read from a webhook body: a <code>homeProject</code> posted there is
+ignored. It is stored with the session, so it survives a restart of a
+server with <a href="#self-hosting-persistence-postgresql">Postgres</a>; a server
+without a database forgets it with the card. A session the board dropped
+(dismissed, evicted, expired) starts over if it posts again, as its
+<code>createdAt</code> does. Since 1.7.0.</p>
+<p>The boards key their project sections by it: <code>homeProject</code> when it is
+non-empty; otherwise <code>project</code>, when that is non-empty and not a UUID, which
+covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
+<strong>No project</strong> section. A UUID here is what the bundled hook takes for one:
+32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
+Sections run in name order, case-insensitive with exact case breaking a tie
+(<code>AgStatus</code> before <code>agstatus</code>), No project last; activity, state and arrival
+never reorder them. A section is a folder name and nothing more: the same
+name on two machines is one section, and one repository checked out under
+two names is two.</p>
 <p><code>tokens</code> is the lifetime token total this session&#39;s agent reports for it (see
 <a href="#api-per-session-token-totals">Per-session token totals</a>). Unlike <code>host</code> the key
 is <strong>absent</strong>, not <code>null</code>, when the board holds no total — and absent means
@@ -2569,7 +2612,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>project</code></td>
 <td>string</td>
 <td>no</td>
-<td>Project or repo the session is working on. Truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder.</td>
+<td>Project or repo the session is working on. Truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder. The server keeps the first usable one as the session&#39;s <a href="#api-the-session-object"><code>homeProject</code></a>, which no later post moves.</td>
 </tr>
 <tr>
 <td><code>source</code></td>
@@ -2607,8 +2650,8 @@ in the middle of a surrogate pair. Omitted optional fields carry the previous
 value forward on update. The JSON body is capped at 16 KB. <code>host</code> is the one
 nullable field: it goes out as <code>null</code> on every session that has none (REST and
 SSE alike). A session that is dismissed, evicted, expired or whose workspace is
-deleted stops being served, and its stored row, <code>host</code> and subagent rows
-included, is flagged as deleted rather than blanked. <code>host</code> never appears in
+deleted stops being served, and its stored row, <code>host</code>, <code>homeProject</code> and
+subagent rows included, is flagged as deleted rather than blanked. <code>host</code> never appears in
 the session timeline or in push notifications.</p>
 <p><strong>Response</strong> — <code>200 OK</code>:</p>
 <pre><code class="language-json">{ &quot;ok&quot;: true, &quot;session&quot;: { &quot;id&quot;: &quot;sess-abc&quot;, &quot;status&quot;: &quot;coding&quot;, ... } }
