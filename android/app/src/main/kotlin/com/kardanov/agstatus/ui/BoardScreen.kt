@@ -3,6 +3,10 @@ package com.kardanov.agstatus.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,7 +20,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,6 +53,7 @@ import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,10 +77,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.Board
+import com.kardanov.agstatus.ProjectSection
+import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.SessionStore
 import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.rememberReduceMotion
@@ -82,10 +92,16 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
- * The live board: one glanceable card per agent session. [onOpenHistory]
- * takes the session and, from a subagent's row, the subagent to arrive at.
+ * The live board: one glanceable card per agent session, grouped by project
+ * (docs/design/project-sections.md). [onOpenHistory] takes the session and,
+ * from a subagent's row, the subagent to arrive at.
+ *
+ * Each project is a section: a label that sticks while its cards pass under
+ * it, then its cards, in the store's stable order. Sections run in name order
+ * (ProjectSections.ORDER) and never move because one got busy. The usage
+ * bars stay pinned above the list.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun BoardScreen(
     store: SessionStore,
@@ -106,6 +122,24 @@ fun BoardScreen(
     val isDemo = connection == SessionStore.Connection.DEMO
     val boardGone = connection == SessionStore.Connection.BOARD_GONE
     val scope = rememberCoroutineScope()
+    // A card that moves has news: the list is keyed by session id, so a card
+    // only animates when the board actually reordered. Nulling the specs is
+    // how a device that asked for less motion gets the same reorder with no
+    // travel.
+    val reduceMotion = rememberReduceMotion()
+
+    // Built on every frame from the flat list, never stored.
+    val sections = remember(sessions) { ProjectSections.of(sessions) }
+    val listState = rememberLazyListState()
+
+    // The one move between sections, out of No project as a session's first
+    // real folder arrives, is drawn, not animated: a card gliding the length
+    // of the board would be news it does not have. These are the cards that
+    // changed section since the board was last drawn, and the labels that
+    // arrived with them, which arrive as their first card does.
+    val drawn = remember { DrawnBoard() }
+    val drawnInPlace = remember(sections) { drawn.moves(sections) }
+    SideEffect { drawn.record(sections) }
 
     var refreshing by remember { mutableStateOf(false) }
     val refresh: () -> Unit = {
@@ -223,56 +257,62 @@ fun BoardScreen(
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         val now by rememberTickingClock(30_000L)
-                        // A card that moves has news: the list is keyed by
-                        // session id, so a card only animates when the board
-                        // actually reordered. Nulling the specs is how a
-                        // device that asked for less motion gets the same
-                        // reorder with no travel.
-                        val reduceMotion = rememberReduceMotion()
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            state = listState,
+                            // No spacing of its own: each label and card
+                            // carries its share (SectionChrome's spacing).
+                            contentPadding = PaddingValues(horizontal = 16.dp),
                         ) {
-                            items(sessions, key = { it.id }) { session ->
-                                val current by rememberUpdatedState(session)
-                                val dismissState = rememberSwipeToDismissBoxState(
-                                    confirmValueChange = { value ->
-                                        if (value == SwipeToDismissBoxValue.EndToStart) {
-                                            scope.launch { store.dismiss(current) }
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    },
-                                )
-                                SwipeToDismissBox(
-                                    state = dismissState,
-                                    modifier = if (reduceMotion) {
-                                        Modifier.animateItem(
-                                            fadeInSpec = null,
-                                            placementSpec = null,
-                                            fadeOutSpec = null,
-                                        )
-                                    } else {
-                                        Modifier.animateItem()
-                                    },
-                                    enableDismissFromStartToEnd = false,
-                                    enableDismissFromEndToStart = true,
-                                    backgroundContent = { DismissBackground(dismissState) },
-                                ) {
-                                    SessionCard(
-                                        session = session,
-                                        nowMillis = now,
-                                        machines = machines,
-                                        focus = focus[session.id],
-                                        subtaskLedger = subtaskSlots[session.id],
-                                        onCommand = { type -> store.sendCommand(session.id, type) },
-                                        onOpenHistory = { subtaskId -> onOpenHistory(session.id, subtaskId) },
-                                        modifier = Modifier.clickable {
-                                            onOpenHistory(session.id, null)
+                            for (section in sections) {
+                                stickyHeader(key = section.key, contentType = "label") {
+                                    ProjectLabel(
+                                        section = section,
+                                        // A label that goes takes no fade:
+                                        // its last card has already gone, by a
+                                        // swipe or to another section.
+                                        modifier = Modifier.listMotion(
+                                            item = this,
+                                            moves = !reduceMotion && section.key !in drawnInPlace,
+                                            fadesOut = false,
+                                        ),
+                                    )
+                                }
+                                val last = section.sessions.last().id
+                                items(section.sessions, key = { it.id }, contentType = { "card" }) { session ->
+                                    val current by rememberUpdatedState(session)
+                                    val dismissState = rememberSwipeToDismissBoxState(
+                                        confirmValueChange = { value ->
+                                            if (value == SwipeToDismissBoxValue.EndToStart) {
+                                                scope.launch { store.dismiss(current) }
+                                                true
+                                            } else {
+                                                false
+                                            }
                                         },
                                     )
+                                    SwipeToDismissBox(
+                                        state = dismissState,
+                                        modifier = Modifier
+                                            .listMotion(item = this, moves = !reduceMotion && session.id !in drawnInPlace)
+                                            .padding(bottom = if (session.id == last) SECTION_GAP else CARD_GAP),
+                                        enableDismissFromStartToEnd = false,
+                                        enableDismissFromEndToStart = true,
+                                        backgroundContent = { DismissBackground(dismissState) },
+                                    ) {
+                                        SessionCard(
+                                            session = session,
+                                            nowMillis = now,
+                                            machines = machines,
+                                            focus = focus[session.id],
+                                            subtaskLedger = subtaskSlots[session.id],
+                                            onCommand = { type -> store.sendCommand(session.id, type) },
+                                            onOpenHistory = { subtaskId -> onOpenHistory(session.id, subtaskId) },
+                                            modifier = Modifier.clickable {
+                                                onOpenHistory(session.id, null)
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -284,6 +324,65 @@ fun BoardScreen(
 }
 
 // MARK: - Session list decoration
+
+/**
+ * A card's or a label's motion in the list: 1.6.5's springs, or none at all
+ * where [moves] is false — animations off, or the one move between sections,
+ * which is drawn. [fadesOut] false lets an item go at once.
+ */
+private fun Modifier.listMotion(item: LazyItemScope, moves: Boolean, fadesOut: Boolean = true): Modifier {
+    val modifier = this
+    return with(item) {
+        if (moves) {
+            modifier.animateItem(
+                fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                placementSpec = spring(
+                    stiffness = Spring.StiffnessMediumLow,
+                    visibilityThreshold = IntOffset.VisibilityThreshold,
+                ),
+                fadeOutSpec = if (fadesOut) spring(stiffness = Spring.StiffnessMediumLow) else null,
+            )
+        } else {
+            modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
+        }
+    }
+}
+
+/**
+ * The section each card was in when the board was last drawn, so a card that
+ * changed section can be drawn in its new place rather than glide there. A
+ * plain holder: updating it must not recompose.
+ */
+private class DrawnBoard {
+    private var sectionOf: Map<String, String> = emptyMap()
+    private var labels: Set<String> = emptySet()
+
+    /**
+     * The keys of the cards whose section changed since the board was last
+     * drawn, and of the labels that arrive with them: a label is new, and
+     * every card under it is one that moved.
+     */
+    fun moves(sections: List<ProjectSection>): Set<String> {
+        val moved = HashSet<String>()
+        for (section in sections) {
+            for (session in section.sessions) {
+                val was = sectionOf[session.id]
+                if (was != null && was != section.name) moved += session.id
+            }
+        }
+        if (moved.isEmpty()) return emptySet()
+        for (section in sections) {
+            if (section.key !in labels && section.sessions.all { it.id in moved }) moved += section.key
+        }
+        return moved
+    }
+
+    fun record(sections: List<ProjectSection>) {
+        sectionOf = sections.flatMap { section -> section.sessions.map { it.id to section.name } }.toMap()
+        labels = sections.mapTo(HashSet()) { it.key }
+    }
+}
+
 
 /** Drag distance at which the dismiss background reaches full opacity. */
 private const val DISMISS_REVEAL_PX = 220f

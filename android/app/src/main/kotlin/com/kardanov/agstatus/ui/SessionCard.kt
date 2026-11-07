@@ -52,6 +52,7 @@ import com.kardanov.agstatus.DisplayStatus
 import com.kardanov.agstatus.FocusCopy
 import com.kardanov.agstatus.FocusStatus
 import com.kardanov.agstatus.MachinePresence
+import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.SessionHost
 import com.kardanov.agstatus.SubtaskLedger
@@ -151,7 +152,13 @@ fun SessionCard(
                 color = Theme.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    // "Claude, Fix the login redirect": the agent first, from
+                    // the session itself. Claude's and Codex's cards share a
+                    // section now, and the mark that tells them apart on the
+                    // meta line is not read.
+                    .clearAndSetSemantics { contentDescription = ProjectSections.cardLead(session) },
             )
             Spacer(Modifier.width(8.dp))
             StatusMark(session = session, stale = stale, nowMillis = nowMillis)
@@ -279,11 +286,26 @@ private class DrawnOnce {
 // MARK: - Meta
 
 /**
- * Agent, machine, directory, when — four different facts, one line.
+ * Agent, machine, place, when — four different facts, one line.
+ *
+ * The agent leads, as its mark ([AgentMark]): an asterisk for Claude, a
+ * hexagon for Codex, a diamond for any other, in the line's own neutral ink.
+ * It replaces a bordered "CLAUDE" box. With the board grouped by project,
+ * Claude's and Codex's cards share a section, so every card needs its agent,
+ * and a box spelling it out on every card was the loudest thing on the line
+ * saying the least. The usage blocks above carry the same marks beside the
+ * names, as their legend. The mark never drops and never sits alone: it
+ * shares its item with the first fact, so a wrap cannot leave it at the end
+ * of a line. TalkBack does not hear it, and hears the agent first instead
+ * ([ProjectSections.cardLead]).
  *
  * The machine is the one the card never showed: it was buried inside the Focus
  * control's label, so two sessions of the same project on two machines were
  * indistinguishable at a glance.
+ *
+ * The place, "in web", only where the session has moved: its live folder is
+ * real and differs from both its section and its name ([ProjectSections.place]).
+ * No card under a label says "in" that label.
  *
  * It wraps, because it must. The web board shipped this same line as a
  * non-wrapping flex row and a 320px card rendered the machine name four pixels
@@ -308,48 +330,14 @@ private fun MetaLine(
     stale: Boolean,
 ) {
     val machine = session.host?.let { remember(it, machines) { FocusCopy.machineLabel(it, machines) } }
-    val project = session.project.takeIf { it.isNotEmpty() && it != session.displayName }
-
-    FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        // Which agent, as a word in a box. No glyph: "CLAUDE" and "CODEX" are
-        // already distinct at a glance, and the one mark this card needs to
-        // carry without colour is the status.
-        Text(
-            text = session.source.uppercase(),
-            style = TextStyle(
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.4.sp,
-            ),
-            color = Theme.textTertiary,
-            maxLines = 1,
-            modifier = Modifier
-                .border(1.dp, Theme.cardBorder, RoundedCornerShape(4.dp))
-                .padding(horizontal = 5.dp, vertical = 2.dp),
-        )
-        if (machine != null) {
-            MetaSeparator()
-            MetaFact(machine)
-        }
-        // Only when it says something the name does not. The name is the
-        // session's title when the agent has one (the Claude app titles every
-        // session) and the folder it started in otherwise, while `project`
-        // follows the live directory — with a Claude worktree root reported as
-        // its repository, not the folder name the app made up. So a titled card
-        // shows "in <repo>", where that work is happening, and an untitled one
-        // shows the directory once the session has MOVED. At a worktree root it
-        // shows from the first event, because the name is the worktree's own
-        // folder and the project its repository ("feature-x · in my-repo");
-        // anywhere else the two are the same word until the session moves.
-        if (project != null) {
-            MetaSeparator()
-            MetaFact("in $project")
-        }
-        MetaSeparator()
+    // Where the session is now, only once it has moved away from the folder
+    // its section is named after. That section is the folder it started in,
+    // pinned by the server, so this is the card's one sign of a `cd`: before
+    // project sections the line said "in <repo>" on every titled card, and
+    // under a label that already says the repo it would say it twice.
+    val place = ProjectSections.place(session)
+    val facts = listOfNotNull(machine, place?.let { "in $it" })
+    val time = @Composable {
         if (stale) {
             FirstThatFits(Modifier.clearAndSetSemantics {}) {
                 MetaTime("no update for ${TimeFormat.age(session.updatedAt, nowMillis)}", Theme.textSecondary)
@@ -357,6 +345,29 @@ private fun MetaLine(
             }
         } else {
             MetaTime(TimeFormat.relative(session.updatedAt, nowMillis), Theme.textTertiary)
+        }
+    }
+
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        // The mark and the first fact are one item, so they wrap together.
+        // In the facts' own size, so at a reader's larger text the agent is
+        // still told apart at a glance.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AgentMark(source = session.source, size = textDp(13.sp), tint = Theme.textTertiary)
+            Spacer(Modifier.width(6.dp))
+            if (facts.isEmpty()) time() else MetaFact(facts.first())
+        }
+        for (fact in facts.drop(1)) {
+            MetaSeparator()
+            MetaFact(fact)
+        }
+        if (facts.isNotEmpty()) {
+            MetaSeparator()
+            time()
         }
     }
 }
