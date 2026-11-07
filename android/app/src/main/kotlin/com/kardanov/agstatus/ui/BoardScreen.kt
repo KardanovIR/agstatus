@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
@@ -88,8 +89,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.semantics.contentDescription
@@ -97,6 +100,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
@@ -287,6 +291,9 @@ fun BoardScreen(
         if (active.isEmpty()) usage else usage.filter { it.source in active }
     }
 
+    val pairs = board?.token != null && !boardGone
+    val exitRoom = demoExitRoom(icons = if (pairs) 2 else 1)
+
     Scaffold(
         modifier = modifier,
         containerColor = Theme.background,
@@ -300,11 +307,18 @@ fun BoardScreen(
                     actionIconContentColor = Theme.textPrimary,
                 ),
                 title = {
-                    Text(
-                        text = "AgStatus",
-                        style = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.Bold),
-                        color = Theme.textPrimary,
-                    )
+                    // The name whole, or not at all. At 200% text the badge
+                    // and the exit left it less than its width, and it broke
+                    // inside the word, "AgStatu" over "s". It is the app's
+                    // name, not news, and the controls keep their room.
+                    FirstThatFits {
+                        Text(
+                            text = "AgStatus",
+                            style = TextStyle(fontSize = 17.sp, fontWeight = FontWeight.Bold),
+                            color = Theme.textPrimary,
+                        )
+                        Box(Modifier)
+                    }
                 },
                 navigationIcon = {
                     Box(Modifier.padding(start = 16.dp)) {
@@ -313,16 +327,8 @@ fun BoardScreen(
                 },
                 actions = {
                     // The demo badge says where you are; this says how you leave.
-                    if (isDemo) {
-                        TextButton(onClick = { store.stopDemo() }) {
-                            Text(
-                                text = "Exit demo",
-                                style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
-                                color = Theme.accent,
-                            )
-                        }
-                    }
-                    if (board?.token != null && !boardGone) {
+                    if (isDemo) ExitDemo(room = exitRoom, onExit = { store.stopDemo() })
+                    if (pairs) {
                         IconButton(onClick = onOpenPair) {
                             Icon(
                                 imageVector = Icons.Outlined.Laptop,
@@ -929,11 +935,7 @@ private fun DemoBadge() {
     // doing — and the accent "Exit demo" button beside it does the pointing.
     Text(
         text = "DEMO",
-        style = TextStyle(
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp,
-        ),
+        style = DemoBadgeStyle,
         color = Theme.textSecondary,
         maxLines = 1,
         modifier = Modifier
@@ -941,6 +943,54 @@ private fun DemoBadge() {
             .padding(horizontal = 8.dp, vertical = 3.dp)
             .semantics { contentDescription = "Demo mode" },
     )
+}
+
+/** The DEMO pill's type, which [demoExitRoom] measures too. */
+private val DemoBadgeStyle = TextStyle(
+    fontSize = 10.sp,
+    fontWeight = FontWeight.Bold,
+    letterSpacing = 1.sp,
+)
+
+/**
+ * The width the exit may take in the bar: the window's, less the badge's
+ * side (the bar's 4dp inset, our 16 and the pill), the [icons] after the
+ * exit, the bar's 4dp end inset, and a gap of 8.
+ */
+@Composable
+private fun demoExitRoom(icons: Int): Dp {
+    val density = LocalDensity.current
+    val bar = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
+    val measurer = rememberTextMeasurer()
+    val pill = remember(density, measurer) {
+        with(density) { measurer.measure("DEMO", DemoBadgeStyle).size.width.toDp() }
+    } + 16.dp
+    return (bar - (4.dp + 16.dp + pill) - (48.dp * icons + 4.dp) - 8.dp).coerceAtLeast(0.dp)
+}
+
+/**
+ * "Exit demo", or "Exit" where the bar cannot hold both words beside the
+ * badge: at 200% text on a 240dp window they ran over the DEMO pill. Beside
+ * the pill "Exit" still says what it leaves, and TalkBack hears "Exit demo"
+ * either way.
+ */
+@Composable
+private fun ExitDemo(room: Dp, onExit: () -> Unit) {
+    FirstThatFits(Modifier.widthIn(max = room)) {
+        ExitDemoButton("Exit demo", onExit)
+        ExitDemoButton("Exit", onExit, Modifier.semantics { contentDescription = "Exit demo" })
+    }
+}
+
+@Composable
+private fun ExitDemoButton(label: String, onExit: () -> Unit, modifier: Modifier = Modifier) {
+    TextButton(onClick = onExit, modifier = modifier) {
+        Text(
+            text = label,
+            style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+            color = Theme.accent,
+        )
+    }
 }
 
 /** A clock that ticks on a fixed period so cards can restate "5m ago". */

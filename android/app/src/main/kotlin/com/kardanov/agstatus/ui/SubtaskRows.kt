@@ -51,6 +51,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -105,16 +106,26 @@ private const val LABEL_SHARE = 0.58f
 private val ROW_TEXT = 13.sp
 
 /**
- * Below this many of its own ems a row takes two lines ([SubtaskRow]), as
- * below the web board's `20em`. Counted from [ROW_TEXT] rather than written
- * as 260sp: since Android 14 type scales nonlinearly, and a length that large
- * barely grows — at 200% 260sp is still about 260dp, under a 412dp phone's
- * 351dp of row, while the 13sp text beside it doubles. Counted this way it is
- * 260dp at the default size, under the rows of any phone from 360dp up, and
- * about 500dp at 200%: it switches at about 115% on a 360dp phone and 150% on
- * a 412dp one.
+ * Below this many of its rows' ems a card stacks ([cardStacks]), as below the
+ * web board's `20em`. Counted from [ROW_TEXT] rather than written as 260sp:
+ * since Android 14 type scales nonlinearly, and a length that large barely
+ * grows — at 200% 260sp is still about 260dp, under a 412dp phone's 351dp of
+ * card, while the 13sp text in it doubles. Counted this way it is 260dp at
+ * the default size, under the cards of any phone from 360dp up, and about
+ * 500dp at 200%: it switches at about 115% on a 360dp phone and 150% on a
+ * 412dp one.
  */
 private const val STACK_BELOW_EMS = 20
+
+/**
+ * Whether a card whose content is [width] across stacks: its state above its
+ * name ([CardHeader]), and each subagent row in two lines, the task over the
+ * state and the activity ([SubtaskRow]). One switch for the whole card, as
+ * iOS's card has, so the badge and the rows' states always stand in one
+ * column: at the trailing edge beside the name, or at the leading edge with
+ * the badge above it.
+ */
+internal fun Density.cardStacks(width: Dp): Boolean = width < ROW_TEXT.toDp() * STACK_BELOW_EMS
 
 // MARK: - Card
 
@@ -141,7 +152,7 @@ internal fun SubtaskBlock(
     val reduceMotion = rememberReduceMotion()
     val footer = SubtaskSlots.footer(total = subtasks.items.size, shown = rows.size, done = subtasks.done)
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val stacked = maxWidth < with(LocalDensity.current) { ROW_TEXT.toDp() } * STACK_BELOW_EMS
+        val stacked = with(LocalDensity.current) { cardStacks(maxWidth) }
         Column(
             modifier = modifier
                 .fillMaxWidth()
@@ -169,19 +180,20 @@ internal fun SubtaskBlock(
 
 /**
  * One subagent: what it was asked to do, what it is doing, and its state as a
- * mark and a word at the trailing edge, under the card's own badge, so the
- * marks make one column a glance reads before any word.
+ * mark and a word under the card's own badge, so the marks make one column a
+ * glance reads before any word: at the trailing edge, or at the leading edge
+ * on a stacked card, whose badge stands above its name there.
  *
  * 28dp, not 48. A row opens the same session screen as its neighbours, only
  * at a different subagent, so a mis-tap costs a scroll. Focus, the card's one
  * control that reaches across to another machine, keeps its 44.
  *
- * [stacked] below [STACK_BELOW_EMS]: at a reader's larger text the three
- * parts no longer share a line, and at 200% the task and the activity came
- * down to a few letters each. So the task takes the whole width, two lines
- * if it needs them, and the activity and the state share the next, the state
- * still at the trailing edge under the badge, its mark and word together.
- * None of the three is dropped, and TalkBack hears the same row either way.
+ * [stacked] on a stacked card ([cardStacks]): at a reader's larger text the
+ * three parts no longer share a line, and at 200% the task and the activity
+ * came down to a few letters each. So the task takes the whole width, two
+ * lines if it needs them, and the state and the activity share the next, the
+ * state leading, under the badge, its mark and word together. None of the
+ * three is dropped, and TalkBack hears the same row either way.
  */
 @Composable
 private fun SubtaskRow(
@@ -235,6 +247,7 @@ private fun SubtaskRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                state()
                 Text(
                     text = subtask.activity,
                     fontSize = ROW_TEXT,
@@ -244,7 +257,6 @@ private fun SubtaskRow(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                state()
             }
         }
     } else {

@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -35,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -142,27 +144,7 @@ fun SessionCard(
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = session.displayName,
-                style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
-                color = Theme.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    // "Claude, Fix the login redirect": the agent first, from
-                    // the session itself. Claude's and Codex's cards share a
-                    // section now, and the mark that tells them apart on the
-                    // meta line is not read.
-                    .clearAndSetSemantics { contentDescription = ProjectSections.cardLead(session) },
-            )
-            Spacer(Modifier.width(8.dp))
-            StatusMark(session = session, stale = stale, nowMillis = nowMillis)
-        }
+        CardHeader(session = session, stale = stale, nowMillis = nowMillis)
 
         if (session.message.isNotEmpty()) {
             Text(
@@ -204,6 +186,77 @@ fun SessionCard(
     }
 }
 
+/**
+ * The name and the state: side by side, the name taking what the state
+ * leaves on one line, until the card stacks ([cardStacks]). At 200% text the
+ * state took 145dp of a 412dp phone's card and left the name "Review an…",
+ * and on a 240dp window it left nothing.
+ *
+ * Stacked, as iOS's card does at the accessibility sizes, the state takes a
+ * line of its own above the name at the leading edge, and the name takes the
+ * whole width and up to two lines. The subagent rows' states move to the
+ * leading edge with it ([SubtaskRow]), so badge and marks still make one
+ * column. TalkBack hears the card the same way in either form: its agent
+ * first, then its name, "Claude, Fix the login redirect"
+ * ([ProjectSections.cardLead]), then its state. Claude's and Codex's cards
+ * share a section, and the mark that tells them apart on the meta line is
+ * not read.
+ */
+@Composable
+private fun CardHeader(session: Session, stale: Boolean, nowMillis: Long) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (with(LocalDensity.current) { cardStacks(maxWidth) }) {
+            Layout(
+                content = {
+                    Text(
+                        text = session.displayName,
+                        style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
+                        color = Theme.textPrimary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    StatusMark(session = session, stale = stale, nowMillis = nowMillis)
+                },
+                // Drawn under the state, heard before it, as when they share
+                // a line. TalkBack takes a card's parts in the order they
+                // stand, top to bottom, so the two are said as one here.
+                modifier = Modifier.clearAndSetSemantics {
+                    contentDescription =
+                        "${ProjectSections.cardLead(session)}, ${spokenStatus(session, stale, nowMillis)}"
+                },
+            ) { measurables, constraints ->
+                val loose = constraints.copy(minWidth = 0, minHeight = 0)
+                val name = measurables[0].measure(loose)
+                val state = measurables[1].measure(loose)
+                val gap = 4.dp.roundToPx()
+                val width = if (constraints.hasBoundedWidth) constraints.maxWidth else maxOf(name.width, state.width)
+                layout(width, state.height + gap + name.height) {
+                    state.placeRelative(0, 0)
+                    name.placeRelative(0, state.height + gap)
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = session.displayName,
+                    style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
+                    color = Theme.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clearAndSetSemantics { contentDescription = ProjectSections.cardLead(session) },
+                )
+                Spacer(Modifier.width(8.dp))
+                StatusMark(session = session, stale = stale, nowMillis = nowMillis)
+            }
+        }
+    }
+}
+
 // MARK: - Status
 
 /**
@@ -232,11 +285,7 @@ internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
     // The display status: WORKING once the turn is over and subagents still work.
     val status = session.displayStatus
     val color = Theme.colorFor(status)
-    val said = if (stale) {
-        "${status.label}, no update for ${TimeFormat.spokenAge(session.updatedAt, nowMillis)}"
-    } else {
-        status.label
-    }
+    val said = spokenStatus(session, stale, nowMillis)
     Row(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -276,6 +325,12 @@ internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
             maxLines = 1,
         )
     }
+}
+
+/** What TalkBack hears for the state: "Coding", or "Coding, no update for 14 minutes". */
+internal fun spokenStatus(session: Session, stale: Boolean, nowMillis: Long): String {
+    val label = session.displayStatus.label
+    return if (stale) "$label, no update for ${TimeFormat.spokenAge(session.updatedAt, nowMillis)}" else label
 }
 
 /** Whether a card has been composed before; flipped after its first composition. */
@@ -398,7 +453,7 @@ private fun MetaTime(text: String, color: Color) {
  * rather than passed over.
  */
 @Composable
-private fun FirstThatFits(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+internal fun FirstThatFits(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Layout(content = content, modifier = modifier) { measurables, constraints ->
         val natural = constraints.copy(minWidth = 0, maxWidth = Constraints.Infinity)
         val placeables = measurables.map { it.measure(natural) }
