@@ -485,17 +485,26 @@ enum DemoData {
     /// card, and that card in each of its `SCENARIOS` — the same subagents,
     /// row for row, in the same order and with the same counts.
     ///
+    /// The project boards come from the mockups of the board grouped by
+    /// project (docs/design/project-sections.md): `projects` is the board its
+    /// phone, iPad and web frames draw, card for card, and the other three
+    /// each put one strain on it — a dozen sections, sessions that have moved,
+    /// and sessions with no folder at all.
+    ///
     /// The launch variables that go with it, all read only in a debug build:
     ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three |
-    ///                           three-limits | long | empty, or a subagent
-    ///                           board: subtasks | subtasks-ten |
-    ///                           subtasks-thirty | subtasks-blocked |
-    ///                           subtasks-failed | subtasks-finished |
-    ///                           subtasks-background | subtasks-nested |
-    ///                           subtasks-minimal | subtasks-codex |
-    ///                           subtasks-long
+    ///                           three-limits | long | empty, a project
+    ///                           board: projects | manyprojects | moved |
+    ///                           noproject, or a subagent board: subtasks |
+    ///                           subtasks-ten | subtasks-thirty |
+    ///                           subtasks-blocked | subtasks-failed |
+    ///                           subtasks-finished | subtasks-background |
+    ///                           subtasks-nested | subtasks-minimal |
+    ///                           subtasks-codex | subtasks-long
     ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
-    ///                           are working instead) | none (nobody is blocked)
+    ///                           are working instead) | none (nobody is
+    ///                           blocked) | <n> (the first n blocked
+    ///                           sessions stay blocked, the rest work)
     ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%) | many
     ///                           (Codex reports six windows, and its usage
     ///                           history has six lines) | 1…6 (that many of
@@ -560,6 +569,20 @@ enum DemoData {
         /// Nothing running. The heads are the limits and nothing else.
         case empty
 
+        // The project boards.
+        /// The mockups' board: two agents, nine sessions in five projects,
+        /// two of them blocked, one moved, one with no folder.
+        case projects
+        /// Eleven projects and No project, a blocked card near the end: the
+        /// board the bar exists for, where most labels are off the screen.
+        case manyprojects
+        /// Sessions that have moved since they started, and one from a server
+        /// too old to pin a folder: where "in <folder>" shows, and where not.
+        case moved
+        /// Codex Desktop started at `/`, a Codex scratch folder named by a
+        /// UUID, and a webhook post with no folder: the No project section.
+        case noproject
+
         // The subagent boards: the prototype's scenarios of the same names.
         /// Two from the Agent tool.
         case subtasks
@@ -620,9 +643,11 @@ enum DemoData {
                   updatedAt: now)
     }
 
-    /// Two more machines for the scenarios, both with a listener connected.
+    /// Three more machines for the scenarios, each with a listener connected.
     private static let studioMachine = Host.Machine(id: "5a1d93c07e2b4f86a0c3d7e915b4f260", name: "Studio")
     private static let laptopMachine = Host.Machine(id: "c7e04b1a96d3f25870b1e4a3d92c6f15", name: "MacBook Pro")
+    /// The project mockups' third machine, where the nightly backfill runs.
+    private static let miniMachine = Host.Machine(id: "e2b7c41f0a9d38652c1e7b4f90d3a815", name: "mini")
 
     /// One card of the prototype's pool. `age` is seconds since its last
     /// update; `calm` is what a blocked session is doing on a board where it
@@ -638,6 +663,11 @@ enum DemoData {
         /// Only when the session has moved; otherwise it is where it started,
         /// and the card says nothing about it.
         var project: String?
+        /// The folder the server pinned for it (`Session.homeProject`). Nil is
+        /// what a 1.7 server does: the first folder it heard, which is the
+        /// live one unless that is `''` or a UUID. `""` is a server too old to
+        /// pin one.
+        var home: String?
         var tokens: Int64?
         var calm: (status: AgentStatus, message: String)?
         /// What the Claude app calls it, under AGSTATUS_DEMO_TITLES. Claude
@@ -723,6 +753,8 @@ enum DemoData {
         case .three, .threeLimits: ids = ["api", "pipe", "web", "land", "docs", "evals", "tf"]
         case .long: ids = ["wt1", "wt2", "wt3", "wt4", "docs"]
         case .empty: ids = []
+        // Their own boards, not the pool's — see `projectBoard`.
+        case .projects, .manyprojects, .moved, .noproject: return projectBoard
         // Their own board, not the pool's — see `subtaskBoard`.
         case .subtasks, .subtasksTen, .subtasksThirty, .subtasksBlocked, .subtasksFailed,
              .subtasksFinished, .subtasksBackground, .subtasksNested, .subtasksMinimal,
@@ -734,15 +766,19 @@ enum DemoData {
     /// Whether `card` is one the launch asked to be quiet.
     ///
     /// AGSTATUS_DEMO_BLOCKED=none calms every blocked session; `claude` calms
-    /// only the first agent's — the prototype's "Claude quiet", which leaves
-    /// one head with an alarm beside one without, the comparison the blocked
-    /// edge exists for.
+    /// only the first agent's — the prototype's "Claude quiet"; a number keeps
+    /// that many blocked, the first in the board's list, and calms the rest,
+    /// so the bar can be seen with none, one and two.
     private static func isCalmed(_ card: Pooled, among cards: [Pooled]) -> Bool {
         guard card.calm != nil else { return false }
         switch ProcessInfo.processInfo.environment["AGSTATUS_DEMO_BLOCKED"] {
         case "none": return true
         case "claude": return card.source == cards.map(\.source).min()
-        default: return false
+        case let value?:
+            guard let kept = Int(value) else { return false }
+            let blocked = cards.filter { $0.calm != nil }
+            return (blocked.firstIndex { $0.id == card.id } ?? 0) >= kept
+        case nil: return false
         }
     }
 
@@ -752,15 +788,15 @@ enum DemoData {
         let cards = scenarioCards
         return cards.map { card in
             let calm = isCalmed(card, among: cards) ? card.calm : nil
+            // A session that stayed where it started reports its own name,
+            // which is what the card reads as "has not moved".
+            let live = card.project ?? card.name
             return Session(id: card.id,
                            name: showsTitles ? card.title ?? card.name : card.name,
                            status: calm?.status ?? card.status,
                            message: calm?.message ?? card.message,
-                           // A session that stayed where it started reports
-                           // its own name, which is what the card reads as
-                           // "has not moved". Under a title that folder is
-                           // no longer the name, and reads as "in <folder>".
-                           project: card.project ?? card.name,
+                           project: live,
+                           homeProject: card.home ?? (Session.isFolderName(live) ? live : ""),
                            source: card.source,
                            createdAt: now - (card.age + 40 * 60) * 1000,
                            updatedAt: now - card.age * 1000,
@@ -784,11 +820,157 @@ enum DemoData {
             return MachinePresence(id: presence.id, name: presence.name, online: true,
                                    since: now - 20 * 60_000)
         }
-        for machine in [studioMachine, laptopMachine] {
+        for machine in [studioMachine, laptopMachine, miniMachine] {
             all.append(MachinePresence(id: machine.id, name: machine.name, online: true,
                                        since: now - 2 * 3_600_000))
         }
         return Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
+    }
+
+    // MARK: Project scenarios
+
+    /// The UUID a Codex scratch workspace is named by: no folder anybody chose.
+    private static let scratchFolder = "0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b"
+
+    /// The project boards' cards, in the board's list order. Claude's are
+    /// named by their titles, as the Claude app names them; Codex never
+    /// titles a session, so its are named by their folders, or "Codex" where
+    /// there was none.
+    private static var projectBoard: [Pooled] {
+        switch scenario {
+        case .projects:
+            // The mockups' board, card for card: five projects, nine sessions,
+            // two blocked. One card cd'd into web/ and says so; Codex Desktop
+            // started at / has no project.
+            return [
+                Pooled(id: "login", source: "claude", name: "Fix the login redirect", status: .blocked,
+                       message: "Approve: git push --force-with-lease", age: 120, machine: laptopMachine,
+                       project: "acme-api", tokens: 41_200, calm: (.coding, "Editing src/auth/redirect.ts")),
+                Pooled(id: "limit", source: "claude", name: "Add rate limiting to /login", status: .coding,
+                       message: "Editing src/middleware/limit.ts", age: 14, machine: laptopMachine,
+                       project: "web", home: "acme-api"),
+                Pooled(id: "acme", source: "codex", name: "acme-api", status: .done, message: "Turn finished",
+                       age: 41 * 60, machine: studioMachine, project: "acme-api", tokens: 9_800),
+                Pooled(id: "org", source: "claude", name: "Session organization by agent", status: .coding,
+                       message: "Editing ios/AgStatus/BoardLayout.swift", age: 5, machine: laptopMachine,
+                       project: "claude-status", tokens: 1_100_000),
+                Pooled(id: "listener", source: "claude", name: "Fix listener reinstall leaving Focus stopped",
+                       status: .testing, message: "xcodebuild test -scheme AgStatus", age: 120,
+                       machine: studioMachine, project: "claude-status", tokens: 640_800),
+                Pooled(id: "wt", source: "codex", name: "agstatus-listener-windows-terminal-focus", status: .testing,
+                       message: "npm test -- focus/wt — 57 passed", age: 60, machine: studioMachine,
+                       project: "claude-status", tokens: 402_600),
+                Pooled(id: "docs", source: "codex", name: "docs", status: .idle, message: "Waiting for input",
+                       age: 6 * 60, project: "docs"),
+                Pooled(id: "backfill", source: "claude", name: "Nightly backfill for March", status: .blocked,
+                       message: "Approve: dbt run --full-refresh", age: 180, machine: miniMachine,
+                       project: "etl-jobs", tokens: 212_400, calm: (.coding, "Backfilling the March partitions")),
+                Pooled(id: "desk", source: "codex", name: "Codex", status: .planning, message: "Reading the brief",
+                       age: 5, project: ""),
+            ]
+        case .manyprojects:
+            // Eleven projects and No project, one card blocked near the end:
+            // on a phone most labels are off the screen, and the bar is the
+            // way to it.
+            return [
+                Pooled(id: "m-acme", source: "claude", name: "Fix token refresh race in the auth middleware",
+                       status: .coding, message: "Editing src/auth/token.ts", age: 15, machine: onlineMachine,
+                       project: "acme-api", tokens: 486_200),
+                Pooled(id: "m-acme-x", source: "codex", name: "acme-api", status: .testing,
+                       message: "pytest -k retry — 41 passed", age: 120, machine: studioMachine,
+                       project: "acme-api", tokens: 540_300),
+                Pooled(id: "m-ag", source: "claude", name: "Port the stale card to Android", status: .coding,
+                       message: "Editing ui/SessionCard.kt", age: 40, machine: laptopMachine,
+                       project: "agstatus", tokens: 312_000),
+                Pooled(id: "m-bill", source: "claude", name: "Investigate failing proration tests in the billing worker",
+                       status: .testing, message: "Running 214 tests — 3 failing", age: 60, machine: studioMachine,
+                       project: "billing-worker", tokens: 912_400),
+                Pooled(id: "m-cs", source: "claude", name: "Session organization by agent", status: .coding,
+                       message: "Editing ios/AgStatus/BoardLayout.swift", age: 10, machine: laptopMachine,
+                       project: "claude-status", tokens: 1_100_000),
+                Pooled(id: "m-cs-x", source: "codex", name: "agstatus-listener-windows-terminal-focus",
+                       status: .testing, message: "npm test -- focus/wt — 57 passed", age: 80,
+                       machine: studioMachine, project: "claude-status", tokens: 402_600),
+                Pooled(id: "m-data", source: "codex", name: "data-platform", status: .coding,
+                       message: "Rewriting the partition loader", age: 25, machine: onlineMachine,
+                       project: "data-platform", tokens: 288_900),
+                Pooled(id: "m-tokens", source: "claude", name: "Migrate checkout to the new design tokens",
+                       status: .done, message: "Finished — 4 files changed", age: 1860, machine: studioMachine,
+                       project: "design-tokens", tokens: 220_500),
+                Pooled(id: "m-docs", source: "codex", name: "docs", status: .done,
+                       message: "All tasks complete — 12 files changed", age: 1560, project: "docs",
+                       tokens: 2_830_000),
+                Pooled(id: "m-etl", source: "claude", name: "Plan the March backfill", status: .planning,
+                       message: "Reading the dbt models", age: 300, machine: miniMachine, project: "etl-jobs",
+                       tokens: 88_100),
+                Pooled(id: "m-infra", source: "claude", name: "infra", status: .idle, message: "Session started",
+                       age: 720, machine: onlineMachine, project: "infra"),
+                Pooled(id: "m-ios", source: "claude", name: "Plan the push-token migration for iOS 26",
+                       status: .planning, message: "Drafting the push-token migration plan", age: 300,
+                       machine: onlineMachine, project: "ios-app", tokens: 88_100),
+                Pooled(id: "m-web", source: "claude", name: "Ship the checkout migration", status: .blocked,
+                       message: "Approve: npm run migrate -- --env production", age: 200, machine: laptopMachine,
+                       project: "web-checkout", tokens: 640_800,
+                       calm: (.coding, "Editing migrations/0042_checkout.sql")),
+                Pooled(id: "m-desk", source: "codex", name: "Codex", status: .planning, message: "Reading the brief",
+                       age: 5, project: ""),
+            ]
+        case .moved:
+            // Where each session started is its section; where it is now is
+            // said only when that is somewhere else.
+            return [
+                Pooled(id: "v-limit", source: "claude", name: "Add rate limiting to /login", status: .coding,
+                       message: "Editing src/middleware/limit.ts", age: 14, machine: laptopMachine,
+                       project: "web", home: "acme-api"),
+                Pooled(id: "v-login", source: "claude", name: "Fix the login redirect", status: .testing,
+                       message: "npm test -- auth — 18 passed", age: 90, machine: laptopMachine,
+                       project: "acme-api", tokens: 41_200),
+                // Named after its folder, and moved: both say something.
+                Pooled(id: "v-acme", source: "codex", name: "acme-api", status: .coding,
+                       message: "Editing src/routes.rs", age: 30, machine: studioMachine, project: "src",
+                       home: "acme-api", tokens: 96_400),
+                Pooled(id: "v-org", source: "claude", name: "Session organization by agent", status: .coding,
+                       message: "Editing AgStatus/BoardView.swift", age: 8, machine: laptopMachine,
+                       project: "ios", home: "claude-status", tokens: 1_100_000),
+                // A worktree root reports its repository: grouped under it,
+                // and nothing more to say.
+                Pooled(id: "v-tree", source: "claude", name: "session-organization-agents-c27901", status: .testing,
+                       message: "xcodebuild test -scheme AgStatus", age: 70, machine: studioMachine,
+                       project: "claude-status", tokens: 640_800),
+                Pooled(id: "v-backfill", source: "claude", name: "Nightly backfill for March", status: .blocked,
+                       message: "Approve: dbt run --full-refresh", age: 180, machine: miniMachine,
+                       project: "models", home: "etl-jobs", tokens: 212_400,
+                       calm: (.coding, "Backfilling the March partitions")),
+                // From a server too old to pin a folder: grouped by where it is
+                // now, and it would move with a cd.
+                Pooled(id: "v-old", source: "codex", name: "landing", status: .coding,
+                       message: "Rewriting the pricing table", age: 20, machine: onlineMachine,
+                       project: "web", home: "", tokens: 312_700),
+                // Gone into a scratch folder, which is not a place.
+                Pooled(id: "v-scratch", source: "codex", name: "docs", status: .done,
+                       message: "Rendered the usage chart", age: 600, project: scratchFolder, home: "docs",
+                       tokens: 58_000),
+            ]
+        case .noproject:
+            // No usable folder three ways, under one project with one.
+            return [
+                Pooled(id: "n-api", source: "claude", name: "Fix the login redirect", status: .coding,
+                       message: "Editing src/auth/redirect.ts", age: 40, machine: laptopMachine,
+                       project: "acme-api", tokens: 41_200),
+                // Codex Desktop, started by LaunchServices at /.
+                Pooled(id: "n-desk", source: "codex", name: "Codex", status: .planning,
+                       message: "Reading the brief", age: 5, project: ""),
+                // A Codex scratch workspace, .codex/visualizations/<date>/<uuid>.
+                Pooled(id: "n-scratch", source: "codex", name: "Codex", status: .coding,
+                       message: "Editing chart.html", age: 50, project: scratchFolder, tokens: 18_300),
+                // A raw webhook post that carried no folder.
+                Pooled(id: "n-hook", source: "claude", name: "nightly-deploy", status: .blocked,
+                       message: "Waiting for approval", age: 240, project: "",
+                       calm: (.testing, "Running the smoke tests")),
+            ]
+        default:
+            return []
+        }
     }
 
     // MARK: Subagent scenarios
@@ -883,7 +1065,8 @@ enum DemoData {
                 ("Check the Codex rollout schema for sub-agent ids", .planning,
                  "Reading developers.openai.com"),
             ], done: 2)
-        case .demo, .busy, .lopsided, .solo, .three, .threeLimits, .long, .empty:
+        case .demo, .busy, .lopsided, .solo, .three, .threeLimits, .long, .empty,
+             .projects, .manyprojects, .moved, .noproject:
             nil
         }
     }
