@@ -1228,6 +1228,48 @@ enum DemoData {
                        createdAt: 0, updatedAt: 0).tokensLabel == nil, "no figure, no label")
     }
 
+    /// The `homeProject` contract, checked beside the decoders above when
+    /// demo mode starts in a debug build.
+    ///
+    /// A server older than 1.7.0 sends no such key, and its cards must decode
+    /// as they always did, their live folder intact. The tolerance
+    /// is the rest of this file's: one odd value must never cost a card, let
+    /// alone the snapshot carrying it. The web's and Android's tests take the
+    /// same cases.
+    static func verifyProjectDecoding() {
+        let decoder = JSONDecoder()
+        func session(_ json: String) -> Session? {
+            try? decoder.decode(Session.self, from: Data(json.utf8))
+        }
+        // Absent, null, a number, an object: no pin, and the card decodes as
+        // it did, its live folder intact.
+        for raw in [#"{"id":"s","project":"web"}"#, #"{"id":"s","project":"web","homeProject":null}"#,
+                    #"{"id":"s","project":"web","homeProject":7}"#, #"{"id":"s","project":"web","homeProject":{}}"#] {
+            assert(session(raw)?.homeProject == "", "no pin: \(raw)")
+            assert(session(raw)?.project == "web", "the live folder: \(raw)")
+        }
+        // A pin, and a cd since: the two fields part company.
+        let pinned = session(#"{"id":"s","name":"Add rate limiting to /login","project":"web","homeProject":"acme-api"}"#)
+        assert(pinned?.homeProject == "acme-api" && pinned?.project == "web", "pinned, and moved")
+        // Neither the server's word for no folder nor a UUID is a folder.
+        let uuid = "0F3C2A1E-6B4D-4E8F-9A7B-1C2D3E4F5A6B"
+        assert(!Session.isFolderName("") && !Session.isFolderName(uuid) && !Session.isFolderName(uuid.lowercased()),
+               "no folder")
+        assert(Session.isFolderName("acme-api") && Session.isFolderName(String(uuid.dropLast()))
+               && Session.isFolderName(String(uuid.dropLast()) + "G"), "folders")
+        // Round trip: the pin survives this client, and no pin stays none.
+        if let pinned, let data = try? JSONEncoder().encode(pinned) {
+            assert((try? decoder.decode(Session.self, from: data)) == pinned, "homeProject round trip")
+        } else {
+            assertionFailure("session encode")
+        }
+        // A snapshot mixing servers' shapes still yields every card.
+        let snapshot = try? decoder.decode([Session].self, from: Data(#"""
+            [{"id":"a","homeProject":"api"},{"id":"b","homeProject":false},{"id":"c"}]
+            """#.utf8))
+        assert(snapshot?.map(\.homeProject) == ["api", "", ""], "the snapshot survives")
+    }
+
     /// The `subtasks` contract and the readings made from it, checked beside
     /// the decoders above when demo mode starts in a debug build.
     ///

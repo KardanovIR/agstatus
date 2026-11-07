@@ -903,6 +903,9 @@ final class SessionStore {
         #if DEBUG
         DemoData.verifyFocusDecoding()
         DemoData.verifyTokenDecoding()
+        // The folder a session started in, which the board groups by: a
+        // server too old to send it costs no card.
+        DemoData.verifyProjectDecoding()
         DemoData.verifyPairing()
         // Subagents: one bad item must never cost a card, let alone the
         // snapshot that carries it — and the words are the web's and

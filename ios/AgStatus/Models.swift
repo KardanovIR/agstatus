@@ -35,7 +35,22 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     var name: String
     var status: AgentStatus
     var message: String
+    /// The folder the session is working in now: the hook's live directory,
+    /// a Claude worktree root reported as its repository. It follows a `cd`.
     var project: String
+    /// The folder the session started in, as the server pinned it: the
+    /// project its card is grouped under (`ProjectKey`).
+    ///
+    /// The server derives it and never takes it from a post: the session's
+    /// earlier value if it had one, else its `project`, with `''` and a
+    /// UUID-shaped name (a GUI app started at `/`, a Codex scratch folder)
+    /// read as no folder at all. Once it is a folder it stays that folder for
+    /// the session's life, so a `cd` never moves a card to another section.
+    ///
+    /// `''` when the server sent none, which is also what a server too old to
+    /// send the field looks like: the board then groups by the live folder,
+    /// and a card there does move on a `cd` (`ProjectKey.of`).
+    var homeProject: String
     /// Agent kind that owns the session ("claude", "codex", …).
     var source: String
     var createdAt: Int64 // epoch milliseconds
@@ -83,6 +98,7 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
          status: AgentStatus,
          message: String,
          project: String,
+         homeProject: String = "",
          source: String = "claude",
          createdAt: Int64,
          updatedAt: Int64,
@@ -94,6 +110,7 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         self.status = status
         self.message = message
         self.project = project
+        self.homeProject = homeProject
         self.source = source
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -103,7 +120,7 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, status, message, project, source, createdAt, updatedAt, host, tokens, subtasks
+        case id, name, status, message, project, homeProject, source, createdAt, updatedAt, host, tokens, subtasks
     }
 
     /// Tolerant decoding: unknown status strings become `.idle`, missing
@@ -116,6 +133,9 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         status = AgentStatus(rawValue: rawStatus) ?? .idle
         message = (try? container.decode(String.self, forKey: .message)) ?? ""
         project = (try? container.decode(String.self, forKey: .project)) ?? ""
+        // Absent — a server older than 1.7.0 — null or malformed: no pinned
+        // folder, and the board falls back to the live one (`ProjectKey.of`).
+        homeProject = (try? container.decode(String.self, forKey: .homeProject)) ?? ""
         let rawSource = (try? container.decode(String.self, forKey: .source)) ?? ""
         source = rawSource.isEmpty ? "claude" : rawSource
         createdAt = Self.decodeInteger(container, .createdAt) ?? 0
@@ -155,6 +175,33 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
 }
 
 extension Session {
+
+    /// Whether `name` is a folder somebody chose, rather than no folder at
+    /// all: not empty, and not shaped like a UUID.
+    ///
+    /// The hook's own rule (UUID_NAME_RE in cli/assets/agstatus-hook.js), and
+    /// the server's when it pins `homeProject`. A GUI app started at `/`
+    /// reports `''`, and Codex writes scratch workspaces under
+    /// `.codex/visualizations/<date>/<uuid>`, whose basename is a UUID nobody
+    /// picked: neither is a project, and neither is a place to say a session
+    /// has moved to. Eight, four, four, four and twelve hex digits, either
+    /// case, joined by hyphens, and nothing else.
+    static func isFolderName(_ name: String) -> Bool {
+        guard !name.isEmpty else { return false }
+        let utf8 = name.utf8
+        guard utf8.count == 36 else { return true }
+        for (index, byte) in utf8.enumerated() {
+            if index == 8 || index == 13 || index == 18 || index == 23 {
+                if byte != UInt8(ascii: "-") { return true }
+            } else {
+                let hex = (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                    || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+                    || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "F"))
+                if !hex { return true }
+            }
+        }
+        return false
+    }
 
     /// This session's spend, formatted for a glance — "48.2K", "1.4M" — or nil
     /// when the board has no figure and the card must show nothing.
