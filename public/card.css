@@ -344,10 +344,12 @@
 
 /* The state leads the row, in a fixed column that starts under the badge's
  * own mark, so the badge and the rows' marks make one column of state down
- * the card: the shape a glance reads before a word. 76px holds
- * "researching" with its mark (75.8), the widest word the brief names;
- * "planning", the widest the hook sends, takes 59. A column a new word could
- * overflow would not be a column.
+ * the card: the shape a glance reads before a word. 4.75rem, 76px at the
+ * default text size, holds "researching" with its mark (75.8), the widest
+ * word the brief names; "planning", the widest the hook sends, takes 59. A
+ * column a new word could overflow would not be a column, so it is in rem
+ * with the word and the mark: in px it held them at the default size only,
+ * and at 200% text "planning" ran past it.
  *
  * The badge's condensed face at the badge's size, but its word lower case,
  * regular weight and in the quiet ink: the badge stays the one coloured word
@@ -355,13 +357,13 @@
  * is still a mark and a word. text-3 clears AA on every card ground. */
 .sub-st {
   order: -1;
-  flex: 0 0 76px;
+  flex: 0 0 4.75rem;
   display: inline-flex;
   align-items: center;
   gap: var(--space-2xs);
   font-family: var(--font-label);
   font-size: var(--t-xs);
-  line-height: 13px;
+  line-height: 0.8125rem;
   font-weight: 400;
   letter-spacing: 0.02em;
   color: var(--text-3);
@@ -370,8 +372,8 @@
 
 .sub-st svg {
   flex: none;
-  width: 13px;
-  height: 13px;
+  width: 0.8125rem;
+  height: 0.8125rem;
   color: var(--rs);
 }
 
@@ -400,7 +402,7 @@
   color: var(--text-2);
   font: inherit;
   font-size: var(--t-xs);
-  line-height: 16px;
+  line-height: 1rem;
   text-align: left;
   white-space: nowrap;
 }
@@ -410,8 +412,8 @@
 
 .sub-foot svg {
   flex: none;
-  width: 10px;
-  height: 10px;
+  width: 0.625rem;
+  height: 0.625rem;
   margin-left: 2px;
   color: var(--text-3);
 }

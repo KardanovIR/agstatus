@@ -770,7 +770,7 @@ body.detail-open > .footer { display: none; }
   grid-area: label;
   max-width: none;
   font-size: 0.875rem;
-  line-height: 19px;
+  line-height: 1.1875rem;
   color: var(--text-1);
 }
 
@@ -778,8 +778,8 @@ body.detail-open > .footer { display: none; }
 .sub.is-roomy .sub-st { grid-area: st; }
 
 .sub.is-roomy .sub-st svg {
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 /* On a wide screen the state leads, in a column of its own, as each event's
@@ -787,7 +787,7 @@ body.detail-open > .footer { display: none; }
  * from its own label, and the eye could not join the two. */
 @container sslist (min-width: 600px) {
   .sub.is-roomy {
-    grid-template-columns: 80px minmax(0, max-content) minmax(0, 1fr);
+    grid-template-columns: 5rem minmax(0, max-content) minmax(0, 1fr);
     grid-template-areas: 'st label act';
     min-height: 44px;
   }
