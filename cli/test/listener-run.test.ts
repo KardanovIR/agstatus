@@ -569,8 +569,10 @@ describe('runListener', () => {
     // A terminal that has to cold start gets more than a focus step's 5 s.
     expect(launches.slice(1).map((l) => l.opts.timeout)).toEqual([15_000, 15_000]);
     // …and the raise that follows the launch is optional: a session sitting
-    // in a new pane is not "nothing started" because `open -b` failed.
-    expect(running.log()).toContain('open: activate app: exit 0 (0ms), optional');
+    // in a new pane is not "nothing started" because `open -b` failed. The
+    // step's time in that line is measured, so any is fine: a CI runner once
+    // took a millisecond, logged "(1ms)", and failed a push that touched no CLI.
+    expect(running.log()).toMatch(/open: activate app: exit 0 \(\d+ms\), optional/);
     for (const launch of launches) {
       expect(launch.opts.env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');
       expect(launch.opts.env?.PATH).toBe('/usr/bin:/bin');
