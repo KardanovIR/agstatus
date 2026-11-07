@@ -126,7 +126,20 @@ data class Session(
     val name: String = "",
     val status: AgentStatus = AgentStatus.IDLE,
     val message: String = "",
+    /** The folder the session is in now: it follows a `cd`. */
     val project: String = "",
+    /**
+     * The folder the session started in, which names its section on the board
+     * (docs/design/project-sections.md). The server works it out and pins it
+     * for the session's life, so a later `cd` never moves the card; a post
+     * cannot set it. Empty until the session reports a usable folder, and
+     * from a server too old to send it, where [ProjectSections.nameOf] falls
+     * back to [project]. Anything but a string reads as empty
+     * ([LenientStringSerializer]): the snapshot is one array, and one odd
+     * value must not cost the board.
+     */
+    @Serializable(with = LenientStringSerializer::class)
+    val homeProject: String = "",
     /** Agent kind that owns the session ("claude", "codex", …). */
     val source: String = "claude",
     /** Epoch milliseconds. */
@@ -171,6 +184,27 @@ data class Session(
      */
     fun isStale(nowMillis: Long): Boolean =
         status.isActive && !isStaleExempt && nowMillis - updatedAt > STALE_AFTER_MILLIS
+
+    /** The one state that needs a human: what the needs-you bar counts. Done never is. */
+    val isBlocked: Boolean get() = displayStatus == DisplayStatus.BLOCKED
+}
+
+/**
+ * A string field decoded leniently: a JSON string is itself, and anything
+ * else — `null`, a number, an object — is empty. AgStatusJson has no
+ * coerceInputValues, so without this an explicit `null` would throw, and the
+ * snapshot is decoded as one array.
+ */
+object LenientStringSerializer : KSerializer<String> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("LenientString", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): String {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeString()
+        return (json.decodeJsonElement() as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+    }
+
+    override fun serialize(encoder: Encoder, value: String) = encoder.encodeString(value)
 }
 
 /**
@@ -182,6 +216,198 @@ data class Session(
  * iOS boards keep the same ten minutes.
  */
 const val STALE_AFTER_MILLIS = 10 * 60 * 1000L
+
+// MARK: - Project sections
+
+/**
+ * One project's section of the board: its folder name, empty for No project,
+ * and its sessions in the board's own order.
+ */
+data class ProjectSection(val name: String, val sessions: List<Session>) {
+    val isNoProject: Boolean get() = name.isEmpty()
+
+    /** What the label says: the folder in its exact case, or the board's own words. */
+    val title: String get() = if (isNoProject) NO_PROJECT else name
+
+    /** The section's LazyColumn key ([keyFor]). */
+    val key: String get() = keyFor(name)
+
+    companion object {
+        const val NO_PROJECT = "No project"
+
+        /**
+         * `project/<name>`, and `project/` for No project. A slash can be in
+         * neither a session id nor a folder name, so a label's key can never
+         * equal a card's, which is its session id — two equal keys crash a
+         * LazyColumn outright.
+         */
+        fun keyFor(name: String): String = "project/$name"
+    }
+}
+
+/**
+ * The board grouped by project (docs/design/project-sections.md), worked out
+ * on every frame from the store's flat list and never stored: a section per
+ * folder a session started in, in name order, its cards in the board's own
+ * order. iOS and the web do the same arithmetic, and the shared test vector
+ * in ProjectSectionsTest holds all three to one order.
+ */
+object ProjectSections {
+
+    /**
+     * A bare UUID is never a folder a person picked: the hook's own test
+     * (`UUID_NAME_RE`, plugin/scripts/agstatus-hook.js), which the server
+     * applies before it pins a `homeProject`.
+     */
+    private val UUID_NAME = Regex(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** A folder name that can name a section or a place: not empty, not a bare UUID. */
+    fun isRealFolder(name: String): Boolean = name.isNotEmpty() && !UUID_NAME.matches(name)
+
+    /**
+     * The section a session is in, empty for No project: the folder the
+     * server pinned for it, else (a server too old to send `homeProject`) the
+     * folder it is in now. Both are held to [isRealFolder]. The server never
+     * pins an empty or UUID-shaped name, so for a current server this is the
+     * spec's rule exactly; holding the pinned value to it too only means that
+     * an odd one cannot open a section the other clients would not.
+     */
+    fun nameOf(session: Session): String = when {
+        isRealFolder(session.homeProject) -> session.homeProject
+        isRealFolder(session.project) -> session.project
+        else -> ""
+    }
+
+    /**
+     * Section order, identical on every client: by name ignoring case, then by
+     * exact case (`AgStatus` before `agstatus`), with No project always last.
+     * Never by activity, state or arrival, so a section never moves because
+     * one of its cards got busy.
+     *
+     * Ignoring case means comparing the locale-independent lower case
+     * (Locale.ROOT, as JavaScript's toLowerCase and Swift's lowercased()), and
+     * both comparisons go by UTF-16 code unit, as a JavaScript `<` does. A
+     * collator would put `_` before `-` and differ by locale.
+     */
+    val ORDER: Comparator<String> = Comparator { a, b ->
+        when {
+            a == b -> 0
+            a.isEmpty() -> 1
+            b.isEmpty() -> -1
+            else -> {
+                val folded = a.lowercase(Locale.ROOT).compareTo(b.lowercase(Locale.ROOT))
+                if (folded != 0) folded else a.compareTo(b)
+            }
+        }
+    }
+
+    /**
+     * The board's sections, in [ORDER]. Each keeps its sessions in the order
+     * of [sessions], which is the store's stable order: filtered, never
+     * re-sorted, so a new session is on top of its section and every other
+     * card keeps its place, blocked included.
+     */
+    fun of(sessions: List<Session>): List<ProjectSection> {
+        val groups = LinkedHashMap<String, MutableList<Session>>()
+        for (session in sessions) groups.getOrPut(nameOf(session)) { mutableListOf() } += session
+        return groups.entries
+            .sortedWith(compareBy(ORDER) { it.key })
+            .map { (name, members) -> ProjectSection(name, members) }
+    }
+
+    /**
+     * Where a session is now, for its meta line: its live folder when that is
+     * real and differs from both its section and its name — a session that
+     * has moved. No card under a label says "in" that label, and an untitled
+     * session named after its folder does not say it twice.
+     */
+    fun place(session: Session): String? = session.project.takeIf {
+        isRealFolder(it) && it != nameOf(session) && it != session.displayName
+    }
+
+    /** Every card in reading order: sections in order, then each section's cards in order. */
+    fun readingOrder(sections: List<ProjectSection>): List<Session> = sections.flatMap { it.sessions }
+
+    /**
+     * The card the needs-you bar names: the first blocked card in reading
+     * order, or, once the bar has brought [shown], the next blocked card after
+     * it, round to the first — [shown] itself when it is the only one. A card
+     * unblocked since keeps its place in the order it is counted from; one no
+     * longer on the board starts the walk over. Null while nothing is blocked.
+     */
+    fun barTarget(sections: List<ProjectSection>, shown: String?): Session? {
+        val order = readingOrder(sections)
+        val first = order.firstOrNull { it.isBlocked } ?: return null
+        val at = if (shown == null) -1 else order.indexOfFirst { it.id == shown }
+        if (at < 0) return first
+        for (step in 1..order.size) {
+            val candidate = order[(at + step) % order.size]
+            if (candidate.isBlocked) return candidate
+        }
+        return first
+    }
+
+    /**
+     * Whether the bar's verb is "Next": it has brought a card that is still on
+     * the board, and there is more than one blocked card to walk.
+     */
+    fun barWalks(sections: List<ProjectSection>, shown: String?): Boolean {
+        if (shown == null) return false
+        val order = readingOrder(sections)
+        return order.any { it.id == shown } && order.count { it.isBlocked } > 1
+    }
+
+    /**
+     * The card's index in the board's LazyColumn, where each section is its
+     * label and then its cards; -1 when it is not on the board.
+     */
+    fun listIndex(sections: List<ProjectSection>, sessionId: String): Int {
+        var index = 0
+        for (section in sections) {
+            index += 1
+            val at = section.sessions.indexOfFirst { it.id == sessionId }
+            if (at >= 0) return index + at
+            index += section.sessions.size
+        }
+        return -1
+    }
+
+    // MARK: Copy
+
+    /** "1 session", "3 sessions": a label's count. */
+    fun sessionCount(count: Int): String = if (count == 1) "1 session" else "$count sessions"
+
+    /** What TalkBack hears for a label, the one heading per project: "acme-api, 3 sessions". */
+    fun labelDescription(section: ProjectSection): String =
+        "${section.title}, ${sessionCount(section.sessions.size)}"
+
+    /**
+     * Where the bar says its card is: "in acme-api", or for a session in No
+     * project its agent's name, since it has no folder to name. Null where
+     * that would only repeat the card's name — an untitled Codex session at
+     * `/` is itself called "Codex".
+     */
+    fun barWhere(session: Session): String? {
+        val section = nameOf(session)
+        if (section.isNotEmpty()) return "in $section"
+        val agent = sourceDisplayName(session.source)
+        return agent.takeUnless { it.equals(session.displayName, ignoreCase = true) }
+    }
+
+    /** What TalkBack hears for the bar: "2 blocked: Fix the login redirect, in acme-api". */
+    fun barDescription(blocked: Int, target: Session): String =
+        listOfNotNull(target.displayName, barWhere(target)).joinToString(", ", prefix = "$blocked blocked: ")
+
+    /**
+     * How TalkBack starts a card, "Claude, Fix the login redirect": the
+     * agent, taken from the session itself, because Claude's and Codex's
+     * sessions share a section now and the card's mark is not read.
+     */
+    fun cardLead(session: Session): String = "${sourceDisplayName(session.source)}, ${session.displayName}"
+}
 
 // MARK: - Host (Focus)
 

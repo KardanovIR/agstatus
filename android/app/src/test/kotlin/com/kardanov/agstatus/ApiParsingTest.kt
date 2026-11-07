@@ -89,6 +89,47 @@ class ApiParsingTest {
         assertEquals(AgentStatus.TESTING, sessions[1].status)
     }
 
+    // MARK: - homeProject
+
+    @Test
+    fun sessionDecodesHomeProject() {
+        val session = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","project":"web","homeProject":"acme-api"}""",
+        )
+
+        assertEquals("acme-api", session.homeProject)
+        assertEquals("web", session.project)
+    }
+
+    @Test
+    fun aServerTooOldToSendHomeProjectReadsAsEmpty() {
+        val session = AgStatusJson.decodeFromString<Session>("""{"id":"s","project":"web"}""")
+
+        assertEquals("", session.homeProject)
+        assertEquals("web", ProjectSections.nameOf(session))
+    }
+
+    @Test
+    fun aHomeProjectThatIsNotAStringReadsAsEmptyWithoutFailingTheBoard() {
+        val json = """
+            [{"id":"a","homeProject":null},{"id":"b","homeProject":7},
+             {"id":"c","homeProject":{"name":"x"}},{"id":"d","homeProject":["x"]},
+             {"id":"e","homeProject":"docs"}]
+        """.trimIndent()
+
+        val sessions = AgStatusJson.decodeFromString<List<Session>>(json)
+
+        assertEquals(listOf("", "", "", "", "docs"), sessions.map { it.homeProject })
+    }
+
+    @Test
+    fun homeProjectSurvivesAnEncodeAndDecode() {
+        val session = Session(id = "s", project = "web", homeProject = "acme-api")
+        val again = AgStatusJson.decodeFromString<Session>(AgStatusJson.encodeToString(session))
+
+        assertEquals(session, again)
+    }
+
     // MARK: - Host (Focus)
 
     @Test
