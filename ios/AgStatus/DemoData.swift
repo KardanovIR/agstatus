@@ -117,9 +117,9 @@ enum DemoData {
         var claudeWeek: Double = 62
         #if DEBUG
         // AGSTATUS_DEMO_LIMITS=hi puts Claude's weekly window past the 85%
-        // where a limit is drawn in the alarm's red. That is the capture the
-        // head's blocked edge was designed against: a head with a red bar and
-        // nothing blocked must not read like a head that needs you.
+        // where a limit is drawn in the blocked red. Since the heads gave the
+        // alarm to the needs-you bar, red in a head can only be a limit, and
+        // this is the capture that shows it.
         let limits = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"]
         if limits == "hi" { claudeWeek = 91 }
         var all = claudeAndCodex(now: now, claudeWeek: claudeWeek)
@@ -1166,7 +1166,7 @@ enum DemoData {
         return base.map { session in
             guard session.id == board.focus else { return session }
             var focus = session
-            // "just now", and so first in its agent's section.
+            // "just now", and so first in its project's section.
             focus.updatedAt = now - 5_000
             if board.minimal {
                 // Minimal mode sends no titles: the card is its folder's name.
