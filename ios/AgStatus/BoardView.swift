@@ -278,7 +278,7 @@ struct BoardView: View {
             // scroll view, so whatever the reader has scrolled to, it stays
             // in view.
             NeedsYouSlot(face: store.connection == .boardGone ? nil : plan.needsYou?.face,
-                         oneLine: plan.wide || plan.compactHeight,
+                         lines: plan.compactHeight ? .one : plan.wide ? .oneOrTwo : .two,
                          onPress: barAction)
                 .equatable()
 
@@ -1997,13 +1997,13 @@ private extension View {
 /// again (`HeadRows` says why the container has to be a view of its own).
 private struct NeedsYouSlot: View, Equatable {
     let face: NeedsYou.Face?
-    let oneLine: Bool
+    let lines: NeedsYouBar.Lines
     let onPress: BoardAction<Void>
 
     var body: some View {
         VStack(spacing: 0) {
             if let face {
-                NeedsYouBar(face: face, oneLine: oneLine, onPress: onPress)
+                NeedsYouBar(face: face, lines: lines, onPress: onPress)
                     // From behind the streak, which is drawn after it.
                     .transition(.move(edge: .bottom))
             }
@@ -2022,15 +2022,25 @@ private struct NeedsYouSlot: View, Equatable {
 /// waiting on you. It wears the blocked card's own surface and, along its top,
 /// the blocked card's edge — no colour that is not already the board's.
 ///
-/// One line where that fits, on a board two columns wide or a phone held
-/// sideways, which is short of height before it is short of width; on a
-/// phone upright, two, the alarm over the session. When room runs out the
-/// word BLOCKED goes first, the mark and the count staying, then the project,
-/// then the name is cut at its end.
+/// One line where that fits, on a board two columns wide; on a phone, two,
+/// the alarm over the session. When room runs out the word BLOCKED goes
+/// first, the mark and the count staying, then the project, then the name is
+/// cut at its end.
 private struct NeedsYouBar: View {
+    /// How many lines the bar may take (`BoardView.board`).
+    enum Lines: Equatable {
+        /// A phone upright: the alarm over the session.
+        case two
+        /// A board two columns wide: one line where it fits, else two.
+        case oneOrTwo
+        /// A phone held sideways, short of height before it is short of
+        /// width: one line, the name cut rather than a second line taken. At
+        /// AX5 on an SE a second line left the board some 60pt.
+        case one
+    }
+
     let face: NeedsYou.Face
-    /// Whether it may take one line (`BoardView.board`).
-    let oneLine: Bool
+    let lines: Lines
     let onPress: BoardAction<Void>
 
     var body: some View {
@@ -2038,15 +2048,24 @@ private struct NeedsYouBar: View {
             onPress(())
         } label: {
             Group {
-                if oneLine {
+                switch lines {
+                case .two:
+                    twoLines
+                case .oneOrTwo:
                     ViewThatFits(in: .horizontal) {
                         oneLine(word: true, place: true)
                         oneLine(word: false, place: true)
                         oneLine(word: false, place: false)
                         twoLines
                     }
-                } else {
-                    twoLines
+                case .one:
+                    ViewThatFits(in: .horizontal) {
+                        oneLine(word: true, place: true)
+                        oneLine(word: false, place: true)
+                        oneLine(word: false, place: false)
+                        // The last step: the name cut at its end.
+                        oneLine(word: false, place: false, whole: false)
+                    }
                 }
             }
             .padding(.horizontal, Theme.Space.md)
@@ -2068,11 +2087,13 @@ private struct NeedsYouBar: View {
     }
 
     /// The bar on one line: the alarm, the session, the verb at the end.
-    private func oneLine(word: Bool, place: Bool) -> some View {
+    /// `whole` holds the session to its full width, which is what lets a
+    /// candidate be measured; the last one gives it up and is cut.
+    private func oneLine(word: Bool, place: Bool, whole: Bool = true) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
             alarm(word: word)
             session(place: place)
-                .fixedSize()
+                .fixedSize(horizontal: whole, vertical: false)
             Spacer(minLength: Theme.Space.xs)
             verb
         }
