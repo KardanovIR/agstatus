@@ -3,7 +3,8 @@
 > Recovered on 2026-11-07 from the transcript of the session that wrote it on
 > 2026-10-28, after its scratchpad was cleared. The research files and probe
 > captures it cites by scratchpad path did not survive; the probe payloads the
-> tests replay are in `cli/test/fixtures/subtasks`.
+> tests replay are in `cli/test/fixtures/subtasks`, and the probe logger it
+> names, `subtasks/probe/bin/log-hook.js`, is now `docs/design/subtasks-probe`.
 
 This is the single contract for five implementers working in parallel (hook, server, web, iOS, Android) plus docs. They do not talk to each other, so every cross-layer detail is fixed here: field names, types, bounds, enum values, ordering, timing, and who computes what.
 
