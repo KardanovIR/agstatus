@@ -482,6 +482,22 @@ body.detail-open > .footer { display: none; }
   vertical-align: middle;
 }
 
+/* A window with a single reading heads its column with its mark. The mark is
+ * 12px, where the line sample that replaces it once a second reading lands is
+ * 26px (KEY_W in app.js). So the column used to be 14px narrower on the
+ * window's first day than on every day after, and narrower than a neighbour
+ * with a shorter name. In the table the mark takes the sample's width, and
+ * the room it does not fill goes before it. The mark then stays the gap from
+ * its name that a sample does, and ends where the samples end when a narrow
+ * column stacks keys over names, so a column keeps its width from the first
+ * day on. Past about 330% text the mark is wider than 26px and needs no room.
+ *
+ * The legend keeps the mark at its own width, as iOS's legend does: it is a
+ * run of keys, not a row of columns. */
+.dv-table .dv-swatch-mark {
+  margin-left: max(0px, 26px - calc(6px + 0.54545em));
+}
+
 .dv-word { white-space: nowrap; }
 
 .dv-nil { color: var(--text-3); }

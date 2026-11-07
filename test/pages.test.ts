@@ -209,6 +209,30 @@ describe('static pages', () => {
     });
   });
 
+  // A window's column in the table of days is headed by its key: its mark,
+  // 12px, while it has a single reading, then a 26px sample of its line from
+  // the day a second reading lands. Heads that wide set the column's width,
+  // so the column was 14px narrower on its first day than ever after. In the
+  // table the mark takes up a sample's width, with the room it does not fill
+  // before it. jsdom lays nothing out, so this pins the rule and its tie to
+  // the sample's width in app.js.
+  it("heads a first-day column in the table of days as wide as a line's", () => {
+    const app = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const keyW = Number(/\bconst KEY_W = (\d+);/.exec(app)?.[1]);
+    expect(keyW, 'app.js no longer declares KEY_W').toBeGreaterThan(0);
+    const shell = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'shell.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const decl = (selector: string, property: string) => {
+      const body = new RegExp(`\\n${selector.replace(/\./g, '\\.')} \\{([^}]*)\\}`).exec(shell)?.[1];
+      return new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+?)\\s*(?:;|$)`).exec(body ?? '')?.[1];
+    };
+    const own = decl('.dv-swatch-mark', 'width');
+    expect(own, 'shell.css has no width for .dv-swatch-mark').toBeDefined();
+    // The room a sample takes that the mark does not, before the mark: mark
+    // and room together are the sample's width, or the mark's own past it.
+    expect(decl('.dv-table .dv-swatch-mark', 'margin-left')).toBe(`max(0px, ${keyW}px - ${own})`);
+  });
+
   // The install one-liners are the documented way in, so both routes have to
   // work on a self-hosted board too — not only on the hosted instance.
   it('serves the install scripts in both modes', async () => {
