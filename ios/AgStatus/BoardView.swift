@@ -416,6 +416,10 @@ struct BoardView: View {
     /// that only exists after a touch.
     private func pressBarForScreenshots() async {
         #if DEBUG
+        if let project = ProcessInfo.processInfo.environment["AGSTATUS_SCROLL_TO"], !project.isEmpty {
+            try? await Task.sleep(for: .milliseconds(600))
+            scrollForScreenshots(to: project)
+        }
         guard let presses = ProcessInfo.processInfo.environment["AGSTATUS_PRESS_BAR"].flatMap(Int.init),
               presses > 0 else { return }
         // Demo sessions are seeded synchronously, so the board is drawn with
@@ -428,6 +432,22 @@ struct BoardView: View {
         }
         #endif
     }
+
+    #if DEBUG
+    /// AGSTATUS_SCROLL_TO=<folder> scrolls the board to that project's
+    /// section, its label at the top, as a reader would: the sections below
+    /// the first screen can be captured. `none` is No project.
+    private func scrollForScreenshots(to project: String) {
+        guard let plan = drawn.plan, let scroller = drawn.scroller else { return }
+        let key: ProjectKey = project == "none" ? .noProject : .folder(project)
+        guard let section = plan.sections.first(where: { $0.key == key }),
+              let first = section.sessions.first else { return }
+        switch plan.arrangement {
+        case .list: scroller.scrollTo(first.id, anchor: .top)
+        case .stacked: scroller.scrollTo(section.id, anchor: .top)
+        }
+    }
+    #endif
 
     /// AGSTATUS_AX_DUMP=1 logs what VoiceOver is offered once the board has
     /// settled, after any AGSTATUS_PRESS_BAR presses (`AccessibilityDump`).

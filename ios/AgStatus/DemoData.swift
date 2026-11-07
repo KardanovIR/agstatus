@@ -528,6 +528,8 @@ enum DemoData {
     ///   AGSTATUS_PRESS_BAR      <n> (BoardView: presses the needs-you bar n
     ///                           times once the board is laid out: 1 brings
     ///                           the first blocked card, 2 the next)
+    ///   AGSTATUS_SCROLL_TO      <folder> | none (BoardView: scrolls the board
+    ///                           to that project's section, or No project's)
     ///   AGSTATUS_AX_DUMP        1 (BoardView: logs what VoiceOver is offered,
     ///                           category `ax`, after any presses — see
     ///                           `AccessibilityDump` for the simulator
@@ -573,7 +575,7 @@ enum DemoData {
         /// The mockups' board: two agents, nine sessions in five projects,
         /// two of them blocked, one moved, one with no folder.
         case projects
-        /// Eleven projects and No project, a blocked card near the end: the
+        /// Twelve projects and No project, a blocked card near the end: the
         /// board the bar exists for, where most labels are off the screen.
         case manyprojects
         /// Sessions that have moved since they started, and one from a server
@@ -869,9 +871,11 @@ enum DemoData {
                        age: 5, project: ""),
             ]
         case .manyprojects:
-            // Eleven projects and No project, one card blocked near the end:
+            // Twelve projects and No project, one card blocked near the end:
             // on a phone most labels are off the screen, and the bar is the
-            // way to it.
+            // way to it. One folder's name is longer than a phone's label
+            // holds beside its count: the count goes, then the name is cut
+            // in the middle.
             return [
                 Pooled(id: "m-acme", source: "claude", name: "Fix token refresh race in the auth middleware",
                        status: .coding, message: "Editing src/auth/token.ts", age: 15, machine: onlineMachine,
@@ -891,6 +895,11 @@ enum DemoData {
                 Pooled(id: "m-cs-x", source: "codex", name: "agstatus-listener-windows-terminal-focus",
                        status: .testing, message: "npm test -- focus/wt — 57 passed", age: 80,
                        machine: studioMachine, project: "claude-status", tokens: 402_600),
+                // The same repository checked out under a longer name is a
+                // section of its own: a project is a folder's name.
+                Pooled(id: "m-csd", source: "claude", name: "Investigate why the SSE stream drops after the iPad wakes",
+                       status: .done, message: "Finished — 23 files changed", age: 840, machine: studioMachine,
+                       project: "claude-status-dashboard-release-1.6", tokens: 3_400_000),
                 Pooled(id: "m-data", source: "codex", name: "data-platform", status: .coding,
                        message: "Rewriting the partition loader", age: 25, machine: onlineMachine,
                        project: "data-platform", tokens: 288_900),
