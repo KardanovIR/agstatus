@@ -189,12 +189,12 @@
 
   const usageLevel = (pct) => (pct >= 85 ? 'high' : pct >= 60 ? 'mid' : 'low');
 
-  // On a phone a limit's name and its reading wrap (shell.css), and these are
-  // the two places they must not. A model name is one name: left to the line
-  // breaker, a 320px phone read "SESSION (GPT-" over "6-ASTRA)". A countdown
-  // is one reading: "resets in 2h" over "17m" says two hours. A reading
-  // wraps on the desktop board too, beside its label: at 561 and 640px wide,
-  // at the default size, it already read "resets in 2d" over "5h".
+  // On the board a limit's name and its reading wrap (shell.css), and these
+  // are the two places they must not. A model name is one name: left to the
+  // line breaker, a 320px phone read "SESSION (GPT-" over "6-ASTRA)". A
+  // countdown is one reading: "resets in 2h" over "17m" says two hours, and
+  // before narrow blocks stacked, a 640px window read "resets in 2d" over "5h"
+  // at the default size.
   //
   // Held by the characters typesetting keeps for it, a non-breaking hyphen
   // and a no-break space, which draw exactly as the hyphen and space they

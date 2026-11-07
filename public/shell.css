@@ -132,6 +132,51 @@ main {
   align-items: stretch;
 }
 
+/* A block lays its heads out by its own width. A reading sits beside its
+ * limit's name while the block holds the longest pair an agent reports,
+ * "Current week (all models)" beside "34% · resets in 2h 17m": 181px of name,
+ * the 8px gap and 116px of reading come to 23.5em of the block's text, and a
+ * query measures inside the padding, so 24em, 312px at the default size.
+ * Narrower, the reading goes under its name, as it does on a phone (below) and
+ * as iOS stacks a head too narrow to hold both. In a row the name was the one
+ * cut: on a phone held sideways, 568px wide, five names in six ended in an
+ * ellipsis, and at 200% text every one, as on a 1024px desktop. At the default
+ * size a window narrower than 736px stacks; at a reader's larger text, wider
+ * ones do too.
+ *
+ * And the blocks go one to a row once two across would leave each less than
+ * 11em, a reading and its reset on one line, as on a phone. That is 143px at
+ * the default size, under card.css's 240px, so nothing moves until the text
+ * passes about 170%. At 300%, two blocks on a 568px screen gave "(GPT-6-ASTRA)"
+ * 228px of the 263 it needs, and broke it. */
+.usage-block {
+  container: usage-block / inline-size;
+  min-width: min(100%, max(240px, 11em));
+}
+
+@container usage-block (width < 24em) {
+  .meter-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+}
+
+/* A name wraps rather than being cut, wherever the board draws it: on a line
+ * of its own, and beside its reading should one ever outgrow the row, as
+ * iOS's heads take a second line at the accessibility sizes. Balanced, so its
+ * lines come out even: "CURRENT WEEK" over "(ALL MODELS)", where filling the
+ * first line left "MODELS)" under it alone. It wraps between words and never
+ * inside a hyphenated model name (app.js holds it whole), and the longest an
+ * agent reports, "(GPT-6-ASTRA)", still fits the row of a 320px phone at 300%
+ * text. Anything wider than the block, such as a window's id, breaks at the
+ * edge rather than running past it. */
+.meter-label {
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-wrap: balance;
+}
+
 /* ---- Usage detail ------------------------------------------------------- */
 
 body.detail-open > main,
@@ -784,25 +829,14 @@ body.detail-open > .footer { display: none; }
    * each takes a line, and the block's width. Left at flex-start, the label
    * was as wide as its text and its ellipsis never engaged: at the default
    * size on a 375px phone "Current week (all models)" ran on under the Codex
-   * block, cut without one. */
+   * block, cut without one. The usage-block query stacks these heads too;
+   * this keeps them stacked once a reader's larger text has given each block
+   * the row, which at 150% on a 560px phone is wider than the query's 24em,
+   * so a phone draws every limit one way. */
   .meter-head {
     flex-direction: column;
     align-items: stretch;
     gap: 0;
-  }
-
-  /* With a line to itself, the label wraps rather than being cut, as iOS's
-   * heads take a second line at the accessibility sizes, and balanced, so its
-   * lines come out even: "CURRENT WEEK" over "(ALL MODELS)", where filling
-   * the first line left "MODELS)" under it alone. It wraps between words and
-   * never inside a hyphenated model name (app.js holds it whole), and the
-   * longest an agent reports, "(GPT-6-ASTRA)", still fits the row of a 320px
-   * phone at 300% text. Anything wider than the block, such as a window's id,
-   * breaks at the edge rather than running past it. */
-  .meter-label {
-    white-space: normal;
-    overflow-wrap: break-word;
-    text-wrap: balance;
   }
 
   .stats { gap: var(--space-2xs) var(--space-sm); }
