@@ -1,9 +1,10 @@
 /*
- * The cards whose markup cards-1.6.3.html pins: every branch cardInner and
+ * The cards whose markup cards-1.6.5.html pins: every branch cardInner and
  * cardMeta take for a session without subagents. The file was written by the
- * 1.6.3 board (origin/master 112cc05) from exactly these sessions, at
- * PIN_TIME, with machine m1 online — so the board must still draw them byte
- * for byte, whatever 1.7.0 added beside them.
+ * 1.6.5 board (master 2d8fc12, the last before subagents) from exactly these
+ * sessions, at PIN_TIME, with machine m1 online — so the board must still
+ * draw them byte for byte, whatever 1.7.0 added beside them. It was 1.6.3's
+ * until 1.7.0 was replayed onto 1.6.5, whose cards gained their stale form.
  */
 export const PIN_TIME = Date.UTC(2026, 9, 28, 12, 0, 0);
 

@@ -7,7 +7,7 @@ import { PIN_TIME, pinnedSessions } from './fixtures/web/pinned-sessions';
 /*
  * Subagents on the web board (1.7.0): the rows inside a card, the footer, the
  * WORKING reading, the session screen's subtasks section, and the promise
- * that a card without subagents is exactly the card 1.6.3 drew.
+ * that a card without subagents is exactly the card 1.6.5 drew.
  *
  * Frames are the session JSON of docs/api.md: `subtasks` is optional, its
  * items are live and failed rows in start order, and its counts are exact.
@@ -89,8 +89,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('a card without subagents is the 1.6.3 card', () => {
-  const PINNED = fs.readFileSync(path.join(__dirname, 'fixtures', 'web', 'cards-1.6.3.html'), 'utf8');
+describe('a card without subagents is the 1.6.5 card', () => {
+  const PINNED = fs.readFileSync(path.join(__dirname, 'fixtures', 'web', 'cards-1.6.5.html'), 'utf8');
 
   async function pinnedBoard(subtasks?: unknown) {
     vi.useFakeTimers();
@@ -101,7 +101,7 @@ describe('a card without subagents is the 1.6.3 card', () => {
     return b;
   }
 
-  // cards-1.6.3.html is what origin/master's board drew for these sessions,
+  // cards-1.6.5.html is what master's board drew for these sessions,
   // byte for byte; see pinned-sessions.ts. Nothing about subagents may leak
   // into a card that has none: no hairline, no group, no class, no zero.
   it('draws the same markup, byte for byte', async () => {
