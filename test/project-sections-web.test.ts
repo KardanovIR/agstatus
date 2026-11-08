@@ -854,6 +854,34 @@ describe('a new block, aloud', () => {
     await vi.advanceTimersByTimeAsync(700);
     expect(said()).toBe('');
   });
+
+  // The region is read with the page, so a sentence left in it would meet
+  // someone reading from the top an hour later, about a block long answered.
+  // Cleared a few seconds after it is written, which a screen reader does not
+  // say: a polite region speaks what is added.
+  it('clears what it said five seconds after saying it', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api', name: 'Fix it' })]);
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix it' }));
+    await vi.advanceTimersByTimeAsync(600);                // written at 0.6 s
+    expect(said()).toBe('Fix it, in acme-api, needs you');
+    await vi.advanceTimersByTimeAsync(4900);               // 5.5 s
+    expect(said()).toBe('Fix it, in acme-api, needs you');
+    await vi.advanceTimersByTimeAsync(200);                // 5.7 s
+    expect(said()).toBe('');
+  });
+
+  it('gives a newer sentence its own five seconds', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api', name: 'Fix it' }), at('c', 2, { homeProject: 'docs', name: 'Docs' })]);
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix it' }));   // written at 0.6 s
+    await vi.advanceTimersByTimeAsync(4500);
+    b.emit('session', blocked('c', 0, 'docs', { name: 'Docs' }));         // written at 5.1 s
+    await vi.advanceTimersByTimeAsync(1200);                               // 5.7 s, past the first one's five
+    expect(said()).toBe('Docs, in docs, needs you');
+    await vi.advanceTimersByTimeAsync(4300);                               // 10.0 s
+    expect(said()).toBe('Docs, in docs, needs you');
+    await vi.advanceTimersByTimeAsync(200);                                // 10.2 s
+    expect(said()).toBe('');
+  });
 });
 
 // jsdom lays nothing out, so the stylesheets are held to what the browser

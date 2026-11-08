@@ -1326,9 +1326,14 @@
 
   const SAID_MS = 60000;
   const GATHER_MS = 500;
+  // How long a sentence stays in the region once written: long past the
+  // moment a screen reader queues it, and gone before anyone reading the page
+  // from the top meets an alarm for a block that was answered long ago.
+  const SAID_KEPT_MS = 5000;
   const saidAt = new Map();        // session id → when its block was said
   let gathered = [];
   let gatherTimer = 0;
+  let saidTimer = 0;
 
   function gatherBlock(id) {
     const now = Date.now();
@@ -1351,9 +1356,16 @@
       const { name, place } = needsWhat(still[0]);
       sentence = `${name}${place ? `, ${place}` : ''}, needs you`;
     }
-    // Emptied first, so the same words a minute later are a change too.
+    // Emptied first, so the same words a minute later are a change too; and
+    // again a few seconds on, which a screen reader does not say (a polite
+    // region speaks what is added), so no stale alarm stays in the page. A
+    // sentence written meanwhile keeps its own few seconds.
+    clearTimeout(saidTimer);
     saidEl.textContent = '';
-    setTimeout(() => { saidEl.textContent = sentence; }, 100);
+    saidTimer = setTimeout(() => {
+      saidEl.textContent = sentence;
+      saidTimer = setTimeout(() => { saidEl.textContent = ''; }, SAID_KEPT_MS);
+    }, 100);
   }
 
   async function refreshSessions() {
