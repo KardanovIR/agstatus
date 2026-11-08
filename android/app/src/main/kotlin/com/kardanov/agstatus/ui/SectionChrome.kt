@@ -443,28 +443,29 @@ internal const val RING_FADE_MILLIS = 600
 
 /**
  * The ring a card the bar brought wears: 2dp in a neutral ink, 2dp clear of
- * the card's edge so it never reads as the blocked card's own brighter edge.
- * Not a colour, because colour on this board is state, and no glow. Drawn
- * outside the card's bounds, which the list does not clip across, and read
- * in the draw phase alone, so its fade recomposes nothing.
+ * the card's 1dp edge so it never reads as the blocked card's own brighter
+ * edge. Not a colour, because colour on this board is state, and no glow.
+ * Read in the draw phase alone, so its fade recomposes nothing.
+ *
+ * Drawn inside the card's bounds, in its 14dp padding, so no label can cover
+ * it. Drawn outside, it lost its top edge whenever the card sat flush under
+ * the label that sticks: the list places that label last, over the cards,
+ * and at the top of the list the card cannot be moved out from under it.
  */
 internal fun Modifier.jumpRing(alpha: () -> Float): Modifier = drawWithContent {
     drawContent()
     val shown = alpha()
     if (shown <= 0f) return@drawWithContent
     val stroke = 2.dp.toPx()
-    val outset = 2.dp.toPx() + stroke / 2
+    val inset = 1.dp.toPx() + 2.dp.toPx() + stroke / 2
     drawRoundRect(
         color = Theme.textSecondary.copy(alpha = shown),
-        topLeft = Offset(-outset, -outset),
-        size = Size(size.width + 2 * outset, size.height + 2 * outset),
-        cornerRadius = CornerRadius(16.dp.toPx() + outset),
+        topLeft = Offset(inset, inset),
+        size = Size(size.width - 2 * inset, size.height - 2 * inset),
+        cornerRadius = CornerRadius((16.dp.toPx() - inset).coerceAtLeast(0f)),
         style = Stroke(width = stroke),
     )
 }
-
-/** What the ring needs below the label a card lands under, so none of it is behind the label. */
-internal val RING_CLEARANCE = 6.dp
 
 // MARK: - Layout
 

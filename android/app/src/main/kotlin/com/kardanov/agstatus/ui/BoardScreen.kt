@@ -80,9 +80,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -143,7 +145,6 @@ fun BoardScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val view = LocalView.current
-    val density = LocalDensity.current
     // A card that moves has news: the list is keyed by session id, so a card
     // only animates when the board actually reordered. Nulling the specs is
     // how a device that asked for less motion gets the same reorder with no
@@ -164,8 +165,8 @@ fun BoardScreen(
     SideEffect { drawn.record(sections) }
 
     // The needs-you bar's walk: the card it last brought, Saveable, so turning
-    // the phone does not start the walk over. The card it brought keeps the
-    // focus requester; for two seconds it also wears the ring.
+    // the phone does not start the walk over. The card it brought takes the
+    // focus requester, and wears the ring for two seconds.
     var shown by rememberSaveable { mutableStateOf<String?>(null) }
     var focusTarget by remember { mutableStateOf<String?>(null) }
     var ringed by remember { mutableStateOf<String?>(null) }
@@ -173,9 +174,19 @@ fun BoardScreen(
     val labelHeight = remember { MeasuredHeight() }
     // What the board brings into view for focus, the bar's and a keyboard's
     // alike, is the room under the stuck label: a focused card is never left
-    // with its top under a label.
-    val underLabel = remember(density) {
-        UnderLabelBringIntoView { labelHeight.px + with(density) { RING_CLEARANCE.toPx() } }
+    // with its top under a label. The ring is drawn inside the card, so the
+    // room starts at the label's own edge.
+    val underLabel = remember(listState) {
+        UnderLabelBringIntoView(
+            top = { labelHeight.px.toFloat() },
+            backRoom = {
+                if (listState.firstVisibleItemIndex == 0) {
+                    listState.firstVisibleItemScrollOffset.toFloat()
+                } else {
+                    Float.POSITIVE_INFINITY
+                }
+            },
+        )
     }
     val reading = remember(sections, shown) {
         ProjectSections.barTarget(sections, shown)?.let { target ->
@@ -190,10 +201,21 @@ fun BoardScreen(
     LaunchedEffect(reading == null) {
         if (reading == null) shown = null
     }
+    // The card the bar brought keeps input focus only while its ring says
+    // why, and lets go on the next touch. In touch mode, which TalkBack is,
+    // it was made focusable for the jump, and holding focus for good gave a
+    // keyboard an extra stop on it, and the list a reason to scroll back to
+    // it whenever its room shrank. Letting go takes away what made it
+    // focusable, which drops input focus and leaves the screen's own; no
+    // more is needed, and TalkBack's focus, its own, stays where it is.
     LaunchedEffect(ringed) {
         if (ringed == null) return@LaunchedEffect
         delay(RING_HOLD_MILLIS)
         ringed = null
+        focusTarget = null
+    }
+    val letGo by rememberUpdatedState {
+        if (focusTarget != null) focusTarget = null
     }
 
     val currentSections by rememberUpdatedState(sections)
@@ -209,9 +231,9 @@ fun BoardScreen(
         ringed = null
         scope.launch {
             // Under its label: the label that sticks over a card in its
-            // section's middle, or its own over a section's first card, with
-            // room for the ring.
-            val offset = -(labelHeight.px + with(density) { RING_CLEARANCE.roundToPx() })
+            // section's middle, or its own over a section's first card. The
+            // ring is inside the card, so the card can sit flush under it.
+            val offset = -labelHeight.px
             // It snaps with animations off, and while TalkBack runs, which
             // reads the card it lands on rather than the scroll.
             if (reduceMotion || touchExploration(context)) {
@@ -320,7 +342,18 @@ fun BoardScreen(
         Column(
             modifier = Modifier
                 .padding(padding)
-                .fillMaxSize(),
+                .fillMaxSize()
+                // The next touch anywhere on the board lets go of the focus
+                // a jump gave its card. Only watched: nothing here takes the
+                // touch from the list or a card.
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.type == PointerEventType.Press) letGo()
+                        }
+                    }
+                },
         ) {
             if (visibleUsage.isNotEmpty() && !boardGone) {
                 UsageBars(
@@ -410,7 +443,7 @@ fun BoardScreen(
                                         // from code. A tap's card is focusable only
                                         // from a keyboard (clickable), so in touch
                                         // mode, which TalkBack is, it is made
-                                        // focusable for the jump.
+                                        // focusable for the jump, until it lets go.
                                         val takesFocus = if (session.id == focusTarget) {
                                             Modifier
                                                 .focusRequester(jumpFocus)
@@ -521,18 +554,28 @@ private class DrawnBoard {
  * the bar's ring went under the label. Here a card in that room stays where
  * it is, one taller than the room has its top just under the label, and one
  * above or below moves the least that brings it into the room.
+ *
+ * Never further back than the list can go, which [backRoom] says. A scroll
+ * asked of the list and not given goes on up as if a finger had pulled, and
+ * at the list's top the pull-to-refresh took it as a pull that no lifted
+ * finger ever let go: focus on the first card, from the bar or a keyboard's
+ * Tab, left the spinner stuck in view.
  */
-private class UnderLabelBringIntoView(private val top: () -> Float) : BringIntoViewSpec {
+private class UnderLabelBringIntoView(
+    private val top: () -> Float,
+    private val backRoom: () -> Float,
+) : BringIntoViewSpec {
     override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
         val start = top().coerceIn(0f, containerSize)
         val leading = offset - start
         val trailing = offset + size - containerSize
-        return when {
+        val distance = when {
             leading >= 0f && trailing <= 0f -> 0f
             size > containerSize - start -> leading
             leading < 0f -> leading
             else -> trailing
         }
+        return if (distance < 0f) distance.coerceAtLeast(-backRoom()) else distance
     }
 }
 
