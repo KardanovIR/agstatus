@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -83,9 +85,11 @@ import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -96,6 +100,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -119,8 +125,8 @@ import kotlin.math.abs
  * it, then its cards, in the store's stable order. Sections run in name order
  * (ProjectSections.ORDER) and never move because one got busy. The usage
  * bars stay pinned above the list, and while anything is blocked the
- * needs-you bar is the screen's bottom bar: the board's one alarm, and the way
- * to the card that needs you.
+ * needs-you bar runs along the screen's bottom edge: the board's one alarm,
+ * and the way to the card that needs you.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -331,21 +337,22 @@ fun BoardScreen(
                 },
             )
         },
-        bottomBar = {
-            NeedsYouBar(
-                reading = reading.takeUnless { boardGone },
-                reduceMotion = reduceMotion,
-                onPress = pressBar,
-            )
-        },
     ) { padding ->
-        Column(
+        val layoutDirection = LocalLayoutDirection.current
+        // The board's sides keep clear of a system bar or cutout there, as the
+        // Scaffold asks; the needs-you bar runs edge to edge and pads itself.
+        val sides = Modifier.padding(
+            start = padding.calculateStartPadding(layoutDirection),
+            end = padding.calculateEndPadding(layoutDirection),
+        )
+        BoardBody(
+            bottomInset = padding.calculateBottomPadding(),
             modifier = Modifier
-                .padding(padding)
+                .padding(top = padding.calculateTopPadding())
                 .fillMaxSize()
-                // The next touch anywhere on the board lets go of the focus
-                // a jump gave its card. Only watched: nothing here takes the
-                // touch from the list or a card.
+                // The next touch anywhere on the board, the bar included,
+                // lets go of the focus a jump gave its card. Only watched:
+                // nothing here takes the touch from the list or a card.
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
@@ -354,17 +361,26 @@ fun BoardScreen(
                         }
                     }
                 },
-        ) {
-            if (visibleUsage.isNotEmpty() && !boardGone) {
-                UsageBars(
-                    usage = visibleUsage,
-                    onOpenDetail = onOpenUsage,
-                    modifier = Modifier
-                        .padding(horizontal = 16.dp)
-                        .padding(top = 10.dp, bottom = 2.dp),
+            usage = {
+                if (visibleUsage.isNotEmpty() && !boardGone) {
+                    UsageBars(
+                        usage = visibleUsage,
+                        onOpenDetail = onOpenUsage,
+                        modifier = sides
+                            .padding(horizontal = 16.dp)
+                            .padding(top = 10.dp, bottom = 2.dp),
+                    )
+                }
+            },
+            bar = {
+                NeedsYouBar(
+                    reading = reading.takeUnless { boardGone },
+                    reduceMotion = reduceMotion,
+                    onPress = pressBar,
                 )
-            }
-            Box(Modifier.weight(1f)) {
+            },
+        ) {
+            Box(sides) {
                 when {
                     boardGone -> BoardGoneState(onStartOver = store::disconnectBoard)
 
@@ -483,6 +499,54 @@ fun BoardScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * The board under the top bar: the usage blocks pinned at the top, the list
+ * under them, and the needs-you bar along the bottom edge while anything is
+ * blocked.
+ *
+ * Placed in another order than drawn: the usage blocks, the bar, then the
+ * list. Compose walks a keyboard's Tab through siblings in the order they are
+ * placed, so Tab reaches the bar after the usage blocks and before the cards,
+ * where it stands in the web board's page. As the Scaffold's bottom bar it
+ * was placed after the top bar, and Tab went from Settings to the bar before
+ * anything on the board. TalkBack goes by position, so it still hears the bar
+ * last, after the cards.
+ *
+ * [bottomInset] is the system bar under the board: the list keeps above it
+ * while no bar shows, and the bar, which runs to the bottom edge, pads itself.
+ */
+@Composable
+private fun BoardBody(
+    bottomInset: Dp,
+    usage: @Composable () -> Unit,
+    bar: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    board: @Composable () -> Unit,
+) {
+    Layout(contents = listOf(usage, bar, board), modifier = modifier) { slots, constraints ->
+        val (usageSlot, barSlot, boardSlot) = slots
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val loose = Constraints(maxWidth = width, maxHeight = height)
+        val bars = barSlot.map { it.measure(loose) }
+        // While the bar comes and goes, the list ends at its top or above the
+        // system bar, whichever is higher, so it never jumps under the bar.
+        val bottom = maxOf(bars.maxOfOrNull { it.height } ?: 0, bottomInset.roundToPx())
+        val usages = usageSlot.map { it.measure(loose.copy(maxHeight = (height - bottom).coerceAtLeast(0))) }
+        val top = usages.sumOf { it.height }
+        val boards = boardSlot.map { it.measure(Constraints.fixed(width, (height - top - bottom).coerceAtLeast(0))) }
+        layout(width, height) {
+            var y = 0
+            for (placeable in usages) {
+                placeable.place(0, y)
+                y += placeable.height
+            }
+            for (placeable in bars) placeable.place(0, height - placeable.height)
+            for (placeable in boards) placeable.place(0, top)
         }
     }
 }

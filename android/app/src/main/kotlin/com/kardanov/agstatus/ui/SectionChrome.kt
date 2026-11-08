@@ -254,12 +254,12 @@ private val BarEase = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 private const val BAR_MOVE_MILLIS = 220
 
 /**
- * The needs-you bar: the board's one alarm, the screen's bottom bar, present
- * only while a session is blocked. "(!) 2 BLOCKED · Fix the login redirect ·
- * in acme-api · Show". The mark, the count and the word are in the blocked
- * ink, the session in primary ink, the place and the verb in secondary. It
- * names the card a press brings; after a press the next one, and its verb is
- * "Next" ([BarReading.walks]).
+ * The needs-you bar: the board's one alarm, along the screen's bottom edge,
+ * present only while a session is blocked. "(!) 2 BLOCKED · Fix the login
+ * redirect · in acme-api · Show". The mark, the count and the word are in the
+ * blocked ink, the session in primary ink, the place and the verb in
+ * secondary. It names the card a press brings; after a press the next one,
+ * and its verb is "Next" ([BarReading.walks]).
  *
  * One line on a wide screen, and on a phone two, the alarm over the session.
  * When room runs out it gives up, in order: the word BLOCKED (the mark and the
