@@ -804,9 +804,9 @@ What does record: entering the after-turn reading once (for example `testing · 
 |---|---|
 | Body | Agent posts are under 1 KB, far below the 16 KB body limit (`src/app.ts:323`). |
 | Frame | At most 8 KB of `subtasks` per session (§4.6); typical under 2 KB. |
-| Snapshot | At most 50 cards × (8 KB + about 1.5 KB) ≈ 475 KB, under the 1,000,000-byte stream cap (`:229`). Legacy mode has no card cap, as today. |
+| Snapshot | At most 50 cards × (8 KB + about 2.6 KB) ≈ 530 KB, under the 1,000,000-byte stream cap (`:229`). Legacy mode has no card cap, as today. |
 | Agent frames | Throttled per session: an agent post broadcasts at once when its wire status changed or no frame for that session went out in the last `AGENT_FRAME_THROTTLE_MS`; otherwise one trailing frame goes out `AGENT_FRAME_THROTTLE_MS` after the last one, carrying the then-current session. Any other broadcast for the session (main-thread post, sweep, token totals, removal) cancels a pending trailing frame. The webhook response and the push decision are never deferred. A 10-agent burst inside a second becomes at most 4 frames. |
-| Outbound per post | At most one frame of about 9.5 KB to each of up to 15 streams (10 viewers, 5 listeners; `docs/api.md:651`, `:660`) against about 1.5 KB today. |
+| Outbound per post | At most one frame of about 10.6 KB (8,192 + 2,688 bytes) to each of up to 15 streams (10 viewers, 5 listeners; `docs/api.md:651`, `:660`) against at most about 2.6 KB for a card without subagents. A card with every other field at its bound (a 128-character id, the longest source, slug, kind and status, and its text in three-byte characters) carries 2,641 bytes besides `subtasks`, 377 of them its 1.7.0 `homeProject`. |
 | Broadcast rate | Bounded by the existing 120 posts/min/workspace limit (`src/store.ts:426`) in multi-tenant mode with `rateLimit` on; legacy mode and `rateLimit: false` have no webhook limit, as today, and rely on the agent-frame throttle. |
 | Write per post | The whole `sessions` row is rewritten on every webhook (`:1261-1280`), now with the column: at most about 22 KB with ASCII text and 43 KB with CJK text, 1-3 KB typical. |
 | Memory per board | At most 256 live rows across a board plus 8 failed rows and 64 tombs per session: about 0.7 MB of heap for a pathological 50-card board (rows about 500 B each in V8, tombs about 120 B). Record this allowance beside the per-board reasoning at `src/store.ts:495-505`, which `MAX_WORKSPACES` is sized against. |
@@ -1255,7 +1255,7 @@ Plus one **cross-layer e2e**: real `agstatus init` and the real `dist/server.js`
    - B blocked 30 s after A's push: debounced;
    - no done push at `Stop` while a background row runs, none when it finishes (hold), exactly one at the report turn's `Stop`;
    - a hold released by the sweep pushes `done` once; a row expiry that leaves the card active does not push.
-4. **`test/sse.test.ts`:** a `session` frame carries `subtasks`; a snapshot of 50 maximal cards stays under 1,000,000 bytes; with 10 viewers and 5 listeners open, one accepted agent post writes at most 15 × (8,192 + 2,048) bytes in total.
+4. **`test/sse.test.ts`:** a `session` frame carries `subtasks`; a snapshot of 50 maximal cards stays under 1,000,000 bytes; with 10 viewers and 5 listeners open, one accepted agent post to a card with every field at its bound writes at most 15 × (8,192 + 2,688) bytes in total, and its frame carries at most 2,688 bytes besides `subtasks`.
 5. **`test/persistence.test.ts` (Postgres):**
    - subtasks, the tally, the ordinals, a hold and a soft block survive a restart;
    - a malformed column, an oversized column (the `CASE` guard), or a `savedAt` that differs from `updated_at` loads as no state; with a derived stored message the session loads as `idle` / '';

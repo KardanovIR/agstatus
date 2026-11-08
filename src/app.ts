@@ -335,7 +335,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
 
   /**
    * The frame for an agent post, throttled per session. A subagent burst would
-   * otherwise send every viewer a frame of up to ~9.5 KB per post: thirty
+   * otherwise send every viewer a frame of up to ~10.6 KB per post: thirty
    * agents starting inside a second, on fifteen streams. So the frame goes at
    * once only when the card's status changed or the session had no frame in the
    * last AGENT_FRAME_THROTTLE_MS; otherwise one trailing frame goes when that

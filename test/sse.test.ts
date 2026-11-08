@@ -231,15 +231,29 @@ const MAX_TEXT = {
   label: '标'.repeat(64),
   activity: '动'.repeat(80),
 };
+// The longest slug and kind a host can have.
 const MAX_HOST = {
   machine: { id: 'ab'.repeat(16), name: '机'.repeat(32) },
-  app: { slug: 'iterm2' as const, name: '应'.repeat(32), kind: 'terminal' as const },
+  app: { slug: 'windows-terminal' as const, name: '应'.repeat(32), kind: 'desktop-app' as const },
 };
+// The longest source and session id a post may name: ^[a-z][a-z0-9_-]{0,23}$
+// and ^[A-Za-z0-9._:-]{1,128}$.
+const MAX_SOURCE = 'x'.repeat(24);
+const maxId = (seed: string): string => seed.padEnd(128, '.');
 
-/** One card as large as the caps let it be: maximal text, `live` running rows and 8 failed ones. */
+/**
+ * What a session frame carries besides its subtasks, at most. A card with every
+ * other field at its bound (the above, and homeProject as long as project)
+ * frames to 2,639 bytes of it in 1.7.0, coding as here, and 2,641 planning, the
+ * longest status; homeProject alone is 377 of those. A token total would add
+ * 26 bytes, but only to an id of at most 64 characters, 64 bytes shorter.
+ */
+const CARD_BESIDES_SUBTASKS_MAX_BYTES = 2688;
+
+/** One card as large as the caps let it be: every field at its bound, `live` running rows and 8 failed ones. */
 function maximalCard(store: Store, wsId: string, id: string, live: number): void {
   const { name, message, project, label, activity } = MAX_TEXT;
-  store.upsertSession(wsId, { id, status: 'coding', name, message, project, source: 'claude', host: MAX_HOST }, Infinity);
+  store.upsertSession(wsId, { id, status: 'coding', name, message, project, source: MAX_SOURCE, host: MAX_HOST }, Infinity);
   const at = Date.now();
   for (let i = 0; i < 8; i++) {
     const agent = agentKey(`${id} failed ${i}`);
@@ -284,7 +298,7 @@ describe('SSE: subtasks', () => {
       const token = await createWorkspaceHttp(base);
       const wsId = store.resolveToken(token)!;
       // The board's 256 live rows spread over the cards, and 8 failed rows on each.
-      for (let i = 0; i < 50; i++) maximalCard(store, wsId, `card-${i}`, i < 6 ? 6 : 5);
+      for (let i = 0; i < 50; i++) maximalCard(store, wsId, maxId(`card-${i}`), i < 6 ? 6 : 5);
       const cards = store.getSessions(wsId);
       expect(cards).toHaveLength(50);
       expect(cards.reduce((n, c) => n + (c.subtasks?.running ?? 0), 0)).toBe(256);
@@ -301,15 +315,16 @@ describe('SSE: subtasks', () => {
     }
   });
 
-  it('one agent post to a maximal card writes at most 15 × (8,192 + 2,048) bytes to 10 viewers and 5 listeners', async () => {
+  it('one agent post to a maximal card writes at most 15 × (8,192 + 2,688) bytes to 10 viewers and 5 listeners', async () => {
     const { app, store } = makeApp();
     const { srv, base } = await listen(app);
     const ac = new AbortController();
     try {
       const token = await createWorkspaceHttp(base);
       const wsId = store.resolveToken(token)!;
-      maximalCard(store, wsId, 'big', 48);
-      expect(store.getSession(wsId, 'big')!.subtasks!.items).toHaveLength(56);
+      const big = maxId('big');
+      maximalCard(store, wsId, big, 48);
+      expect(store.getSession(wsId, big)!.subtasks!.items).toHaveLength(56);
 
       const streams = [];
       for (let i = 0; i < 10; i++) streams.push(await countedStream(`${base}/w/${token}/events`, {}, ac.signal));
@@ -326,15 +341,25 @@ describe('SSE: subtasks', () => {
       const before = streams.map((s) => s.bytes);
 
       await postWebhook(base, token, {
-        session_id: 'big', status: 'coding',
-        agent: { id: agentKey('big live 0'), state: 'coding', activity: 'Something new', at: Date.now() + 10 },
+        session_id: big, status: 'coding',
+        agent: { id: agentKey(`${big} live 0`), state: 'coding', activity: 'Something new', at: Date.now() + 10 },
       });
       await until(() => streams.every((s) => s.text.lastIndexOf('event: session') > -1), 'the frame on every stream');
       await sleep(400); // and anything a trailing frame would add
       const written = streams.map((s, i) => s.bytes - before[i]);
-      for (const w of written) expect(w).toBeLessThanOrEqual(WIRE_SUBTASKS_MAX_BYTES + 2048);
-      expect(written.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(15 * (WIRE_SUBTASKS_MAX_BYTES + 2048));
+      for (const w of written) expect(w).toBeLessThanOrEqual(WIRE_SUBTASKS_MAX_BYTES + CARD_BESIDES_SUBTASKS_MAX_BYTES);
+      expect(written.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(15 * (WIRE_SUBTASKS_MAX_BYTES + CARD_BESIDES_SUBTASKS_MAX_BYTES));
       expect(written.every((w) => w > 0)).toBe(true);
+      // The frame's bytes besides its subtasks, which no total above can
+      // catch while this card's subtasks stay under their 8,192-byte guard.
+      // Close to the bound as well, so that the bound is the one tested.
+      const text = streams[0].text;
+      const tail = text.slice(text.lastIndexOf('event: session'));
+      const frame = tail.slice(0, tail.indexOf('\n\n') + 2);
+      const { subtasks } = JSON.parse(frame.split('\n')[1].slice('data: '.length));
+      const besides = Buffer.byteLength(frame) - Buffer.byteLength(JSON.stringify(subtasks));
+      expect(besides).toBeLessThanOrEqual(CARD_BESIDES_SUBTASKS_MAX_BYTES);
+      expect(besides).toBeGreaterThan(CARD_BESIDES_SUBTASKS_MAX_BYTES - 64);
     } finally {
       ac.abort();
       await closeServer(srv);
