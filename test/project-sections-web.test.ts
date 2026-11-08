@@ -182,6 +182,39 @@ describe('project sections', () => {
     expect(sections(b)).toEqual(['AgStatus', 'agstatus', 'Alpha', 'alpha', 'beta', 'zeta']);
   });
 
+  // The rule the server and every client hold a folder name to: trimmed, it
+  // is not empty, not '/' or '.', and not shaped like a UUID. Anything else
+  // names no section, pinned or live, and no place.
+  it.each([
+    ['empty', ''], ['blank', '   '], ['the root', '/'], ['the root, padded', ' / '], ['here', '.'],
+    ['here, padded', '  . '], ['a UUID', UUID], ['a UUID in capitals', UUID.toUpperCase()],
+    ['a UUID, padded', `  ${UUID} `],
+  ])('puts a session whose folder is %s in No project, pinned or live', async (_what, name) => {
+    const b = await boardOf([
+      at('h', 1, { homeProject: name, project: name }), at('l', 2, { project: name }),
+      at('a', 3, { homeProject: 'acme-api', project: name }),
+    ]);
+    expect(layout(b)).toEqual(['# acme-api', 'a', '# No project', 'h', 'l']);
+    for (const id of ['h', 'l', 'a']) expect(place(b, id), id).toBe(null);
+  });
+
+  // A pinned folder the rule turns down is no pin: the live folder stands in,
+  // as it does on a server too old to pin one.
+  it('holds a pinned folder to the same rule, and falls back to the live one', async () => {
+    const b = await boardOf([
+      at('u', 1, { homeProject: UUID, project: 'web' }), at('r', 2, { homeProject: '/', project: 'web' }),
+      at('d', 3, { homeProject: ' . ', project: 'acme-api' }), at('n', 4, { homeProject: '  ', project: '.' }),
+    ]);
+    expect(layout(b)).toEqual(['# acme-api', 'd', '# web', 'u', 'r', '# No project', 'n']);
+  });
+
+  // Only the test trims: a name that passes is the folder's own, spaces and all.
+  it('uses a usable name exactly as it was sent', async () => {
+    const b = await boardOf([at('p', 1, { homeProject: ' api ' }), at('q', 2, { homeProject: 'api' })]);
+    expect((b.$$('h2.section-label') as HTMLElement[]).map((h) => h.dataset.section)).toEqual([' api ', 'api']);
+    expect(headings(b)).toEqual([' api , 1 session', 'api, 1 session']);
+  });
+
   it('draws each section as its label and then its cards, in the board\'s own order', async () => {
     const b = await boardOf([
       at('a1', 1, { homeProject: 'acme-api' }), at('c1', 2, { homeProject: 'claude-status' }),
@@ -378,6 +411,8 @@ describe('project sections', () => {
     ['a folder that is its name', { homeProject: 'acme-api', project: 'web', name: 'web' }, null],
     ['no folder', { homeProject: 'acme-api', project: '', name: 'Fix it' }, null],
     ['a UUID folder', { homeProject: 'acme-api', project: UUID, name: 'Fix it' }, null],
+    ['the root', { homeProject: 'acme-api', project: '/', name: 'Fix it' }, null],
+    ['a blank folder', { homeProject: 'acme-api', project: '  ', name: 'Fix it' }, null],
     ['a live folder that is its section (an old server)', { project: 'acme-api', name: 'Fix it' }, null],
     ['a worktree root before its section knows the repo', { homeProject: 'feature-x', project: 'my-repo', name: 'feature-x' }, 'in my-repo'],
   ])('shows the place for %s as %s', async (_what, over, expected) => {

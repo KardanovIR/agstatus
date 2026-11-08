@@ -264,24 +264,38 @@
   // A project is the folder a session started in, which the server pins for
   // the session's life as `homeProject`, so a later cd never moves a card. A
   // server too old to send it leaves the live folder, `project`. A session
-  // with no usable folder, '' or a bare UUID (the hook's own test for a name
-  // nobody chose), goes in No project, always last.
+  // with no usable folder (realFolder) goes in No project, always last.
   //
   // The labels are full-row headings inside the one grid, not containers, so
   // no card ever changes parent: Focus (paintFocus), the history route's
   // focus return (sessionOpener) and the reconciler all keep finding cards
   // where they always were.
 
+  // The hook's own test for a name nobody chose (plugin/scripts/agstatus-hook.js).
   const UUID_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  // No folder is ever named '', so it cannot collide with a real section.
+  // No usable folder name is '', so it cannot collide with a real section.
   const NO_PROJECT = '';
 
-  /** A folder name a person chose: not empty, and not a bare UUID. */
-  const realFolder = (v) => typeof v === 'string' && v !== '' && !UUID_NAME_RE.test(v);
+  /**
+   * Whether a string can name a folder: a section, or the place a card says
+   * it is. The rule the server's normalizeProject and every client hold a
+   * name to: trimmed, it is not empty, not '/' or '.', and not a bare UUID.
+   * Only the test trims. A name that passes is used exactly as it was sent,
+   * so ' api' and 'api' are two folders, as they are on the disk.
+   */
+  const realFolder = (v) => {
+    if (typeof v !== 'string') return false;
+    const name = v.trim();
+    return name !== '' && name !== '/' && name !== '.' && !UUID_NAME_RE.test(name);
+  };
 
-  /** Which section a session's card is in: the wire contract's section key. */
-  const sectionKey = (s) => (typeof s.homeProject === 'string' && s.homeProject !== ''
-    ? s.homeProject
+  /**
+   * Which section a session's card is in, the wire contract's section key:
+   * its pinned folder, else its live folder (a server too old to pin one),
+   * else No project. The pinned one is held to the same rule as the live
+   * one, so a value no client would draw cannot open a section here alone.
+   */
+  const sectionKey = (s) => (realFolder(s.homeProject) ? s.homeProject
     : realFolder(s.project) ? s.project : NO_PROJECT);
 
   /**
@@ -822,14 +836,15 @@
   // tooltip. Never a colour: colour on this board means state.
   //
   // The place, "in <folder>", shows only once a session has moved: when its
-  // live folder is a real one and differs from both its section, which the
-  // label above already names, and its name. `name` is the session's title
-  // when the agent has one and the folder it started in otherwise, and
-  // `project` follows the live directory, a Claude worktree root reported as
-  // its repository. So a session that ran `cd web` reads "in web", and an
-  // untitled one at a worktree root, named for the worktree's folder, reads
-  // "in <repo>" until its section knows the repo. On a server too old to
-  // send `homeProject` the section is the live folder, and no card says it.
+  // live folder is a usable name (realFolder) and differs from both its
+  // section, which the label above already names, and its name. `name` is
+  // the session's title when the agent has one and the folder it started in
+  // otherwise, and `project` follows the live directory, a Claude worktree
+  // root reported as its repository. So a session that ran `cd web` reads
+  // "in web", and an untitled one at a worktree root, named for the
+  // worktree's folder, reads "in <repo>" until its section knows the repo.
+  // On a server too old to send `homeProject` the section is the live
+  // folder, and no card says it.
   function cardMeta(s) {
     const name = agentName(s.source);
     const agent = `<span class="meta-agent" title="${escape(name)}">${agentMark(s.source)}`
