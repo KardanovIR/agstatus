@@ -2121,12 +2121,12 @@ private struct NeedsYouBar: View {
     /// `whole` holds the session to its full width, which is what lets a
     /// candidate be measured; the last one gives it up and is cut.
     private func oneLine(word: Bool, place: Bool, whole: Bool = true) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
-            alarm(word: word)
-            session(place: place)
-                .fixedSize(horizontal: whole, vertical: false)
-            Spacer(minLength: Theme.Space.xs)
-            verb
+        endingInVerb(spacing: Theme.Space.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.Space.sm) {
+                alarm(word: word)
+                session(place: place)
+                    .fixedSize(horizontal: whole, vertical: false)
+            }
         }
     }
 
@@ -2148,9 +2148,36 @@ private struct NeedsYouBar: View {
     }
 
     private func alarmLine(word: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
+        endingInVerb(spacing: Theme.Space.xs) {
             alarm(word: word)
-            Spacer(minLength: Theme.Space.xs)
+        }
+    }
+
+    /// A line of the bar: `content` at the start, the verb at the far end,
+    /// `spacing` apart, and between them a gap of at least 8pt — laid out to
+    /// the point as `content`, a `Spacer(minLength: 8)` and the verb were in
+    /// an HStack of that spacing, wherever the line is wide enough and
+    /// wherever it is not. A cascade measures the same width for it.
+    ///
+    /// Without that Spacer, because with it the bar made every hook event
+    /// cost the whole board's layout. The alarm's fixed token — the mark
+    /// beside its count — in a line with a Spacer and the verb had the board's
+    /// root stack ask every child for its size again on every update: about
+    /// 12 asks and 4 placements an event for the pinned heads, the bar and
+    /// the streak each, though none of them had changed, and the root reader
+    /// placing the whole board again (a 6.9" simulator, 40 message events:
+    /// some 39 million more instructions on the main thread an event than
+    /// with the bar hidden, half as many again). Any one piece taken away
+    /// ended it: the Spacer, the verb, the token's .fixedSize(), its count,
+    /// or the mark. The mark had to stay, so the Spacer went; a flexible frame
+    /// holding the gap costs nothing. Why SwiftUI did this is not known.
+    private func endingInVerb<Content: View>(spacing: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: spacing) {
+            content()
+                // The Spacer's least length, and the spacing that stood
+                // before it.
+                .padding(.trailing, Theme.Space.xs + spacing)
+                .frame(maxWidth: .infinity, alignment: .leading)
             verb
         }
     }
