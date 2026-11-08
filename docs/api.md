@@ -48,14 +48,17 @@ the many sessions whose hook has not opted in, and the key is always present.
 server works it out itself: the first usable `project` the session
 reported, kept for the rest of its life. A session that starts in
 `acme-api` and runs `cd web` keeps `"homeProject": "acme-api"` while
-`project` says `web`. An empty `project` and a bare UUID (a session the OS
-started at `/`, a Codex scratch folder) are not usable, so such a session
-has `"homeProject": ""` until a post names a real folder, which then claims
-it; a post without a `project` changes nothing. The key is always present,
-and it is never read from a webhook body: a `homeProject` posted there is
-ignored. It is stored with the session, so it survives a restart of a
-server with [Postgres](self-hosting.md#persistence-postgresql); a server
-without a database forgets it with the card. Since 1.7.0.
+`project` says `web`. A `project` is usable unless, with the white space at
+its ends trimmed, it is empty, `/`, `.` or a bare UUID: a session started at
+`/` (an empty `project` from the Node hook, `/` from the shell hook), a
+Codex scratch folder, or a raw post's blank name. Such a session has
+`"homeProject": ""` until a post names a real folder, which then claims it;
+a post without a `project` changes nothing. A usable name is kept exactly as
+sent, never trimmed. The key is always present, and it is never read from a
+webhook body: a `homeProject` posted there is ignored. It is stored with the
+session, so it survives a restart of a server with
+[Postgres](self-hosting.md#persistence-postgresql); a server without a
+database forgets it with the card. Since 1.7.0.
 
 A card the board drops on request (dismissed with a `DELETE` of the
 session, which the bundled hooks also send at `SessionEnd`; cleared with
@@ -69,15 +72,15 @@ from the folder it names. A card the session TTL expired
 over too, as the hook's pinned card name does.
 
 The boards key their project sections by it: `homeProject` when it is
-non-empty; otherwise `project`, when that is non-empty and not a UUID, which
+usable; otherwise `project`, when that is usable by the same rule, which
 covers servers older than 1.7.0 that send no `homeProject`; otherwise the
 **No project** section. A UUID here is what the bundled hook takes for one:
 32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
-Sections run in name order, case-insensitive with exact case breaking a tie
-(`AgStatus` before `agstatus`), No project last; activity, state and arrival
-never reorder them. A section is a folder name and nothing more: the same
-name on two machines is one section, and one repository checked out under
-two names is two.
+Sections run in name order: the names lowercased and compared by UTF-16 code
+unit, then the exact names (`AgStatus` before `agstatus`), with No project
+last; activity, state and arrival never reorder them. A section is a folder
+name and nothing more: the same name on two machines is one section, and
+one repository checked out under two names is two.
 
 `tokens` is the lifetime token total this session's agent reports for it (see
 [Per-session token totals](#per-session-token-totals)). Unlike `host` the key

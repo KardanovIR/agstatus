@@ -828,9 +828,12 @@ stays in the acme-api section. The hook sends nothing new for this — the
 server works it out from what it already gets — so the grouping is right on
 every machine as soon as the server is, with no reinstall. A Claude worktree
 root counts as its repository, as its <code>project</code> does. A session with no
-usable folder (an agent macOS started at <code>/</code>, a folder named by a bare UUID,
-a raw webhook post without a <code>project</code>) sits in <strong>No project</strong>, the last
-section, and leaves it once, when its first real folder arrives. A session
+usable folder sits in <strong>No project</strong>, the last section, and leaves it once,
+when its first real folder arrives: an agent macOS started at <code>/</code>, which
+the Node hook reports as an empty <code>project</code> and the bash hook as <code>/</code>; a
+folder named by a bare UUID; a raw webhook post with a blank <code>project</code> or
+none. The server and every board apply one rule for that (see
+<a href="#api-the-session-object">the session object</a>). A session
 started inside a subfolder, say <code>ios/</code>, lives under that subfolder&#39;s name.
 Sections run in name order and never reorder because one got busy. A
 section is a folder name and nothing more: two checkouts called <code>api</code> share
@@ -2418,14 +2421,17 @@ the many sessions whose hook has not opted in, and the key is always present.</p
 server works it out itself: the first usable <code>project</code> the session
 reported, kept for the rest of its life. A session that starts in
 <code>acme-api</code> and runs <code>cd web</code> keeps <code>&quot;homeProject&quot;: &quot;acme-api&quot;</code> while
-<code>project</code> says <code>web</code>. An empty <code>project</code> and a bare UUID (a session the OS
-started at <code>/</code>, a Codex scratch folder) are not usable, so such a session
-has <code>&quot;homeProject&quot;: &quot;&quot;</code> until a post names a real folder, which then claims
-it; a post without a <code>project</code> changes nothing. The key is always present,
-and it is never read from a webhook body: a <code>homeProject</code> posted there is
-ignored. It is stored with the session, so it survives a restart of a
-server with <a href="#self-hosting-persistence-postgresql">Postgres</a>; a server
-without a database forgets it with the card. Since 1.7.0.</p>
+<code>project</code> says <code>web</code>. A <code>project</code> is usable unless, with the white space at
+its ends trimmed, it is empty, <code>/</code>, <code>.</code> or a bare UUID: a session started at
+<code>/</code> (an empty <code>project</code> from the Node hook, <code>/</code> from the shell hook), a
+Codex scratch folder, or a raw post&#39;s blank name. Such a session has
+<code>&quot;homeProject&quot;: &quot;&quot;</code> until a post names a real folder, which then claims it;
+a post without a <code>project</code> changes nothing. A usable name is kept exactly as
+sent, never trimmed. The key is always present, and it is never read from a
+webhook body: a <code>homeProject</code> posted there is ignored. It is stored with the
+session, so it survives a restart of a server with
+<a href="#self-hosting-persistence-postgresql">Postgres</a>; a server without a
+database forgets it with the card. Since 1.7.0.</p>
 <p>A card the board drops on request (dismissed with a <code>DELETE</code> of the
 session, which the bundled hooks also send at <code>SessionEnd</code>; cleared with
 <code>sessions/clear</code>; or evicted by the 50-card cap) keeps its <code>homeProject</code>
@@ -2437,15 +2443,15 @@ from the folder it names. A card the session TTL expired
 (<code>SESSION_TTL_MS</code>, 24 hours without an update on a hosted board) starts
 over too, as the hook&#39;s pinned card name does.</p>
 <p>The boards key their project sections by it: <code>homeProject</code> when it is
-non-empty; otherwise <code>project</code>, when that is non-empty and not a UUID, which
+usable; otherwise <code>project</code>, when that is usable by the same rule, which
 covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
 <strong>No project</strong> section. A UUID here is what the bundled hook takes for one:
 32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
-Sections run in name order, case-insensitive with exact case breaking a tie
-(<code>AgStatus</code> before <code>agstatus</code>), No project last; activity, state and arrival
-never reorder them. A section is a folder name and nothing more: the same
-name on two machines is one section, and one repository checked out under
-two names is two.</p>
+Sections run in name order: the names lowercased and compared by UTF-16 code
+unit, then the exact names (<code>AgStatus</code> before <code>agstatus</code>), with No project
+last; activity, state and arrival never reorder them. A section is a folder
+name and nothing more: the same name on two machines is one section, and
+one repository checked out under two names is two.</p>
 <p><code>tokens</code> is the lifetime token total this session&#39;s agent reports for it (see
 <a href="#api-per-session-token-totals">Per-session token totals</a>). Unlike <code>host</code> the key
 is <strong>absent</strong>, not <code>null</code>, when the board holds no total — and absent means

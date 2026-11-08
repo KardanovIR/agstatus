@@ -548,9 +548,12 @@ stays in the acme-api section. The hook sends nothing new for this — the
 server works it out from what it already gets — so the grouping is right on
 every machine as soon as the server is, with no reinstall. A Claude worktree
 root counts as its repository, as its `project` does. A session with no
-usable folder (an agent macOS started at `/`, a folder named by a bare UUID,
-a raw webhook post without a `project`) sits in **No project**, the last
-section, and leaves it once, when its first real folder arrives. A session
+usable folder sits in **No project**, the last section, and leaves it once,
+when its first real folder arrives: an agent macOS started at `/`, which
+the Node hook reports as an empty `project` and the bash hook as `/`; a
+folder named by a bare UUID; a raw webhook post with a blank `project` or
+none. The server and every board apply one rule for that (see
+[the session object](api.md#the-session-object)). A session
 started inside a subfolder, say `ios/`, lives under that subfolder's name.
 Sections run in name order and never reorder because one got busy. A
 section is a folder name and nothing more: two checkouts called `api` share

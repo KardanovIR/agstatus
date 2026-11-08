@@ -118,21 +118,32 @@ export function normalizeHost(raw: unknown): Host | null {
 export const UUID_FOLDER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * A project a board can file a session under, or '' for none: '' (an agent
- * started at `/`, a post without one) and a bare UUID. Anything else is kept
- * exactly as sent, case included: a section is a folder name, nothing more.
+ * A project a board can file a session under, or '' for none. A name is
+ * usable unless, with the white space at its ends trimmed, it is empty, `/`,
+ * `.` or a bare UUID. An agent started at `/` reports '' from the Node hook
+ * (path.basename) and `/` from the legacy shell hook, whose POSIX `basename /`
+ * prints `/` (hooks/claude-status-hook.sh); a post without a project carries
+ * ''; white space alone, `.`, and a UUID with a space before it come from raw
+ * posts. A tab or a newline never gets this far, because app.ts's clean()
+ * strips control characters from every posted string. A usable name is kept
+ * exactly as sent, case and white space included: a section is a folder
+ * name, nothing more. Every board applies this same rule to a session's
+ * homeProject and to its fallback, project (docs/design/project-sections.md,
+ * "Wire contract").
  */
 export function normalizeProject(project: string): string {
-  return UUID_FOLDER_RE.test(project) ? '' : project;
+  const name = project.trim();
+  return name === '' || name === '/' || name === '.' || UUID_FOLDER_RE.test(name) ? '' : project;
 }
 
 /**
  * A session's home project: the one it already has, else its current project
  * when that is usable. So the first usable folder a session reports is its
  * home for the rest of its life, and neither a later `cd` nor a post without a
- * project moves it, while '' and a UUID are skipped until a real folder
- * claims the session. Both sides are normalized, so a value read back from
- * the database is held to the same rule as one worked out here.
+ * project moves it, while a name that is not usable (normalizeProject) is
+ * skipped until a real folder claims the session. Both sides are normalized,
+ * so a value read back from the database is held to the same rule as one
+ * worked out here.
  */
 export function homeProjectFor(previous: string, project: string): string {
   return normalizeProject(previous) || normalizeProject(project);

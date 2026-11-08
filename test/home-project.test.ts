@@ -3,6 +3,7 @@ import request from 'supertest';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { execFile, spawnSync } from 'child_process';
 import type { Express } from 'express';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
@@ -28,11 +29,11 @@ import {
 
 // The board grouped by project (docs/design/project-sections.md, "Wire
 // contract"). Every session goes out with `homeProject`: the first usable
-// folder the server heard for it ('' and bare UUIDs are not usable), held for
-// the session's life, worked out here and never taken from a post. The boards
-// key their sections by it, so a card whose agent runs `cd web` keeps its
-// place in its section, and only its line says "in web". A card the board
-// drops on request keeps its home for its return.
+// folder the server heard for it (empty, white space, "/", "." and bare UUIDs
+// are not usable), held for the session's life, worked out here and never
+// taken from a post. The boards key their sections by it, so a card whose
+// agent runs `cd web` keeps its place in its section, and only its line says
+// "in web". A card the board drops on request keeps its home for its return.
 
 type Json = Record<string, any>;
 
@@ -67,20 +68,28 @@ const droppedHomes = (store: Store) =>
     .droppedHomes;
 
 describe('homeProject: which folders count', () => {
-  it('turns "" and a bare UUID into "", and keeps every other name exactly as sent', () => {
-    expect(normalizeProject('')).toBe('');
-    expect(normalizeProject(UUID)).toBe('');
-    expect(normalizeProject(UUID.toUpperCase())).toBe('');
+  it('turns a name that is not usable into "", testing it trimmed, and keeps every usable one exactly as sent', () => {
+    // Not usable, each with the white space at its ends trimmed first: empty
+    // or white space alone, "/" (the legacy shell hook's `basename /`), "."
+    // and a bare UUID. A tab only reaches the rule through a direct call; a
+    // posted one is stripped before (app.ts clean(), the next describe).
+    for (const name of [
+      '', '   ', '/', '.', ' / ', '. ', UUID, UUID.toUpperCase(), ` ${UUID}`, `${UUID}  `, `\t${UUID}`,
+    ]) {
+      expect(normalizeProject(name), JSON.stringify(name)).toBe('');
+    }
     // Case is the folder's own: AgStatus and agstatus are two sections.
     expect(normalizeProject('AgStatus')).toBe('AgStatus');
     expect(normalizeProject('agstatus')).toBe('agstatus');
-    // Names from the owner's board that only look like scratch, and names
-    // that only look like a UUID: a section is a folder name, so all stay.
+    // Names from the owner's board that only look like scratch, names that
+    // only look like a UUID, "/" or ".", and names with spaces in them: a
+    // section is a folder name, so all stay, and none is trimmed.
     for (const name of [
       'wf_0b2e3442-125-1', 'scratch-2026-10-05-47589e', 'zealous-jennings-84637b', 'is-it-a-good-idea-to',
       `${UUID}-copy`, UUID.slice(1), UUID.replace(/-/g, ''), 'codex', 'Codex', 'ios',
+      '..', '.github', 'my project', ' acme-api', 'acme-api ', '  acme api  ',
     ]) {
-      expect(normalizeProject(name), name).toBe(name);
+      expect(normalizeProject(name), JSON.stringify(name)).toBe(name);
     }
   });
 
@@ -94,10 +103,15 @@ describe('homeProject: which folders count', () => {
     expect(homeProjectFor('acme-api', 'web')).toBe('acme-api');
     expect(homeProjectFor('acme-api', '')).toBe('acme-api');
     expect(homeProjectFor('acme-api', UUID)).toBe('acme-api');
+    expect(homeProjectFor('acme-api', '/')).toBe('acme-api');
     expect(homeProjectFor('', '')).toBe('');
     expect(homeProjectFor('', UUID)).toBe('');
+    expect(homeProjectFor('', '/')).toBe('');
+    expect(homeProjectFor('', '   ')).toBe('');
+    expect(homeProjectFor(' acme-api ', 'web')).toBe(' acme-api ');
     // A value read back from the database is held to the same rule.
     expect(homeProjectFor(UUID, 'acme-api')).toBe('acme-api');
+    expect(homeProjectFor('/', 'acme-api')).toBe('acme-api');
   });
 
   it("uses the hook's own UUID pattern: a folder the hook will not name a card after is no project either", () => {
@@ -137,6 +151,26 @@ describe('homeProject on a board without a database', () => {
     expect(await b.post('s', { project: '' })).toMatchObject({ project: '', homeProject: 'acme-api' });
     expect(await b.post('s', { project: UUID.toUpperCase() })).toMatchObject({ homeProject: 'acme-api' });
     expect(await b.post('s', { project: 'web' })).toMatchObject({ homeProject: 'acme-api' });
+  });
+
+  it('files a posted "/", ".", white space and a padded UUID under no project, and a padded real name as sent', async () => {
+    const b = await board();
+    // The rule never sees a posted tab: clean() strips control characters
+    // from every string a post carries, so "\t<uuid>" arrives a bare UUID.
+    const none: Array<[string, string]> = [
+      ['/', '/'], ['.', '.'], ['   ', '   '], [` ${UUID}`, ` ${UUID}`], [`\t${UUID}`, UUID],
+    ];
+    for (const [i, [sent, kept]] of none.entries()) {
+      expect(await b.post(`none-${i}`, { project: sent }), JSON.stringify(sent))
+        .toMatchObject({ project: kept, homeProject: '' });
+    }
+    // Like '', each waits for the first real folder, which claims the session.
+    expect(await b.post('none-0', { project: 'acme-api' })).toMatchObject({ project: 'acme-api', homeProject: 'acme-api' });
+    expect(await b.post('none-0', { project: '/' })).toMatchObject({ project: '/', homeProject: 'acme-api' });
+    // A usable name is used exactly as sent, spaces and all.
+    expect(await b.post('spaced', { project: 'my project' })).toMatchObject({ homeProject: 'my project' });
+    expect(await b.post('padded', { project: ' acme-api ' }))
+      .toMatchObject({ project: ' acme-api ', homeProject: ' acme-api ' });
   });
 
   it('carries the home forward through a post without a project', async () => {
@@ -550,6 +584,58 @@ describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
       await second.shutdown();
     }
     expect(await rows(`WHERE id = 's'`)).toEqual([{ id: 's', project: 'web', home_project: 'web', deleted_at: null }]);
+  });
+});
+
+// ---- the legacy shell hook --------------------------------------------------
+// hooks/claude-status-hook.sh is still shipped and still works. It names the
+// project with POSIX `basename`, which prints "/" for a session started at the
+// root where the Node hook's path.basename gives '', and both must mean No
+// project. Run for real, so it needs bash, jq and curl; skipped without them.
+
+const SHELL_HOOK = path.resolve(__dirname, '..', 'hooks', 'claude-status-hook.sh');
+const shellHookRuns = ['bash', 'jq', 'curl'].every(
+  (tool) => spawnSync(tool, ['--version'], { stdio: 'ignore' }).status === 0,
+);
+
+/** One hook event, as Claude Code delivers it: the payload on stdin. */
+function runShellHook(url: string, payload: Json): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      'bash',
+      [SHELL_HOOK],
+      { env: { PATH: process.env.PATH ?? '', CLAUDE_STATUS_URL: url }, timeout: 10_000 },
+      (err) => (err ? reject(err) : resolve()),
+    );
+    child.stdin!.end(JSON.stringify(payload));
+  });
+}
+
+describe.skipIf(!shellHookRuns)('homeProject from the legacy shell hook', () => {
+  it('files a session it started at "/" under no project until a real folder claims it, and keeps it through SessionEnd', async () => {
+    const t = makeApp({ multiTenant: false });
+    const { srv, base } = await listen(t.app);
+    try {
+      const hook = (hook_event_name: string, cwd: string, extra: Json = {}) =>
+        runShellHook(`${base}/webhook`, { hook_event_name, session_id: 'sh', cwd, ...extra });
+      const card = async (): Promise<Json | undefined> =>
+        ((await request(t.app).get('/api/sessions').expect(200)).body as Json[]).find((s) => s.id === 'sh');
+      await hook('SessionStart', '/');
+      expect(await card()).toMatchObject({ name: '/', project: '/', homeProject: '' });
+      await hook('UserPromptSubmit', '/Users/me/acme-api', { prompt: 'Fix the login redirect' });
+      expect(await card()).toMatchObject({ project: 'acme-api', homeProject: 'acme-api' });
+      await hook('Stop', '/');
+      expect(await card()).toMatchObject({ project: '/', homeProject: 'acme-api' });
+      // SessionEnd is the hook's DELETE: the card goes, its home is kept for
+      // the same session's return. (This hook pins no name; it sends the live
+      // folder as both name and project on every post.)
+      await hook('SessionEnd', '/Users/me/acme-api/web');
+      expect(await card()).toBeUndefined();
+      await hook('UserPromptSubmit', '/Users/me/acme-api/web', { prompt: 'And the tests' });
+      expect(await card()).toMatchObject({ name: 'web', project: 'web', homeProject: 'acme-api' });
+    } finally {
+      await closeServer(srv);
+    }
   });
 });
 
