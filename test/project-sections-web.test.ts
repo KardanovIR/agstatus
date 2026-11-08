@@ -988,6 +988,17 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(rule(shell, 'body.needs-up:not(.detail-open)')).toMatch(/padding-bottom:\s*calc\(var\(--needs-h/);
   });
 
+  // The chevron leans 2px in on focus (card.css), which put it on the ring's
+  // edge. The rule outranks the lean by coming later at the same weight:
+  // shell.css loads after card.css (index.html).
+  it('rests the title\'s chevron while the title is ringed', () => {
+    expect(rule(shell, '.card.is-ringed .name-more')).toMatch(/transform:\s*none/);
+    expect(rule(read('card.css'), '.name-open:hover .name-more,\n.name-open:focus-visible .name-more'))
+      .toMatch(/transform:\s*translateX\(2px\)/);
+    const html = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
+    expect(html.indexOf('/shell.css')).toBeGreaterThan(html.indexOf('/card.css'));
+  });
+
   it('fixes the bar to the bottom edge above the safe-area inset, at least 44px tall', () => {
     const r = rule(shell, '.needs');
     expect(r).toMatch(/position:\s*fixed/);

@@ -955,6 +955,10 @@ html:has(body.needs-up:not(.detail-open)) { scroll-padding-bottom: calc(var(--ne
   border-radius: var(--r-sm);
 }
 
+/* The chevron leans 2px in on focus (card.css), which carried it onto the
+ * ring's right edge for the ring's two seconds; while ringed it rests. */
+.card.is-ringed .name-more { transform: none; }
+
 /* ---- Footer -------------------------------------------------------------
  * The webhook URL, which is setup rather than triage. It used to be fixed to
  * the bottom of the viewport behind a blur, which cost every card 104px of

@@ -526,13 +526,14 @@
 .meta-sep { color: var(--text-3); }
 .ts { flex: none; }
 
-/* Shown only when it differs from the card's name (cardMeta in app.js). The
- * name is the session's title when it has one, else the folder it started in;
- * `project` follows the live directory, a Claude worktree root reported as its
- * repo. So a titled card nearly always shows it ("in <repo>"); an untitled one
- * shows it once the session has changed directory, and from the start at a
- * worktree root, where the name is the worktree folder and the project the
- * repo. */
+/* "in <folder>", where the session is now, shown only once it has moved
+ * (cardMeta's place rule in app.js, since 1.7.0): when its live folder,
+ * `project`, is a usable name and differs from both the section the card is
+ * drawn under, which the label above already names, and the card's own name.
+ * So a session that ran `cd web` reads "in web", and one still in its
+ * project's folder says nothing, titled or not. Until 1.7.0 it showed
+ * wherever the folder differed from the name, which on a titled card was
+ * nearly always. */
 .proj {
   /* A floor, so a long project name truncates with an ellipsis instead of
    * collapsing — wrapping handles the common case, this handles the long one. */
