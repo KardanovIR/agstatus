@@ -264,16 +264,25 @@ object ProjectSections {
         RegexOption.IGNORE_CASE,
     )
 
-    /** A folder name that can name a section or a place: not empty, not a bare UUID. */
-    fun isRealFolder(name: String): Boolean = name.isNotEmpty() && !UUID_NAME.matches(name)
+    /**
+     * Whether [name] can name a folder: a section, or the place a card says
+     * it is. Trimmed of whitespace at both ends, it must be something, not
+     * `/` or `.`, and not a bare UUID. The shipped legacy shell hook posts `/`
+     * for a session started at `/`, which names no project anyone keeps. The
+     * same rule on every client and the server, so no board opens a section
+     * the others would not. Only the test trims: a usable name is used
+     * exactly as sent.
+     */
+    fun isRealFolder(name: String): Boolean {
+        val trimmed = name.trim()
+        return trimmed.isNotEmpty() && trimmed != "/" && trimmed != "." && !UUID_NAME.matches(trimmed)
+    }
 
     /**
      * The section a session is in, empty for No project: the folder the
      * server pinned for it, else (a server too old to send `homeProject`) the
-     * folder it is in now. Both are held to [isRealFolder]. The server never
-     * pins an empty or UUID-shaped name, so for a current server this is the
-     * spec's rule exactly; holding the pinned value to it too only means that
-     * an odd one cannot open a section the other clients would not.
+     * folder it is in now, each only where [isRealFolder] says it can name
+     * one, and exactly as sent.
      */
     fun nameOf(session: Session): String = when {
         isRealFolder(session.homeProject) -> session.homeProject
@@ -385,21 +394,35 @@ object ProjectSections {
         "${section.title}, ${sessionCount(section.sessions.size)}"
 
     /**
-     * Where the bar says its card is: "in acme-api", or for a session in No
-     * project its agent's name, since it has no folder to name. Null where
-     * that would only repeat the card's name — an untitled Codex session at
-     * `/` is itself called "Codex".
+     * What the bar and the spoken alarm call a session: its name, or its
+     * agent's where it has none. The same words on every client.
+     */
+    fun barName(session: Session): String = session.name.ifEmpty { sourceDisplayName(session.source) }
+
+    /**
+     * Where the bar and the spoken alarm say a session is: "in acme-api", its
+     * section, or for a session in No project its agent's name, since it has
+     * no folder to name. Null where that would only repeat [barName]: the
+     * section is the name, as for an untitled session named after its folder,
+     * or the agent is, as for Codex's untitled session at `/`. Compared
+     * exactly, as on every client.
      */
     fun barWhere(session: Session): String? {
+        val name = barName(session)
         val section = nameOf(session)
-        if (section.isNotEmpty()) return "in $section"
-        val agent = sourceDisplayName(session.source)
-        return agent.takeUnless { it.equals(session.displayName, ignoreCase = true) }
+        if (section.isNotEmpty()) return "in $section".takeUnless { section == name }
+        return sourceDisplayName(session.source).takeUnless { it == name }
     }
 
-    /** What TalkBack hears for the bar: "2 blocked: Fix the login redirect, in acme-api". */
-    fun barDescription(blocked: Int, target: Session): String =
-        listOfNotNull(target.displayName, barWhere(target)).joinToString(", ", prefix = "$blocked blocked: ")
+    /**
+     * What TalkBack hears for the bar, "2 blocked: Fix the login redirect, in
+     * acme-api, Show": every word it shows, the verb last ("Next" once it
+     * [walks]), so a Voice Access user who says "tap Show" reaches it
+     * (WCAG 2.5.3). No place, no comma for it.
+     */
+    fun barDescription(blocked: Int, target: Session, walks: Boolean): String =
+        listOfNotNull(barName(target), barWhere(target), if (walks) "Next" else "Show")
+            .joinToString(", ", prefix = "$blocked blocked: ")
 
     /**
      * How TalkBack starts a card, "Claude, Fix the login redirect": the

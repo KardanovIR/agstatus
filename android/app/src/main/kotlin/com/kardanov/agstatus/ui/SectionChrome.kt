@@ -244,8 +244,9 @@ internal data class BarReading(
     val target: Session,
     val walks: Boolean,
 ) {
+    val name: String get() = ProjectSections.barName(target)
     val where: String? get() = ProjectSections.barWhere(target)
-    val said: String get() = ProjectSections.barDescription(blocked, target)
+    val said: String get() = ProjectSections.barDescription(blocked, target, walks)
 }
 
 /** The board's ease (public/tokens.css `--ease`) and its `--d-mid`, as the subagent rows move. */
@@ -264,7 +265,8 @@ private const val BAR_MOVE_MILLIS = 220
  * When room runs out it gives up, in order: the word BLOCKED (the mark and the
  * count stay), the place, then the end of the name. The whole bar is one
  * button, at least 48dp tall, and TalkBack hears "2 blocked: Fix the login
- * redirect, in acme-api", then "double-tap to show that session".
+ * redirect, in acme-api, Show", every word it shows, then "double-tap to
+ * show that session".
  *
  * It enters from the bottom edge as the first block lands and leaves when none
  * remain; with animations off it appears and goes in place. Its words change
@@ -335,17 +337,17 @@ private fun BarContent(reading: BarReading, modifier: Modifier = Modifier) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Alarm(reading.blocked, word = true)
                         BarGap()
-                        NameAndWhere(reading.target.displayName, reading.where)
+                        NameAndWhere(reading.name, reading.where)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Alarm(reading.blocked, word = false)
                         BarGap()
-                        NameAndWhere(reading.target.displayName, reading.where)
+                        NameAndWhere(reading.name, reading.where)
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Alarm(reading.blocked, word = false)
                         BarGap()
-                        BarName(reading.target.displayName)
+                        BarName(reading.name)
                     }
                 }
                 BarGap()
@@ -362,8 +364,8 @@ private fun BarContent(reading: BarReading, modifier: Modifier = Modifier) {
                     verb()
                 }
                 FirstFitting {
-                    NameAndWhere(reading.target.displayName, reading.where)
-                    BarName(reading.target.displayName)
+                    NameAndWhere(reading.name, reading.where)
+                    BarName(reading.name)
                 }
             }
         }

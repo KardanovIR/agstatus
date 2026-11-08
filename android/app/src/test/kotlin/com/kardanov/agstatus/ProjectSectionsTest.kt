@@ -119,6 +119,38 @@ class ProjectSectionsTest {
         assertTrue(ProjectSections.isRealFolder("$UUID-fork"))
     }
 
+    @Test
+    fun `the root, the current folder and blanks name no folder`() {
+        // The shipped legacy shell hook posts "/" for a session started at "/".
+        for (name in listOf("/", ".", " ", "\t", " / ", " . ", "  $UUID\n")) {
+            assertFalse("'$name'", ProjectSections.isRealFolder(name))
+            assertEquals("'$name'", "", ProjectSections.nameOf(session("a", project = name, homeProject = name)))
+        }
+    }
+
+    @Test
+    fun `names that only contain a dot or start with one are folders`() {
+        for (name in listOf(".config", "..", "a.b", "v1.7", "_")) {
+            assertTrue(name, ProjectSections.isRealFolder(name))
+        }
+    }
+
+    @Test
+    fun `an unusable pinned folder falls back to a usable live one`() {
+        assertEquals("web", ProjectSections.nameOf(session("a", project = "web", homeProject = "/")))
+        assertEquals("web", ProjectSections.nameOf(session("a", project = "web", homeProject = "  ")))
+        assertEquals("", ProjectSections.nameOf(session("a", project = ".", homeProject = "/")))
+    }
+
+    @Test
+    fun `a usable name is used exactly as sent, never trimmed`() {
+        val padded = session("a", project = " acme ", homeProject = " acme ")
+        val plain = session("b", project = "acme", homeProject = "acme")
+
+        assertEquals(" acme ", ProjectSections.nameOf(padded))
+        assertEquals(listOf(" acme ", "acme"), titles(ProjectSections.of(listOf(padded, plain))))
+    }
+
     // MARK: - Keys
 
     @Test
@@ -228,6 +260,12 @@ class ProjectSectionsTest {
         assertNull(ProjectSections.place(session("a", project = "web", name = "Fix it")))
     }
 
+    @Test
+    fun `a card that went to the root says nothing of it`() {
+        assertNull(ProjectSections.place(session("a", project = "/", homeProject = "acme-api", name = "Fix it")))
+        assertNull(ProjectSections.place(session("a", project = " ", homeProject = "acme-api", name = "Fix it")))
+    }
+
     // MARK: - The needs-you bar
 
     private val walkBoard = ProjectSections.of(
@@ -305,11 +343,19 @@ class ProjectSectionsTest {
     }
 
     @Test
-    fun `the bar says how many, which and where`() {
+    fun `the bar says how many, which, where, and its verb`() {
         val target = session("a", homeProject = "acme-api", name = "Fix the login redirect", status = AgentStatus.BLOCKED)
 
+        assertEquals("Fix the login redirect", ProjectSections.barName(target))
         assertEquals("in acme-api", ProjectSections.barWhere(target))
-        assertEquals("2 blocked: Fix the login redirect, in acme-api", ProjectSections.barDescription(2, target))
+        assertEquals(
+            "2 blocked: Fix the login redirect, in acme-api, Show",
+            ProjectSections.barDescription(2, target, walks = false),
+        )
+        assertEquals(
+            "2 blocked: Fix the login redirect, in acme-api, Next",
+            ProjectSections.barDescription(2, target, walks = true),
+        )
     }
 
     @Test
@@ -317,10 +363,40 @@ class ProjectSectionsTest {
         val titled = session("a", name = "Reading the brief", source = "codex", status = AgentStatus.BLOCKED)
         val untitled = session("b", name = "Codex", source = "codex", status = AgentStatus.BLOCKED)
 
-        assertEquals("1 blocked: Reading the brief, Codex", ProjectSections.barDescription(1, titled))
-        // Not "Codex, Codex".
+        assertEquals("1 blocked: Reading the brief, Codex, Show", ProjectSections.barDescription(1, titled, walks = false))
+        // Not "Codex, Codex", and no comma for a place it does not have.
         assertNull(ProjectSections.barWhere(untitled))
-        assertEquals("1 blocked: Codex", ProjectSections.barDescription(1, untitled))
+        assertEquals("1 blocked: Codex, Show", ProjectSections.barDescription(1, untitled, walks = false))
+    }
+
+    @Test
+    fun `a session with no name is called by its agent's name`() {
+        val inProject = session("a", homeProject = "acme-api", source = "codex", status = AgentStatus.BLOCKED)
+        val nowhere = session("b", source = "codex", status = AgentStatus.BLOCKED)
+
+        assertEquals("Codex", ProjectSections.barName(inProject))
+        assertEquals("1 blocked: Codex, in acme-api, Show", ProjectSections.barDescription(1, inProject, walks = false))
+        // In No project its place would be its name again.
+        assertEquals("1 blocked: Codex, Show", ProjectSections.barDescription(1, nowhere, walks = false))
+    }
+
+    @Test
+    fun `the place goes when the section is the name`() {
+        // An untitled session named after its folder, under that folder's label.
+        val named = session("a", project = "acme-api", homeProject = "acme-api", name = "acme-api", source = "codex")
+
+        assertNull(ProjectSections.barWhere(named))
+        assertEquals("3 blocked: acme-api, Next", ProjectSections.barDescription(3, named, walks = true))
+    }
+
+    @Test
+    fun `the bar's words compare exactly`() {
+        val folder = session("a", homeProject = "Acme-API", name = "acme-api")
+        val agent = session("b", name = "codex", source = "codex")
+
+        assertEquals("in Acme-API", ProjectSections.barWhere(folder))
+        assertEquals("Codex", ProjectSections.barWhere(agent))
+        assertEquals("1 blocked: codex, Codex, Show", ProjectSections.barDescription(1, agent, walks = false))
     }
 
     @Test

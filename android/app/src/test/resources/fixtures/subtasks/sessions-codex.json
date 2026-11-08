@@ -9,6 +9,7 @@
     "host": null,
     "createdAt": 1793209331890,
     "updatedAt": 1793209331895,
+    "homeProject": "search-indexer",
     "subtasks": {
       "turnEnded": false,
       "running": 3,

@@ -536,6 +536,25 @@ class ApiParsingTest {
         }
     }
 
+    @Test
+    fun aRealServersSessionsSayWhichProjectTheyStartedIn() {
+        // A 1.7.0 server pins homeProject itself; these sessions never left
+        // the folder they started in, so it is their project, and the board
+        // files them under it.
+        val snapshot = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))
+        for (session in snapshot) {
+            assertTrue("homeProject of ${session.id}", session.homeProject.isNotEmpty())
+            assertEquals("homeProject of ${session.id}", session.project, session.homeProject)
+        }
+        val codex = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-codex.json")).single()
+        assertEquals("search-indexer", codex.homeProject)
+        assertEquals("search-indexer", ProjectSections.nameOf(codex))
+
+        val sections = ProjectSections.of(snapshot)
+        assertEquals(listOf("claude-status", "search-indexer"), sections.map { it.title })
+        assertEquals(listOf("seed-codex"), sections.last().sessions.map { it.id })
+    }
+
     /** A capture under src/test/resources/fixtures/subtasks/, byte for byte. */
     private fun fixture(name: String): String =
         checkNotNull(javaClass.getResourceAsStream("/fixtures/subtasks/$name")) { "no fixture $name" }
@@ -555,6 +574,7 @@ class ApiParsingTest {
             status = AgentStatus.entries.find { it.wire == status } ?: error("unknown status $status"),
             message = wire.string("message"),
             project = wire.string("project"),
+            homeProject = wire.string("homeProject"),
             source = wire.string("source"),
             createdAt = wire.literal("createdAt").long,
             updatedAt = wire.literal("updatedAt").long,

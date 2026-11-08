@@ -8,6 +8,7 @@
     "source": "claude",
     "host": null,
     "createdAt": 1793209331627,
-    "updatedAt": 1793209331630
+    "updatedAt": 1793209331630,
+    "homeProject": "claude-status"
   }
 ]
