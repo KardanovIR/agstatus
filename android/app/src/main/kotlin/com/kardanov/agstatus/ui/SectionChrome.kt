@@ -284,7 +284,12 @@ private const val BAR_MOVE_MILLIS = 220
  * in place, never cross-faded. While it leaves it keeps the last thing it said.
  */
 @Composable
-internal fun NeedsYouBar(reading: BarReading?, reduceMotion: Boolean, onPress: () -> Unit) {
+internal fun NeedsYouBar(
+    reading: BarReading?,
+    reduceMotion: Boolean,
+    onPress: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     // A plain holder, not state: what the bar said last, for it to say while it leaves.
     val last = remember { LastReading() }
     if (reading != null) last.value = reading
@@ -303,7 +308,7 @@ internal fun NeedsYouBar(reading: BarReading?, reduceMotion: Boolean, onPress: (
     ) {
         val shown = reading ?: last.value ?: return@AnimatedVisibility
         Column(
-            modifier = Modifier
+            modifier = modifier
                 .fillMaxWidth()
                 .background(Theme.card)
                 .clickable(role = Role.Button, onClickLabel = "show that session", onClick = onPress)
@@ -545,7 +550,7 @@ internal fun SpokenLine(speaker: Speaker, modifier: Modifier = Modifier) {
  * be measured at the real width rather than its own.
  */
 @Composable
-private fun FirstFitting(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+internal fun FirstFitting(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Layout(content = content, modifier = modifier) { measurables, constraints ->
         if (measurables.isEmpty()) return@Layout layout(constraints.minWidth, constraints.minHeight) {}
         val chosen = measurables.firstOrNull { it.maxIntrinsicWidth(Constraints.Infinity) <= constraints.maxWidth }

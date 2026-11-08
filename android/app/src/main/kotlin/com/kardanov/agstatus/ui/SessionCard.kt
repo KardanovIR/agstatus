@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.offset
@@ -209,7 +208,7 @@ private fun CardHeader(session: Session, stale: Boolean, nowMillis: Long) {
             Layout(
                 content = {
                     Text(
-                        text = session.displayName,
+                        text = breakAfterHyphens(session.displayName),
                         style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.SemiBold),
                         color = Theme.textPrimary,
                         maxLines = 2,
@@ -256,6 +255,14 @@ private fun CardHeader(session: Session, stale: Boolean, nowMillis: Long) {
         }
     }
 }
+
+/**
+ * A name with a place to break after each hyphen, which Android's line
+ * breaker passed over: stacked at 200%, "agstatus-listener-windows-terminal-
+ * focus" broke inside "windows". The mark is zero-width, and never spoken: the
+ * stacked header is heard from the name itself.
+ */
+private fun breakAfterHyphens(name: String): String = name.replace("-", "-\u200B")
 
 // MARK: - Status
 
@@ -364,9 +371,9 @@ private class DrawnOnce {
  *
  * It wraps, because it must. The web board shipped this same line as a
  * non-wrapping flex row and a 320px card rendered the machine name four pixels
- * wide — present to a screen reader, invisible to everyone else. A FlowRow
- * cannot fail that way: it takes a second line instead of taking it out of the
- * one item that can shrink.
+ * wide — present to a screen reader, invisible to everyone else. A flow
+ * ([MetaFlow]) cannot fail that way: it takes a second line instead of
+ * taking it out of the one item that can shrink.
  *
  * On a stale card the time is the news, so it says so: "no update for 14m", in
  * the brighter secondary ink. The words outrank the machine and the directory:
@@ -376,7 +383,6 @@ private class DrawnOnce {
  * bright. TalkBack hears none of it here: it hears "no update for 14
  * minutes" straight after the state ([StatusMark]).
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MetaLine(
     session: Session,
@@ -403,11 +409,7 @@ private fun MetaLine(
         }
     }
 
-    FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
+    MetaFlow {
         // The mark and the first fact are one item, so they wrap together.
         // In the facts' own size, so at a reader's larger text the agent is
         // still told apart at a glance.
@@ -423,6 +425,51 @@ private fun MetaLine(
         if (facts.isNotEmpty()) {
             MetaSeparator()
             time()
+        }
+    }
+}
+
+/**
+ * The meta line's items in a flow that wraps between them, 6dp apart and 4dp
+ * between lines, as the FlowRow it replaces laid them out, except that each
+ * dot goes with the fact after it: onto the next line together, where the dot
+ * is dropped. A dot at a line's start or end separates nothing, and at a
+ * reader's larger text the FlowRow left one there, "· 3m ago" alone on a line.
+ *
+ * Its content is the first item, then a dot and an item for each of the rest.
+ * Each is measured at the whole line's width, as in a FlowRow, so one wider
+ * than a line takes a line of its own and cuts itself there.
+ */
+@Composable
+private fun MetaFlow(content: @Composable () -> Unit) {
+    Layout(content = content, modifier = Modifier.fillMaxWidth()) { measurables, constraints ->
+        val gap = 6.dp.roundToPx()
+        val lineGap = 4.dp.roundToPx()
+        val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
+        // Each line's items as indices into placeables, and their x.
+        val lines = mutableListOf(mutableListOf(0 to 0))
+        var x = placeables.first().width
+        var i = 1
+        while (i + 1 < placeables.size) {
+            val dot = placeables[i]
+            val item = placeables[i + 1]
+            if (x + gap + dot.width + gap + item.width <= constraints.maxWidth) {
+                lines.last() += i to x + gap
+                lines.last() += (i + 1) to x + gap + dot.width + gap
+                x += gap + dot.width + gap + item.width
+            } else {
+                lines += mutableListOf((i + 1) to 0)
+                x = item.width
+            }
+            i += 2
+        }
+        val heights = lines.map { line -> line.maxOf { (at, _) -> placeables[at].height } }
+        layout(constraints.maxWidth, heights.sum() + lineGap * (lines.size - 1)) {
+            var y = 0
+            lines.forEachIndexed { n, line ->
+                for ((at, left) in line) placeables[at].placeRelative(left, y)
+                y += heights[n] + lineGap
+            }
         }
     }
 }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
@@ -23,10 +24,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,11 +66,13 @@ import androidx.compose.material3.SwipeToDismissBoxState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -80,8 +85,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -233,14 +241,67 @@ fun BoardScreen(
         if (focusTarget != null) focusTarget = null
     }
 
+    // Only limits of agents that actually have sessions on the board — a
+    // Claude-only evening doesn't need Codex bars. With no sessions there is
+    // nothing to disambiguate, and the limits still matter between runs, so
+    // everything is shown rather than nothing.
+    val visibleUsage = remember(sessions, usage) {
+        val active = sessions.mapTo(mutableSetOf()) { it.source }
+        if (active.isEmpty()) usage else usage.filter { it.source in active }
+    }
+
+    // Where the usage blocks stand: pinned over the list while it keeps room
+    // under them for a label and a card (leastListRoom), and otherwise the
+    // list's first item, which scrolls away with it — upright at a reader's
+    // larger text, and on a phone held sideways at any. Pinned there, they
+    // and the bar left the list 63dp at 100% on a Pixel 7 held sideways and
+    // none at 200%, where the bar cut the blocks through their text. They
+    // are as tall in either place, so where they stand cannot flap.
+    var usageHeight by remember { mutableIntStateOf(0) }
+    var bodyHeight by remember { mutableIntStateOf(0) }
+    val leastList = leastListRoom()
+    val leastListPx = with(LocalDensity.current) { leastList.roundToPx() }
+    val usageLeads = sessions.isNotEmpty() && !boardGone && visibleUsage.isNotEmpty() &&
+        usageHeight > 0 && bodyHeight > 0 && bodyHeight - usageHeight < leastListPx
+    val leadsNow by rememberUpdatedState(usageLeads)
+    // The list keeps the card at its top in place when the blocks join it,
+    // which would leave them above the screen; at the list's top, it shows
+    // them.
+    LaunchedEffect(usageLeads) {
+        if (!usageLeads) return@LaunchedEffect
+        withFrameNanos { }
+        if (listState.firstVisibleItemIndex == 1 && listState.firstVisibleItemScrollOffset == 0) {
+            listState.scrollToItem(0)
+        }
+    }
+
+    // Tab's order, as the web board's page has it: the usage blocks, the
+    // needs-you bar, then the cards. BoardBody places them so while the
+    // blocks are pinned. Leading the list, the blocks are in it, before its
+    // cards, and with the bar up Tab would reach the bar first, so these say
+    // where Tab goes among the four, each only to what is composed.
+    val tabsAround = usageLeads && reading != null
+    val settingsFocus = remember { FocusRequester() }
+    val usageFirst = remember { FocusRequester() }
+    val usageLast = remember { FocusRequester() }
+    val barFocus = remember { FocusRequester() }
+    val firstCardFocus = remember { FocusRequester() }
+    var usageComposed by remember { mutableStateOf(false) }
+    var composedFirstCard by remember { mutableStateOf<String?>(null) }
+    var barFocused by remember { mutableStateOf(false) }
+    val firstCardId = sections.firstOrNull()?.sessions?.firstOrNull()?.id
+    val firstCardComposed = firstCardId != null && composedFirstCard == firstCardId
+
     val currentSections by rememberUpdatedState(sections)
     // A press reads the board as last drawn: a card dismissed or unblocked
     // since the bar named it is passed over for the next.
     val pressBar: () -> Unit = press@{
         val drawnSections = currentSections
         val target = ProjectSections.barTarget(drawnSections, shown) ?: return@press
-        val index = ProjectSections.listIndex(drawnSections, target.id)
-        if (index < 0) return@press
+        val found = ProjectSections.listIndex(drawnSections, target.id)
+        if (found < 0) return@press
+        // One further down while the usage blocks lead the list.
+        val index = found + if (leadsNow) 1 else 0
         shown = target.id
         focusTarget = target.id
         ringed = null
@@ -280,15 +341,6 @@ fun BoardScreen(
                 }
             }
         }
-    }
-
-    // Only limits of agents that actually have sessions on the board — a
-    // Claude-only evening doesn't need Codex bars. With no sessions there is
-    // nothing to disambiguate, and the limits still matter between runs, so
-    // everything is shown rather than nothing.
-    val visibleUsage = remember(sessions, usage) {
-        val active = sessions.mapTo(mutableSetOf()) { it.source }
-        if (active.isEmpty()) usage else usage.filter { it.source in active }
     }
 
     val pairs = board?.token != null && !boardGone
@@ -337,7 +389,12 @@ fun BoardScreen(
                             )
                         }
                     }
-                    IconButton(onClick = onOpenSettings) {
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .focusRequester(settingsFocus)
+                            .focusProperties { if (tabsAround && usageComposed) next = usageFirst },
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.Settings,
                             contentDescription = "Settings",
@@ -360,6 +417,7 @@ fun BoardScreen(
             modifier = Modifier
                 .padding(top = padding.calculateTopPadding())
                 .fillMaxSize()
+                .onSizeChanged { bodyHeight = it.height }
                 // The next touch anywhere on the board, the bar included,
                 // lets go of the focus a jump gave its card. Only watched:
                 // nothing here takes the touch from the list or a card.
@@ -372,11 +430,13 @@ fun BoardScreen(
                     }
                 },
             usage = {
-                if (visibleUsage.isNotEmpty() && !boardGone) {
+                if (visibleUsage.isNotEmpty() && !boardGone && !usageLeads) {
                     UsageBars(
                         usage = visibleUsage,
                         onOpenDetail = onOpenUsage,
-                        modifier = sides
+                        modifier = Modifier
+                            .onSizeChanged { usageHeight = it.height }
+                            .then(sides)
                             .padding(horizontal = 16.dp)
                             .padding(top = 10.dp, bottom = 2.dp),
                     )
@@ -387,6 +447,15 @@ fun BoardScreen(
                     reading = reading.takeUnless { boardGone },
                     reduceMotion = reduceMotion,
                     onPress = pressBar,
+                    modifier = Modifier
+                        .focusRequester(barFocus)
+                        .onFocusChanged { barFocused = it.isFocused }
+                        .focusProperties {
+                            if (tabsAround) {
+                                if (usageComposed) previous = usageLast
+                                if (firstCardComposed) next = firstCardFocus
+                            }
+                        },
                 )
             },
             spoken = { SpokenLine(speaker) },
@@ -424,6 +493,46 @@ fun BoardScreen(
                                 // carries its share (SectionChrome's spacing).
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                             ) {
+                                if (usageLeads) {
+                                    item(key = USAGE_ITEM, contentType = USAGE_ITEM) {
+                                        DisposableEffect(Unit) {
+                                            usageComposed = true
+                                            onDispose { usageComposed = false }
+                                        }
+                                        UsageBars(
+                                            usage = visibleUsage,
+                                            onOpenDetail = onOpenUsage,
+                                            modifier = Modifier
+                                                .onSizeChanged { usageHeight = it.height }
+                                                .padding(top = 10.dp, bottom = 2.dp)
+                                                // From the bar, Tab goes on to
+                                                // the cards. Where the first is
+                                                // not composed, the blocks pass
+                                                // it on, once it is in view.
+                                                .focusProperties {
+                                                    onEnter = {
+                                                        if (tabsAround && barFocused &&
+                                                            requestedFocusDirection == FocusDirection.Next
+                                                        ) {
+                                                            cancelFocusChange()
+                                                            scope.launch {
+                                                                listState.scrollToItem(2)
+                                                                withFrameNanos { }
+                                                                runCatching { firstCardFocus.requestFocus() }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                .focusGroup(),
+                                            firstBlock = Modifier
+                                                .focusRequester(usageFirst)
+                                                .focusProperties { if (tabsAround) previous = settingsFocus },
+                                            lastBlock = Modifier
+                                                .focusRequester(usageLast)
+                                                .focusProperties { if (tabsAround) next = barFocus },
+                                        )
+                                    }
+                                }
                                 for (section in sections) {
                                     stickyHeader(key = section.key, contentType = "label") {
                                         ProjectLabel(
@@ -471,6 +580,20 @@ fun BoardScreen(
                                         // from a keyboard (clickable), so in touch
                                         // mode, which TalkBack is, it is made
                                         // focusable for the jump, until it lets go.
+                                        val first = session.id == firstCardId
+                                        if (first) {
+                                            DisposableEffect(session.id) {
+                                                composedFirstCard = session.id
+                                                onDispose { if (composedFirstCard == session.id) composedFirstCard = null }
+                                            }
+                                        }
+                                        val tabStop = if (first) {
+                                            Modifier
+                                                .focusRequester(firstCardFocus)
+                                                .focusProperties { if (tabsAround) previous = barFocus }
+                                        } else {
+                                            Modifier
+                                        }
                                         val takesFocus = if (session.id == focusTarget) {
                                             Modifier
                                                 .focusRequester(jumpFocus)
@@ -498,6 +621,7 @@ fun BoardScreen(
                                                 modifier = Modifier
                                                     .jumpRing { ring }
                                                     .then(takesFocus)
+                                                    .then(tabStop)
                                                     .clickable {
                                                         onOpenHistory(session.id, null)
                                                     },
@@ -512,6 +636,29 @@ fun BoardScreen(
             }
         }
     }
+}
+
+/** The usage blocks' key, as the list's first item. */
+private const val USAGE_ITEM = "usage"
+
+/**
+ * The room the list keeps under pinned usage blocks, or they lead it: a
+ * label, the shortest card whole — its name, a line of message and its meta
+ * line, at the reader's text size — and the needs-you bar, counted whether or
+ * not it shows, so a block landing never moves the usage blocks.
+ */
+@Composable
+private fun leastListRoom(): Dp {
+    val density = LocalDensity.current
+    val line = textDp(24.sp)
+    val label = textDp(20.sp) + LABEL_TOP + LABEL_TO_CARD
+    val card = 14.dp + line + 8.dp + line + 8.dp + line + 14.dp
+    // One line on a wide screen, two on a phone (NeedsYouBar), over its rule.
+    val window = with(density) { LocalWindowInfo.current.containerSize.width.toDp() }
+    val words = if (window - 32.dp >= 600.dp) textDp(20.sp) else textDp(20.sp) * 2 + 2.dp
+    val inset = with(density) { WindowInsets.safeDrawing.getBottom(this).toDp() }
+    val bar = 1.dp + maxOf(47.dp, words + 16.dp) + inset
+    return label + card + bar
 }
 
 /**
@@ -529,6 +676,8 @@ fun BoardScreen(
  *
  * [bottomInset] is the system bar under the board: the list keeps above it
  * while no bar shows, and the bar, which runs to the bottom edge, pads itself.
+ *
+ * [usage] is empty while the usage blocks lead the list instead.
  */
 @Composable
 private fun BoardBody(
@@ -548,7 +697,10 @@ private fun BoardBody(
         // While the bar comes and goes, the list ends at its top or above the
         // system bar, whichever is higher, so it never jumps under the bar.
         val bottom = maxOf(bars.maxOfOrNull { it.height } ?: 0, bottomInset.roundToPx())
-        val usages = usageSlot.map { it.measure(loose.copy(maxHeight = (height - bottom).coerceAtLeast(0))) }
+        // At their own height: where that leaves the list too little room,
+        // the blocks move into it (BoardScreen's usageLeads), and they must
+        // be measured whole to know.
+        val usages = usageSlot.map { it.measure(loose.copy(maxHeight = Constraints.Infinity)) }
         val top = usages.sumOf { it.height }
         val boards = boardSlot.map { it.measure(Constraints.fixed(width, (height - top - bottom).coerceAtLeast(0))) }
         val lines = spokenSlot.map { it.measure(loose) }
