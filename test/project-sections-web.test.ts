@@ -538,10 +538,104 @@ describe('the needs-you bar', () => {
     expect(barShows().count).toBe('1');
   });
 
-  it('keeps its words for a block elsewhere, and counts it', async () => {
+  // Until a press it names the first blocked card in reading order, worked
+  // out on every render as iOS and Android do, so a block earlier in that
+  // order changes what it names. (Until this was fixed the web kept naming
+  // the card it named first.)
+  it('names the first blocked card until pressed, so a block earlier in reading order changes what it names', async () => {
     const b = await boardOf([blocked('m', 1, 'middle', { name: 'In middle' }), at('a', 2, { homeProject: 'alpha' })]);
+    expect(barShows().name).toBe('In middle');
     b.emit('session', blocked('a', 0, 'alpha', { name: 'In alpha' }));
-    expect(barShows()).toEqual({ count: '2', name: 'In middle', where: '·in middle', verb: 'Show' });
+    expect(barShows()).toEqual({ count: '2', name: 'In alpha', where: '·in alpha', verb: 'Show' });
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+    expect(barShows()).toEqual({ count: '2', name: 'In middle', where: '·in middle', verb: 'Next' });
+  });
+
+  // After a press it names the first blocked card after the one it brought,
+  // as drawn now: a card that blocks between them mid-walk is the next one,
+  // where the web used to keep naming the card it had picked and reached
+  // the new one only a whole round later.
+  it('walks A, B, C and round to A when B blocks between them mid-walk', async () => {
+    const b = await boardOf([
+      blocked('a', 1, 'alpha', { name: 'A' }), at('b', 2, { homeProject: 'bravo', name: 'B' }),
+      blocked('c', 3, 'charlie', { name: 'C' }),
+    ]);
+    const walk: string[] = [];
+    const press = () => {
+      b.click(bar());
+      walk.push((document.activeElement as HTMLElement).closest('.card')!.getAttribute('data-id')!);
+    };
+    press();
+    expect(barShows()).toEqual({ count: '2', name: 'C', where: '·in charlie', verb: 'Next' });
+    b.emit('session', blocked('b', 0, 'bravo', { name: 'B' }));
+    expect(barShows()).toEqual({ count: '3', name: 'B', where: '·in bravo', verb: 'Next' });
+    press();
+    press();
+    press();
+    expect(walk).toEqual(['a', 'b', 'c', 'a']);
+  });
+
+  it('walks on from the card it brought once that card is unblocked', async () => {
+    const b = await boardOf([
+      blocked('a', 1, 'alpha', { name: 'A' }), blocked('b', 2, 'bravo', { name: 'B' }),
+      blocked('c', 3, 'charlie', { name: 'C' }),
+    ]);
+    b.click(bar());
+    b.click(bar());                                   // brings B
+    b.emit('session', at('b', 0, { homeProject: 'bravo', name: 'B', status: 'coding' }));
+    expect(barShows()).toEqual({ count: '2', name: 'C', where: '·in charlie', verb: 'Next' });
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'c'));
+    expect(barShows()).toEqual({ count: '2', name: 'A', where: '·in alpha', verb: 'Next' });
+  });
+
+  // Once the card a press brought is off the board there is nothing to walk
+  // on from: the first blocked card again, and Show, as on a fresh bar.
+  it('names the first blocked card again, with Show, once the card it brought has left the board', async () => {
+    const b = await boardOf([
+      blocked('a', 1, 'alpha', { name: 'A' }), blocked('c', 2, 'charlie', { name: 'C' }),
+      blocked('d', 3, 'delta', { name: 'D' }),
+    ]);
+    b.click(bar());
+    expect(barShows()).toEqual({ count: '3', name: 'C', where: '·in charlie', verb: 'Next' });
+    b.emit('remove', { id: 'a' });
+    expect(barShows()).toEqual({ count: '2', name: 'C', where: '·in charlie', verb: 'Show' });
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'c'));
+    expect(barShows()).toEqual({ count: '2', name: 'D', where: '·in delta', verb: 'Next' });
+  });
+
+  it('starts from the first blocked card, with Show, each time it comes back', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), blocked('e', 2, 'etl')]);
+    b.click(bar());
+    expect(barShows().verb).toBe('Next');
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    b.emit('session', at('e', 0, { homeProject: 'etl', status: 'coding' }));
+    await vi.advanceTimersByTimeAsync(500);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    b.emit('session', blocked('e', 0, 'etl'));
+    expect(barShows()).toEqual({ count: '2', name: 'a', where: '·in acme-api', verb: 'Show' });
+  });
+
+  // The words every client says: the session's name, or its agent's where
+  // it has none, and the place, compared exactly.
+  it('names an untitled session by its agent, in the bar and aloud', async () => {
+    const b = await boardOf([at('x', 1, { homeProject: 'acme-api', name: '', source: 'codex' })]);
+    b.emit('session', blocked('x', 0, 'acme-api', { name: '', source: 'codex' }));
+    expect(barShows()).toEqual({ count: '1', name: 'Codex', where: '·in acme-api', verb: 'Show' });
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Codex, in acme-api, Show');
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Codex, in acme-api, needs you');
+    // In No project the agent is its name already, and is not said twice.
+    b.emit('session', blocked('x', 0, '', { project: '', name: '', source: 'codex' }));
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Codex, Show');
+    // A session sent with no name, from before `source` existed, is Claude's.
+    b.emit('session', blocked('x', 0, 'acme-api', { name: undefined, source: undefined }));
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Claude, in acme-api, Show');
+    // Exactly: a name that differs from its section only in case keeps the place.
+    b.emit('session', blocked('x', 0, 'acme-api', { name: 'ACME-API' }));
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: ACME-API, in acme-api, Show');
   });
 
   // A press reads the board as last drawn.
@@ -601,6 +695,62 @@ describe('the needs-you bar', () => {
     bar().focus();
     b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
     expect(document.activeElement).toBe(titleOf(b, 'a'));
+  });
+
+  // Leaving with focus, the bar hands it to the first of these still on the
+  // board: the card it brought in this life, the card it named last, the
+  // first card's title, the board's heading. Never <body>, where a reader
+  // starts again from the top, and never a card an earlier bar brought.
+  it('hands its focus to the card it names, not one an earlier bar brought that has gone since', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    b.click(bar());                                                     // brings a
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));   // the bar leaves
+    await vi.advanceTimersByTimeAsync(500);
+    b.emit('remove', { id: 'a' });
+    b.emit('session', blocked('c', 0, 'docs', { name: 'Docs' }));       // a bar of its own for c
+    bar().focus();
+    b.emit('session', at('c', 0, { homeProject: 'docs', name: 'Docs', status: 'coding' }));
+    expect(document.activeElement).toBe(titleOf(b, 'c'));
+  });
+
+  it('hands its focus to the card it names, not one an earlier bar brought that is still here', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    b.click(bar());
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    await vi.advanceTimersByTimeAsync(500);
+    b.emit('session', blocked('c', 0, 'docs', { name: 'Docs' }));
+    bar().focus();
+    b.emit('session', at('c', 0, { homeProject: 'docs', name: 'Docs', status: 'coding' }));
+    expect(document.activeElement).toBe(titleOf(b, 'c'));
+  });
+
+  it('hands its focus to the card it brought in this life, over the one it named after', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), blocked('c', 2, 'docs'), at('z', 3, { homeProject: 'zeta' })]);
+    b.click(bar());                                   // brings a, names c
+    bar().focus();
+    b.emit('snapshot', [at('a', 1, { homeProject: 'acme-api' }), at('c', 2, { homeProject: 'docs' }), at('z', 3, { homeProject: 'zeta' })]);
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+  });
+
+  // Dismissed on another device, or evicted, while the bar has focus.
+  it('hands its focus to the first card\'s title when the card it names is taken off the board', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' }), at('z', 3, { homeProject: 'zeta' })]);
+    bar().focus();
+    b.emit('remove', { id: 'a' });
+    expect(document.activeElement).toBe(titleOf(b, 'c'));
+    expect(bar().hasAttribute('inert')).toBe(true);
+  });
+
+  it('hands its focus to the board\'s heading when no card is left, for as long as it holds it', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api')]);
+    b.click(bar());
+    bar().focus();
+    b.emit('remove', { id: 'a' });
+    const heading = document.querySelector('h1') as HTMLElement;
+    expect(document.activeElement).toBe(heading);
+    expect(heading.getAttribute('tabindex')).toBe('-1');   // focusable from a script, never a Tab stop
+    heading.blur();
+    expect(heading.hasAttribute('tabindex')).toBe(false);
   });
 
   it('comes back at once for a block that lands while it leaves', async () => {

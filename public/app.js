@@ -1050,43 +1050,67 @@
   // the web and Android draw the same bar (docs/design/project-sections.md).
   //
   // Reading order is the grid's own: sections in order, cards in order, row
-  // by row. A press reads the board as last drawn, so a card dismissed or
-  // unblocked meanwhile is passed over. A card that becomes blocked never
-  // moves (the board's order); the bar is the way to it.
+  // by row. Every render works out what the bar names from the board as it
+  // is drawn then, so a card dismissed or unblocked meanwhile is passed over,
+  // and one that blocks between the card a press brought and the next is
+  // the next. A card that becomes blocked never moves (the board's order);
+  // the bar is the way to it.
 
   const RING_MS = 2000;
-  // The bar's memory: the card it names, whether it has been pressed since
-  // it appeared, the card it last brought and the one ringing now, and the
-  // reading order last drawn.
-  const bar = { target: null, pressed: false, brought: null, ring: null, order: [] };
+  // The bar's memory between renders. `brought` is the card its last press
+  // brought: null until the first press, and null again once the bar leaves,
+  // so each time it comes back it starts from the top. `named` is the card it
+  // names as last drawn, and `ring` the card ringing now.
+  const bar = { brought: null, named: null, ring: null };
 
   const reducedMotion = () => typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  /** The blocked cards in reading order, as last drawn: ids. */
-  const blockedDrawn = () => [...gridEl.querySelectorAll('.card[data-status="blocked"]')].map((el) => el.dataset.id);
-
-  /**
-   * What the bar and the voice say a session is: its name, and where. Where
-   * is its project, or for a session in No project its agent; and nothing
-   * where that would only repeat the name, as a card's own place does not
-   * ("acme-api", untitled, in acme-api).
-   */
-  function needsWhat(s) {
-    const key = sectionKey(s);
-    const where = key === NO_PROJECT ? agentName(s.source) : key;
-    return { name: s.name, place: where === s.name ? '' : key === NO_PROJECT ? where : `in ${key}` };
+  /** The cards in reading order as drawn now, and the blocked ones among them: ids. */
+  function drawnOrder() {
+    const order = [];
+    const blocked = [];
+    for (const el of gridEl.querySelectorAll('.card')) {
+      order.push(el.dataset.id);
+      if (el.dataset.status === 'blocked' && state.has(el.dataset.id)) blocked.push(el.dataset.id);
+    }
+    return { order, blocked };
   }
 
-  /** The first of `ids` after `from` in the order last drawn, round to the start. */
-  function after(ids, from) {
-    const at = bar.order.indexOf(from);
-    if (at < 0) return ids[0];
-    for (let i = 1; i <= bar.order.length; i += 1) {
-      const id = bar.order[(at + i) % bar.order.length];
-      if (ids.includes(id)) return id;
+  /**
+   * The card the bar names, by the rule iOS and Android keep (NeedsYou,
+   * barTarget): the first blocked card after the one the last press brought,
+   * in reading order as drawn now, round to the first, and so that card
+   * itself when it is the only one blocked. With no press yet, or that card
+   * gone from the board, the first blocked card. A card brought and since
+   * unblocked is still where the walk goes on from. Null with none blocked.
+   */
+  function barTarget({ order, blocked }) {
+    if (blocked.length === 0) return null;
+    const at = bar.brought === null ? -1 : order.indexOf(bar.brought);
+    if (at < 0) return blocked[0];
+    const waiting = new Set(blocked);
+    for (let i = 1; i <= order.length; i += 1) {
+      const id = order[(at + i) % order.length];
+      if (waiting.has(id)) return id;
     }
-    return ids[0];
+    return blocked[0];
+  }
+
+  /**
+   * What the bar and the voice call a blocked session, in the words every
+   * client uses: its name, or its agent's where it has none; and where it
+   * is, "in <section>" for a folder's section and its agent for No project,
+   * each left out where it would only say the name again (an untitled card
+   * named after its folder; a Codex session called "Codex"). Compared
+   * exactly. Never the live folder: the section is where the reader looks.
+   */
+  function needsWhat(s) {
+    const agent = agentName(s.source);
+    const name = typeof s.name === 'string' && s.name !== '' ? s.name : agent;
+    const key = sectionKey(s);
+    if (key === NO_PROJECT) return { name, place: agent === name ? '' : agent };
+    return { name, place: key === name ? '' : `in ${key}` };
   }
 
   function needsHTML(count, s, verb) {
@@ -1100,31 +1124,32 @@
 
   /** The bar as the board stands: shown, named and worded, or leaving. */
   function renderNeeds() {
-    const ids = blockedDrawn();
-    const order = [...gridEl.querySelectorAll('.card')].map((el) => el.dataset.id);
+    const drawn = drawnOrder();
+    const { blocked } = drawn;
     // Gone sooner than two seconds when its card is no longer blocked.
-    if (bar.ring && !ids.includes(bar.ring.id)) clearRing();
-    if (ids.length === 0) {
-      hideNeeds(bar.brought || bar.target);
-      bar.target = null;
-      bar.pressed = false;
-      bar.order = order;
+    if (bar.ring && !blocked.includes(bar.ring.id)) clearRing();
+    if (blocked.length === 0) {
+      hideNeeds();
+      bar.brought = null;
+      bar.named = null;
       return;
     }
-    // It goes on naming the card it names while that is blocked, so its
-    // words do not change under the reader's eye for a block elsewhere.
-    if (!ids.includes(bar.target)) bar.target = bar.target ? after(ids, bar.target) : ids[0];
-    bar.order = order;
-    const s = state.get(bar.target);
-    const verb = bar.pressed && ids.length > 1 ? 'Next' : 'Show';
+    const id = barTarget(drawn);
+    const s = state.get(id);
+    bar.named = id;
+    // "Next" while the card a press brought is still on the board and there
+    // is another to walk to; "Show" before any press, and again once that
+    // card has gone or is the only one left.
+    const walks = bar.brought !== null && drawn.order.includes(bar.brought) && blocked.length > 1;
+    const verb = walks ? 'Next' : 'Show';
     const { name, place } = needsWhat(s);
     // iOS's words, and then the verb the bar shows, so that its name holds
     // every word of its label (WCAG 2.5.3): a speech user who says "click
     // Show" or "click Next", as iOS Voice Control answers to "Show blocked",
     // reaches it.
-    const label = `${ids.length} blocked: ${name}${place ? `, ${place}` : ''}, ${verb}`;
+    const label = `${blocked.length} blocked: ${name}${place ? `, ${place}` : ''}, ${verb}`;
     if (needsEl.getAttribute('aria-label') !== label) needsEl.setAttribute('aria-label', label);
-    if (paint(needsEl, needsHTML(ids.length, s, verb))) fitNeeds();
+    if (paint(needsEl, needsHTML(blocked.length, s, verb))) fitNeeds();
     showNeeds();
   }
 
@@ -1145,15 +1170,12 @@
     padForNeeds();
   }
 
-  function hideNeeds(last) {
+  function hideNeeds() {
     if (needsEl.hidden || needsEl.classList.contains('leaving')) return;
-    // A reader on the bar is not dropped to the top of the page: they go to
-    // the card it last brought, or else last named, if that is still here.
-    if (needsEl.contains(document.activeElement)) {
-      const rec = last ? cards.get(last) : null;
-      const title = rec && rec.el.querySelector('[data-open]');
-      if (title) title.focus({ preventScroll: true });
-    }
+    // Focus on a control that turns inert, then hidden, falls to <body>, and
+    // a reader on the bar would start again from the top of the page. So it
+    // is handed on first, before the bar forgets what it brought.
+    if (needsEl.contains(document.activeElement)) handFocusOn();
     needsEl.classList.remove('entering');
     needsEl.classList.add('leaving');
     needsEl.setAttribute('inert', '');
@@ -1168,6 +1190,35 @@
     };
     // Its animation's end, or a moment past it where none runs.
     leaveTimer = setTimeout(gone, reducedMotion() ? 0 : 400);
+  }
+
+  /**
+   * Where a reader on the leaving bar goes: the first of these still on the
+   * board. The card the bar last brought in this life of it, else the one it
+   * named last, so they land where the bar sent them or was about to; else
+   * the first card's title, the next stop after the bar; else, with no card
+   * left, the board's heading. Never a card brought in an earlier life,
+   * which nothing on the bar had named. Without a scroll, as every focus
+   * this board hands back: the page does not move under the reader.
+   */
+  function handFocusOn() {
+    for (const id of [bar.brought, bar.named]) {
+      const rec = id === null ? null : cards.get(id);
+      const title = rec && rec.el.isConnected ? rec.el.querySelector('[data-open]') : null;
+      if (title) { title.focus({ preventScroll: true }); return; }
+    }
+    const first = gridEl.querySelector('.card [data-open]');
+    if (first) { first.focus({ preventScroll: true }); return; }
+    const heading = document.querySelector('h1');
+    if (!heading) return;
+    // A heading takes focus only with a tabindex of -1, which keeps it out
+    // of the Tab order. That goes again once focus moves on, so a later
+    // click on the heading focuses nothing.
+    if (!heading.hasAttribute('tabindex')) {
+      heading.setAttribute('tabindex', '-1');
+      heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true });
+    }
+    heading.focus({ preventScroll: true });
   }
 
   needsEl.addEventListener('animationend', (e) => {
@@ -1251,13 +1302,12 @@
     bar.ring = { id, timer: setTimeout(clearRing, RING_MS) };
   }
 
+  // A press brings the card the bar names, read from the board as drawn now,
+  // and the render after it names the next.
   needsEl.addEventListener('click', () => {
-    const ids = blockedDrawn();
-    if (ids.length === 0) return;
-    const id = ids.includes(bar.target) ? bar.target : after(ids, bar.target);
+    const id = barTarget(drawnOrder());
+    if (id === null) return;
     bring(id);
-    bar.pressed = true;
-    bar.target = ids.length > 1 ? ids[(ids.indexOf(id) + 1) % ids.length] : id;
     renderNeeds();
   });
 
