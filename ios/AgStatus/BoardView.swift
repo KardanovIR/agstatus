@@ -2102,8 +2102,11 @@ private struct NeedsYouBar: View {
         .accessibilityLabel(face.spoken)
         .accessibilityHint("Shows that session")
         // Voice Control: "Show blocked", or "Tap Blocked". The label is a
-        // sentence whose count and name move while it is being said.
-        .accessibilityInputLabels(["Show blocked", "Blocked"])
+        // sentence whose count and name move while it is being said. And the
+        // verb the bar shows, so that "Tap Show", or "Tap Next" once it has
+        // been pressed, reaches it: its name holds the word a reader sees on
+        // it (WCAG 2.5.3), as the web's does.
+        .accessibilityInputLabels(["Show blocked", "Blocked", verbWord])
         // The words change in place, never cross-faded into the next ones.
         .transaction(value: face) { $0.animation = nil }
     }
@@ -2207,9 +2210,12 @@ private struct NeedsYouBar: View {
     }
 
     /// What a press does: brings the card it names, or after a press the
-    /// next blocked one. A word, in the secondary ink, at the far end.
+    /// next blocked one.
+    private var verbWord: String { face.next ? "Next" : "Show" }
+
+    /// The verb as drawn: a word, in the secondary ink, at the far end.
     private var verb: some View {
-        Text(face.next ? "Next" : "Show")
+        Text(verbWord)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(Theme.textSecondary)
             .lineLimit(1)
