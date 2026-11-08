@@ -636,13 +636,35 @@ struct NeedsYou: Equatable {
     /// acme-api" — or, in No project, its agent: the Codex Desktop session
     /// that started at `/` is "Reading the brief · Codex". Never the live
     /// folder: the project is the section the reader goes looking under.
+    ///
+    /// The place is left out where it would only say the name again, as the
+    /// card's own "in <folder>" is: an untitled Codex session in acme-api,
+    /// which the hook names "acme-api", is "acme-api" and not "acme-api · in
+    /// acme-api"; one named after its agent in No project is "Codex". Exact
+    /// comparisons, on the web and Android as here.
     static func words(for session: Session) -> (name: String, place: String?) {
         let agent = UsageInfo.displayName(for: session.source)
         let name = session.name.isEmpty ? agent : session.name
         switch session.projectKey {
-        case .folder(let folder): return (name, "in \(folder)")
+        case .folder(let folder): return (name, folder == name ? nil : "in \(folder)")
         case .noProject: return (name, name == agent ? nil : agent)
         }
+    }
+
+    /// What is said aloud when sessions have just become blocked
+    /// (`BoardView.announceBlocks`): "Fix the login redirect, in acme-api,
+    /// needs you", or "2 sessions need you" for blocks that came within the
+    /// same half second. Which session and where, in the bar's words: its
+    /// project rather than its agent, now that the sections are projects and
+    /// the card's agent is a mark on it; in No project its agent instead;
+    /// and neither where it would only repeat the name, so a session named
+    /// after its agent is "Codex needs you" and one named after its folder
+    /// "acme-api needs you". Nil for none.
+    static func announcement(for sessions: [Session]) -> String? {
+        guard let session = sessions.first else { return nil }
+        guard sessions.count == 1 else { return "\(sessions.count) sessions need you" }
+        let words = words(for: session)
+        return words.place.map { "\(words.name), \($0), needs you" } ?? "\(words.name) needs you"
     }
 }
 
@@ -1243,6 +1265,25 @@ extension BoardArrangement {
         assert(drawn(desk).bar?.place == "Codex", "a named one gets its agent")
         desk[4].name = ""
         assert(drawn(desk).bar?.name == "Codex" && drawn(desk).bar?.place == nil, "an unnamed one is its agent's")
+        assert(NeedsYou.announcement(for: [desk[4]]) == "Codex needs you", "and is said once")
+        // A folder section: its project is not said twice either. The hook
+        // names an untitled Codex session after its folder.
+        var named = board
+        named[0].status = .coding
+        named[3].status = .coding
+        named[2].status = .blocked
+        assert(drawn(named).bar == NeedsYou.Face(count: 1, name: "acme-api", place: nil, next: false),
+               "named after its folder: acme-api, not acme-api · in acme-api")
+        assert(drawn(named).bar?.spoken == "1 blocked: acme-api", "and the bar says it once")
+        assert(NeedsYou.announcement(for: [named[2]]) == "acme-api needs you", "and so does the alarm")
+        named[2].name = "Acme-api"
+        assert(drawn(named).bar?.place == "in acme-api", "an exact comparison")
+        named[2].name = ""
+        assert(drawn(named).bar?.name == "Codex" && drawn(named).bar?.place == "in acme-api",
+               "an unnamed session is its agent's, in its folder")
+        assert(NeedsYou.announcement(for: [board[0]]) == "Fix the login redirect, in acme-api, needs you"
+               && NeedsYou.announcement(for: [board[0], board[3]]) == "2 sessions need you"
+               && NeedsYou.announcement(for: []) == nil, "the alarm's sentences")
         // A moved card is named under its project, not where it went.
         var moved = board
         moved[0].project = "web"

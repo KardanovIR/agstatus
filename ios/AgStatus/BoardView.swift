@@ -1016,7 +1016,7 @@ struct BoardView: View {
         speech.gathered = []
         speech.wait = nil
         let sessions = gathered.compactMap { id in store.sessions.first { $0.id == id && $0.status == .blocked } }
-        guard let sentence = Self.blockSentence(for: sessions) else {
+        guard let sentence = NeedsYou.announcement(for: sessions) else {
             traceBlocks("nothing said: \(gathered) no longer blocked")
             return
         }
@@ -1031,19 +1031,6 @@ struct BoardView: View {
         var line = AttributedString(sentence)
         line.accessibilitySpeechAnnouncementPriority = .default
         AccessibilityNotification.Announcement(line).post()
-    }
-
-    /// "Fix the login redirect, in acme-api, needs you", or "2 sessions need
-    /// you": which session and where, as the bar names it. Its project rather
-    /// than its agent, now that the sections are projects and the card's
-    /// agent is a mark on it; in No project its agent instead, as on the bar
-    /// (`NeedsYou.words`), and "Codex needs you" for a session named after
-    /// its agent.
-    private static func blockSentence(for sessions: [Session]) -> String? {
-        guard let session = sessions.first else { return nil }
-        guard sessions.count == 1 else { return "\(sessions.count) sessions need you" }
-        let words = NeedsYou.words(for: session)
-        return words.place.map { "\(words.name), \($0), needs you" } ?? "\(words.name) needs you"
     }
 
     /// Why a block would go unsaid now, or nil when it can be said.
