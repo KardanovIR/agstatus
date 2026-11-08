@@ -154,12 +154,13 @@ class BlockSpeechTest {
             "Reading the brief, Codex, needs you",
             BlockSpeech.sentence(listOf(session("a", name = "Reading the brief", homeProject = "", source = "codex"))),
         )
-        // No place where it would only repeat the name, and no comma for it.
+        // No place where it would only repeat the name, and then a plain
+        // sentence with no comma at all, as iOS says it.
         assertEquals(
-            "Codex, needs you",
+            "Codex needs you",
             BlockSpeech.sentence(listOf(session("a", name = "", homeProject = "", source = "codex"))),
         )
-        assertEquals("acme-api, needs you", BlockSpeech.sentence(listOf(session("a", name = "acme-api"))))
+        assertEquals("acme-api needs you", BlockSpeech.sentence(listOf(session("a", name = "acme-api"))))
         assertEquals("3 sessions need you", BlockSpeech.sentence(listOf(session("a"), session("b"), session("c"))))
         assertNull(BlockSpeech.sentence(emptyList()))
     }

@@ -501,14 +501,16 @@ class BlockSpeech {
 
         /**
          * "Fix the login redirect, in acme-api, needs you", with the bar's
-         * words ([ProjectSections.barName], [ProjectSections.barWhere]) and
-         * no place where the bar has none; "2 sessions need you" for more.
+         * words ([ProjectSections.barName], [ProjectSections.barWhere]). The
+         * commas set the place off, so where the bar has no place it is a
+         * plain sentence, as iOS says it: "Codex needs you". "2 sessions need
+         * you" for more.
          */
         fun sentence(sessions: List<Session>): String? = when (sessions.size) {
             0 -> null
             1 -> sessions.single().let { session ->
-                listOfNotNull(ProjectSections.barName(session), ProjectSections.barWhere(session), "needs you")
-                    .joinToString(", ")
+                val name = ProjectSections.barName(session)
+                ProjectSections.barWhere(session)?.let { "$name, $it, needs you" } ?: "$name needs you"
             }
             else -> "${sessions.size} sessions need you"
         }

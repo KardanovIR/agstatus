@@ -868,6 +868,18 @@ describe('a new block, aloud', () => {
     expect(said()).toBe('');
   });
 
+  it('says a block with no place to name as a plain sentence, as iOS does', async () => {
+    // Untitled in No project: named by its agent, which is then no place.
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
+    b.emit('session', blocked('n', 0, '', { name: '', source: 'codex', project: '/' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Codex needs you');
+    // Named after its folder: the place would only repeat the name.
+    b.emit('session', blocked('m', 0, 'acme-api', { name: 'acme-api' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('acme-api needs you');
+  });
+
   it('says a new session that arrives blocked', async () => {
     const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
     b.emit('session', blocked('n', 0, 'billing', { name: 'Charge the card' }));

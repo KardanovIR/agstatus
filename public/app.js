@@ -1380,8 +1380,10 @@
     for (const s of still) saidAt.set(s.id, now);
     let sentence = `${still.length} sessions need you`;
     if (still.length === 1) {
+      // The commas set the place off; with no place there is nothing to set
+      // off, and it is a plain sentence, as iOS says it: "Codex needs you".
       const { name, place } = needsWhat(still[0]);
-      sentence = `${name}${place ? `, ${place}` : ''}, needs you`;
+      sentence = place ? `${name}, ${place}, needs you` : `${name} needs you`;
     }
     // Emptied first, so the same words a minute later are a change too; and
     // again a few seconds on, which a screen reader does not say (a polite
