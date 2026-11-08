@@ -1660,30 +1660,32 @@ enum DemoData {
     /// rules: a workflow of ten and one of thirty, one subagent waiting on
     /// approval and then two, a failure, every row finished, the turn over
     /// with two still working, the report hold, minimal mode, Codex, labels
-    /// at their real lengths, and a card with no subagents. Joined into one
-    /// array they are that frame's data, byte for byte. Each is broken into
-    /// lines here only to be read, one subagent to a line, and joined again
-    /// before it is decoded.
+    /// at their real lengths, and a card with no subagents. Each carries the
+    /// `homeProject` the server pinned for it. Joined into one array they are
+    /// that frame's data, byte for byte, as the server's own capture holds it
+    /// (test/fixtures/subtasks/wire/snapshot.sse). Each is broken into lines
+    /// here only to be read, one subagent to a line, and joined again before
+    /// it is decoded.
     static func verifyServerSubtasks() {
         let decoder = JSONDecoder()
         // In the frame's own order, the most recently updated first.
         let frame: [(scenario: String, json: String)] = [
             ("long", #"""
-                {"id":"seed-long","name":"Fix listener reinstall leaving Focus stopped","status":"coding","message":"Editing install.ts","project":"claude-status","source":"claude","host":null,"createdAt":1793209331895,"updatedAt":1793209331900,
+                {"id":"seed-long","name":"Fix listener reinstall leaving Focus stopped","status":"coding","message":"Editing install.ts","project":"claude-status","source":"claude","host":null,"createdAt":1793209331895,"updatedAt":1793209331900,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":3,"blocked":0,"failed":0,"done":2,"items":[
                 {"id":"691024b85fbf8ed1fdc3dab8","n":3,"label":"Find why the listener reinstall leaves Focus stopped","state":"planning","activity":"Searching: launchctl bootstrap leaves the LaunchAgent unloaded after a reinstall"},
                 {"id":"fe5c9a2f13b1ec7e17cf7483","n":4,"label":"Run the store migration tests against Postgres 16.15","state":"testing","activity":"Run the store migration tests with --no-file-parallelism against a disposable cl"},
                 {"id":"eac87fba0a27afc05409e6d2","n":5,"label":"Check the Codex rollout schema for spawn_agent calls","state":"planning","activity":"Reading developers.openai.com"}]}}
                 """#),
             ("codex", #"""
-                {"id":"seed-codex","name":"search-indexer","status":"coding","message":"Editing files","project":"search-indexer","source":"codex","host":null,"createdAt":1793209331890,"updatedAt":1793209331895,
+                {"id":"seed-codex","name":"search-indexer","status":"coding","message":"Editing files","project":"search-indexer","source":"codex","host":null,"createdAt":1793209331890,"updatedAt":1793209331895,"homeProject":"search-indexer",
                 "subtasks":{"turnEnded":false,"running":3,"blocked":0,"failed":0,"done":2,"items":[
                 {"id":"eda034f3b538b230c6bd40eb","n":3,"label":"Feynman","state":"testing","activity":"cargo test -p indexer"},
                 {"id":"389b9beddd053d3df2cd0c32","n":4,"label":"Noether","state":"coding","activity":"Editing files"},
                 {"id":"13fb52e6f6f78f771bfa0c6e","n":5,"label":"Hypatia","state":"planning","activity":""}]}}
                 """#),
             ("minimal", #"""
-                {"id":"seed-minimal","name":"claude-status","status":"coding","message":"Edit","project":"claude-status","source":"claude","host":null,"createdAt":1793209331884,"updatedAt":1793209331890,
+                {"id":"seed-minimal","name":"claude-status","status":"coding","message":"Edit","project":"claude-status","source":"claude","host":null,"createdAt":1793209331884,"updatedAt":1793209331890,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":4,"blocked":0,"failed":0,"done":2,"items":[
                 {"id":"5394db0c7caa12460b2ee93c","n":3,"label":"Subagent 3","state":"testing","activity":"Bash"},
                 {"id":"acfaf4d87e271423e1e00c4a","n":4,"label":"Subagent 4","state":"coding","activity":"Edit"},
@@ -1691,28 +1693,28 @@ enum DemoData {
                 {"id":"3d93bcc479369cf4d295b2b6","n":6,"label":"Subagent 6","state":"coding","activity":"Write"}]}}
                 """#),
             ("hold", #"""
-                {"id":"seed-hold","name":"Collect the background reports","status":"planning","message":"Reading subagent results","project":"claude-status","source":"claude","host":null,"createdAt":1793209331880,"updatedAt":1793209331884,
+                {"id":"seed-hold","name":"Collect the background reports","status":"planning","message":"Reading subagent results","project":"claude-status","source":"claude","host":null,"createdAt":1793209331880,"updatedAt":1793209331884,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":0,"blocked":0,"failed":0,"done":3,"items":[]}}
                 """#),
             ("background", #"""
-                {"id":"seed-background","name":"Land the docs and CI sweep","status":"testing","message":"2 subagents still running","project":"claude-status","source":"claude","host":null,"createdAt":1793209331874,"updatedAt":1793209331879,
+                {"id":"seed-background","name":"Land the docs and CI sweep","status":"testing","message":"2 subagents still running","project":"claude-status","source":"claude","host":null,"createdAt":1793209331874,"updatedAt":1793209331879,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":true,"running":2,"blocked":0,"failed":0,"done":3,"items":[
                 {"id":"08fee937f71c6198e80fbc87","n":4,"label":"Run the server suite on Postgres","state":"testing","activity":"Run the root suite with --no-file-parallelism"},
                 {"id":"3059021926a12f41407c831d","n":5,"label":"Sweep docs for stale flags","state":"coding","activity":"Editing docs.html"}]}}
                 """#),
             ("finished", #"""
-                {"id":"seed-finished","name":"Map the board layout code","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331859,"updatedAt":1793209331874,
+                {"id":"seed-finished","name":"Map the board layout code","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331859,"updatedAt":1793209331874,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":0,"blocked":0,"failed":0,"done":12,"items":[]}}
                 """#),
             ("failed", #"""
-                {"id":"seed-failed","name":"Prepare the 1.6.4 release","status":"coding","message":"Editing RELEASE-1.6.4.md","project":"claude-status","source":"claude","host":null,"createdAt":1793209331851,"updatedAt":1793209331859,
+                {"id":"seed-failed","name":"Prepare the 1.6.4 release","status":"coding","message":"Editing RELEASE-1.6.4.md","project":"claude-status","source":"claude","host":null,"createdAt":1793209331851,"updatedAt":1793209331859,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":2,"blocked":0,"failed":1,"done":4,"items":[
                 {"id":"e64b1cceac06588757ecc96b","n":5,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
                 {"id":"e2c73d81da1455b3eaf358cc","n":6,"label":"Audit the Android strings","state":"failed","activity":"Failed: API error (overloaded)"},
                 {"id":"caa9caff0545175d746dae6c","n":7,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"}]}}
                 """#),
             ("two-blocked", #"""
-                {"id":"seed-two-blocked","name":"Prepare the Android release","status":"blocked","message":"Needs approval: Audit the Android strings +1","project":"claude-status","source":"claude","host":null,"createdAt":1793209331845,"updatedAt":1793209331851,
+                {"id":"seed-two-blocked","name":"Prepare the Android release","status":"blocked","message":"Needs approval: Audit the Android strings +1","project":"claude-status","source":"claude","host":null,"createdAt":1793209331845,"updatedAt":1793209331851,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":3,"blocked":2,"failed":0,"done":0,"items":[
                 {"id":"578acf7e9e0804166a49689e","n":1,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
                 {"id":"78844cab97ff5fb50d2b0e52","n":2,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"},
@@ -1721,7 +1723,7 @@ enum DemoData {
                 {"id":"3029de2f327479a99a6c53ff","n":5,"label":"Summarize the hook diff","state":"blocked","activity":"Approve: git diff origin/master -- cli"}]}}
                 """#),
             ("blocked", #"""
-                {"id":"seed-blocked","name":"Verify the hook before release","status":"blocked","message":"Needs approval: verify:hook","project":"claude-status","source":"claude","host":null,"createdAt":1793209331823,"updatedAt":1793209331845,
+                {"id":"seed-blocked","name":"Verify the hook before release","status":"blocked","message":"Needs approval: verify:hook","project":"claude-status","source":"claude","host":null,"createdAt":1793209331823,"updatedAt":1793209331845,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":9,"blocked":1,"failed":0,"done":15,"items":[
                 {"id":"d6eb60f4020603989cf4fc11","n":13,"label":"review:hook","state":"testing","activity":"Run hook tests with --no-file-parallelism"},
                 {"id":"fbb414dd278da301e2b11d84","n":14,"label":"review:listener","state":"coding","activity":"Editing listener.ts"},
@@ -1735,7 +1737,7 @@ enum DemoData {
                 {"id":"9670b0f4ef4ad5a9d3572c54","n":22,"label":"verify:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"}]}}
                 """#),
             ("thirty", #"""
-                {"id":"seed-thirty","name":"Implement subtasks across all clients","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331671,"updatedAt":1793209331823,
+                {"id":"seed-thirty","name":"Implement subtasks across all clients","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331671,"updatedAt":1793209331823,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":30,"blocked":0,"failed":0,"done":186,"items":[
                 {"id":"6b944b2ed97ca824f6d749b8","n":187,"label":"implement:server","state":"coding","activity":"Editing store.ts"},
                 {"id":"9055dd87cbfe940cc74d6561","n":188,"label":"implement:hook","state":"coding","activity":"Editing agstatus-hook.js"},
@@ -1769,7 +1771,7 @@ enum DemoData {
                 {"id":"9cb8c8907d472f4546ed1c22","n":216,"label":"map:codex","state":"planning","activity":"Reading developers.openai.com"}]}}
                 """#),
             ("ten", #"""
-                {"id":"seed-ten","name":"Review and verify the subtasks branch","status":"planning","message":"Running workflow: review-and-verify","project":"claude-status","source":"claude","host":null,"createdAt":1793209331639,"updatedAt":1793209331670,
+                {"id":"seed-ten","name":"Review and verify the subtasks branch","status":"planning","message":"Running workflow: review-and-verify","project":"claude-status","source":"claude","host":null,"createdAt":1793209331639,"updatedAt":1793209331670,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":10,"blocked":0,"failed":0,"done":15,"items":[
                 {"id":"2c6fb5642df321bc8ae2919b","n":13,"label":"review:hook","state":"testing","activity":"Run hook tests with --no-file-parallelism"},
                 {"id":"2f438243b248645cd24f356c","n":14,"label":"review:listener","state":"coding","activity":"Editing listener.ts"},
@@ -1783,13 +1785,13 @@ enum DemoData {
                 {"id":"71d73939988e8fcf028e3eed","n":22,"label":"verify:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"}]}}
                 """#),
             ("two", #"""
-                {"id":"seed-two","name":"Ship the store migration","status":"planning","message":"Draft release notes","project":"claude-status","source":"claude","host":null,"createdAt":1793209331631,"updatedAt":1793209331639,
+                {"id":"seed-two","name":"Ship the store migration","status":"planning","message":"Draft release notes","project":"claude-status","source":"claude","host":null,"createdAt":1793209331631,"updatedAt":1793209331639,"homeProject":"claude-status",
                 "subtasks":{"turnEnded":false,"running":2,"blocked":0,"failed":0,"done":0,"items":[
                 {"id":"44a4dc7558ae7a432f86b923","n":1,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
                 {"id":"62668ff106691d43c7be2abe","n":2,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"}]}}
                 """#),
             ("none", #"""
-                {"id":"seed-none","name":"Fix the iPad board layout","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331627,"updatedAt":1793209331630}
+                {"id":"seed-none","name":"Fix the iPad board layout","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331627,"updatedAt":1793209331630,"homeProject":"claude-status"}
                 """#),
         ]
         // The line breaks taken out again: the server's own bytes.
@@ -1812,6 +1814,10 @@ enum DemoData {
             // sends is dropped, defaulted or re-derived on the way in.
             assert(session.status.rawValue == raw["status"] as? String && session.message == raw["message"] as? String
                    && session.source == raw["source"] as? String, "\(scenario): the card's reading")
+            // The folder it started in, which the server pins, and the
+            // section that makes it: the project the capture's cards share.
+            assert(session.homeProject == raw["homeProject"] as? String && session.project == raw["project"] as? String
+                   && session.projectKey == .folder(session.homeProject), "\(scenario): its project as sent")
             if let block = raw["subtasks"] as? [String: Any] {
                 let items = block["items"] as? [[String: Any]] ?? []
                 let subtasks = session.subtasks
