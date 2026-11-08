@@ -15,9 +15,9 @@ status webhook to your board. Ways to set it up:
    only (Codex needs [the installer](#install)).
 3. **Manual bash hook** — *deprecated.* The original
    `hooks/claude-status-hook.sh`, still shipped and still working, for people
-   who want to see and customize every moving part. It reports status only:
-   no plan-usage bars, no card removal at session end, no subagent rows, and
-   no Codex support.
+   who want to see and customize every moving part. It reports status and
+   removes the card at session end, and nothing more: no plan-usage bars, no
+   subagent rows, and no Codex support.
    Prefer 1 or 2; see [Manual setup: the bash hook](#manual-setup-the-bash-hook-deprecated).
 
 Both hooks are deliberately non-blocking: any failure (server down, bad
@@ -1053,9 +1053,9 @@ the helpers.
 
 > **Deprecated.** This hook still ships and still works, and nothing here has
 > stopped being true — but it is no longer where new features land, and it is
-> missing four that the Node hook has: **plan-usage bars** (it reports no
-> usage at all), **card removal on `SessionEnd`**, **subagent rows** (a
-> subagent's tool calls still land on its parent's line), and **Codex
+> missing three that the Node hook has: **plan-usage bars** (it reports no
+> usage at all), **subagent rows** (a subagent's tool calls still land on
+> its parent's line), and **Codex
 > support** (no `PermissionRequest` or `apply_patch` handling). Prefer
 > [the installer](#install) or the
 > [Claude Code plugin](#claude-code-plugin); keep reading only if you want a

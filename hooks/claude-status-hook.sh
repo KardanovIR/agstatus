@@ -2,7 +2,7 @@
 # Posts Claude Code session status to the dashboard.
 #
 # DEPRECATED: still supported, but no longer where new features land. It has no
-# plan-usage bars, no card removal on SessionEnd, and no Codex support. Prefer
+# plan-usage bars, no subagent rows, and no Codex support. Prefer
 # `curl -fsSL https://agstatus.online/install.sh | sh`, which installs the Node
 # hook (on Windows: `irm https://agstatus.online/install.ps1 | iex`). See docs/hooks.md.
 #

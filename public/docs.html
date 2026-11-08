@@ -215,9 +215,9 @@ surgery; see <a href="#hooks-claude-code-plugin">Claude Code plugin</a> below. C
 only (Codex needs <a href="#hooks-install">the installer</a>).</li>
 <li><strong>Manual bash hook</strong> — <em>deprecated.</em> The original
 <code>hooks/claude-status-hook.sh</code>, still shipped and still working, for people
-who want to see and customize every moving part. It reports status only:
-no plan-usage bars, no card removal at session end, no subagent rows, and
-no Codex support.
+who want to see and customize every moving part. It reports status and
+removes the card at session end, and nothing more: no plan-usage bars, no
+subagent rows, and no Codex support.
 Prefer 1 or 2; see <a href="#hooks-manual-setup-the-bash-hook-deprecated">Manual setup: the bash hook</a>.</li>
 </ol>
 <p>Both hooks are deliberately non-blocking: any failure (server down, bad
@@ -1317,9 +1317,9 @@ the helpers.</p>
 <blockquote>
 <p><strong>Deprecated.</strong> This hook still ships and still works, and nothing here has
 stopped being true — but it is no longer where new features land, and it is
-missing four that the Node hook has: <strong>plan-usage bars</strong> (it reports no
-usage at all), <strong>card removal on <code>SessionEnd</code></strong>, <strong>subagent rows</strong> (a
-subagent&#39;s tool calls still land on its parent&#39;s line), and <strong>Codex
+missing three that the Node hook has: <strong>plan-usage bars</strong> (it reports no
+usage at all), <strong>subagent rows</strong> (a subagent&#39;s tool calls still land on
+its parent&#39;s line), and <strong>Codex
 support</strong> (no <code>PermissionRequest</code> or <code>apply_patch</code> handling). Prefer
 <a href="#hooks-install">the installer</a> or the
 <a href="#hooks-claude-code-plugin">Claude Code plugin</a>; keep reading only if you want a
