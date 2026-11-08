@@ -347,12 +347,24 @@
       + `<span class="sr-only">${escape(name)}, ${sessions}</span>`;
   }
 
+  // A name as the characters a reader sees: grapheme clusters, so a cut
+  // never parts an accent from its letter (macOS often stores 'é' as 'e' and
+  // a combining mark) or a family emoji into its people. Code points where a
+  // browser has no Intl.Segmenter, which at least never halves a surrogate
+  // pair.
+  const graphemeSegmenter = (() => {
+    try { return new Intl.Segmenter('und', { granularity: 'grapheme' }); } catch { return null; }
+  })();
+  const graphemes = (text) => (graphemeSegmenter
+    ? Array.from(graphemeSegmenter.segment(text), (g) => g.segment)
+    : Array.from(text));
+
   /**
    * Fits a label to its one line, as iOS fits its own: where room runs short
    * the count goes first, before any letter of the name, and then the name is
    * cut in the middle, "agstatus-list…and-presence", keeping both ends, where
    * a folder's distinguishing part often is. Measured, because CSS can cut
-   * text only at an end; split by code point, never inside one.
+   * text only at an end; cut between graphemes, never inside one.
    *
    * Asked whenever a label is painted, and again when it changes size (the
    * window's width, or the reader's text size, which a label's height
@@ -379,7 +391,7 @@
     }
     count.hidden = true;
     if (name.scrollWidth <= room) return;
-    const chars = Array.from(full);
+    const chars = graphemes(full);
     const cut = (k) => `${chars.slice(0, Math.ceil(k / 2)).join('')}\u2026${
       chars.slice(chars.length - Math.floor(k / 2)).join('')}`;
     // The most characters that fit around the ellipsis, by halving.

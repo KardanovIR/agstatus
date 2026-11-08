@@ -328,10 +328,14 @@ describe('project sections', () => {
   // Where room runs short the count goes first, then the name is cut in the
   // middle, keeping both ends. jsdom lays nothing out, so this stands in for
   // the browser: a character of the name is 10px, of the count 6px, and the
-  // label's line is `room` px wide.
+  // label's line is `room` px wide. A character is what a browser draws as
+  // one: a grapheme, so an accent costs its letter nothing more and a family
+  // emoji is one glyph.
+  const segmenter = new Intl.Segmenter('und', { granularity: 'grapheme' });
+  const drawnLength = (text: string) => [...segmenter.segment(text)].length;
   function layOut(b: Board, room: number) {
     const width = (el: Element) => {
-      if (el.classList.contains('section-name')) return Array.from(el.textContent!).length * 10;
+      if (el.classList.contains('section-name')) return drawnLength(el.textContent!) * 10;
       if (el.classList.contains('section-count')) return (el as HTMLElement).hidden ? 0 : el.textContent!.length * 6;
       return 0;
     };
@@ -349,12 +353,21 @@ describe('project sections', () => {
     return [h.querySelector('.section-name')!.textContent, (h.querySelector('.section-count') as HTMLElement).hidden];
   };
   const LONG = 'agstatus-listener-windows-terminal-focus-and-presence';
+  const FAMILY = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}';   // seven code points, one glyph
 
   it.each([
     ['both, where both fit', 'acme-api', 200, ['acme-api', false]],
     ['the name alone, where only it fits', 'acme-api', 100, ['acme-api', true]],
     ['the name cut in the middle, where even it does not', LONG, 200, ['agstatus-l\u2026-presence', true]],
     ['whole characters, never half of one', '😀😀😀😀😀😀', 40, ['😀😀\u2026😀', true]],
+    // macOS file names often spell 'é' as 'e' and a combining accent. A cut
+    // by code point kept the 'e' and dropped its accent ("cafe…"), or began
+    // the tail with the accent, which then sat on the ellipsis.
+    ['an accent kept on its letter, ending the head', 'cafe\u0301-reservations-2026', 80, ['cafe\u0301\u2026026', true]],
+    ['an accent kept on its letter, starting the tail', 'reservations-at-the-cafe\u0301-terrasse', 210,
+      ['reservatio\u2026e\u0301-terrasse', true]],
+    // A cut by code point drew two of the family's four people.
+    ['a family emoji kept whole', `our-${FAMILY}-holiday-photos`, 120, [`our-${FAMILY}-\u2026hotos`, true]],
   ])('fits a label to its line: %s', async (_what, name, room, expected) => {
     vi.useFakeTimers();
     const b = await loadBoard();
@@ -377,6 +390,20 @@ describe('project sections', () => {
     expect(shown(b, 'acme-api')).toEqual(['acme-api', false]);      // 80 + 60 = 140
     for (const id of 'cdefghij') b.emit('session', at(id, 0, { homeProject: 'acme-api' }));
     expect(shown(b, 'acme-api')).toEqual(['acme-api', true]);       // "10 sessions": 80 + 66
+  });
+
+  // Where a browser cannot find graphemes the cut falls back to code points:
+  // there an accent can part from its letter, and a surrogate pair still
+  // cannot be halved.
+  it('cuts by code point where the browser has no Intl.Segmenter', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('Intl', Object.create(Intl, { Segmenter: { value: undefined } }));
+    const b = await loadBoard();
+    layOut(b, 80);
+    const names = ['cafe\u0301-reservations-2026', '😀😀😀😀😀😀😀😀😀😀'];
+    b.emit('snapshot', names.map((homeProject, i) => at(`s${i}`, i, { homeProject })));
+    expect(shown(b, names[0])).toEqual(['cafe\u2026026', true]);
+    expect(shown(b, names[1])).toEqual(['😀😀😀😀\u2026😀😀😀', true]);
   });
 
   it('escapes a folder name, which comes from the machine', async () => {
