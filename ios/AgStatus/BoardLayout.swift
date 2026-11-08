@@ -467,9 +467,9 @@ enum HeadForm: Equatable {
 /// Two across is drawn as two sides that each keep their cards, not as a grid
 /// filled in reading order. In a grid, dismissing one card slides every card
 /// after it one cell along — half of them across the screen to the other
-/// side. Here a card is given a side once, inside its own section, so a
-/// dismissal moves the cards beneath it up and never across: the same promise
-/// the rest of the board makes, that a card keeps its place.
+/// side. Here a card is given a side inside its own section and keeps it
+/// there, so a dismissal moves the cards beneath it up and never across: the
+/// same promise the rest of the board makes, that a card keeps its place.
 ///
 /// Kept by the board view for as long as it shows one board, and never
 /// persisted. Like the store's own ordering it belongs to this device.
@@ -479,47 +479,59 @@ struct CardSides: Equatable {
         case trailing
     }
 
-    private var assigned: [String: Side] = [:]
+    /// A card's side, and the section it was given that side in.
+    private struct Placement: Equatable {
+        let side: Side
+        let section: ProjectKey
+    }
+
+    private var assigned: [String: Placement] = [:]
 
     /// A card nobody has placed yet reads as leading. Nothing is ever drawn
     /// from that default — the board draws from `resolved(for:)`, which places
     /// every card present — but a lookup needs an answer.
-    subscript(id: String) -> Side { assigned[id] ?? .leading }
+    subscript(id: String) -> Side { assigned[id]?.side ?? .leading }
 
     /// The ledger with a side for every card on the board.
     ///
     /// Pure, so the view can draw from the answer in the same pass that it
     /// stores it, and no frame ever shows a card that has not been placed.
     ///
-    /// Each section is walked top to bottom, and a card with no side yet
-    /// takes the side holding fewer of that section's PRESENT cards, leading
-    /// on a tie. A first fill therefore alternates, and a later arrival lands
-    /// on the shorter side — which is what re-balances a section after
-    /// dismissals without moving anybody already there.
+    /// Each section is walked top to bottom, and a card with no side in it
+    /// yet takes the side holding fewer of that section's PRESENT cards,
+    /// leading on a tie. A first fill therefore alternates, and a later
+    /// arrival lands on the shorter side — which is what re-balances a section
+    /// after dismissals without moving anybody already there.
     ///
     /// Entries are kept when a card leaves. A dismiss that fails on the server
     /// puts the card back where it was in the list, and it has to come back on
-    /// the side it left as well. A card that moves to another section — once,
-    /// out of No project — keeps the side it was given there: given once.
+    /// the side it left as well.
+    ///
+    /// A card that moves to another section — once, out of No project, when
+    /// its first real folder arrives — has no side in its new section, and
+    /// takes one there by the same rule, as an arrival does. It is drawn in a
+    /// new place either way. Keeping the side it had in No project left the
+    /// trailing side of its new section holding a card with the leading side
+    /// empty, or two cards on one side over nothing on the other. The cards
+    /// that stay, in either section, keep theirs.
     func resolved(for sections: [ProjectSection]) -> CardSides {
         var next = self
         for section in sections {
             var leading = 0
             var trailing = 0
             for session in section.sessions {
-                switch assigned[session.id] {
+                guard let placed = assigned[session.id], placed.section == section.key else { continue }
+                switch placed.side {
                 case .leading: leading += 1
                 case .trailing: trailing += 1
-                case nil: break
                 }
             }
-            for session in section.sessions where assigned[session.id] == nil {
-                if trailing < leading {
-                    next.assigned[session.id] = .trailing
-                    trailing += 1
-                } else {
-                    next.assigned[session.id] = .leading
-                    leading += 1
+            for session in section.sessions where assigned[session.id]?.section != section.key {
+                let side: Side = trailing < leading ? .trailing : .leading
+                next.assigned[session.id] = Placement(side: side, section: section.key)
+                switch side {
+                case .leading: leading += 1
+                case .trailing: trailing += 1
                 }
             }
         }
@@ -1080,11 +1092,51 @@ extension BoardArrangement {
         let both = CardSides().resolved(for: ProjectSection.make(sessions: mixed))
         assert(both["x1"] == .leading && both["x2"] == .trailing && both["y1"] == .leading && both["y2"] == .trailing,
                "sides are counted per section")
-        // A card that moves section keeps the side it was given.
+        // A card that moves section — out of No project, when its first real
+        // folder arrives — is given a side again in its new section, by the
+        // same rule as an arrival; every card that stays keeps its own.
+        // Codex Desktop at / twice, beside one acme-api card: d1 leading and
+        // d2 trailing in No project.
+        let a1 = card("a1", home: "acme-api", project: "acme-api")
+        var d1 = card("d1", "codex", name: "Codex")
+        var d2 = card("d2", "codex", name: "Codex")
+        let start = CardSides().resolved(for: ProjectSection.make(sessions: [a1, d1, d2]))
+        assert(start["a1"] == .leading && start["d1"] == .leading && start["d2"] == .trailing, "before the move")
+        // d1's folder is acme-api, which holds one card on its leading side:
+        // d1 takes the trailing side, not a second card over the leading one.
+        d1.homeProject = "acme-api"
+        d1.project = "acme-api"
+        let intoAcme = start.resolved(for: ProjectSection.make(sessions: [a1, d1, d2]))
+        assert(intoAcme["a1"] == .leading && intoAcme["d1"] == .trailing, "into a section: the shorter side")
+        assert(intoAcme["d2"] == .trailing, "the card left behind stays where it was")
+        // d2's folder is web, a section of its own: its one card leads, not
+        // a card on the right with the left side empty.
+        d2.homeProject = "web"
+        d2.project = "web"
+        let intoWeb = intoAcme.resolved(for: ProjectSection.make(sessions: [a1, d1, d2]))
+        assert(intoWeb["d2"] == .leading && intoWeb["a1"] == .leading && intoWeb["d1"] == .trailing,
+               "into a new section: leading")
+        assert(intoWeb.resolved(for: ProjectSection.make(sessions: [a1, d1, d2])) == intoWeb, "settled after a move")
+        // Given once in its new section: a card that moves in after it, from
+        // above it in the store, does not take its side from it.
+        var d3 = card("d3", "codex", name: "Codex")
+        let joined = intoWeb.resolved(for: ProjectSection.make(sessions: [d3, a1, d1, d2]))
+        d3.homeProject = "acme-api"
+        d3.project = "acme-api"
+        let third = joined.resolved(for: ProjectSection.make(sessions: [d3, a1, d1, d2]))
+        assert(third["a1"] == .leading && third["d1"] == .trailing && third["d3"] == .leading,
+               "a later move-in takes the shorter side and moves nobody")
+        // And a moved card that leaves comes back to its new side.
+        let gone = third.resolved(for: ProjectSection.make(sessions: [d3, a1, d2]))
+        assert(gone.resolved(for: ProjectSection.make(sessions: [d3, a1, d1, d2]))["d1"] == .trailing,
+               "a moved card returns to the side it was given there")
+        // A move between two folders, which a server too old to pin one
+        // makes on a cd, follows the same rule.
         var moving = mixed
         moving[1].homeProject = "api"
         let moved = both.resolved(for: ProjectSection.make(sessions: moving))
-        assert(moving.allSatisfy { moved[$0.id] == both[$0.id] }, "given once")
+        assert(moved["x1"] == .leading && moved["x2"] == .trailing && moved["y2"] == .trailing, "the others stay")
+        assert(moved["y1"] == .leading, "y1 takes api's shorter side, leading on a tie")
 
         // Reading order: sections in order; in the list, top to bottom; two
         // across, row by row with the leading side first. With s2 gone the

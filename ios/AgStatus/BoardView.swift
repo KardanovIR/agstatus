@@ -199,9 +199,13 @@ struct BoardView: View {
             .onChange(of: store.connection) { old, new in announceConnection(from: old, to: new) }
             // The body draws from `sides.resolved(for:)`, and this stores the
             // same answer — so the first frame a card appears in already has
-            // it on its side, and every later frame finds it there.
-            .onChange(of: store.sessions.map(\.id), initial: true) {
-                sides = sides.resolved(for: sections)
+            // it on its side, and every later frame finds it there. Keyed on
+            // the answer itself, which changes when a card arrives and when
+            // one changes section, and at no other time: a card that has
+            // just moved out of No project is held to the side it was given
+            // in its new section, whichever cards move in after it.
+            .onChange(of: sides.resolved(for: sections), initial: true) { _, resolved in
+                sides = resolved
             }
             // A card that loses its subagents, or leaves the board, is folded:
             // its next subagents start a list of their own.
