@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -16,8 +16,10 @@ import {
   sql,
 } from './helpers';
 import {
+  DROPPED_HOME_TTL_MS,
   homeProjectFor,
   LEGACY_WS,
+  MAX_DROPPED_HOMES_PER_WORKSPACE,
   MAX_SESSIONS_PER_WORKSPACE,
   normalizeProject,
   Store,
@@ -29,7 +31,8 @@ import {
 // folder the server heard for it ('' and bare UUIDs are not usable), held for
 // the session's life, worked out here and never taken from a post. The boards
 // key their sections by it, so a card whose agent runs `cd web` keeps its
-// place in its section, and only its line says "in web".
+// place in its section, and only its line says "in web". A card the board
+// drops on request keeps its home for its return.
 
 type Json = Record<string, any>;
 
@@ -38,6 +41,8 @@ const UUID = '0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b';
 
 /** 1.6.5's keys in 1.6.5's order, then the one this adds. */
 const KEYS = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'createdAt', 'updatedAt', 'homeProject'];
+
+const HOUR = 60 * 60 * 1000;
 
 /** A fresh in-memory board, posting the way the hook does. */
 async function board() {
@@ -55,6 +60,11 @@ async function board() {
 async function evictOldest(post: (id: string, extra?: Json) => Promise<unknown>): Promise<void> {
   for (let i = 0; i < MAX_SESSIONS_PER_WORKSPACE; i += 1) await post(`filler-${i}`, { project: 'other' });
 }
+
+/** The store's own memory of dropped cards' homes, which nothing serves as such. */
+const droppedHomes = (store: Store) =>
+  (store as unknown as { droppedHomes: Map<string, Map<string, { homeProject: string; lastPostAt: number }>> })
+    .droppedHomes;
 
 describe('homeProject: which folders count', () => {
   it('turns "" and a bare UUID into "", and keeps every other name exactly as sent', () => {
@@ -102,6 +112,10 @@ describe('homeProject: which folders count', () => {
 });
 
 describe('homeProject on a board without a database', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('is pinned by the first post, and a later cd does not move it', async () => {
     const b = await board();
     expect(await b.post('s', { project: 'acme-api' })).toMatchObject({ project: 'acme-api', homeProject: 'acme-api' });
@@ -158,19 +172,162 @@ describe('homeProject on a board without a database', () => {
     expect(await b.post('t', { homeProject: 'evil' })).toMatchObject({ project: '', homeProject: '' });
   });
 
-  it('starts over when the board dropped the card: evicted, or dismissed, then posting again', async () => {
+  it('keeps the home when the board dropped the card on request: evicted, dismissed or cleared, then posting again', async () => {
     const b = await board();
-    await b.post('s', { project: 'acme-api' });
-    await b.post('s', { project: 'web' });
+    // As the hook posts: the name it pinned at the first event, every time.
+    const as = (project: string): Json => ({ name: 'acme-api', project });
+    await b.post('s', as('acme-api'));
+    await b.post('s', as('web'));
     await evictOldest(b.post);
     expect(await b.card('s')).toBeUndefined();
-    // The card the next post makes is new to the board, as its createdAt and
-    // its timeline are, so its home is the folder it names now.
-    expect(await b.post('s', { project: 'web' })).toMatchObject({ project: 'web', homeProject: 'web' });
+    // Back in acme-api, saying where it is now, rather than filed under web.
+    expect(await b.post('s', as('web'))).toMatchObject({ name: 'acme-api', project: 'web', homeProject: 'acme-api' });
+    // Otherwise the card is new to the board, as its timeline shows.
     expect((await request(b.app).get(`/w/${b.token}/api/sessions/s/history`).expect(200)).body).toHaveLength(1);
 
+    // A viewer's swipe and the hook's SessionEnd are both this DELETE.
     await request(b.app).delete(`/w/${b.token}/sessions/s`).expect(200);
-    expect(await b.post('s', { project: 'docs' })).toMatchObject({ project: 'docs', homeProject: 'docs' });
+    expect(await b.post('s', as('docs'))).toMatchObject({ project: 'docs', homeProject: 'acme-api' });
+    // A clear drops every card at once, and each keeps its home the same way.
+    await request(b.app).post(`/w/${b.token}/sessions/clear`).expect(200);
+    expect(await b.list()).toEqual([]);
+    expect(await b.post('s', as('web'))).toMatchObject({ homeProject: 'acme-api' });
+    expect(await b.post('filler-9', { project: 'docs' })).toMatchObject({ homeProject: 'other' });
+    // A subagent's post, which names no folder, brings the card back home too.
+    await request(b.app).delete(`/w/${b.token}/sessions/s`).expect(200);
+    expect(await b.post('s', { agent: { id: 'a1b2c3d4e5f6a7b8c9d0e1f2', state: 'coding', at: Date.now() } }))
+      .toMatchObject({ project: '', homeProject: 'acme-api' });
+    // Back on the board the card holds its home itself, and a cd still does not move it.
+    expect(await b.post('s', as('web'))).toMatchObject({ project: 'web', homeProject: 'acme-api' });
+
+    // A card with no home yet has none to keep: its first real folder claims it.
+    await b.post('raw', { project: '' });
+    await request(b.app).delete(`/w/${b.token}/sessions/raw`).expect(200);
+    expect(await b.post('raw', { project: 'ops' })).toMatchObject({ homeProject: 'ops' });
+
+    // A legacy board's DELETE, which needs no secret, keeps it as well.
+    const legacy = makeApp({ multiTenant: false });
+    const legacyPost = async (project: string): Promise<Json> =>
+      (await request(legacy.app).post('/webhook').send(webhookBody('s', as(project))).expect(200)).body.session;
+    await legacyPost('acme-api');
+    await legacyPost('web');
+    await request(legacy.app).delete('/sessions/s').expect(200);
+    expect(await legacyPost('web')).toMatchObject({ project: 'web', homeProject: 'acme-api' });
+  });
+
+  it("starts over when the TTL expired the card, as the hook's name pin does", async () => {
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const store = new Store('');
+    await store.ready;
+    const up = (project: string) =>
+      store.upsertSession(LEGACY_WS, { id: 's', status: 'coding', name: 'acme-api', project }, Infinity).session!;
+    up('acme-api');
+    expect(up('web')).toMatchObject({ project: 'web', homeProject: 'acme-api' });
+    // A self-hosted board's hour-long TTL, well inside the day a dismissal
+    // would be remembered for: an expiry is never remembered at all.
+    clock += HOUR + 1;
+    expect(store.sweepExpiredSessions(HOUR)).toEqual([{ wsId: LEGACY_WS, id: 's' }]);
+    expect(up('web')).toMatchObject({ project: 'web', homeProject: 'web' });
+    await store.close();
+  });
+
+  it("remembers a dropped card's home for 24 hours after its session's last post, however late the drop", async () => {
+    const start = Date.now();
+    let clock = start;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const store = new Store('');
+    await store.ready;
+    const up = (id: string, project: string) =>
+      store.upsertSession(LEGACY_WS, { id, status: 'coding', project }, Infinity).session!;
+    for (const id of ['early', 'late', 'quiet']) {
+      up(id, 'acme-api');
+      up(id, 'web');
+    }
+    // Dismissed an hour after their last posts, and 23 hours after.
+    clock = start + HOUR;
+    store.deleteSession(LEGACY_WS, 'early');
+    store.deleteSession(LEGACY_WS, 'quiet');
+    clock = start + 23 * HOUR;
+    store.deleteSession(LEGACY_WS, 'late');
+    // A millisecond inside the day, the session is filed where it was.
+    clock = start + DROPPED_HOME_TTL_MS - 1;
+    expect(DROPPED_HOME_TTL_MS).toBe(24 * HOUR);
+    expect(up('early', 'web')).toMatchObject({ homeProject: 'acme-api' });
+    // At 24 hours the day is over for both, the late drop's included: it was
+    // the session's last post the window ran from, as the hook's pin does.
+    clock = start + DROPPED_HOME_TTL_MS;
+    expect(up('late', 'web')).toMatchObject({ homeProject: 'web' });
+    expect(up('quiet', 'web')).toMatchObject({ homeProject: 'web' });
+    await store.close();
+  });
+
+  it('lets an aged home go from memory with the next drop, and never keeps one for a card already past the day', async () => {
+    const start = Date.now();
+    let clock = start;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const store = new Store('');
+    await store.ready;
+    const up = (id: string, project: string) => store.upsertSession(LEGACY_WS, { id, status: 'coding', project }, Infinity);
+    for (const id of ['a', 'b', 'c']) {
+      up(id, `home-${id}`);
+      store.deleteSession(LEGACY_WS, id);
+    }
+    expect([...droppedHomes(store).get(LEGACY_WS)!.keys()]).toEqual(['a', 'b', 'c']);
+    // A card whose last post is a day old when it goes has nothing to keep.
+    up('stale', 'home-stale');
+    clock = start + DROPPED_HOME_TTL_MS;
+    store.deleteSession(LEGACY_WS, 'stale');
+    up('fresh', 'home-fresh');
+    store.deleteSession(LEGACY_WS, 'fresh');
+    expect([...droppedHomes(store).get(LEGACY_WS)!.entries()])
+      .toEqual([['fresh', { homeProject: 'home-fresh', lastPostAt: start + DROPPED_HOME_TTL_MS }]]);
+    // A card that comes back takes its entry with it.
+    up('fresh', 'web');
+    expect(droppedHomes(store).has(LEGACY_WS)).toBe(false);
+    await store.close();
+  });
+
+  it(`remembers at most ${MAX_DROPPED_HOMES_PER_WORKSPACE} dropped cards a board, letting the earliest drop go first`, async () => {
+    const store = new Store('');
+    await store.ready;
+    const up = (id: string, project: string) =>
+      store.upsertSession(LEGACY_WS, { id, status: 'coding', project }, Infinity).session!;
+    const drop = (id: string, project: string) => {
+      up(id, project);
+      store.deleteSession(LEGACY_WS, id);
+    };
+    for (let i = 0; i < MAX_DROPPED_HOMES_PER_WORKSPACE; i += 1) drop(`s${i}`, `home-${i}`);
+    expect(droppedHomes(store).get(LEGACY_WS)!.size).toBe(MAX_DROPPED_HOMES_PER_WORKSPACE);
+    // s0 comes back and is dropped again: now the latest drop, not the earliest.
+    expect(up('s0', 'elsewhere')).toMatchObject({ homeProject: 'home-0' });
+    store.deleteSession(LEGACY_WS, 's0');
+    // One more drop than the cap holds: the earliest, s1, makes room for it.
+    drop('x', 'home-x');
+    expect(droppedHomes(store).get(LEGACY_WS)!.size).toBe(MAX_DROPPED_HOMES_PER_WORKSPACE);
+    expect(up('s1', 'elsewhere')).toMatchObject({ homeProject: 'elsewhere' });
+    expect(up('s0', 'elsewhere')).toMatchObject({ homeProject: 'home-0' });
+    expect(up('s2', 'elsewhere')).toMatchObject({ homeProject: 'home-2' });
+    expect(up('x', 'elsewhere')).toMatchObject({ homeProject: 'home-x' });
+    await store.close();
+  });
+
+  it("is each board's own, and goes with the board", async () => {
+    const store = new Store('');
+    await store.ready;
+    const a = store.resolveToken(store.createWorkspace().token)!;
+    const b = store.resolveToken(store.createWorkspace().token)!;
+    const up = (ws: string, project: string) =>
+      store.upsertSession(ws, { id: 's', status: 'coding', project }, MAX_SESSIONS_PER_WORKSPACE).session!;
+    up(a, 'acme-api');
+    store.deleteSession(a, 's');
+    // The same session id on another board is that board's own session.
+    expect(up(b, 'web')).toMatchObject({ homeProject: 'web' });
+    expect(droppedHomes(store).get(a)?.get('s')).toMatchObject({ homeProject: 'acme-api' });
+    // Deleting a board forgets its dropped cards with everything else it held.
+    store.deleteWorkspace(a);
+    expect(droppedHomes(store).has(a)).toBe(false);
+    await store.close();
   });
 
   it('goes out on every read: REST after updatedAt, the snapshot, a session frame, and a legacy board', async () => {
@@ -347,7 +504,7 @@ describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
     }
   });
 
-  it('keeps the home on an evicted row, flagged, and a re-post starts over on the same row', async () => {
+  it('keeps the home on an evicted row, flagged, and a re-post files the session there again, on the same row', async () => {
     const t = makeApp({ databaseUrl: dbUrl });
     await t.ready;
     try {
@@ -361,12 +518,38 @@ describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
       expect(evicted).toMatchObject({ project: 'web', home_project: 'acme-api' });
       expect(evicted.deleted_at).not.toBeNull();
 
-      expect(await post(t.app, token, 's', { project: 'web' })).toMatchObject({ homeProject: 'web' });
+      expect(await post(t.app, token, 's', { project: 'web' })).toMatchObject({ homeProject: 'acme-api' });
       await t.store.flush();
-      expect(await rows(`WHERE id = 's'`)).toEqual([{ id: 's', project: 'web', home_project: 'web', deleted_at: null }]);
+      expect(await rows(`WHERE id = 's'`)).toEqual([{ id: 's', project: 'web', home_project: 'acme-api', deleted_at: null }]);
     } finally {
       await t.shutdown();
     }
+  });
+
+  it("forgets a dismissed card's home across a restart, so its next post starts over: the memory of it is not stored", async () => {
+    const first = makeApp({ databaseUrl: dbUrl });
+    await first.ready;
+    const token = await createWorkspace(first.app);
+    await post(first.app, token, 's', { project: 'acme-api' });
+    await post(first.app, token, 's', { project: 'web' });
+    await request(first.app).delete(`/w/${token}/sessions/s`).expect(200);
+    await first.store.flush();
+    await first.shutdown();
+    const [dismissed] = await rows(`WHERE id = 's'`);
+    expect(dismissed).toMatchObject({ project: 'web', home_project: 'acme-api' });
+    expect(dismissed.deleted_at).not.toBeNull();
+
+    const second = makeApp({ databaseUrl: dbUrl });
+    await second.ready;
+    try {
+      // The accepted cost (docs/api.md): the folder it is in now, as for a
+      // card the TTL expired. The flagged row is revived, never a second one.
+      expect(await post(second.app, token, 's', { project: 'web' })).toMatchObject({ homeProject: 'web' });
+      await second.store.flush();
+    } finally {
+      await second.shutdown();
+    }
+    expect(await rows(`WHERE id = 's'`)).toEqual([{ id: 's', project: 'web', home_project: 'web', deleted_at: null }]);
   });
 });
 

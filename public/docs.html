@@ -2425,9 +2425,17 @@ it; a post without a <code>project</code> changes nothing. The key is always pre
 and it is never read from a webhook body: a <code>homeProject</code> posted there is
 ignored. It is stored with the session, so it survives a restart of a
 server with <a href="#self-hosting-persistence-postgresql">Postgres</a>; a server
-without a database forgets it with the card. A session the board dropped
-(dismissed, evicted, expired) starts over if it posts again, as its
-<code>createdAt</code> does. Since 1.7.0.</p>
+without a database forgets it with the card. Since 1.7.0.</p>
+<p>A card the board drops on request (dismissed with a <code>DELETE</code> of the
+session, which the bundled hooks also send at <code>SessionEnd</code>; cleared with
+<code>sessions/clear</code>; or evicted by the 50-card cap) keeps its <code>homeProject</code>
+for its session&#39;s return: if the session posts again within 24 hours of
+its last post, its new card is filed where the old one was, whatever folder
+it is in by then. That memory is held in the server process alone, so a
+restart in between forgets it, and the session&#39;s next post then starts over
+from the folder it names. A card the session TTL expired
+(<code>SESSION_TTL_MS</code>, 24 hours without an update on a hosted board) starts
+over too, as the hook&#39;s pinned card name does.</p>
 <p>The boards key their project sections by it: <code>homeProject</code> when it is
 non-empty; otherwise <code>project</code>, when that is non-empty and not a UUID, which
 covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
@@ -3694,6 +3702,11 @@ shuts down gets <code>503</code>.</p>
 <td>Session TTL</td>
 <td>24 h (<code>SESSION_TTL_MS</code>)</td>
 <td>Expired sessions are swept and <code>remove</code> events broadcast.</td>
+</tr>
+<tr>
+<td>Dropped cards&#39; homes per workspace</td>
+<td>500, each for 24 h after its session&#39;s last post</td>
+<td>The earliest drop is forgotten first. Held in memory only, so a restart forgets them all (see <a href="#api-the-session-object"><code>homeProject</code></a>).</td>
 </tr>
 <tr>
 <td>Idle workspaces</td>

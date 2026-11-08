@@ -148,9 +148,10 @@ export interface Session {
   /**
    * The project the boards group this session under: the first usable
    * `project` it reported (homeProjectFor), held for the session's life so a
-   * `cd` never moves its card, and '' until a usable one arrives. Worked out
-   * here and never taken from a post: a webhook body is read field by field,
-   * and this is not one of its fields.
+   * `cd` never moves its card, and '' until a usable one arrives. A card the
+   * board drops on request keeps it for the session's return as well
+   * (DROPPED_HOME_TTL_MS). Worked out here and never taken from a post: a
+   * webhook body is read field by field, and this is not one of its fields.
    */
   homeProject: string;
   /** Agent kind that owns the session ("claude", "codex", …). */
@@ -342,6 +343,60 @@ const MAX_SESSION_TOTALS_PER_WORKSPACE = 500;
  * totals age out.
  */
 const MAX_SESSION_TOTALS_WITH_LIVE_CARDS = MAX_SESSION_TOTALS_PER_WORKSPACE + MAX_SESSIONS_PER_WORKSPACE;
+
+/**
+ * How long the board remembers the homeProject of a card it dropped on
+ * request, counted from that session's last post. On request means dismissed
+ * (DELETE /sessions/:id, which a viewer's swipe and the hook's SessionEnd
+ * both send), cleared (POST /sessions/clear), or evicted by
+ * MAX_SESSIONS_PER_WORKSPACE. A session that posts again inside the window
+ * goes back under the home it had, not the folder it is in now: a card the
+ * board dropped has no `prev`, and without this a session that had run
+ * `cd web` came back filed under web, so the cd moved its card after all.
+ *
+ * 24 hours is the hook's SESSION_NAME_MAX_AGE_MS. For that long after a
+ * session's last event the hook re-sends the name it pinned, so the session
+ * comes back under its old name and, with this, in its old section. It is
+ * also the hosted board's default SESSION_TTL_MS: a dropped card's home is
+ * kept exactly as long as the card would have stayed on the board, and never
+ * past the privacy policy's 24 hours after a session's last update. A card
+ * the TTL expires is not remembered at all, because its name pin ages out
+ * with it and the two start over together. SessionEnd is the one drop after
+ * which the hook forgets its pin at once: a session resumed under the same
+ * id keeps its section and is named afresh.
+ *
+ * In memory only, like the cards of a server without a database: a restart
+ * forgets every entry, and a session dropped before the restart starts over
+ * when it next posts (docs/api.md, "The session object").
+ */
+export const DROPPED_HOME_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Dropped cards whose home a workspace remembers at once (DROPPED_HOME_TTL_MS).
+ *
+ * Sized against the owner's machine rather than a guess: the agents' own
+ * session logs there, read in November 2026, start at most 59 sessions in a
+ * day over five months (55 of them Codex). A session holds one entry, and
+ * only for a day after its last post, so an honest board needs about one busy
+ * day's worth; 500 is eight such days, room for a small team on one board.
+ *
+ * The bound is for a token holder posting fresh ids, each a card that a
+ * DELETE or the card cap turns into an entry: 120 a minute on the webhook
+ * budget. Unlike the caps above, this one evicts rather than refuses, oldest
+ * drop first. Nothing in this map is ever written, so evicting bounds it
+ * completely, and what a flood pushes out are its own board's entries. At the
+ * bounds (a 128-character id, a 120-character name in three-byte characters)
+ * an entry is about 490 bytes of V8 heap, so a workspace holds at most about
+ * 240 KB of them; a UUID and a short folder name are about 140 bytes.
+ */
+export const MAX_DROPPED_HOMES_PER_WORKSPACE = 500;
+
+/** A dropped card's home, kept for its session's return (DROPPED_HOME_TTL_MS). */
+interface DroppedHome {
+  homeProject: string;
+  /** The session's updatedAt when it was dropped: the clock the window runs on. */
+  lastPostAt: number;
+}
 
 /**
  * Distinct (source, project, day) rows held per workspace.
@@ -596,7 +651,8 @@ const HISTORY_READS_PER_MINUTE = 30;
  * project days alone are ~1.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE), and
  * subtask state up to ~0.7 MB more for a pathological 50-card board: 256 live
  * rows across the board (MAX_LIVE_ROWS_PER_WORKSPACE in subtasks.ts), plus 8
- * failed rows and 64 tombs per card, at about 500 and 120 bytes each in V8 —
+ * failed rows and 64 tombs per card, at about 500 and 120 bytes each in V8,
+ * and up to ~240 KB of dropped cards' homes (MAX_DROPPED_HOMES_PER_WORKSPACE) —
  * and a create-then-delete loop leaves a flagged workspaces row per turn
  * without ever nearing MAX_WORKSPACES. At 200 an hour, filling 10,000 takes
  * at least 50 hours from empty, however many addresses do it, and that loop
@@ -687,6 +743,11 @@ export class Store {
   // apart from `sessions` on purpose: the rows arrive on their own endpoint,
   // outlive the cards they describe, and exist for ids that never had a card.
   private sessionTotals = new Map<string, Map<string, SessionTotal>>();
+  // Where each card the board dropped on request was filed, wsId → session id
+  // → its home, so the session's next post files it there again; kept in drop
+  // order, oldest first. Like sessionTotals it outlives the card it is for,
+  // and it is for the card's return. Nothing here is persisted.
+  private droppedHomes = new Map<string, Map<string, DroppedHome>>();
   // The next session_events seq, wsId → one counter for every session of that
   // board. Not one per session: the counter this replaced was a Map entry per
   // session id ever seen, which nothing could ever remove — forgetting one
@@ -1324,6 +1385,7 @@ export class Store {
     this.usagePoints.delete(wsId);
     this.projectDays.delete(wsId);
     this.sessionTotals.delete(wsId);
+    this.droppedHomes.delete(wsId);
     this.commands.delete(wsId);
     this.commandWindows.delete(wsId);
     this.listenerWindows.delete(wsId);
@@ -1449,10 +1511,11 @@ export class Store {
       message,
       project,
       // On every post alike, a subagent's included (the hook sends it no
-      // project, so it carries the parent's). A card the board dropped —
-      // dismissed, evicted, expired — has no prev, so it starts over, as its
-      // createdAt does.
-      homeProject: homeProjectFor(prev?.homeProject ?? '', project),
+      // project, so it carries the parent's). A card the board dropped on
+      // request (dismissed, cleared, evicted) has no prev, and takes the home
+      // remembered for it; one the TTL expired, or dropped before a restart,
+      // has none remembered and starts over (DROPPED_HOME_TTL_MS).
+      homeProject: homeProjectFor(prev ? prev.homeProject : this.droppedHome(wsId, input.id, now), project),
       source: input.source ?? prev?.source ?? 'claude',
       // Always a key (null, never undefined) so the wire shape is stable.
       host: input.host !== undefined ? input.host : prev?.host ?? null,
@@ -1480,11 +1543,14 @@ export class Store {
         );
         this.dropEvents(wsId, oldest.id);
         this.cancelCommands(wsId, oldest.id);
+        this.rememberHome(wsId, oldest, now);
         evictedId = oldest.id;
       }
     }
 
     map.set(session.id, session);
+    // Back on the board, the card holds its home itself again.
+    if (!prev) this.forgetDroppedHome(wsId, session.id);
     // Timeline: record real transitions, not keep-alive re-posts of the same
     // status+message (PreToolUse fires between every tool call). A card with
     // subtask state, before this post or after it, compares by historyKey,
@@ -2152,32 +2218,84 @@ export class Store {
   }
 
   deleteSession(wsId: string, id: string): boolean {
+    const session = this.sessions.get(wsId)?.get(id);
     const removed = this.sessions.get(wsId)?.delete(id) ?? false;
     if (removed) {
+      const now = Date.now();
       // Flagged, not erased. `host` stays on the row like every other column:
       // dismissing a card hides it, and hiding is not destroying.
       this.exec(
         'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
-        [wsId, id, Date.now()]
+        [wsId, id, now]
       );
       this.dropEvents(wsId, id);
       this.cancelCommands(wsId, id);
+      if (session) this.rememberHome(wsId, session, now);
     }
     return removed;
   }
 
   clearSessions(wsId: string): void {
     const map = this.sessions.get(wsId);
+    const now = Date.now();
     if (map) {
-      for (const id of map.keys()) this.dropEvents(wsId, id);
+      for (const s of map.values()) {
+        this.dropEvents(wsId, s.id);
+        this.rememberHome(wsId, s, now);
+      }
       map.clear();
     }
     this.cancelCommands(wsId, null);
     // Flagged, not erased — `host` survives a clear like every other column.
     this.exec(
       'UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL',
-      [wsId, Date.now()]
+      [wsId, now]
     );
+  }
+
+  /**
+   * Remembers where a card the board is dropping on request was filed, for
+   * its session's next post (DROPPED_HOME_TTL_MS): a dismissal, a clear, or
+   * the card cap's eviction, never the TTL sweep. Nothing to remember for a
+   * card with no home yet, or one whose last post is already past the window.
+   */
+  private rememberHome(wsId: string, session: Session, now: number): void {
+    if (!session.homeProject || now - session.updatedAt >= DROPPED_HOME_TTL_MS) return;
+    let ws = this.droppedHomes.get(wsId);
+    if (!ws) {
+      ws = new Map();
+      this.droppedHomes.set(wsId, ws);
+    }
+    // Aged out on the way in, so the cap below only ever counts live entries.
+    // Every entry, not just the front: the window runs from each session's
+    // last post, which is not the order cards are dropped in.
+    for (const [id, home] of ws) {
+      if (now - home.lastPostAt >= DROPPED_HOME_TTL_MS) ws.delete(id);
+    }
+    // Re-set rather than updated, so a card dropped again moves to the end:
+    // insertion order is drop order, and the cap drops from the front.
+    ws.delete(session.id);
+    ws.set(session.id, { homeProject: session.homeProject, lastPostAt: session.updatedAt });
+    if (ws.size > MAX_DROPPED_HOMES_PER_WORKSPACE) {
+      const oldest = ws.keys().next();
+      if (!oldest.done) ws.delete(oldest.value);
+    }
+  }
+
+  /**
+   * The home remembered for a dropped card, or '' when there is none. Checked
+   * against the window on read as well, so an entry that aged out while
+   * nothing was dropped is never used.
+   */
+  private droppedHome(wsId: string, id: string, now: number): string {
+    const home = this.droppedHomes.get(wsId)?.get(id);
+    return home && now - home.lastPostAt < DROPPED_HOME_TTL_MS ? home.homeProject : '';
+  }
+
+  /** Forgets a dropped card's home once the card is back: it holds its home itself again. */
+  private forgetDroppedHome(wsId: string, id: string): void {
+    const ws = this.droppedHomes.get(wsId);
+    if (ws?.delete(id) && ws.size === 0) this.droppedHomes.delete(wsId);
   }
 
   /** Fixed-window webhook rate limit per workspace. */
@@ -2463,7 +2581,12 @@ export class Store {
     return this.takeFinishedCommands();
   }
 
-  /** Removes sessions not updated within ttlMs. Returns what was removed, for broadcasting. */
+  /**
+   * Removes sessions not updated within ttlMs. Returns what was removed, for
+   * broadcasting. Unlike a dismissal it remembers no home (rememberHome): the
+   * hook's name pin ages out with the card, so a session that posts again
+   * after this starts over, name and section alike (DROPPED_HOME_TTL_MS).
+   */
   sweepExpiredSessions(ttlMs: number): Array<{ wsId: string; id: string }> {
     const cutoff = Date.now() - ttlMs;
     const removed: Array<{ wsId: string; id: string }> = [];

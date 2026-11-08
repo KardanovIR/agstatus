@@ -55,9 +55,18 @@ it; a post without a `project` changes nothing. The key is always present,
 and it is never read from a webhook body: a `homeProject` posted there is
 ignored. It is stored with the session, so it survives a restart of a
 server with [Postgres](self-hosting.md#persistence-postgresql); a server
-without a database forgets it with the card. A session the board dropped
-(dismissed, evicted, expired) starts over if it posts again, as its
-`createdAt` does. Since 1.7.0.
+without a database forgets it with the card. Since 1.7.0.
+
+A card the board drops on request (dismissed with a `DELETE` of the
+session, which the bundled hooks also send at `SessionEnd`; cleared with
+`sessions/clear`; or evicted by the 50-card cap) keeps its `homeProject`
+for its session's return: if the session posts again within 24 hours of
+its last post, its new card is filed where the old one was, whatever folder
+it is in by then. That memory is held in the server process alone, so a
+restart in between forgets it, and the session's next post then starts over
+from the folder it names. A card the session TTL expired
+(`SESSION_TTL_MS`, 24 hours without an update on a hosted board) starts
+over too, as the hook's pinned card name does.
 
 The boards key their project sections by it: `homeProject` when it is
 non-empty; otherwise `project`, when that is non-empty and not a UUID, which
@@ -913,6 +922,7 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Workspace creations, server-wide | 200 in any 60 minutes (`MAX_NEW_WORKSPACES_PER_HOUR`) | `503` with `Retry-After` (seconds until the oldest of them is an hour old). Counts created boards only, deleted ones included; with Postgres it carries across a restart. Refusals spend none of the per-IP 20. |
 | Pair-code claims | 10/min/IP | `429`. |
 | Session TTL | 24 h (`SESSION_TTL_MS`) | Expired sessions are swept and `remove` events broadcast. |
+| Dropped cards' homes per workspace | 500, each for 24 h after its session's last post | The earliest drop is forgotten first. Held in memory only, so a restart forgets them all (see [`homeProject`](#the-session-object)). |
 | Idle workspaces | 60 days | Deleted by a periodic sweep (every 6 hours). |
 | Live workspaces | `MAX_WORKSPACES` (default 10000) | Creation returns `503`, with no `Retry-After`. |
 | Rows per project-day report | 200 | `400`; the hook sends several reports. |
