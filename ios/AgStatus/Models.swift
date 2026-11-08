@@ -42,10 +42,11 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     /// project its card is grouped under (`ProjectKey`).
     ///
     /// The server derives it and never takes it from a post: the session's
-    /// earlier value if it had one, else its `project`, with `''` and a
-    /// UUID-shaped name (a GUI app started at `/`, a Codex scratch folder)
-    /// read as no folder at all. Once it is a folder it stays that folder for
-    /// the session's life, so a `cd` never moves a card to another section.
+    /// earlier value if it had one, else its `project`, with anything that
+    /// cannot name a folder (`Session.isFolderName`: `''`, `/` from a session
+    /// started at `/`, a Codex scratch folder's UUID) read as no folder at
+    /// all. Once it is a folder it stays that folder for the session's life,
+    /// so a `cd` never moves a card to another section.
     ///
     /// `''` when the server sent none, which is also what a server too old to
     /// send the field looks like: the board then groups by the live folder,
@@ -176,31 +177,45 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
 
 extension Session {
 
-    /// Whether `name` is a folder somebody chose, rather than no folder at
-    /// all: not empty, and not shaped like a UUID.
+    /// Whether `name` can name a folder — a section, or the place a card says
+    /// it has moved to — rather than being no folder at all. The rule every
+    /// client and the server share: with the whitespace at either end left
+    /// out, it is not empty, not `/` and not `.`, and not shaped like a UUID.
     ///
-    /// The hook's own rule (UUID_NAME_RE in cli/assets/agstatus-hook.js), and
-    /// the server's when it pins `homeProject`. A GUI app started at `/`
-    /// reports `''`, and Codex writes scratch workspaces under
+    /// A GUI app started at `/` reports `''`, and the shipped legacy shell
+    /// hook reports `/` itself. Codex writes scratch workspaces under
     /// `.codex/visualizations/<date>/<uuid>`, whose basename is a UUID nobody
-    /// picked: neither is a project, and neither is a place to say a session
-    /// has moved to. Eight, four, four, four and twelve hex digits, either
-    /// case, joined by hyphens, and nothing else.
+    /// picked (the hook's UUID_NAME_RE, cli/assets/agstatus-hook.js: eight,
+    /// four, four, four and twelve hex digits, either case, joined by
+    /// hyphens, and nothing else). None of them is a project, and none is a
+    /// place to say a session has moved to.
+    ///
+    /// Only the test leaves the whitespace out. A name that passes is used
+    /// exactly as it was sent, so " web " is a section of its own, apart
+    /// from "web". Whitespace is Unicode's White_Space property, checked
+    /// scalar by scalar, with nothing copied: this runs for every card on
+    /// every pass.
     static func isFolderName(_ name: String) -> Bool {
-        guard !name.isEmpty else { return false }
-        let utf8 = name.utf8
-        guard utf8.count == 36 else { return true }
+        let scalars = name.unicodeScalars
+        guard let first = scalars.firstIndex(where: { !$0.properties.isWhitespace }),
+              let last = scalars.lastIndex(where: { !$0.properties.isWhitespace }) else { return false }
+        let trimmed = Substring(scalars[first...last])
+        return trimmed != "/" && trimmed != "." && !isUUIDShaped(trimmed.utf8)
+    }
+
+    private static func isUUIDShaped(_ utf8: Substring.UTF8View) -> Bool {
+        guard utf8.count == 36 else { return false }
         for (index, byte) in utf8.enumerated() {
             if index == 8 || index == 13 || index == 18 || index == 23 {
-                if byte != UInt8(ascii: "-") { return true }
+                if byte != UInt8(ascii: "-") { return false }
             } else {
                 let hex = (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
                     || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
                     || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "F"))
-                if !hex { return true }
+                if !hex { return false }
             }
         }
-        return false
+        return true
     }
 
     /// This session's spend, formatted for a glance — "48.2K", "1.4M" — or nil

@@ -34,9 +34,10 @@ enum ProjectKey: Hashable {
     /// The section key of the wire contract (docs/design/project-sections.md):
     /// the folder the server pinned for the session's life (`homeProject`);
     /// else, from a server too old to pin one, the live folder; else no
-    /// project. Neither `''` nor a UUID-shaped name is a folder, wherever it
-    /// comes from (`Session.isFolderName`): a 1.7 server never pins either,
-    /// and a pinned value that somehow is one is read as no pin at all.
+    /// project. Only a name that can name a folder counts, wherever it comes
+    /// from (`Session.isFolderName`: not `''`, `/`, `.`, blank or a UUID): a
+    /// 1.7 server never pins one that cannot, and a pinned value that somehow
+    /// is one is read as no pin at all. The name is kept exactly as sent.
     ///
     /// So a card moves between sections at most once, out of No project when
     /// its first real folder arrives. On an older server it follows the live
@@ -877,8 +878,9 @@ extension BoardArrangement {
     /// Which section a card is under, the order sections come in, and the
     /// place a card says it has moved to.
     private static func verifySectionKeys() {
-        // What is a folder: the hook's UUID pattern, either case, and nothing
-        // else that merely looks close.
+        // What can name a folder: anything but an empty name, / and ., and
+        // the hook's UUID pattern in either case (not what merely looks close
+        // to one), each tested with the whitespace at its ends left out.
         let uuid = "0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b"
         assert(!Session.isFolderName("") && !Session.isFolderName(uuid), "empty, and a UUID")
         assert(!Session.isFolderName(uuid.uppercased()), "a UUID in capitals")
@@ -886,8 +888,14 @@ extension BoardArrangement {
         assert(Session.isFolderName(String(uuid.dropLast()) + "g"), "not hex")
         assert(Session.isFolderName("0f3c2a1e66b4d-4e8f-9a7b-1c2d3e4f5a6b"), "a hyphen out of place")
         assert(Session.isFolderName(String(repeating: "é", count: 18)), "36 bytes that are not a UUID")
-        assert(Session.isFolderName("acme-api") && Session.isFolderName("No project") && Session.isFolderName("/"),
-               "names")
+        assert(!Session.isFolderName("/") && !Session.isFolderName("."), "a session started at /, and here")
+        assert(!Session.isFolderName("  ") && !Session.isFolderName("\t\n") && !Session.isFolderName("\u{3000}"),
+               "blank")
+        assert(!Session.isFolderName(" \(uuid)") && !Session.isFolderName("\(uuid.uppercased())\n"),
+               "a UUID with whitespace round it")
+        assert(!Session.isFolderName(" / ") && !Session.isFolderName("\t."), "/ and ., padded")
+        assert(Session.isFolderName("acme-api") && Session.isFolderName("No project") && Session.isFolderName("..")
+               && Session.isFolderName(" web ") && Session.isFolderName("/web"), "names")
 
         // The shared vector, which the web's and Android's tests assert too:
         // as the live folders an older server sends, as the pins a 1.7 one
@@ -905,6 +913,20 @@ extension BoardArrangement {
         }
         assert(ProjectSection.make(sessions: [card("a", project: ""), card("b", project: uuid)]).map(\.label.count)
                == [2], "'' and a UUID are one bucket")
+        // The legacy shell hook's / for a session started there, a blank, a
+        // UUID with a space before it, and .: No project too. A pin that
+        // cannot name a folder is no pin, and a name that can is kept exactly
+        // as it was sent.
+        assert(ProjectSection.make(sessions: [card("r", project: "/"), card("s", project: "  "),
+                                              card("t", project: " \(uuid)"), card("u", project: ".")])
+               .map(\.key) == [.noProject], "/, a blank, a padded UUID and . are No project")
+        assert(card("p", home: "/", project: "web").projectKey == .folder("web")
+               && card("q", home: "  ", project: "/").projectKey == .noProject, "a pin that cannot name a folder")
+        assert(card("w", project: " web ").projectKey == .folder(" web ")
+               && ProjectSection.make(sessions: [card("w1", project: " web "), card("w2", project: "web")]).count == 2,
+               "a name is used as sent")
+        assert(card("m", home: "acme-api", project: "/").movedTo == nil
+               && card("n", home: "acme-api", project: "  ").movedTo == nil, "/ and a blank are no place to move to")
         assert(ProjectKey.noProject.title == "No project" && ProjectKey.folder("No project") != .noProject,
                "a folder called No project is a folder")
         // Digits and punctuation by code unit, after the case is folded.

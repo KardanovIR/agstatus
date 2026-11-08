@@ -1493,6 +1493,10 @@ enum DemoData {
         assert(desktop?.projectKey == ProjectKey.noProject, "Codex at /")
         let scratch = session(#"{"id":"s","source":"codex","project":"0F3C2A1E-6B4D-4E8F-9A7B-1C2D3E4F5A6B"}"#)
         assert(scratch?.projectKey == ProjectKey.noProject && scratch?.movedTo == nil, "a scratch folder")
+        // What the shipped legacy shell hook posts for a session started at
+        // /, from a server too old to pin a folder: no project, not "/".
+        let root = session(#"{"id":"s","name":"Codex","source":"codex","project":"/"}"#)
+        assert(root?.projectKey == ProjectKey.noProject && root?.movedTo == nil, "a session started at /")
         // Round trip: the pin survives this client, and no pin stays none.
         if let pinned, let data = try? JSONEncoder().encode(pinned) {
             assert((try? decoder.decode(Session.self, from: data)) == pinned, "homeProject round trip")
