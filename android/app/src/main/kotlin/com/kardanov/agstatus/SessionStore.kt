@@ -7,8 +7,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -80,6 +83,16 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     /** Per session, the timer its status waits on: the ack watchdog, or a success's fade. */
     private val focusTimers = HashMap<String, Job>()
+
+    /**
+     * What the board says aloud when sessions become blocked while it is
+     * watching, "Fix the login redirect, in acme-api, needs you" or "2
+     * sessions need you" ([BlockSpeech]), for the board to hand to TalkBack.
+     * Not kept: a sentence nobody is there to hear is not news later.
+     */
+    private val _spoken = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val spoken: SharedFlow<String> = _spoken.asSharedFlow()
+    private val blockSpeech = BlockSpeech()
 
     private val sse = SseClient()
     private var streamJob: Job? = null
@@ -222,11 +235,12 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                                 } else {
                                     listOf(event.session) + current
                                 },
+                                live = true,
                             )
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
                         is SseEvent.Remove -> {
-                            setSessions(_sessions.value.filter { it.id != event.id })
+                            setSessions(_sessions.value.filter { it.id != event.id }, live = true)
                             setFocus(event.id, null)
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
@@ -648,9 +662,31 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 delay(DEMO_TICK_MILLIS)
                 if (_connection.value != Connection.DEMO) return@launch
-                setSessions(stableOrder(_sessions.value, DemoData.tick(_sessions.value)))
+                setSessions(stableOrder(_sessions.value, DemoData.tick(_sessions.value)), live = true)
                 _lastActivityAt.value = System.currentTimeMillis()
             }
+        }
+    }
+
+    /**
+     * The demo sessions [ids] become blocked [afterMillis] from now, as a
+     * session frame would make them, so the spoken alarm can be heard on a
+     * demo that otherwise holds still: MainActivity's debug-only
+     * agstatus_demo_block. Several in one frame are said together.
+     */
+    fun blockDemoLater(ids: Set<String>, afterMillis: Long) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            delay(afterMillis)
+            if (!isDemo) return@launch
+            val now = System.currentTimeMillis()
+            setSessions(
+                _sessions.value.map { session ->
+                    if (session.id !in ids) return@map session
+                    session.copy(status = AgentStatus.BLOCKED, message = "Needs permission approval", updatedAt = now)
+                },
+                live = true,
+            )
         }
     }
 
@@ -671,10 +707,20 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      * move with it: resolved from the slots the card held a moment ago,
      * dropped with its subtask block or with the card. Leaving a board or the
      * demo empties the list, and so clears every card's slots.
+     *
+     * [live] is news as it happens, a session frame or a demo tick, and only
+     * then can a block be said aloud ([spoken]); a snapshot, a refresh or the
+     * demo's first board only shows what already stands.
      */
-    private fun setSessions(sessions: List<Session>) {
+    private fun setSessions(sessions: List<Session>, live: Boolean = false) {
         _sessions.value = sessions
         _subtaskSlots.value = SubtaskSlots.resolve(_subtaskSlots.value, sessions)
+        if (blockSpeech.observe(sessions, live, System.currentTimeMillis())) {
+            viewModelScope.launch {
+                delay(BlockSpeech.GATHER_MILLIS)
+                blockSpeech.say(_sessions.value, System.currentTimeMillis())?.let { _spoken.tryEmit(it) }
+            }
+        }
     }
 
     private fun cancelStream() {

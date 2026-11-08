@@ -432,6 +432,89 @@ object ProjectSections {
     fun cardLead(session: Session): String = "${sourceDisplayName(session.source)}, ${session.displayName}"
 }
 
+// MARK: - The spoken alarm
+
+/**
+ * Which new blocks the board says aloud, and in what words, as iOS says them
+ * with VoiceOver and the web through its polite live region: "Fix the login
+ * redirect, in acme-api, needs you". The board itself is silent, so this is
+ * how a TalkBack user, who would otherwise hear of a block only by exploring
+ * to the bottom edge, learns that something needs them.
+ *
+ * Speech nobody asked for has to be earned, so only a block that arrives
+ * while the board is watching is said: a session frame, or a demo tick, that
+ * turns a card blocked or brings one new and blocked ([observe] with `live`).
+ * Never the first draw, a reconnect's snapshot or a refresh, whose blocks
+ * were standing before the board looked. A session said is not said again
+ * within [REPEAT_MILLIS], the server's own wait before it pushes the same
+ * block twice. Blocks that land within [GATHER_MILLIS] of the first are said
+ * together, "2 sessions need you", since a second sentence would cut off the
+ * first.
+ *
+ * The rule only; SessionStore keeps the clock and the wait. A plain object
+ * the store owns, never shown, never saved.
+ */
+class BlockSpeech {
+    /** The blocked sessions as last seen; null until the board is first drawn. */
+    private var blocked: Set<String>? = null
+    private val saidAt = HashMap<String, Long>()
+    private val gathered = LinkedHashSet<String>()
+
+    /**
+     * Takes in the board after a change. [live] is news as it happens; a
+     * snapshot is not, and only teaches what stands. True when this change
+     * starts a gathering, after which the caller waits [GATHER_MILLIS] and
+     * asks [say] what to say.
+     */
+    fun observe(sessions: List<Session>, live: Boolean, nowMillis: Long): Boolean {
+        val now = sessions.filter { it.isBlocked }.mapTo(HashSet()) { it.id }
+        val before = blocked
+        blocked = now
+        if (!live || before == null) return false
+        saidAt.entries.removeAll { nowMillis - it.value >= REPEAT_MILLIS }
+        val idle = gathered.isEmpty()
+        for (id in now) {
+            if (id !in before && id !in saidAt) gathered += id
+        }
+        return idle && gathered.isNotEmpty()
+    }
+
+    /**
+     * What to say once the gathering closes, or null: the blocks it gathered
+     * that still stand in [sessions], the board as it is now. One answered
+     * within the half second is no longer news.
+     */
+    fun say(sessions: List<Session>, nowMillis: Long): String? {
+        val ids = gathered.toList()
+        gathered.clear()
+        val still = ids.mapNotNull { id -> sessions.firstOrNull { it.id == id && it.isBlocked } }
+        for (session in still) saidAt[session.id] = nowMillis
+        return sentence(still)
+    }
+
+    companion object {
+        /** Blocks this close to the first are said in one sentence. */
+        const val GATHER_MILLIS = 500L
+
+        /** A session's block is said at most once in this long. */
+        const val REPEAT_MILLIS = 60_000L
+
+        /**
+         * "Fix the login redirect, in acme-api, needs you", with the bar's
+         * words ([ProjectSections.barName], [ProjectSections.barWhere]) and
+         * no place where the bar has none; "2 sessions need you" for more.
+         */
+        fun sentence(sessions: List<Session>): String? = when (sessions.size) {
+            0 -> null
+            1 -> sessions.single().let { session ->
+                listOfNotNull(ProjectSections.barName(session), ProjectSections.barWhere(session), "needs you")
+                    .joinToString(", ")
+            }
+            else -> "${sessions.size} sessions need you"
+        }
+    }
+}
+
 // MARK: - Host (Focus)
 
 /** The machine a session runs on, as its hook labelled it (docs/api.md `host`). */

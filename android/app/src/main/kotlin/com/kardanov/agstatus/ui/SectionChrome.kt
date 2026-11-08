@@ -10,6 +10,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,7 +29,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -46,9 +51,11 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -63,6 +70,10 @@ import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.Theme
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * The chrome of the board grouped by project (docs/design/project-sections.md):
@@ -464,6 +475,63 @@ internal fun Modifier.jumpRing(alpha: () -> Float): Modifier = drawWithContent {
         size = Size(size.width - 2 * inset, size.height - 2 * inset),
         cornerRadius = CornerRadius((16.dp.toPx() - inset).coerceAtLeast(0f)),
         style = Stroke(width = stroke),
+    )
+}
+
+// MARK: - Spoken
+
+/** How long the spoken line holds its words: long enough for TalkBack to take them, short enough not to linger as a stop. */
+private const val SPOKEN_HOLD_MILLIS = 5_000L
+
+/**
+ * How long the line is empty between two sentences, so the second is a
+ * change even when its words are the first's: Compose sends the
+ * accessibility tree's changes at most every 100ms.
+ */
+private const val SPOKEN_GAP_MILLIS = 250L
+
+/**
+ * What the board says aloud ([SpokenLine]): a new block, "Fix the login
+ * redirect, in acme-api, needs you" (BlockSpeech), and where a press of the
+ * bar went when its card could not take focus. Each sentence holds for a few
+ * seconds and goes, so the next one, even in the same words, is news.
+ */
+@Stable
+internal class Speaker {
+    var said: String? by mutableStateOf(null)
+        private set
+    private var saying: Job? = null
+
+    fun say(sentence: String, scope: CoroutineScope) {
+        saying?.cancel()
+        saying = scope.launch {
+            if (said != null) {
+                said = null
+                delay(SPOKEN_GAP_MILLIS)
+            }
+            said = sentence
+            delay(SPOKEN_HOLD_MILLIS)
+            said = null
+        }
+    }
+}
+
+/**
+ * Where the board speaks: a polite live region, which TalkBack reads out
+ * when its words change, after whatever it is saying. Not an announcement:
+ * View.announceForAccessibility is deprecated from Android 16, which asks
+ * for a live region instead. Draws nothing, and holds no words between
+ * sentences, so TalkBack has nothing to stop on. One dp, because a node
+ * without size is left out of what TalkBack is handed.
+ */
+@Composable
+internal fun SpokenLine(speaker: Speaker, modifier: Modifier = Modifier) {
+    val said = speaker.said
+    Box(
+        modifier.size(1.dp).semantics {
+            liveRegion = LiveRegionMode.Polite
+            if (said != null) contentDescription = said
+        },
     )
 }
 

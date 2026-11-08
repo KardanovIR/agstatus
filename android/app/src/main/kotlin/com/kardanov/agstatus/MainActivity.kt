@@ -75,6 +75,16 @@ import kotlinx.coroutines.withTimeoutOrNull
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --ei agstatus_demo_projects 12
  *
+ * A block that lands while the board is open, which the board says aloud
+ * for TalkBack: those demo sessions (ids, separated by commas) become blocked
+ * that many seconds after the demo starts (8 if not given), as a session
+ * frame would make them, on a board that otherwise holds still. Two or more
+ * are said together:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ez agstatus_demo_freeze true \
+ *         --es agstatus_demo_block demo-webapp --ei agstatus_demo_block_after 8
+ *
  * The session screen can open at a subagent, by its ordinal (`n`), as the
  * iOS app's AGSTATUS_OPEN_SUBTASK does: the first card listing that subagent
  * opens, scrolled to it and lit. The demo starts with subagents 3 to 12:
@@ -89,6 +99,8 @@ private const val EXTRA_DEMO_FREEZE = "agstatus_demo_freeze"
 private const val EXTRA_DEMO_LIMITS = "agstatus_demo_limits"
 private const val EXTRA_DEMO_FIRST_DAY = "agstatus_demo_first_day"
 private const val EXTRA_DEMO_PROJECTS = "agstatus_demo_projects"
+private const val EXTRA_DEMO_BLOCK = "agstatus_demo_block"
+private const val EXTRA_DEMO_BLOCK_AFTER = "agstatus_demo_block_after"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
 private const val EXTRA_OPEN_SUBTASK = "agstatus_open_subtask"
 private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
@@ -121,6 +133,12 @@ class MainActivity : ComponentActivity() {
             store.startDemo(
                 agedMinutes = intent.getIntExtra(EXTRA_DEMO_STALE, 0),
                 frozen = intent.getBooleanExtra(EXTRA_DEMO_FREEZE, false),
+            )
+            store.blockDemoLater(
+                ids = intent.getStringExtra(EXTRA_DEMO_BLOCK)
+                    ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+                    .orEmpty(),
+                afterMillis = intent.getIntExtra(EXTRA_DEMO_BLOCK_AFTER, 8) * 1_000L,
             )
         }
         val openSubtask =

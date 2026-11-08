@@ -90,7 +90,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.semantics.contentDescription
@@ -126,7 +125,8 @@ import kotlin.math.abs
  * (ProjectSections.ORDER) and never move because one got busy. The usage
  * bars stay pinned above the list, and while anything is blocked the
  * needs-you bar runs along the screen's bottom edge: the board's one alarm,
- * and the way to the card that needs you.
+ * and the way to the card that needs you. A block that lands while the board
+ * is open is also said aloud, for TalkBack ([SpokenLine]).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -150,7 +150,6 @@ fun BoardScreen(
     val boardGone = connection == SessionStore.Connection.BOARD_GONE
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val view = LocalView.current
     // A card that moves has news: the list is keyed by session id, so a card
     // only animates when the board actually reordered. Nulling the specs is
     // how a device that asked for less motion gets the same reorder with no
@@ -193,6 +192,12 @@ fun BoardScreen(
                 }
             },
         )
+    }
+    // What the board says aloud: a block that lands while it is watching
+    // (SessionStore.spoken), through a polite live region.
+    val speaker = remember { Speaker() }
+    LaunchedEffect(store) {
+        store.spoken.collect { sentence -> speaker.say(sentence, scope) }
     }
     val reading = remember(sections, shown) {
         ProjectSections.barTarget(sections, shown)?.let { target ->
@@ -254,8 +259,7 @@ fun BoardScreen(
             withFrameNanos { }
             val focused = runCatching { jumpFocus.requestFocus() }.getOrDefault(false)
             if (!focused && touchExploration(context)) {
-                @Suppress("DEPRECATION")
-                view.announceForAccessibility("${ProjectSections.cardLead(target)}, blocked")
+                speaker.say("${ProjectSections.cardLead(target)}, blocked", scope)
             }
         }
     }
@@ -379,6 +383,7 @@ fun BoardScreen(
                     onPress = pressBar,
                 )
             },
+            spoken = { SpokenLine(speaker) },
         ) {
             Box(sides) {
                 when {
@@ -506,7 +511,7 @@ fun BoardScreen(
 /**
  * The board under the top bar: the usage blocks pinned at the top, the list
  * under them, and the needs-you bar along the bottom edge while anything is
- * blocked.
+ * blocked, with the [spoken] line just above it.
  *
  * Placed in another order than drawn: the usage blocks, the bar, then the
  * list. Compose walks a keyboard's Tab through siblings in the order they are
@@ -524,11 +529,12 @@ private fun BoardBody(
     bottomInset: Dp,
     usage: @Composable () -> Unit,
     bar: @Composable () -> Unit,
+    spoken: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     board: @Composable () -> Unit,
 ) {
-    Layout(contents = listOf(usage, bar, board), modifier = modifier) { slots, constraints ->
-        val (usageSlot, barSlot, boardSlot) = slots
+    Layout(contents = listOf(usage, bar, board, spoken), modifier = modifier) { slots, constraints ->
+        val (usageSlot, barSlot, boardSlot, spokenSlot) = slots
         val width = constraints.maxWidth
         val height = constraints.maxHeight
         val loose = Constraints(maxWidth = width, maxHeight = height)
@@ -539,6 +545,7 @@ private fun BoardBody(
         val usages = usageSlot.map { it.measure(loose.copy(maxHeight = (height - bottom).coerceAtLeast(0))) }
         val top = usages.sumOf { it.height }
         val boards = boardSlot.map { it.measure(Constraints.fixed(width, (height - top - bottom).coerceAtLeast(0))) }
+        val lines = spokenSlot.map { it.measure(loose) }
         layout(width, height) {
             var y = 0
             for (placeable in usages) {
@@ -547,6 +554,7 @@ private fun BoardBody(
             }
             for (placeable in bars) placeable.place(0, height - placeable.height)
             for (placeable in boards) placeable.place(0, top)
+            for (placeable in lines) placeable.place(0, height - bottom - placeable.height)
         }
     }
 }
