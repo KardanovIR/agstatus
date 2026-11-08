@@ -941,6 +941,17 @@ final class SessionStore {
         // demo that always showed an unbroken run would never exercise the
         // forgiveness rule, which is the part most likely to be wrong.
         streak = Streak.derive(from: DemoData.usageHistory(days: UsageHistory.streakWindowDays).projects)
+        #if DEBUG
+        // AGSTATUS_DEMO_MOVE: a card's first real folder, once the board has
+        // drawn it in No project (`DemoData.movesForScreenshots`).
+        if !DemoData.movesForScreenshots.isEmpty {
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(1500))
+                guard let self, self.connection == .demo else { return }
+                self.sessions = DemoData.movedForScreenshots(self.sessions)
+            }
+        }
+        #endif
         connection = .demo
         demoTask = Task { [weak self] in
             while !Task.isCancelled {

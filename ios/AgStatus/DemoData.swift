@@ -505,6 +505,16 @@ enum DemoData {
     ///                           are working instead) | none (nobody is
     ///                           blocked) | <n> (the first n blocked
     ///                           sessions stay blocked, the rest work)
+    ///   AGSTATUS_DEMO_BLOCK     <id>[,<id>…] (those cards of a scenario
+    ///                           are blocked as well, whatever it seeds them
+    ///                           as: the bar naming a card it otherwise never
+    ///                           would, such as projects' acme-api)
+    ///   AGSTATUS_DEMO_MOVE      <id>:<folder>[,…] (a second and a half
+    ///                           after launch, those cards' first real folder
+    ///                           arrives, as a 1.7 server pins it: the one
+    ///                           move a card makes between sections, out of
+    ///                           No project, after the board has drawn it
+    ///                           there)
     ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%) | many
     ///                           (Codex reports six windows, and its usage
     ///                           history has six lines) | 1…6 (that many of
@@ -628,6 +638,34 @@ enum DemoData {
     /// slug, and the card's two-line name and its meta line's priorities have
     /// nothing to be checked against.
     static let showsTitles = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_TITLES"] == "1"
+
+    /// AGSTATUS_DEMO_BLOCK=<id>[,<id>…] — those cards are seeded blocked.
+    private static let blockedForScreenshots = Set(
+        (ProcessInfo.processInfo.environment["AGSTATUS_DEMO_BLOCK"] ?? "").split(separator: ",").map(String.init)
+    )
+
+    /// AGSTATUS_DEMO_MOVE=<id>:<folder>[,…] — the cards whose first real
+    /// folder arrives once the board has drawn them, and that folder.
+    static let movesForScreenshots: [String: String] = Dictionary(
+        (ProcessInfo.processInfo.environment["AGSTATUS_DEMO_MOVE"] ?? "").split(separator: ",").compactMap { pair in
+            let parts = pair.split(separator: ":", maxSplits: 1).map(String.init)
+            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        },
+        uniquingKeysWith: { _, last in last }
+    )
+
+    /// The board with each card in `movesForScreenshots` given its folder,
+    /// live and pinned at once, as a 1.7 server pins the first real folder it
+    /// hears for a session that had none.
+    static func movedForScreenshots(_ sessions: [Session]) -> [Session] {
+        sessions.map { session in
+            guard let folder = movesForScreenshots[session.id] else { return session }
+            var moved = session
+            moved.project = folder
+            moved.homeProject = folder
+            return moved
+        }
+    }
 
     /// The board's sessions come from the pool below rather than from the
     /// App Store demo, which a plain launch leaves untouched.
@@ -790,13 +828,14 @@ enum DemoData {
         let cards = scenarioCards
         return cards.map { card in
             let calm = isCalmed(card, among: cards) ? card.calm : nil
+            let blocks = blockedForScreenshots.contains(card.id)
             // A session that stayed where it started reports its own name,
             // which is what the card reads as "has not moved".
             let live = card.project ?? card.name
             return Session(id: card.id,
                            name: showsTitles ? card.title ?? card.name : card.name,
-                           status: calm?.status ?? card.status,
-                           message: calm?.message ?? card.message,
+                           status: blocks ? .blocked : calm?.status ?? card.status,
+                           message: blocks ? "Waiting for approval" : calm?.message ?? card.message,
                            project: live,
                            homeProject: card.home ?? (Session.isFolderName(live) ? live : ""),
                            source: card.source,
