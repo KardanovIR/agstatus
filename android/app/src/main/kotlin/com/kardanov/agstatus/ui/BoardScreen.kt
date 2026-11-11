@@ -104,7 +104,9 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.traversalIndex
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -725,8 +727,13 @@ private fun leastListRoom(): Dp {
  * placed, so Tab reaches the bar after the usage blocks and before the cards,
  * where it stands in the web board's page. As the Scaffold's bottom bar it
  * was placed after the top bar, and Tab went from Settings to the bar before
- * anything on the board. TalkBack goes by position, so it still hears the bar
- * last, after the cards.
+ * anything on the board.
+ *
+ * TalkBack is given the same order ([ReadInTurn]). It goes by position where
+ * nothing says otherwise, and heard the board's one alarm last, after every
+ * label and card on the board. Where the usage blocks lead the list they are
+ * its first item, inside the list, so TalkBack hears the bar just before
+ * them, as VoiceOver does on iOS; Tab still reaches it after them.
  *
  * [bottomInset] is the system bar under the board: the list keeps above it
  * while no bar shows, and the bar, which runs to the bottom edge, pads itself.
@@ -741,7 +748,14 @@ private fun BoardBody(
     modifier: Modifier = Modifier,
     board: @Composable () -> Unit,
 ) {
-    Layout(contents = listOf(usage, bar, board), modifier = modifier) { slots, constraints ->
+    Layout(
+        contents = listOf(
+            { ReadInTurn(turn = 0f, content = usage) },
+            { ReadInTurn(turn = 1f, content = bar) },
+            { ReadInTurn(turn = 2f, content = board) },
+        ),
+        modifier = modifier.semantics { isTraversalGroup = true },
+    ) { slots, constraints ->
         val (usageSlot, barSlot, boardSlot) = slots
         val width = constraints.maxWidth
         val height = constraints.maxHeight
@@ -765,6 +779,24 @@ private fun BoardBody(
             for (placeable in bars) placeable.place(0, height - placeable.height)
             for (placeable in boards) placeable.place(0, top)
         }
+    }
+}
+
+/**
+ * One of [BoardBody]'s parts, which TalkBack reads whole, in its [turn]
+ * among the others, wherever it is drawn. Measured as its content would be
+ * on its own, so the board lays out as it did.
+ */
+@Composable
+private fun ReadInTurn(turn: Float, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier.semantics {
+            isTraversalGroup = true
+            traversalIndex = turn
+        },
+        propagateMinConstraints = true,
+    ) {
+        content()
     }
 }
 
