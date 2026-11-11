@@ -156,6 +156,21 @@
     const key = agentKey(source);
     return (key.startsWith('claude') ? ICON.claude : key.startsWith('codex') ? ICON.codex : ICON.agent) || '';
   };
+  /** A session's name, or its agent's where it has none: what the bar, its voice and a card's lead call it. */
+  const sessionName = (s) => (typeof s.name === 'string' && s.name !== '' ? s.name : agentName(s.source));
+
+  /**
+   * What a screen reader calls a card: "Claude, Fix the login redirect", its
+   * agent and then its name, now that Claude and Codex share sections; the
+   * name alone where it is its agent's own name, compared exactly, so the
+   * untitled Codex session at / is "Codex", never "Codex, Codex". The rule
+   * iOS and Android read a card by.
+   */
+  const cardLead = (s) => {
+    const agent = agentName(s.source);
+    const name = sessionName(s);
+    return name === agent ? name : `${agent}, ${name}`;
+  };
 
   // ---- Painting -------------------------------------------------------------
   //
@@ -938,6 +953,13 @@
   // minute. The row's last word is a hidden full stop, the pause between the
   // state and the message that the two elements would otherwise run together.
   //
+  // The name leads with the card's agent (cardLead), "Claude, Fix the login
+  // redirect — open this session's history": since 1.7.0 Claude and Codex
+  // share a section, and a reader moving from title to title heard which
+  // agent a card was only in its meta line, after the state and the message.
+  // One string on the button, so no box can come between its words, and it
+  // holds the visible name whole.
+  //
   // `shown` is the display status; `rows` the subagent block, which sits
   // between the card's own line and its meta, and is '' for a card without
   // one — whose markup is then exactly what it was before subagents existed.
@@ -950,7 +972,7 @@
     return `<div class="card-head">
         <div class="card-title-row">
           <button class="name-open" type="button" data-open="${escape(s.id)}"
-                  aria-label="${escape(`${s.name} — open this session's history`)}"
+                  aria-label="${escape(`${cardLead(s)} — open this session's history`)}"
                   aria-describedby="${escape(s.message ? `${stateId} ${msgId}` : stateId)}"
             ><span class="name" title="${escape(s.name)}">${escape(s.name)}</span
             ><span class="name-more" aria-hidden="true">›</span></button>
@@ -1148,7 +1170,7 @@
    */
   function needsWhat(s) {
     const agent = agentName(s.source);
-    const name = typeof s.name === 'string' && s.name !== '' ? s.name : agent;
+    const name = sessionName(s);
     const key = sectionKey(s);
     if (key === NO_PROJECT) return { name, place: agent === name ? '' : agent };
     return { name, place: key === name ? '' : `in ${key}` };

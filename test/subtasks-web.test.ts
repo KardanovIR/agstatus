@@ -119,14 +119,24 @@ describe('a card without subagents is the 1.6.5 card, but for its meta line', ()
   // into a card that has none: no hairline, no group, no class, no zero.
   //
   // 1.7.0 also groups the board by project (project-sections-web.test.ts),
-  // which puts a label above each section and changes one thing on every
-  // card, on its meta line; everything else is held to 1.6.5's markup.
-  it('draws the same card, byte for byte, outside its meta line', async () => {
+  // which puts a label above each section and changes two things on every
+  // card: its meta line, and its title's name, which leads with the card's
+  // agent now that Claude and Codex share sections ("Claude, Fix the parser
+  // — open this session's history"). Everything else is held to 1.6.5's
+  // markup.
+  it('draws the same card, byte for byte, outside its meta line and its title\'s agent', async () => {
     const b = await pinnedBoard();
     const now = cardsIn(b.grid());
     const then = pinned();
     expect([...now.keys()].sort()).toEqual([...then.keys()].sort());
-    for (const [id, card] of then) expect(now.get(id)!.rest, id).toBe(card.rest);
+    for (const [id, card] of then) {
+      // 1.6.5's chip named the agent in capitals, CLAUDE or CODEX.
+      const word = /<\/svg>([A-Z]+)<\/span>/.exec(card.meta)![1];
+      const agent = word.charAt(0) + word.slice(1).toLowerCase();
+      const rest = card.rest.replace(/(class="name-open"[^>]*?aria-label=")/, `$1${agent}, `);
+      expect(rest, `${id}: the fixture's title`).not.toBe(card.rest);
+      expect(now.get(id)!.rest, id).toBe(rest);
+    }
     expect(b.grid().classList.contains('has-subs')).toBe(false);
   });
 

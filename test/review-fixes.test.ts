@@ -390,8 +390,9 @@ describe('board script: focus lifecycle', () => {
       expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
       expect(row.lastElementChild!.className).toBe('sr-only');
       expect(row.lastElementChild!.textContent).toBe('.');
-      // The name is still the words on the button, for Voice Control.
-      expect(title('s1').getAttribute('aria-label')).toBe("Fix the parser — open this session's history");
+      // The name still holds the words on the button, for Voice Control,
+      // after the card's agent (1.7.0).
+      expect(title('s1').getAttribute('aria-label')).toBe("Claude, Fix the parser — open this session's history");
 
       // No message, no reference to one; every card's ids are its own.
       expect(title('s2').getAttribute('aria-describedby')).toBe('card-s2-state');
@@ -432,8 +433,9 @@ describe('board script: focus lifecycle', () => {
       b.emit('snapshot', [session()]);
       const open = b.$('[data-open]') as HTMLButtonElement;
       expect(open.tagName).toBe('BUTTON');
-      // A name a screen reader can act on: what it is, then what it does.
-      expect(open.getAttribute('aria-label')).toBe("Fix the parser — open this session's history");
+      // A name a screen reader can act on: whose it is and what it is, then
+      // what it does.
+      expect(open.getAttribute('aria-label')).toBe("Claude, Fix the parser — open this session's history");
       // The card's other controls are siblings, never inside the title, so
       // one can never swallow a press meant for another.
       expect(b.$('[data-dismiss]')!.closest('[data-open]')).toBeNull();

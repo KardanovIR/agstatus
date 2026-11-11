@@ -999,6 +999,27 @@ describe('an agent, named and marked as every board does', () => {
     expect(said()).toBe('Gemini needs you');
   });
 
+  // A card is read "<agent>, <name>" now that Claude and Codex share
+  // sections, and "<name>" alone where the name is its agent's own,
+  // compared exactly, as iOS and Android read it. On the title, whose name
+  // keeps every word it shows (WCAG 2.5.3) and says what a press does.
+  it.each([
+    ['claude', 'Fix the login redirect', 'Claude, Fix the login redirect'],
+    ['codex', 'Fix flaky test', 'Codex, Fix flaky test'],
+    ['codex', 'Codex', 'Codex'],
+    ['codex', 'codex', 'Codex, codex'],
+    ['gemini', 'Gemini', 'Gemini'],
+    [undefined, 'Claude', 'Claude'],
+    ['claude', 'agstatus', 'Claude, agstatus'],
+  ])('reads a %s card named "%s" as "%s"', async (source, name, lead) => {
+    const b = await boardOf([at('s', 1, { source, name })]);
+    const title = titleOf(b, 's') as HTMLElement;
+    const label = title.getAttribute('aria-label')!;
+    expect(label).toBe(`${lead} — open this session's history`);
+    expect(title.querySelector('.name')!.textContent).toBe(name);
+    expect(label).toContain(name);
+  });
+
   // By the source's start, for Claude as for Codex, as iOS and Android mark
   // them: a second Claude account tagged claude-work is Claude's.
   it.each([
