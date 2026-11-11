@@ -8,6 +8,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
@@ -18,10 +19,12 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
@@ -50,6 +53,7 @@ class BarFocusTest {
             Settings.Global.ANIMATOR_DURATION_SCALE,
             1f,
         )
+        RuntimeEnvironment.setFontScale(1f)
     }
 
     private fun card(id: String, name: String, home: String, status: AgentStatus = AgentStatus.CODING) = Session(
@@ -63,7 +67,7 @@ class BarFocusTest {
         updatedAt = 1,
     )
 
-    private fun launch(board: List<Session>, animationsOff: Boolean = false) {
+    private fun launch(board: List<Session>, animationsOff: Boolean = false, usage: List<UsageInfo> = emptyList()) {
         if (animationsOff) {
             Settings.Global.putFloat(
                 ApplicationProvider.getApplicationContext<android.app.Application>().contentResolver,
@@ -78,7 +82,7 @@ class BarFocusTest {
         )
         scenario.onActivity {
             store = ViewModelProvider(it)[SessionStore::class.java]
-            store.showForTest(board, usage = emptyList())
+            store.showForTest(board, usage = usage)
         }
         rule.waitForIdle()
     }
@@ -145,5 +149,37 @@ class BarFocusTest {
         approve(long, "z1")
 
         assertEquals(listOf("Claude, Session 1"), focused().map { it.substringBefore(" Coding") })
+    }
+
+    @Test
+    @Config(qualifiers = "w915dp-h330dp-land-xxhdpi")
+    fun `with no card in view, it goes to the first usage block, still on the board`() {
+        // A phone held sideways at 200% text: the usage blocks lead the list
+        // and fill it, and the one card is below them, out of view.
+        RuntimeEnvironment.setFontScale(2f)
+        val usage = listOf(
+            UsageInfo(
+                source = "claude",
+                windows = listOf(
+                    UsageWindow(id = "five_hour", label = "Current session", usedPct = 64.0),
+                    UsageWindow(id = "seven_day", label = "Weekly", usedPct = 22.0),
+                    UsageWindow(id = "seven_day_opus", label = "Weekly (Opus)", usedPct = 41.0),
+                ),
+            ),
+        )
+        val alone = listOf(card("c1", "Fix the login redirect", "acme-api", AgentStatus.BLOCKED))
+        launch(alone, usage = usage)
+        val list = rule.onNode(hasScrollToIndexAction()).fetchSemanticsNode().boundsInRoot
+        val cardsInView = rule.onAllNodes(
+            SemanticsMatcher("the card") {
+                it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull()?.startsWith("Claude, Fix") == true
+            },
+        ).fetchSemanticsNodes().filter { it.boundsInRoot.bottom > list.top && it.boundsInRoot.top < list.bottom }
+        assertTrue("no card in view: $cardsInView", cardsInView.isEmpty())
+        focusTheBar()
+
+        approve(alone, "c1")
+
+        assertEquals(listOf("Claude, 1 session"), focused().map { it.substringBefore(" Claude ") })
     }
 }

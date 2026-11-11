@@ -312,21 +312,23 @@ internal fun BoardScreen(
     // to the card the bar last named, where that card is in view, else to
     // the first card in view: never to the top app bar, where the platform
     // put it, the reader's place on the board lost and a stray Enter opening
-    // Settings or leaving the demo. It goes as the bar starts to leave, while
-    // the bar still holds it, or, with animations off, the moment the bar
-    // has gone. Nothing scrolls for it. TalkBack keeps a focus of its own,
-    // and a press has already sent the keyboard's to the card it brought.
+    // Settings or leaving the demo. With no card in view, as where the usage
+    // blocks fill a phone held sideways at large text, it goes to the first
+    // block, which is. It goes as the bar starts to leave, while the bar
+    // still holds it, or, with animations off, the moment the bar has gone.
+    // Nothing scrolls for it. TalkBack keeps a focus of its own, and a press
+    // has already sent the keyboard's to the card it brought.
     val lastNamed = remember { LastNamed() }
     SideEffect { reading?.let { lastNamed.id = it.target.id } }
     val readingNow by rememberUpdatedState(reading)
     val handFocusOn: () -> Unit = handOn@{
         if (lastNamed.handedOn) return@handOn
-        val to = focusAfterBar(listState.layoutInfo, lastNamed.id, labelHeight.px) ?: return@handOn
         lastNamed.handedOn = true
-        focusTarget = to
+        val to = focusAfterBar(listState.layoutInfo, lastNamed.id, labelHeight.px)
+        if (to != null) focusTarget = to
         scope.launch {
             withFrameNanos { }
-            runCatching { jumpFocus.requestFocus() }
+            runCatching { if (to != null) jumpFocus.requestFocus() else usageFirst.requestFocus() }
         }
     }
     LaunchedEffect(reading == null) {
@@ -485,6 +487,8 @@ internal fun BoardScreen(
                             .then(sides)
                             .padding(horizontal = 16.dp)
                             .padding(top = 10.dp, bottom = 2.dp),
+                        // Where the focus goes when the bar leaves with no card in view.
+                        firstBlock = Modifier.focusRequester(usageFirst),
                     )
                 }
             },
@@ -926,7 +930,7 @@ private class LastNamed {
  * Where a keyboard's focus goes when the needs-you bar leaves while it has
  * it: the card the bar last [named], where it is at least partly in view
  * under the stuck label ([labelPx] tall), else the first card that is. Null
- * with no card in view, where the focus is left to the platform.
+ * with no card in view, where the board gives it to the first usage block.
  */
 internal fun focusAfterBar(layout: LazyListLayoutInfo, named: String?, labelPx: Int): String? {
     val inView = layout.visibleItemsInfo.filter { item ->
