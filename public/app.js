@@ -455,8 +455,16 @@
   const labelSizes = typeof ResizeObserver === 'function'
     ? new ResizeObserver((entries) => { for (const e of entries) fitLabel(e.target); })
     : null;
+  // The webfonts change every width the fits measured, and on a cold load
+  // they arrive after the board has drawn in the fallback face, which is
+  // wider. Neither the labels' nor the bar's markup or size changes with
+  // them, so nothing else would ask either to fit again: the bar kept
+  // dropping its word and its project when both would fit.
   if (document.fonts && typeof document.fonts.addEventListener === 'function') {
-    document.fonts.addEventListener('loadingdone', () => { for (const { el } of labels.values()) fitLabel(el); });
+    document.fonts.addEventListener('loadingdone', () => {
+      for (const { el } of labels.values()) fitLabel(el);
+      fitNeeds();
+    });
   }
 
   /**

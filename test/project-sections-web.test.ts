@@ -10,6 +10,24 @@ import { loadBoard, session, type Board } from './board-harness';
  * against the real shell, as review-fixes.test.ts drives Focus.
  */
 
+// A browser's FontFaceSet, which jsdom lacks: the board fits its labels and
+// its bar again when the webfonts arrive ('loadingdone'). Every board in this
+// file gets one, already loaded; only the font tests fire it.
+vi.mock('jsdom', async (importOriginal) => {
+  const real = await importOriginal<typeof import('jsdom')>();
+  class JSDOM extends real.JSDOM {
+    constructor(...args: ConstructorParameters<typeof real.JSDOM>) {
+      super(...args);
+      const fonts = Object.assign(new this.window.EventTarget(), { status: 'loaded', ready: Promise.resolve() });
+      Object.defineProperty(this.window.document, 'fonts', { configurable: true, value: fonts });
+    }
+  }
+  return { ...real, JSDOM };
+});
+/** The webfonts arriving, as a browser reports it. */
+const fontsArrive = (b: Board) => (document as unknown as { fonts: EventTarget }).fonts
+  .dispatchEvent(new b.win.Event('loadingdone'));
+
 const MIN = 60_000;
 
 /** The cards in the order the grid draws them. */
@@ -921,6 +939,24 @@ describe('the needs-you bar', () => {
     layOutBar(b, o);
     b.emit('snapshot', [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
     expect(gaveWay()).toEqual(expected);
+  });
+
+  // A cold load draws the bar in the fallback face, which is wider. Barlow
+  // arriving changes neither its markup nor its size, which is all that
+  // fitted it again, so it kept dropping words that would now fit.
+  it('fits itself again when the webfonts arrive', async () => {
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    const o = { name: 165, where: 80, word: 60, line: 300 };
+    layOutBar(b, o);
+    b.emit('snapshot', [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
+    expect(gaveWay()).toEqual(['drop-word']);
+    o.name = 150;
+    fontsArrive(b);
+    expect(gaveWay()).toEqual([]);
+    o.name = 240;
+    fontsArrive(b);
+    expect(gaveWay()).toEqual(['drop-word', 'drop-where']);
   });
 
   // A keyboard reaches the bar before the cards it leads to, as a real
