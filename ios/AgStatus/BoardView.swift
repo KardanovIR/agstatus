@@ -242,11 +242,14 @@ struct BoardView: View {
         // Before anything this pass draws can be pressed.
         drawn.plan = plan
         drawn.scroller = scroller
-        return VStack(spacing: 0) {
+        let bar = store.connection == .boardGone ? nil : plan.needsYou?.face
+        return reachingBar(VStack(spacing: 0) {
             if !plan.heads.isEmpty && store.connection != .boardGone
                 && !(plan.idle ? plan.idleHeadsScroll : plan.headsScroll) {
                 pinned(plan)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                    // Read first, as it is drawn (`reachingBar`).
+                    .accessibilitySortPriority(3)
             }
             Group {
                 if store.connection == .boardGone {
@@ -276,15 +279,22 @@ struct BoardView: View {
                         .environment(\.subtasksOpenScreen, plan.arrangement == .list)
                 }
             }
+            // The cards, after the bar for VoiceOver (`reachingBar`): one
+            // container, so the List and the stack each take one place in
+            // the order however many elements they hold.
+            .accessibilityElement(children: .contain)
+            .accessibilitySortPriority(1)
 
             // The board's one alarm, between the board and the streak, and
             // only while something is blocked (`NeedsYouBar`). Outside the
             // scroll view, so whatever the reader has scrolled to, it stays
             // in view.
-            NeedsYouSlot(face: store.connection == .boardGone ? nil : plan.needsYou?.face,
+            NeedsYouSlot(face: bar,
                          lines: plan.compactHeight ? .one : plan.wide ? .oneOrTwo : .two,
                          onPress: barAction)
                 .equatable()
+                // Before the cards, though it is drawn below them.
+                .accessibilitySortPriority(2)
 
             // Pinned under the list rather than inside it: the streak is
             // about the board, not about any card, and a row that scrolled
@@ -299,7 +309,7 @@ struct BoardView: View {
                 StreakBar(streak: store.streak)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-        }
+        }, while: bar != nil)
         .settles(on: plan.shape)
         // A head gaining or losing a limit window, which changes its height:
         // it grows with the cards under it moving together, rather than
@@ -330,6 +340,32 @@ struct BoardView: View {
         .onChange(of: plan.subtasks, initial: true) { _, resolved in
             subtaskSlots = resolved
         }
+    }
+
+    /// The board as VoiceOver meets it: one container, its parts in the
+    /// order a reader needs them rather than the order they are drawn — the
+    /// pinned heads, then the needs-you bar, then the cards, then the streak.
+    /// As on the web and Android, the board's one alarm comes before the
+    /// cards it leads to. Drawn at the bottom and left to the geometry, it
+    /// came after every label, card and subagent row, so a VoiceOver reader
+    /// with twenty cards swiped through all of them to reach it. Where the
+    /// heads lead the scroll they are the first rows of the cards'
+    /// container, and the bar is read before them.
+    ///
+    /// And while the bar shows, Magic Tap — VoiceOver's two-finger double
+    /// tap — presses it from anywhere on the board: the bar's card comes into
+    /// view, and VoiceOver lands on it. While it does not, nothing here
+    /// answers a Magic Tap, which goes on to the system as it always did, to
+    /// pause what is playing.
+    ///
+    /// The action is added or not on one value of one type, so the bar
+    /// arriving or leaving changes an accessibility property, never which
+    /// view the board is: an `if` around the board would have rebuilt it,
+    /// and its scroll position with it.
+    private func reachingBar<Board: View>(_ board: Board, while shows: Bool) -> some View {
+        // The board's own place among its neighbours is the first, as it was.
+        let contained = board.accessibilityElement(children: .contain).accessibilitySortPriority(0)
+        return shows ? contained.accessibilityAction(.magicTap) { pressBar() } : contained
     }
 
     /// Forgets every card's side, slots and open list, and where the bar had
@@ -455,11 +491,19 @@ struct BoardView: View {
 
     /// AGSTATUS_AX_DUMP=1 logs what VoiceOver is offered once the board has
     /// settled, after any AGSTATUS_PRESS_BAR presses (`AccessibilityDump`).
+    /// AGSTATUS_MAGIC_TAP=<words> then makes VoiceOver's Magic Tap from the
+    /// first element whose label holds those words, as UIKit hands it on
+    /// (`AccessibilityDump.magicTap`), and logs the tree again.
     private func dumpAccessibilityForScreenshots() async {
         #if DEBUG
-        guard ProcessInfo.processInfo.environment["AGSTATUS_AX_DUMP"] == "1" else { return }
-        let presses = ProcessInfo.processInfo.environment["AGSTATUS_PRESS_BAR"].flatMap(Int.init) ?? 0
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["AGSTATUS_AX_DUMP"] == "1" else { return }
+        let presses = environment["AGSTATUS_PRESS_BAR"].flatMap(Int.init) ?? 0
         try? await Task.sleep(for: .milliseconds(2500 + 900 * presses))
+        AccessibilityDump.log(focused: jumpFocus.map { "\($0)" })
+        guard let words = environment["AGSTATUS_MAGIC_TAP"], !words.isEmpty else { return }
+        AccessibilityDump.magicTap(from: words)
+        try? await Task.sleep(for: .milliseconds(1500))
         AccessibilityDump.log(focused: jumpFocus.map { "\($0)" })
         #endif
     }
@@ -1655,28 +1699,79 @@ enum AccessibilityDump {
             lines.append(indent + parts.joined(separator: " | "))
             return
         }
-        var children: [Any] = node.accessibilityElements ?? []
-        if children.isEmpty {
-            let count = node.accessibilityElementCount()
-            if count != NSNotFound && count > 0 {
-                children = (0..<count).compactMap { node.accessibilityElement(at: $0) }
-            } else if let view = node as? UIView {
-                // Plain views are read in reading order, top to bottom and
-                // then leading to trailing, which is what VoiceOver does with
-                // views that name no order of their own: the List's rows and
-                // headers among them.
-                children = view.subviews.sorted { a, b in
-                    let fa = a.accessibilityFrame, fb = b.accessibilityFrame
-                    return fa.minY != fb.minY ? fa.minY < fb.minY : fa.minX < fb.minX
-                }
-            }
-        }
         var next = depth
         if let label = node.accessibilityLabel, !label.isEmpty {
             lines.append(indent + "<\(label)>")
             next += 1
         }
-        for child in children { walk(child, depth: next, into: &lines) }
+        for child in children(of: node) { walk(child, depth: next, into: &lines) }
+    }
+
+    /// A container's elements, in the order it gives them.
+    private static func children(of node: NSObject) -> [Any] {
+        let named = node.accessibilityElements ?? []
+        guard named.isEmpty else { return named }
+        let count = node.accessibilityElementCount()
+        if count != NSNotFound && count > 0 {
+            return (0..<count).compactMap { node.accessibilityElement(at: $0) }
+        }
+        // Plain views are read in reading order, top to bottom and then
+        // leading to trailing, which is what VoiceOver does with views that
+        // name no order of their own: the List's rows and headers among them.
+        return (node as? UIView)?.subviews.sorted { a, b in
+            let fa = a.accessibilityFrame, fb = b.accessibilityFrame
+            return fa.minY != fb.minY ? fa.minY < fb.minY : fa.minX < fb.minX
+        } ?? []
+    }
+
+    /// What VoiceOver's Magic Tap does with its cursor on the first element
+    /// whose label holds `words`, written to the log a step at a time.
+    ///
+    /// UIKit offers the tap to the element under the cursor, then to each
+    /// container above it, until one says it has handled it; one that nothing
+    /// on the board takes is the system's, which pauses whatever is playing.
+    /// VoiceOver does not run in the Simulator, so this walk — by each
+    /// element's `accessibilityContainer`, and a view's superview where it
+    /// names none — is how a debug build shows which part of the board
+    /// answers, and that a tap goes on past it while nothing is blocked.
+    @MainActor
+    static func magicTap(from words: String) {
+        let windows = UIApplication.shared.connectedScenes.flatMap { ($0 as? UIWindowScene)?.windows ?? [] }
+        guard let start = windows.lazy.compactMap({ first(labelled: words, under: $0, depth: 0) }).first else {
+            Logger.ax.info("magic tap: no element's label holds \(words, privacy: .public)")
+            return
+        }
+        var node: NSObject? = start
+        var steps = 0
+        while let current = node, steps < 80 {
+            let handled = current.accessibilityPerformMagicTap()
+            let label = current.accessibilityLabel.map { " \"\($0)\"" } ?? ""
+            Logger.ax.info("magic tap: \(String(describing: type(of: current)), privacy: .public)\(label, privacy: .public): \(handled ? "handled" : "passed on", privacy: .public)")
+            if handled { return }
+            node = container(of: current)
+            steps += 1
+        }
+        Logger.ax.info("magic tap: nothing on the board handled it; the system's own action would run")
+    }
+
+    private static func first(labelled words: String, under object: Any, depth: Int) -> NSObject? {
+        guard let node = object as? NSObject, depth < 40 else { return nil }
+        if let view = node as? UIView, view.isHidden || view.alpha == 0 { return nil }
+        if node.isAccessibilityElement {
+            return node.accessibilityLabel?.contains(words) == true ? node : nil
+        }
+        for child in children(of: node) {
+            if let found = first(labelled: words, under: child, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    private static func container(of node: NSObject) -> NSObject? {
+        if node.responds(to: NSSelectorFromString("accessibilityContainer")),
+           let container = node.value(forKey: "accessibilityContainer") as? NSObject {
+            return container
+        }
+        return (node as? UIView)?.superview
     }
 }
 
