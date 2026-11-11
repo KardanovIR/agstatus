@@ -135,8 +135,21 @@
   // mark, the asterisk for Claude, the hexagon for Codex and the diamond for
   // any other (marks.js). A session from before `source` existed is Claude's.
   // Until 1.7.0 every agent that was not Codex wore Claude's asterisk.
+  //
+  // Named and marked by the rule every board keeps, so the bar, its voice and
+  // a card's lead say the same words on each. Claude and Codex by name; any
+  // other source keeps its own spelling with its first letter upper-cased,
+  // "Gemini", "Codex-cli", as the hook names a session after its agent
+  // (agentLabel), where the web used to print the bare lowercase id. Looked
+  // up as the table's own key: a source is any lowercase word the server
+  // accepts, and SOURCE_NAMES['constructor'] is Object's function, which the
+  // bar printed.
+  const SOURCE_NAMES = { claude: 'Claude', codex: 'Codex' };
   const agentKey = (source) => String(source || 'claude').toLowerCase();
-  const agentName = (source) => SOURCE_NAMES[agentKey(source)] || agentKey(source);
+  const agentName = (source) => {
+    const key = agentKey(source);
+    return Object.hasOwn(SOURCE_NAMES, key) ? SOURCE_NAMES[key] : key.charAt(0).toUpperCase() + key.slice(1);
+  };
   const agentMark = (source) => {
     const key = agentKey(source);
     return (key === 'claude' ? ICON.claude : key.startsWith('codex') ? ICON.codex : ICON.agent) || '';
@@ -451,7 +464,6 @@
 
   // ---- plan usage limit bars ------------------------------------------------
 
-  const SOURCE_NAMES = { claude: 'Claude', codex: 'Codex' };
   let usage = [];
 
   const fmtReset = (ts) => {
@@ -2500,7 +2512,7 @@
   function renderDetail(source, data) {
     stopChart();
     const days = dayRange(data.days || DETAIL_DAYS);
-    const name = SOURCE_NAMES[source] || source;
+    const name = agentName(source);
 
     // Tokens per day for this source, and the per-project totals beside it.
     const perDay = new Map(days.map((d) => [d, 0]));

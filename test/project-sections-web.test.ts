@@ -449,7 +449,8 @@ describe('project sections', () => {
 
   // The bordered CLAUDE chip goes: each card's first fact is its agent's
   // mark, plain, the name in hidden text and a tooltip, and an agent that is
-  // neither Claude nor Codex gets the diamond rather than Claude's asterisk.
+  // neither Claude nor Codex gets the diamond rather than Claude's asterisk,
+  // and its own name with a capital, as every board names it.
   it('leads every meta line with its agent\'s mark, named for a screen reader and a pointer', async () => {
     const b = await boardOf([
       at('c', 1, { source: 'claude' }),
@@ -461,7 +462,7 @@ describe('project sections', () => {
     const lead = (id: string) => meta(b, id).firstElementChild as HTMLElement;
     const path = (svg: string) => /<path d="([^"]+)"/.exec(svg)![1];
     expect(b.$$('.source')).toHaveLength(0);
-    for (const [id, name, icon] of [['c', 'Claude', 'claude'], ['x', 'Codex', 'codex'], ['g', 'gemini', 'agent'], ['o', 'Claude', 'claude']]) {
+    for (const [id, name, icon] of [['c', 'Claude', 'claude'], ['x', 'Codex', 'codex'], ['g', 'Gemini', 'agent'], ['o', 'Claude', 'claude']]) {
       expect(lead(id).className, id).toBe('meta-agent');
       expect(lead(id).title, id).toBe(name);
       expect(lead(id).querySelector('.sr-only')!.textContent, id).toBe(`${name},`);
@@ -955,6 +956,60 @@ describe('a new block, aloud', () => {
     expect(said()).toBe('Docs, in docs, needs you');
     await vi.advanceTimersByTimeAsync(200);                                // 10.2 s
     expect(said()).toBe('');
+  });
+});
+
+// ---- An agent, named and marked as every board does -------------------------
+
+describe('an agent, named and marked as every board does', () => {
+  /** What a card says of its agent: the tooltip on its mark, and the hidden words before its facts. */
+  const lead = (b: Board, id: string) => {
+    const agent = meta(b, id).querySelector('.meta-agent') as HTMLElement;
+    return [agent.title, agent.querySelector('.sr-only')!.textContent];
+  };
+
+  // Claude and Codex by name; any other source in its own spelling with its
+  // first letter upper-cased, as the hook names a session after its agent
+  // (agentLabel), so the bar and its voice say what iOS and Android say. The
+  // server takes any lowercase word as a source, 'constructor' included,
+  // which a plain object index answers with Object's own function.
+  it.each([
+    ['claude', 'Claude'], ['codex', 'Codex'], ['gemini', 'Gemini'], ['codex-cli', 'Codex-cli'],
+    ['claude-work', 'Claude-work'], ['my_agent', 'My_agent'], ['constructor', 'Constructor'],
+  ])('names %s "%s" on its card, in the bar and aloud', async (source, name) => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
+    b.emit('session', blocked('n', 0, '', { project: '', name: 'Port the parser', source }));
+    expect(lead(b, 'n')).toEqual([name, `${name},`]);
+    // In No project the bar's place is the agent's name.
+    expect(bar().getAttribute('aria-label')).toBe(`1 blocked: Port the parser, ${name}, Show`);
+    expect(barShows().where).toBe(`·${name}`);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe(`Port the parser, ${name}, needs you`);
+  });
+
+  // The hook names an untitled session with no folder after its agent, and
+  // the bar leaves out a place that would only say the name again. Spelt
+  // in lower case, the web said it twice: "Gemini, gemini, needs you".
+  it('says an untitled session named after its agent once, as iOS and Android do', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' })]);
+    b.emit('session', blocked('g', 0, '', { project: '/', name: 'Gemini', source: 'gemini' }));
+    expect(bar().getAttribute('aria-label')).toBe('1 blocked: Gemini, Show');
+    expect(barShows().where).toBe(null);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(said()).toBe('Gemini needs you');
+  });
+
+  it('names a usage block and its thirty days by the same rule', async () => {
+    const b = await boardOf([at('g', 1, { source: 'gemini' }), at('k', 2, { source: 'constructor' })]);
+    b.emit('usage', [
+      { source: 'gemini', windows: [{ id: 'daily', label: 'Daily', usedPct: 10 }] },
+      { source: 'constructor', windows: [{ id: 'daily', label: 'Daily', usedPct: 20 }] },
+    ]);
+    expect([...document.querySelectorAll('.usage-name')].map((el) => el.textContent)).toEqual(['Gemini', 'Constructor']);
+    location.hash = 'usage/constructor';
+    await b.settle();
+    await b.settle();   // openDetail awaits a fetch before it paints
+    expect(document.querySelector('#detail .dv-title')!.textContent).toBe('Constructor · last 30 days');
   });
 });
 
