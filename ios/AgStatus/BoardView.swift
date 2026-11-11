@@ -2140,9 +2140,14 @@ private struct NeedsYouSlot: View, Equatable {
 /// the blocked card's edge — no colour that is not already the board's.
 ///
 /// One line where that fits, on a board two columns wide; on a phone, two,
-/// the alarm over the session. When room runs out the word BLOCKED goes
-/// first, the mark and the count staying, then the project, then the name is
-/// cut at its end.
+/// the alarm over the session. On one line, when room runs out, the word
+/// BLOCKED goes first, the mark and the count staying, then the project,
+/// then the name is cut at its end — or, on a board two columns wide, the
+/// bar takes its second line instead. On two lines each line gives way on
+/// its own: the session line drops the project, then cuts the name at its
+/// end, and the alarm line drops BLOCKED only when that line itself lacks
+/// room, since dropping it there gives the session line nothing. The web
+/// and Android give way the same way.
 private struct NeedsYouBar: View {
     /// How many lines the bar may take (`BoardView.board`).
     enum Lines: Equatable {
