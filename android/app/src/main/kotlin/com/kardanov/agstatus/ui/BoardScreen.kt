@@ -62,8 +62,8 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.SwipeToDismissBoxDefaults
 import androidx.compose.material3.SwipeToDismissBoxState
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -544,16 +544,18 @@ internal fun BoardScreen(
                                     val last = section.sessions.last().id
                                     items(section.sessions, key = { it.id }, contentType = { "card" }) { session ->
                                         val current by rememberUpdatedState(session)
-                                        val dismissState = rememberSwipeToDismissBoxState(
-                                            confirmValueChange = { value ->
-                                                if (value == SwipeToDismissBoxValue.EndToStart) {
-                                                    scope.launch { store.dismiss(current) }
-                                                    true
-                                                } else {
-                                                    false
-                                                }
-                                            },
-                                        )
+                                        // A fresh swipe for each life of a card. The
+                                        // swipe was saved with the list, by session
+                                        // id, so a card swiped away came back, when
+                                        // its session posted again and the server
+                                        // filed it under its home, as the red Dismiss
+                                        // slab with the card off the screen, until the
+                                        // app restarted. Not saved now, and new with
+                                        // each card the server makes (its createdAt).
+                                        val threshold = SwipeToDismissBoxDefaults.positionalThreshold
+                                        val dismissState = remember(session.createdAt) {
+                                            SwipeToDismissBoxState(SwipeToDismissBoxValue.Settled, threshold)
+                                        }
                                         // On at once, and gone at once if the card
                                         // is unblocked; it lets go of its own accord
                                         // with a fade, unless animations are off.
@@ -600,6 +602,20 @@ internal fun BoardScreen(
                                                 .padding(bottom = if (session.id == last) SECTION_GAP else CARD_GAP),
                                             enableDismissFromStartToEnd = false,
                                             enableDismissFromEndToStart = true,
+                                            onDismiss = { direction ->
+                                                if (direction == SwipeToDismissBoxValue.EndToStart) {
+                                                    scope.launch {
+                                                        store.dismiss(current)
+                                                        // Still on the board: the dismiss
+                                                        // failed and the store put the card
+                                                        // back where it was. Whole, not as
+                                                        // the slab it was swiped to.
+                                                        if (store.sessions.value.any { it.id == current.id }) {
+                                                            dismissState.snapTo(SwipeToDismissBoxValue.Settled)
+                                                        }
+                                                    }
+                                                }
+                                            },
                                             backgroundContent = { DismissBackground(dismissState) },
                                         ) {
                                             SessionCard(
