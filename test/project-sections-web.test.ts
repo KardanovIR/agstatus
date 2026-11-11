@@ -877,6 +877,68 @@ describe('the needs-you bar', () => {
     expect(document.activeElement).toBe(titleOf(b, 'a'));
   });
 
+  // Where the reader can see it, focus is handed on and the page stays
+  // still. Where they cannot, under the stuck label or the bar, or off the
+  // window, it is brought into view as it lands: the least way, so the
+  // root's scroll padding stops it clear of the label or the bar, and in
+  // one step under reduced motion (WCAG 2.4.11). A 375x812 window: the
+  // label stuck at the top is 34px tall, the bar's top edge is at 756.
+  describe('a focus it hands on is never hidden', () => {
+    function layOutWindow(b: Board, title: { top: number; bottom: number }, reduced = false) {
+      const at = (top: number, bottom: number) => ({ x: 0, y: top, top, left: 0, right: 343, bottom, width: 343, height: bottom - top });
+      b.win.Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this.matches('h2.section-label')) return this.matches(':first-of-type') ? at(0, 34) : at(900, 934);
+        if (this.id === 'needs') return at(756, 812);
+        if (this.matches('[data-open], h1')) return at(title.top, title.bottom);
+        return at(0, 0);
+      } as never;
+      const scrolled: Array<{ el: Element; how: unknown }> = [];
+      b.win.Element.prototype.scrollIntoView = function (this: Element, how: unknown) { scrolled.push({ el: this, how }); } as never;
+      Object.assign(window, {
+        innerHeight: 812,
+        matchMedia: (q: string) => ({ media: q, matches: reduced && q === '(prefers-reduced-motion: reduce)', addEventListener() {}, removeEventListener() {} }),
+      });
+      return scrolled;
+    }
+    async function leave(title: { top: number; bottom: number }, reduced = false) {
+      const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+      const scrolled = layOutWindow(b, title, reduced);
+      bar().focus();
+      b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+      expect(document.activeElement).toBe(titleOf(b, 'a'));
+      return scrolled.map(({ el, how }) => [el === titleOf(b, 'a') ? 'title' : el, how]);
+    }
+
+    it('leaves the page still where the title shows whole', async () => {
+      expect(await leave({ top: 300, bottom: 326 })).toEqual([]);
+      expect(await leave({ top: 34, bottom: 60 })).toEqual([]);
+    });
+
+    it.each([
+      ['wholly under the stuck label', { top: 4, bottom: 30 }],
+      ['partly under the stuck label', { top: 20, bottom: 46 }],
+      ['under the bar', { top: 740, bottom: 766 }],
+      ['below the window', { top: 1709, bottom: 1735 }],
+      ['above the window', { top: -400, bottom: -374 }],
+    ])('brings a title %s into view as focus lands', async (_where, title) => {
+      expect(await leave(title)).toEqual([['title', { block: 'nearest', behavior: 'smooth' }]]);
+    });
+
+    it('brings it in one step under reduced motion', async () => {
+      expect(await leave({ top: 4, bottom: 30 }, true)).toEqual([['title', { block: 'nearest', behavior: 'auto' }]]);
+    });
+
+    it('brings the board\'s heading into view when no card is left', async () => {
+      const b = await boardOf([blocked('a', 1, 'acme-api')]);
+      const scrolled = layOutWindow(b, { top: -500, bottom: -474 });
+      bar().focus();
+      b.emit('remove', { id: 'a' });
+      const heading = document.querySelector('h1');
+      expect(document.activeElement).toBe(heading);
+      expect(scrolled.map(({ el }) => el)).toEqual([heading]);
+    });
+  });
+
   // Leaving with focus, the bar hands it to the first of these still on the
   // board: the card it brought in this life, the card it named last, the
   // first card's title, the board's heading. Never <body>, where a reader

@@ -1316,17 +1316,17 @@
    * named last, so they land where the bar sent them or was about to; else
    * the first card's title, the next stop after the bar; else, with no card
    * left, the board's heading. Never a card brought in an earlier life,
-   * which nothing on the bar had named. Without a scroll, as every focus
-   * this board hands back: the page does not move under the reader.
+   * which nothing on the bar had named. Without moving the page where the
+   * reader can see where focus lands (handTo).
    */
   function handFocusOn() {
     for (const id of [bar.brought, bar.named]) {
       const rec = id === null ? null : cards.get(id);
       const title = rec && rec.el.isConnected ? rec.el.querySelector('[data-open]') : null;
-      if (title) { title.focus({ preventScroll: true }); return; }
+      if (title) { handTo(title); return; }
     }
     const first = gridEl.querySelector('.card [data-open]');
-    if (first) { first.focus({ preventScroll: true }); return; }
+    if (first) { handTo(first); return; }
     const heading = document.querySelector('h1');
     if (!heading) return;
     // A heading takes focus only with a tabindex of -1, which keeps it out
@@ -1336,7 +1336,42 @@
       heading.setAttribute('tabindex', '-1');
       heading.addEventListener('blur', () => heading.removeAttribute('tabindex'), { once: true });
     }
-    heading.focus({ preventScroll: true });
+    handTo(heading);
+  }
+
+  /**
+   * Focus handed to `el` by the board rather than moved there by the
+   * reader. Where all of it shows, below whatever label is stuck at the top
+   * and above the bar, the page stays still under the reader, as with every
+   * focus this board hands back. Where it does not, it is brought into view
+   * as focus lands, the least way (nearest), so the root's scroll padding
+   * stops it clear of the label or the bar, and in one step under reduced
+   * motion: a reader who had scrolled the board with the bar focused, and
+   * then saw the block answered, had focus land on a title under the stuck
+   * label, or far below the window, where nothing showed where it was
+   * (WCAG 2.4.11).
+   */
+  function handTo(el) {
+    if (!seenWhole(el) && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    }
+    el.focus({ preventScroll: true });
+  }
+
+  /**
+   * Whether all of an element shows: below the labels stuck at the top
+   * edge, where a label sticks while its cards pass (board.css) and every
+   * earlier one sticks under it, and above the bar while it shows.
+   */
+  function seenWhole(el) {
+    let top = 0;
+    for (const { el: label } of labels.values()) {
+      const l = label.getBoundingClientRect();
+      if (l.top <= 0.5 && l.bottom > top) top = l.bottom;
+    }
+    const bottom = needsEl.hidden ? window.innerHeight : needsEl.getBoundingClientRect().top;
+    const r = el.getBoundingClientRect();
+    return r.top >= top && r.bottom <= bottom;
   }
 
   needsEl.addEventListener('animationend', (e) => {
