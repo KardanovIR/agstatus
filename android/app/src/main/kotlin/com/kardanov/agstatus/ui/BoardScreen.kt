@@ -78,7 +78,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -181,10 +180,11 @@ fun BoardScreen(
     val drawnInPlace = remember(sections) { drawn.moves(sections) }
     SideEffect { drawn.record(sections) }
 
-    // The needs-you bar's walk: the card it last brought, Saveable, so turning
-    // the phone does not start the walk over. The card it brought takes the
-    // focus requester, and wears the ring for two seconds.
-    var shown by rememberSaveable { mutableStateOf<String?>(null) }
+    // The needs-you bar's walk: the card it last brought, which the store
+    // holds and lets go of once nothing is blocked, whatever screen shows
+    // then (SessionStore.brought). The card it brought takes the focus
+    // requester, and wears the ring for two seconds.
+    val shown by store.brought.collectAsState()
     var focusTarget by remember { mutableStateOf<String?>(null) }
     var ringed by remember { mutableStateOf<String?>(null) }
     val jumpFocus = remember { FocusRequester() }
@@ -219,10 +219,6 @@ fun BoardScreen(
                 walks = ProjectSections.barWalks(sections, shown),
             )
         }
-    }
-    // Nothing blocked: the walk is over, and the next block starts with Show.
-    LaunchedEffect(reading == null) {
-        if (reading == null) shown = null
     }
     // The card the bar brought keeps input focus only while its ring says
     // why, and lets go on the next touch. In touch mode, which TalkBack is,
@@ -302,7 +298,7 @@ fun BoardScreen(
         if (found < 0) return@press
         // One further down while the usage blocks lead the list.
         val index = found + if (leadsNow) 1 else 0
-        shown = target.id
+        store.bring(target.id)
         focusTarget = target.id
         ringed = null
         scope.launch {

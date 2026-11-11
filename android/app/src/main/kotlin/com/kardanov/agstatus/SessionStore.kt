@@ -1,6 +1,7 @@
 package com.kardanov.agstatus
 
 import android.app.Application
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
@@ -93,6 +94,20 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     private val _spoken = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val spoken: SharedFlow<String> = _spoken.asSharedFlow()
     private val blockSpeech = BlockSpeech()
+
+    /**
+     * The card the needs-you bar last brought into view, by session id: a
+     * press sets it ([bring]), and the bar walks on from it. None until the
+     * first press, and none again once the bar leaves, that is once nothing
+     * is blocked, which [setSessions] watches whatever screen is showing. It
+     * was the board's own state, cleared only while the board was composed:
+     * a walk that ended under History, Settings or Usage came back walking
+     * on from its old card, "Next" where it should have started over with
+     * "Show". Here it outlives turning the phone, as the store does, and not
+     * the process, as iOS's does not.
+     */
+    private val _brought = MutableStateFlow<String?>(null)
+    val brought: StateFlow<String?> = _brought.asStateFlow()
 
     private val sse = SseClient()
     private var streamJob: Job? = null
@@ -442,6 +457,13 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // MARK: The needs-you bar
+
+    /** The bar brought [sessionId] into view: its next press walks on from there. */
+    fun bring(sessionId: String) {
+        _brought.value = sessionId
+    }
+
     // MARK: Focus
 
     /**
@@ -711,10 +733,14 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      * [live] is news as it happens, a session frame or a demo tick, and only
      * then can a block be said aloud ([spoken]); a snapshot, a refresh or the
      * demo's first board only shows what already stands.
+     *
+     * With nothing blocked the needs-you bar has left, and lets go of the
+     * card it brought ([brought]), so the next block starts its walk over.
      */
     private fun setSessions(sessions: List<Session>, live: Boolean = false) {
         _sessions.value = sessions
         _subtaskSlots.value = SubtaskSlots.resolve(_subtaskSlots.value, sessions)
+        if (_brought.value != null && sessions.none { it.isBlocked }) _brought.value = null
         if (blockSpeech.observe(sessions, live, System.currentTimeMillis())) {
             viewModelScope.launch {
                 delay(BlockSpeech.GATHER_MILLIS)
@@ -726,6 +752,19 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     private fun cancelStream() {
         streamJob?.cancel()
         streamJob = null
+    }
+
+    /**
+     * Tests only: the board a live stream would leave, [sessions] and, where
+     * given, [usage], through the one way the list changes ([setSessions]).
+     * [live] makes it a session frame's news, which a block can be said for.
+     * A demo stays a demo; anything else reads as connected.
+     */
+    @VisibleForTesting
+    internal fun showForTest(sessions: List<Session>, usage: List<UsageInfo>? = null, live: Boolean = false) {
+        if (usage != null) _usage.value = usage
+        if (_connection.value != Connection.DEMO) _connection.value = Connection.LIVE
+        setSessions(sessions, live)
     }
 
     private fun stopDemoJob() {
