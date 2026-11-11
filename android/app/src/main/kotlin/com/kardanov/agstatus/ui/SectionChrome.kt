@@ -282,11 +282,15 @@ private const val BAR_MOVE_MILLIS = 220
  * and its verb is "Next" ([BarReading.walks]).
  *
  * One line on a wide screen, and on a phone two, the alarm over the session.
- * When room runs out it gives up, in order: the word BLOCKED (the mark and the
- * count stay), the place, then the end of the name. The whole bar is one
- * button, at least 48dp tall, and TalkBack hears "2 blocked: Fix the login
- * redirect, in acme-api, Show", every word it shows, then "double-tap to
- * show that session".
+ * On one line, when room runs out it gives up, in order: the word BLOCKED
+ * (the mark and the count stay), the place, then the end of the name. On two,
+ * each line gives way on its own, since dropping a word from one frees no
+ * room on the other: the session line drops the place, then cuts the name at
+ * its end, and the alarm line drops BLOCKED only when it lacks room itself.
+ * The whole bar is one button, at least 48dp tall, and TalkBack hears "2
+ * blocked: Fix the login redirect, in acme-api, Show", every word it shows,
+ * the place included where it is not drawn, then "double-tap to show that
+ * session".
  *
  * It enters from the bottom edge as the first block lands and leaves when none
  * remain; with animations off it appears and goes in place. Its words change
