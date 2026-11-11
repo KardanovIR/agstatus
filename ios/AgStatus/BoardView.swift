@@ -52,6 +52,13 @@ struct BoardView: View {
     /// The plan and the scroll view the board was last drawn with, which a
     /// press of the bar reads (`DrawnBoard`).
     @State private var drawn = DrawnBoard()
+    /// Where each card on the stacked board was last drawn, which its
+    /// reading order follows (`CardTops`). Not observed: layout writes it.
+    @State private var cardTops = CardTops()
+    /// Counts the times layout has changed the order the stacked board's
+    /// cards are read in, and is the one thing about where cards are drawn
+    /// that the board observes (`cardsMoved`).
+    @State private var reorders = 0
     /// Redraws every minute so the "resets in …" countdowns stay honest. One
     /// clock for the whole board, handed to every head: heads now live both
     /// above the scroll view and inside it, and a clock apiece would let two
@@ -380,6 +387,9 @@ struct BoardView: View {
         subtaskSlots = SubtaskSlots()
         expandedSubtasks = []
         barAfter = nil
+        // Not the edges where cards are drawn: they are layout's own answer,
+        // true of whatever is on the board now, and a card laid out where it
+        // already was reports nothing to replace them with.
     }
 
     /// Debug-only deep links so screenshot automation can reach the pushed
@@ -531,7 +541,10 @@ struct BoardView: View {
         let compactHeight = verticalSizeClass == .compact
         let arrangement = BoardArrangement.resolve(width: width, minColumn: minColumn, compactHeight: compactHeight)
         let sides = sides.resolved(for: sections)
-        let order = ReadingOrder.make(sections, arrangement: arrangement, sides: sides)
+        // Read so that layout changing the order cards are read in draws the
+        // board again (`cardsMoved`); the edges themselves are not observed.
+        _ = reorders
+        let order = ReadingOrder.make(sections, arrangement: arrangement, sides: sides, tops: cardTops.edges)
         return BoardPlan(
             width: width,
             scale: minColumn / BoardArrangement.minColumn,
@@ -778,15 +791,15 @@ struct BoardView: View {
                         // Two sides that each keep their cards — see CardSides.
                         HStack(alignment: .top, spacing: BoardArrangement.cardGap) {
                             ForEach(CardSides.Side.allCases, id: \.self) { side in
-                                cardStack(plan.sides.cards(section.sessions, on: side))
+                                cardStack(plan.sides.cards(section.sessions, on: side), in: section.key)
                                     .frame(width: plan.side, alignment: .top)
                             }
                         }
                     }
                     // Read one project at a time. Left to itself VoiceOver
-                    // goes across the sides row by row, which is the reading
-                    // order, but would run on into the next project's cards
-                    // without saying so.
+                    // goes across the sides by where things are drawn, which
+                    // is the reading order (`ReadingOrder`), but would run on
+                    // into the next project's cards without saying so.
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel(section.key.folder.map { "\($0) sessions" } ?? "Sessions with no project")
                     .id(section.id)
@@ -824,13 +837,36 @@ struct BoardView: View {
     ///
     /// So a side begins with 8pt of air, which is also the label's 8 above
     /// the first card.
-    private func cardStack(_ sessions: [Session]) -> some View {
-        VStack(spacing: BoardArrangement.cardGap - Self.cardLead) {
+    ///
+    /// Laid out by `DrawnSide`, which stacks the cards as a VStack of that
+    /// spacing would and keeps the top edge it gives each one (`CardTops`):
+    /// where a card is drawn is what the reading order follows.
+    private func cardStack(_ sessions: [Session], in section: ProjectKey) -> some View {
+        // What a laid-out side reports to, made once and kept with the edges
+        // (`cardsMoved`).
+        if cardTops.moved == nil { cardTops.moved = { cardsMoved() } }
+        return DrawnSide(spacing: BoardArrangement.cardGap - Self.cardLead, section: section,
+                         ids: sessions.map(\.id), tops: cardTops) {
             ForEach(sessions) { session in
                 card(session)
                     .padding(.top, Self.cardLead)
                     .id(JumpTarget.card(session.id))
             }
+        }
+    }
+
+    /// Cards on the stacked board have been laid out with their top edges
+    /// somewhere new (`DrawnSide`). The edges are kept where nothing observes
+    /// them; the board is drawn again only if they change the order the
+    /// cards are read in, which is what the bar names and what a press
+    /// brings. An event that moves no card asks nothing of this, and one that
+    /// moves cards without reordering them draws nothing more.
+    private func cardsMoved() {
+        guard let plan = drawn.plan, plan.arrangement == .stacked else { return }
+        cardTops.forget(allBut: plan.order)
+        let order = ReadingOrder.make(plan.sections, arrangement: .stacked, sides: plan.sides, tops: cardTops.edges)
+        if !order.lazy.map(\.id).elementsEqual(plan.order.lazy.map(\.id)) {
+            reorders &+= 1
         }
     }
 
@@ -2016,6 +2052,101 @@ private final class DrawnBoard {
     /// (`BoardView.reachingBar`). Like the bar's own action, it presses the
     /// bar from whatever board is drawn when it runs.
     var magicTap: (() -> Void)?
+}
+
+/// Where each card on the stacked board was last drawn: its top edge in its
+/// section (`DrawnTop`), which the board's reading order follows
+/// (`ReadingOrder.make`).
+///
+/// A class held in @State and deliberately not observable, as `DrawnBoard`
+/// is: layout writes it as it places cards (`DrawnSide`), and an edge that
+/// moves is nothing to redraw unless it changes the order cards are read in,
+/// which the board counts apart (`BoardView.cardsMoved`). A hook event that
+/// moves no card — a message, a token figure — changes nothing here. Main
+/// thread only.
+private final class CardTops {
+    private(set) var edges: [String: DrawnTop] = [:]
+    /// What the board does when edges have moved (`BoardView.cardsMoved`),
+    /// made on its first pass and kept, as the bar's Magic Tap is.
+    var moved: (() -> Void)?
+    private var settling = false
+
+    /// Keeps where a side has placed a card. True when that is somewhere
+    /// new.
+    func place(_ id: String, _ top: DrawnTop) -> Bool {
+        guard edges[id] != top else { return false }
+        edges[id] = top
+        return true
+    }
+
+    /// Tells the board that edges have moved, once layout is over: layout
+    /// may not change what the board observes. Every side that moved in one
+    /// pass is told about once.
+    func settle() {
+        guard !settling else { return }
+        settling = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.settling = false
+            self.moved?()
+        }
+    }
+
+    /// Forgets the cards that have left, once there are more of them than
+    /// cards on the board: a day of sessions coming and going would
+    /// otherwise keep every edge it ever drew.
+    func forget(allBut board: [Session]) {
+        guard edges.count > 2 * board.count + 8 else { return }
+        let ids = Set(board.map(\.id))
+        edges = edges.filter { ids.contains($0.key) }
+    }
+}
+
+/// One side of a stacked section: its cards one under another, `spacing`
+/// apart, laid out as a VStack of that spacing lays them out — each offered
+/// the side's width and given its own height, centred across it — that also
+/// keeps where it put each one (`CardTops`): its top edge, measured from the
+/// top of the side, which a scroll never moves. A section's two sides are
+/// top-aligned, so their edges compare.
+///
+/// A layout rather than a VStack because it already knows every card's place:
+/// keeping it costs a comparison a card each time the side is laid out, and
+/// nothing on a hook event that moves no card. A geometry reader on every
+/// card, tried first, cost the 13-inch iPad's busy board about a million
+/// instructions an event that moved nothing.
+private struct DrawnSide: Layout {
+    let spacing: CGFloat
+    let section: ProjectKey
+    /// The cards' ids, in the order of the subviews.
+    let ids: [String]
+    let tops: CardTops
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let offer = ProposedViewSize(width: proposal.width, height: nil)
+        var size = CGSize.zero
+        for (index, subview) in subviews.enumerated() {
+            let card = subview.sizeThatFits(offer)
+            size.width = max(size.width, card.width)
+            size.height += card.height + (index == 0 ? 0 : spacing)
+        }
+        return size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let offer = ProposedViewSize(width: proposal.width ?? bounds.width, height: nil)
+        var y = bounds.minY
+        var moved = false
+        for (index, subview) in subviews.enumerated() {
+            let card = subview.sizeThatFits(offer)
+            subview.place(at: CGPoint(x: bounds.midX, y: y), anchor: .top,
+                          proposal: ProposedViewSize(width: offer.width, height: card.height))
+            if index < ids.count, tops.place(ids[index], DrawnTop(section: section, y: y - bounds.minY)) {
+                moved = true
+            }
+            y += card.height + spacing
+        }
+        if moved { tops.settle() }
+    }
 }
 
 /// Which of the phone's List rows are laid out, and the one a jump is waiting

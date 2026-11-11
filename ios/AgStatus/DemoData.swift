@@ -508,7 +508,9 @@ enum DemoData {
     ///   AGSTATUS_DEMO_BLOCK     <id>[,<id>…] (those cards of a scenario
     ///                           are blocked as well, whatever it seeds them
     ///                           as: the bar naming a card it otherwise never
-    ///                           would, such as projects' acme-api)
+    ///                           would, such as projects' acme-api; on a
+    ///                           subagent board, any card but the one with
+    ///                           the subagents)
     ///   AGSTATUS_DEMO_MOVE      <id>:<folder>[,…] (a second and a half
     ///                           after launch, those cards' first real folder
     ///                           arrives, as a 1.7 server pins it: the one
@@ -1203,7 +1205,15 @@ enum DemoData {
                     state: item.state, activity: item.activity)
         }
         return base.map { session in
-            guard session.id == board.focus else { return session }
+            guard session.id == board.focus else {
+                // AGSTATUS_DEMO_BLOCK reaches the cards around the subagents'
+                // one too: on the iPad, a tall card beside two blocked ones.
+                guard blockedForScreenshots.contains(session.id) else { return session }
+                var blocked = session
+                blocked.status = .blocked
+                blocked.message = "Waiting for approval"
+                return blocked
+            }
             var focus = session
             // "just now", and so first in its project's section.
             focus.updatedAt = now - 5_000

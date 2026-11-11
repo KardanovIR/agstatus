@@ -637,29 +637,77 @@ struct CardSides: Equatable {
 
 // MARK: - ReadingOrder
 
+/// Where a card on the stacked board was last drawn: its top edge, in the
+/// section it was drawn in, measured from that section's own origin, so
+/// that scrolling never moves it (`BoardView`'s `CardTops`).
+struct DrawnTop: Equatable {
+    let section: ProjectKey
+    let y: CGFloat
+}
+
 /// The cards as a reader meets them, which is the order the needs-you bar
 /// walks.
 enum ReadingOrder {
     /// Sections in their order, then each section's cards in theirs: top to
-    /// bottom in the list, and two across row by row, the leading side first.
+    /// bottom in the list, and two across where they are drawn — by each
+    /// card's top edge, the leading side first on a tie.
     ///
-    /// A row is a card's position down its own side, the leading side winning
-    /// a tie: the third card on one side is taken to be above the fourth on
-    /// the other. It needs no measured frames, which would arrive a pass late
-    /// and make the bar depend on what happened to be laid out.
+    /// The two sides of a section keep their own cards, at their own
+    /// heights, so a card's place down its side is not its row: beside a card
+    /// with three subagent rows, the second card on the other side stands
+    /// well above the second on this one, and a reader meets it first. So
+    /// the order follows `tops`, where each card was last drawn. A section
+    /// with a card not yet drawn in it — one that has just arrived or moved
+    /// in — is read row by row, by position down each side, the leading side
+    /// first, until layout gives that card its edge; on a first fill of
+    /// cards of one height the two orders are the same.
     static func make(_ sections: [ProjectSection], arrangement: BoardArrangement,
-                     sides: CardSides) -> [Session] {
+                     sides: CardSides, tops: [String: DrawnTop] = [:]) -> [Session] {
         sections.flatMap { section -> [Session] in
             guard arrangement == .stacked else { return section.sessions }
             let leading = sides.cards(section.sessions, on: .leading)
             let trailing = sides.cards(section.sessions, on: .trailing)
-            var rows: [Session] = []
-            for row in 0..<max(leading.count, trailing.count) {
-                if row < leading.count { rows.append(leading[row]) }
-                if row < trailing.count { rows.append(trailing[row]) }
+            guard section.sessions.allSatisfy({ tops[$0.id]?.section == section.key }) else {
+                return byRow(leading, trailing)
             }
-            return rows
+            return byTop(leading, trailing, tops: tops)
         }
+    }
+
+    /// How close two top edges are to be one row: within a point, what the
+    /// rounding of layout to the pixel leaves between two cards of one
+    /// height. The leading side then comes first.
+    static let tie: CGFloat = 1
+
+    /// Down each side in its own order, taking from the side whose next card
+    /// is drawn higher, the leading side on a tie.
+    private static func byTop(_ leading: [Session], _ trailing: [Session],
+                              tops: [String: DrawnTop]) -> [Session] {
+        func top(_ session: Session) -> CGFloat { tops[session.id]?.y ?? 0 }
+        var order: [Session] = []
+        var l = 0, t = 0
+        while l < leading.count || t < trailing.count {
+            let takesLeading = t == trailing.count
+                || (l < leading.count && top(leading[l]) <= top(trailing[t]) + tie)
+            if takesLeading {
+                order.append(leading[l])
+                l += 1
+            } else {
+                order.append(trailing[t])
+                t += 1
+            }
+        }
+        return order
+    }
+
+    /// Row by row, a card's position down its side its row.
+    private static func byRow(_ leading: [Session], _ trailing: [Session]) -> [Session] {
+        var rows: [Session] = []
+        for row in 0..<max(leading.count, trailing.count) {
+            if row < leading.count { rows.append(leading[row]) }
+            if row < trailing.count { rows.append(trailing[row]) }
+        }
+        return rows
     }
 
     /// The 'next after' step: the first blocked card after the card `id` in
@@ -957,6 +1005,7 @@ extension BoardArrangement {
         verifyArrangements()
         verifyHeadForms()
         verifySidesAndReading()
+        verifyDrawnOrder()
         verifyNews()
         verifyMatrix()
         verifySubtaskSlots()
@@ -1445,6 +1494,84 @@ extension BoardArrangement {
         assert(ReadingOrder.nextBlocked(after: "b", in: lone)?.id == "b", "one blocked: itself again")
     }
 
+    /// The stacked board read where its cards are drawn: by each card's top
+    /// edge, the leading side first on a tie (`ReadingOrder`, `DrawnTop`).
+    /// The bar walks it, and its press brings what it names.
+    private static func verifyDrawnOrder() {
+        let acme = ProjectKey.folder("acme-api")
+        func at(_ edges: [(String, CGFloat)], in section: ProjectKey = acme) -> [String: DrawnTop] {
+            Dictionary(uniqueKeysWithValues: edges.map { ($0.0, DrawnTop(section: section, y: $0.1)) })
+        }
+        // The review's board. A has ten subagents, of which the stacked
+        // board shows three rows; B, C and D are a plain card's height, and C
+        // and D are blocked. The first fill puts A and C on the leading side,
+        // B and D on the trailing one.
+        var a = card("A", home: "acme-api", project: "acme-api")
+        a.subtasks = Subtasks(items: (1...10).map { Subtask(id: "k\($0)", n: $0, label: "k\($0)", state: .coding,
+                                                              activity: "") }, done: 0)
+        let board = [a, card("B", home: "acme-api", project: "acme-api"),
+                     card("C", "claude", .blocked, home: "acme-api", project: "acme-api"),
+                     card("D", "claude", .blocked, home: "acme-api", project: "acme-api")]
+        let sections = ProjectSection.make(sessions: board)
+        let sides = CardSides().resolved(for: sections)
+        assert(sides["A"] == .leading && sides["B"] == .trailing && sides["C"] == .leading && sides["D"] == .trailing,
+               "the first fill")
+        assert(SubtaskSlots().resolved(for: board, slots: SubtaskSlots.slots(for: .stacked), expanded: [])
+               .rows(for: a).count == 3, "A shows three rows")
+        // Drawn 12pt apart under the label: a plain card is 112pt tall, and
+        // A with its rows, its footer and its meta line under them about
+        // 203. So D stands beside A, and C below it.
+        let drawn = at([("A", 8), ("B", 8), ("D", 132), ("C", 223)])
+        let order = ReadingOrder.make(sections, arrangement: .stacked, sides: sides, tops: drawn)
+        assert(order.map(\.id) == ["A", "B", "D", "C"], "as drawn: D, beside A, before C, below it")
+        // The bar names D first; a press brings D and the bar names C; a
+        // press brings C and the bar names D again. Never up the screen and
+        // back down.
+        let show = NeedsYou.make(order: order, after: nil)
+        assert(show?.target == "D" && show?.face.next == false, "D first, Show")
+        let next = NeedsYou.make(order: order, after: "D")
+        assert(next?.target == "C" && next?.face.next == true, "then C, Next")
+        assert(NeedsYou.make(order: order, after: "C")?.target == "D", "and round to D")
+        // Before the board is drawn, row by row: C, the second on its side,
+        // before D, the second on its own.
+        assert(ReadingOrder.make(sections, arrangement: .stacked, sides: sides).map(\.id) == ["A", "B", "C", "D"],
+               "not yet drawn: row by row")
+        // A section with a card not drawn in it yet — just arrived, or just
+        // moved in, its edge still the one it had in the other section — is
+        // read row by row until it is.
+        var arriving = drawn
+        arriving["D"] = nil
+        assert(ReadingOrder.make(sections, arrangement: .stacked, sides: sides, tops: arriving).map(\.id)
+               == ["A", "B", "C", "D"], "a card not yet drawn")
+        var movedIn = drawn
+        movedIn["D"] = DrawnTop(section: .noProject, y: 132)
+        assert(ReadingOrder.make(sections, arrangement: .stacked, sides: sides, tops: movedIn).map(\.id)
+               == ["A", "B", "C", "D"], "an edge from another section")
+        // A tie is within a point, the leading side first; past it, the
+        // higher card.
+        func read(_ edges: [(String, CGFloat)]) -> [String] {
+            ReadingOrder.make(sections, arrangement: .stacked, sides: sides, tops: at(edges)).map(\.id)
+        }
+        assert(read([("A", 8), ("B", 8), ("C", 132), ("D", 132)]) == ["A", "B", "C", "D"], "level: leading first")
+        assert(read([("A", 8.6), ("B", 8), ("C", 133), ("D", 132)]) == ["A", "B", "C", "D"],
+               "within a point: leading first")
+        assert(read([("A", 10), ("B", 8), ("C", 134), ("D", 132)]) == ["B", "A", "D", "C"],
+               "two points: the higher first")
+        // A tall card on the trailing side: the leading side's second card
+        // is read before the trailing side's.
+        assert(read([("A", 8), ("B", 8), ("C", 132), ("D", 223)]) == ["A", "B", "C", "D"], "a tall trailing card")
+        // The list reads down each section, whatever was drawn where; and a
+        // section is read whole before the next, whatever its edges.
+        assert(ReadingOrder.make(sections, arrangement: .list, sides: sides, tops: drawn).map(\.id)
+               == ["A", "B", "C", "D"], "the list: down its section")
+        let two = ProjectSection.make(sessions: board + [card("W", "codex", .blocked, home: "web", project: "web")])
+        let twoSides = sides.resolved(for: two)
+        var twoDrawn = drawn
+        twoDrawn["W"] = DrawnTop(section: .folder("web"), y: 8)
+        assert(ReadingOrder.make(two, arrangement: .stacked, sides: twoSides, tops: twoDrawn).map(\.id)
+               == ["A", "B", "D", "C", "W"], "sections in their order, each as drawn")
+    }
+
     /// What is whose news. A label, a head and the bar are handed only what
     /// they draw, so an event that changes none of it changes none of them,
     /// and they do not run (`ProjectLabel`, `AgentHead`, `NeedsYouBar`).
@@ -1666,6 +1793,18 @@ extension BoardArrangement {
                "every card read once: \(label)")
         // On a first fill, row by row is the section's own order.
         assert(order.map(\.id) == sections.flatMap(\.sessions).map(\.id), "read section by section: \(label)")
+        // And drawn, every card one height, it still is: where cards are
+        // drawn changes the order only where their heights differ.
+        var level: [String: DrawnTop] = [:]
+        for section in sections {
+            for side in CardSides.Side.allCases {
+                for (row, session) in sides.cards(section.sessions, on: side).enumerated() {
+                    level[session.id] = DrawnTop(section: section.key, y: 8 + CGFloat(row) * 124)
+                }
+            }
+        }
+        assert(ReadingOrder.make(sections, arrangement: arrangement, sides: sides, tops: level).map(\.id)
+               == order.map(\.id), "drawn at one height, the same order: \(label)")
 
         let blocked = order.filter { $0.status == .blocked }.map(\.id)
         var after: String?
