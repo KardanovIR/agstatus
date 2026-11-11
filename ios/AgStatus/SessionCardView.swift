@@ -269,8 +269,9 @@ struct SessionCardView: View {
         // to be added here as well.
         .accessibilityElement(children: .ignore)
         // "Claude, Fix the login redirect"; a Codex Desktop session that
-        // started at / is named after its agent, and is "Codex" once.
-        .accessibilityLabel(namedForAgent ? agentName : "\(agentName), \(session.name)")
+        // started at / is named after its agent, and is "Codex" once
+        // (`Session.lead`).
+        .accessibilityLabel(session.lead(agent: agentName))
         .accessibilityValue(spokenState(stale: stale, now: now))
         .accessibilityAddTraits(.isButton)
         // The tap, stated, so a double-tap opens history wherever the
@@ -284,7 +285,8 @@ struct SessionCardView: View {
         .accessibilityCustomContent(.updated, Text(Self.spokenRelativeTime(from: session.updatedDate, to: now)))
         .accessibilityCustomContent(.tokens, session.tokensLabel.map { Text($0) })
         // Voice Control: "Tap data-pipeline", with or without its agent.
-        .accessibilityInputLabels(namedForAgent ? [agentName] : [session.name, "\(agentName) \(session.name)"])
+        .accessibilityInputLabels(session.isNamed(for: agentName) ? [agentName]
+                                  : [session.name, "\(agentName) \(session.name)"])
         .accessibilityActions {
             if let host = session.host, store.isMachineOnline(host.machine.id) {
                 Button("Bring to front on \(store.machineLabel(for: host))") {
@@ -867,13 +869,6 @@ struct SessionCardView: View {
 
     // MARK: - VoiceOver
 
-    /// Whether the session's name says no more than its agent's: none at
-    /// all, or the agent's own, which the hook gives a session with no
-    /// folder.
-    private var namedForAgent: Bool {
-        session.name.isEmpty || session.name.caseInsensitiveCompare(agentName) == .orderedSame
-    }
-
     /// The machine this session runs on, as the board names it.
     private var machineFact: String? {
         session.host.map { store.machineLabel(for: $0) }
@@ -891,10 +886,8 @@ struct SessionCardView: View {
 
     /// The live folder, for More Content, only where it differs from the
     /// project — which, unlike the face's place, it says even when it is the
-    /// card's own name.
-    private var directoryFact: String? {
-        Session.isFolderName(session.project) && session.project != projectFact ? session.project : nil
-    }
+    /// card's own name (`Session.directory`).
+    private var directoryFact: String? { session.directory }
 
     /// The card's one reading as VoiceOver says it: the state the badge draws;
     /// on a stale card, for how long nothing has been heard, in words, whether

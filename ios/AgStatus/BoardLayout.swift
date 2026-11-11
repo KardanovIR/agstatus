@@ -18,6 +18,25 @@
 import CoreGraphics
 import Foundation
 
+// MARK: - Exact names
+
+extension String {
+    /// Whether this is `other` code unit for code unit: how every board
+    /// compares folder names, section keys and session names.
+    ///
+    /// Not Swift's `==`, which compares by canonical equivalence, so that a
+    /// composed "café" (U+00E9) equals a decomposed one (e + U+0301) — and
+    /// hashes them alike. The web compares with `===` and Android with
+    /// Kotlin's `==`, both code unit by code unit, and the three boards have
+    /// to draw one board: the same folder sent in two forms by two machines
+    /// is two sections everywhere, never one on a phone and two on the desk.
+    /// A 1.7 server sends every name in NFC, where the two rules agree; an
+    /// older one sends whatever it was given.
+    func isExactly(_ other: String) -> Bool {
+        utf16.elementsEqual(other.utf16)
+    }
+}
+
 // MARK: - ProjectKey
 
 /// Which section a card is under: a folder, by its name in exact case, or no
@@ -27,9 +46,31 @@ import Foundation
 /// that somebody really did call "No project" is a section like any other,
 /// and a folder called "codex" is never mistaken for the Codex head or for a
 /// session whose id is "codex" (`JumpTarget`).
+///
+/// Equal, and hashed, code unit by code unit (`isExactly`): a key is a
+/// folder's name exactly as it was sent.
 enum ProjectKey: Hashable {
     case folder(String)
     case noProject
+
+    static func == (lhs: ProjectKey, rhs: ProjectKey) -> Bool {
+        switch (lhs, rhs) {
+        case let (.folder(a), .folder(b)): a.isExactly(b)
+        case (.noProject, .noProject): true
+        default: false
+        }
+    }
+
+    func hash(into hasher: inout Hasher) {
+        switch self {
+        case .folder(let name):
+            hasher.combine(0 as UInt8)
+            hasher.combine(name.utf16.count)
+            for unit in name.utf16 { hasher.combine(unit) }
+        case .noProject:
+            hasher.combine(1 as UInt8)
+        }
+    }
 
     /// The section key of the wire contract (docs/design/project-sections.md):
     /// the folder the server pinned for the session's life (`homeProject`);
@@ -101,9 +142,36 @@ extension Session {
     /// label already does, for every card beneath it. That includes a titled
     /// session, which 1.6.5 always gave its folder, and a worktree root,
     /// which reports its repository and is grouped under it.
+    ///
+    /// Both comparisons are exact (`isExactly`), as on the web and Android.
     var movedTo: String? {
-        guard Session.isFolderName(project), project != projectKey.folder, project != name else { return nil }
+        guard let directory, !project.isExactly(name) else { return nil }
+        return directory
+    }
+
+    /// The live folder, where it is a folder and not the project's own:
+    /// what More Content calls Directory. Unlike the face's place it is said
+    /// even when it is the card's own name. Exact, as `movedTo` is.
+    var directory: String? {
+        guard Session.isFolderName(project) else { return nil }
+        if let folder = projectKey.folder, project.isExactly(folder) { return nil }
         return project
+    }
+
+    /// Whether the session's name says no more than its agent's: none at
+    /// all, or exactly its agent's display name, which the hook gives a
+    /// session with no folder. Exact, as the bar's comparisons are: "codex"
+    /// is a name of its own beside the agent Codex.
+    func isNamed(for agent: String) -> Bool {
+        name.isEmpty || name.isExactly(agent)
+    }
+
+    /// What VoiceOver hears first on a card: "<agent>, <name>" — "Claude,
+    /// Fix the login redirect" — or the name alone where it is the agent's,
+    /// so the untitled Codex session at `/` is "Codex", never "Codex, Codex".
+    /// The same on the web and Android.
+    func lead(agent: String) -> String {
+        isNamed(for: agent) ? agent : "\(agent), \(name)"
     }
 }
 
@@ -609,6 +677,13 @@ struct NeedsYou: Equatable {
 
         /// "2 blocked: Fix the login redirect, in acme-api".
         var spoken: String { "\(count) blocked: \(name)\(place.map { ", \($0)" } ?? "")" }
+
+        /// Equal when it draws the same code units (`isExactly`): a name
+        /// that changes only its Unicode form is drawn again in its new one.
+        static func == (lhs: Face, rhs: Face) -> Bool {
+            lhs.count == rhs.count && lhs.next == rhs.next && lhs.name.isExactly(rhs.name)
+                && (lhs.place == nil) == (rhs.place == nil) && (lhs.place ?? "").isExactly(rhs.place ?? "")
+        }
     }
 
     let face: Face
@@ -642,13 +717,13 @@ struct NeedsYou: Equatable {
     /// card's own "in <folder>" is: an untitled Codex session in acme-api,
     /// which the hook names "acme-api", is "acme-api" and not "acme-api · in
     /// acme-api"; one named after its agent in No project is "Codex". Exact
-    /// comparisons, on the web and Android as here.
+    /// comparisons (`isExactly`), on the web and Android as here.
     static func words(for session: Session) -> (name: String, place: String?) {
         let agent = UsageInfo.displayName(for: session.source)
         let name = session.name.isEmpty ? agent : session.name
         switch session.projectKey {
-        case .folder(let folder): return (name, folder == name ? nil : "in \(folder)")
-        case .noProject: return (name, name == agent ? nil : agent)
+        case .folder(let folder): return (name, folder.isExactly(name) ? nil : "in \(folder)")
+        case .noProject: return (name, name.isExactly(agent) ? nil : agent)
         }
     }
 
@@ -855,6 +930,7 @@ extension BoardArrangement {
     /// dismissal or a message does to the cards that stay.
     static func verify() {
         verifySectionKeys()
+        verifyExactNames()
         verifyArrangements()
         verifyHeadForms()
         verifySidesAndReading()
@@ -982,6 +1058,89 @@ extension BoardArrangement {
         assert(desktop.projectKey == .folder("acme-api") && desktop.movedTo == "ios", "and kept")
         // A pin that is not a folder, which no 1.7 server sends, is no pin.
         assert(card("z", home: uuid, project: "web").projectKey == .folder("web"), "a UUID pin is no pin")
+    }
+
+    /// Names compared code unit for code unit (`isExactly`), as the web and
+    /// Android compare them, and never by Swift's canonical equivalence: a
+    /// folder, a section and a name are each exactly what was sent. Every
+    /// check here compares with `isExactly` or `ProjectKey`'s own `==`,
+    /// since `==` on two Strings would pass either way.
+    private static func verifyExactNames() {
+        func same(_ a: String?, _ b: String?) -> Bool {
+            switch (a, b) {
+            case (nil, nil): true
+            case let (a?, b?): a.isExactly(b)
+            default: false
+            }
+        }
+        // One folder in two forms: café composed (U+00E9), as a Linux
+        // checkout names it, and decomposed (e, U+0301), as macOS's file
+        // APIs often do. Swift's == calls them one name.
+        let composed = "caf\u{E9}", decomposed = "cafe\u{301}"
+        assert(composed == decomposed && !composed.isExactly(decomposed) && composed.isExactly("caf\u{E9}"),
+               "== merges the two forms; isExactly does not")
+        // Two sections on every board, from either machine first: by code
+        // unit 'e' (0065) is before 'é' (00E9), so the decomposed one leads.
+        for board in [[composed, decomposed], [decomposed, composed]] {
+            let sections = ProjectSection.make(sessions: board.enumerated().map {
+                card("c\($0.offset)", home: $0.element, project: $0.element)
+            })
+            assert(sections.map(\.key) == [.folder(decomposed), .folder(composed)]
+                   && sections.map(\.label.count) == [1, 1], "café in two forms is two sections")
+            assert(same(sections[0].key.folder, decomposed) && same(sections[1].key.folder, composed),
+                   "each under its own form")
+        }
+        assert(ProjectKey.folder(composed) != .folder(decomposed)
+               && Set([ProjectKey.folder(composed), .folder(decomposed)]).count == 2
+               && Set([JumpTarget.section(.folder(composed)), .section(.folder(decomposed))]).count == 2,
+               "two keys, two hashes, two targets")
+        assert(SectionLabel(key: .folder(composed), count: 1) != SectionLabel(key: .folder(decomposed), count: 1),
+               "two labels")
+        // Each card is given its side in its own section.
+        let sides = CardSides().resolved(for: ProjectSection.make(sessions: [card("c0", project: composed),
+                                                                             card("c1", project: decomposed)]))
+        assert(sides["c0"] == .leading && sides["c1"] == .leading, "each leads its own section")
+
+        // A live folder in the other form is somewhere else: the card says
+        // so, and More Content names it.
+        let moved = card("m", home: composed, project: decomposed, name: "Fix the login redirect")
+        assert(same(moved.movedTo, decomposed) && same(moved.directory, decomposed), "in café")
+        let home = card("h", home: composed, project: composed, name: "Fix the login redirect")
+        assert(home.movedTo == nil && home.directory == nil, "at home")
+        // A title in the other form of the folder it moved to is not its
+        // own folder's name.
+        let named = card("n", home: "acme-api", project: decomposed, name: composed)
+        assert(same(named.movedTo, decomposed), "a name in the other form")
+        assert(card("o", home: "acme-api", project: composed, name: composed).movedTo == nil
+               && same(card("o", home: "acme-api", project: composed, name: composed).directory, composed),
+               "a name in the same form: More Content only")
+
+        // The bar: a session titled café in its folder café, in the other
+        // form, is not named after its folder, and says where it is.
+        let titled = card("t", "claude", .blocked, home: decomposed, project: decomposed, name: composed)
+        let words = NeedsYou.words(for: titled)
+        assert(same(words.name, composed) && same(words.place, "in \(decomposed)"), "café · in café")
+        assert(NeedsYou.words(for: card("u", "claude", .blocked, home: composed, project: composed, name: composed))
+               .place == nil, "the same form: said once")
+        // A bar whose name changes only its form is a bar to draw again.
+        assert(NeedsYou.Face(count: 1, name: composed, place: nil, next: false)
+               != NeedsYou.Face(count: 1, name: decomposed, place: nil, next: false)
+               && NeedsYou.Face(count: 1, name: "x", place: composed, next: false)
+               != NeedsYou.Face(count: 1, name: "x", place: decomposed, next: false)
+               && NeedsYou.Face(count: 1, name: "x", place: nil, next: false)
+               != NeedsYou.Face(count: 1, name: "x", place: "", next: false)
+               && NeedsYou.Face(count: 1, name: composed, place: "in a", next: true)
+               == NeedsYou.Face(count: 1, name: composed, place: "in a", next: true), "faces, exactly")
+
+        // A card named after its agent is read once, and only when the name
+        // is the agent's exactly: "codex" is a name of its own.
+        let desk = card("d", "codex", name: "Codex")
+        assert(desk.isNamed(for: "Codex") && desk.lead(agent: "Codex") == "Codex", "Codex, once")
+        let lower = card("l", "codex", name: "codex")
+        assert(!lower.isNamed(for: "Codex") && lower.lead(agent: "Codex") == "Codex, codex", "codex is a name")
+        assert(card("e", "codex", name: "").lead(agent: "Codex") == "Codex", "no name: the agent's")
+        assert(card("f", name: "Fix the login redirect").lead(agent: "Claude") == "Claude, Fix the login redirect",
+               "<agent>, <name>")
     }
 
     /// The arrangement rule and the heads' pin rule, at the board widths of
