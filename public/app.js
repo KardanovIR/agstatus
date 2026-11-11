@@ -452,8 +452,29 @@
     name.textContent = cut(lo);
   }
 
+  /**
+   * What a stuck label takes at the top of the window, measured as the bar's
+   * height is (padForNeeds) and set on the root, whose scroll padding
+   * (board.css) keeps whatever is scrolled into view clear of it: a control
+   * taking focus, and the card the bar brings. A label is one line as tall
+   * as its line height, and a reader's own line height (WCAG 1.4.12) makes
+   * it taller than any token can say. Every label is as tall as the next;
+   * the tallest of those that changed size is taken, from the observer
+   * below, so a frame that draws no label measures none.
+   */
+  function padForLabels(els) {
+    let h = 0;
+    for (const el of els) h = Math.max(h, el.getBoundingClientRect().height);
+    if (!h) return;   // not laid out: a screen over the board, say
+    const root = document.documentElement;
+    if (root.style.getPropertyValue('--label-h') !== `${h}px`) root.style.setProperty('--label-h', `${h}px`);
+  }
+
   const labelSizes = typeof ResizeObserver === 'function'
-    ? new ResizeObserver((entries) => { for (const e of entries) fitLabel(e.target); })
+    ? new ResizeObserver((entries) => {
+      padForLabels(entries.map((e) => e.target));
+      for (const e of entries) fitLabel(e.target);
+    })
     : null;
   // The webfonts change every width the fits measured, and on a cold load
   // they arrive after the board has drawn in the fallback face, which is

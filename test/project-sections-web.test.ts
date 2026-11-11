@@ -28,6 +28,27 @@ vi.mock('jsdom', async (importOriginal) => {
 const fontsArrive = (b: Board) => (document as unknown as { fonts: EventTarget }).fonts
   .dispatchEvent(new b.win.Event('loadingdone'));
 
+/**
+ * A ResizeObserver a test can fire, as a browser does once layout has
+ * changed an observed box: for every element it observes. The board makes
+ * its observers as it loads, so this goes in before loadBoard.
+ */
+class FakeResizeObserver {
+  static made: FakeResizeObserver[] = [];
+  readonly seen = new Set<Element>();
+  constructor(private readonly cb: (entries: Array<{ target: Element }>) => void) { FakeResizeObserver.made.push(this); }
+  observe(el: Element) { this.seen.add(el); }
+  unobserve(el: Element) { this.seen.delete(el); }
+  disconnect() { this.seen.clear(); }
+  static fire() {
+    for (const ro of FakeResizeObserver.made) if (ro.seen.size) ro.cb([...ro.seen].map((target) => ({ target })));
+  }
+}
+const observeSizes = () => {
+  FakeResizeObserver.made = [];
+  vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+};
+
 const MIN = 60_000;
 
 /** The cards in the order the grid draws them. */
@@ -448,6 +469,32 @@ describe('project sections', () => {
     // Measured, so the cut is the script's alone, and CSS adds no ellipsis
     // of its own (board.css).
     expect(b.$(`h2[data-section="${name}"]`)!.classList.contains('fitted')).toBe(true);
+  });
+
+  // A label is one line as tall as its line height, which a reader can set
+  // for themselves (WCAG 1.4.12: 1.5). What a stuck label takes at the top
+  // is measured, as the bar's height is, and the root's scroll padding
+  // reads it, so focus and the bar's jump land clear of a taller label.
+  it('measures what a label takes at the top, for the scroll padding', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    let height = 34;
+    b.win.Element.prototype.getBoundingClientRect = function (this: Element) {
+      const h = this.matches('h2.section-label') ? height : 0;
+      return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: h, width: 0, height: h };
+    } as never;
+    b.emit('snapshot', [at('a', 1, { homeProject: 'acme-api' }), at('b', 2, { homeProject: 'billing' })]);
+    const labelH = () => document.documentElement.style.getPropertyValue('--label-h');
+    FakeResizeObserver.fire();
+    expect(labelH()).toBe('34px');
+    height = 38.5;   // the reader's line height, 1.5
+    FakeResizeObserver.fire();
+    expect(labelH()).toBe('38.5px');
+    // Not laid out, under a screen over the board: the last height stands.
+    height = 0;
+    FakeResizeObserver.fire();
+    expect(labelH()).toBe('38.5px');
   });
 
   it('fits a label again when its count changes', async () => {
@@ -1193,6 +1240,15 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(r).toMatch(/background:\s*var\(--ink-950\)/);
     expect(r).toMatch(/z-index:\s*1\b/);
     expect(r).toMatch(/grid-column:\s*1 \/ -1/);
+  });
+
+  // A label's line is one line by its own line height, so a reader's own
+  // (WCAG 1.4.12) gives the name a taller box rather than cutting off the
+  // bottom of every letter; the token stays for a browser without lh.
+  it('makes a label\'s line as tall as its own line height, so a reader\'s spacing cuts no letter', () => {
+    const r = rule(board, '.section-line');
+    expect(r).toMatch(/height:\s*var\(--label-line\);\s*height:\s*1lh;/);
+    expect(r).toMatch(/overflow:\s*hidden/);
   });
 
   // A name fitLabel has measured is cut by the script alone, in the middle:

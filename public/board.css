@@ -304,7 +304,9 @@ body {
  * A label is one line at every width and text size, so each is exactly as
  * tall as the one it covers. */
 html {
-  /* A label's line, and what the label takes at the top of the window. */
+  /* A label's line, and what the label takes at the top of the window:
+   * until app.js measures a label (padForLabels), which it does as soon as
+   * one is drawn, since a reader's own line height can make it taller. */
   --label-line: calc(var(--t-md) * var(--lh-tight));
   --label-h: calc(var(--label-line) + 2 * var(--space-xs));
 }
@@ -338,13 +340,18 @@ html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(-
 .section-label:first-child { margin-top: 0; }
 
 /* One line, whatever wraps inside it: the line's own box clips, not the
- * label's, whose padding would show the top of a second. */
+ * label's, whose padding would show the top of a second. One line by its
+ * own line height, 1lh, and not by the token alone: a reader who sets a
+ * line height of their own (WCAG 1.4.12's 1.5) lays the name out on a
+ * taller line, and a box held to the token cut off the bottom of every
+ * letter, so 'gg' read 'qq'. The token stays for a browser without lh. */
 .section-line {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: var(--space-xs);
   height: var(--label-line);
+  height: 1lh;
   overflow: hidden;
 }
 
