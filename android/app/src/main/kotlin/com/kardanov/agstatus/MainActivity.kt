@@ -10,7 +10,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -20,6 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
@@ -33,6 +37,9 @@ import com.kardanov.agstatus.ui.HistoryScreen
 import com.kardanov.agstatus.ui.PairSheet
 import com.kardanov.agstatus.ui.ScannerScreen
 import com.kardanov.agstatus.ui.SettingsScreen
+import com.kardanov.agstatus.ui.Speaker
+import com.kardanov.agstatus.ui.SpokenAlarm
+import com.kardanov.agstatus.ui.SpokenLine
 import com.kardanov.agstatus.ui.UsageDetailScreen
 import com.kardanov.agstatus.ui.WelcomeScreen
 import com.kardanov.agstatus.ui.adoptBoard
@@ -254,6 +261,13 @@ private fun AgStatusApp(
 
     KeepScreenAwakeEffect(store, showsBoard)
 
+    // What the app says aloud, a block that lands while it is in front, on
+    // whichever screen shows: above the NavHost, so History, Settings and
+    // Usage hear it as the board does (SpokenAlarm).
+    val speechScope = rememberCoroutineScope()
+    val speaker = remember(speechScope) { Speaker(speechScope) }
+    SpokenAlarm(store.spoken, speaker)
+
     Box(modifier = Modifier.fillMaxSize()) {
         NavHost(navController = navController, startDestination = startDestination) {
             composable(Route.WELCOME) {
@@ -262,6 +276,7 @@ private fun AgStatusApp(
             composable(Route.BOARD) {
                 BoardScreen(
                     store = store,
+                    speaker = speaker,
                     onOpenHistory = { sessionId, subtaskId ->
                         navController.navigate(Route.history(sessionId, subtaskId))
                     },
@@ -329,6 +344,13 @@ private fun AgStatusApp(
         if (showPairSheet) {
             PairSheet(store = store, onDismiss = { showPairSheet = false })
         }
+
+        SpokenLine(
+            speaker = speaker,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .windowInsetsPadding(WindowInsets.safeDrawing),
+        )
     }
 }
 

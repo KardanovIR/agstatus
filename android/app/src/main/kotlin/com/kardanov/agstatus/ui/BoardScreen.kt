@@ -136,13 +136,16 @@ import kotlin.math.abs
  * (ProjectSections.ORDER) and never move because one got busy. The usage
  * bars stay pinned above the list, and while anything is blocked the
  * needs-you bar runs along the screen's bottom edge: the board's one alarm,
- * and the way to the card that needs you. A block that lands while the board
- * is open is also said aloud, for TalkBack ([SpokenLine]).
+ * and the way to the card that needs you. A block that lands while the app
+ * is in front is also said aloud, for TalkBack, on whichever screen shows:
+ * the app's [speaker] says it ([SpokenAlarm]), and the board's press uses it
+ * too, where its card could not take focus.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun BoardScreen(
+internal fun BoardScreen(
     store: SessionStore,
+    speaker: Speaker,
     onOpenHistory: (sessionId: String, subtaskId: String?) -> Unit,
     onOpenUsage: (String) -> Unit,
     onOpenSettings: () -> Unit,
@@ -204,12 +207,6 @@ fun BoardScreen(
                 }
             },
         )
-    }
-    // What the board says aloud: a block that lands while it is watching
-    // (SessionStore.spoken), through a polite live region.
-    val speaker = remember { Speaker() }
-    LaunchedEffect(store) {
-        store.spoken.collect { sentence -> speaker.say(sentence, scope) }
     }
     val reading = remember(sections, shown) {
         ProjectSections.barTarget(sections, shown)?.let { target ->
@@ -320,7 +317,7 @@ fun BoardScreen(
             withFrameNanos { }
             val focused = runCatching { jumpFocus.requestFocus() }.getOrDefault(false)
             if (!focused && touchExploration(context)) {
-                speaker.say("${ProjectSections.cardLead(target)}, blocked", scope)
+                speaker.say("${ProjectSections.cardLead(target)}, blocked")
             }
         }
     }
@@ -454,7 +451,6 @@ fun BoardScreen(
                         },
                 )
             },
-            spoken = { SpokenLine(speaker) },
         ) {
             Box(sides) {
                 when {
@@ -657,7 +653,7 @@ private fun leastListRoom(): Dp {
 /**
  * The board under the top bar: the usage blocks pinned at the top, the list
  * under them, and the needs-you bar along the bottom edge while anything is
- * blocked, with the [spoken] line just above it.
+ * blocked.
  *
  * Placed in another order than drawn: the usage blocks, the bar, then the
  * list. Compose walks a keyboard's Tab through siblings in the order they are
@@ -677,12 +673,11 @@ private fun BoardBody(
     bottomInset: Dp,
     usage: @Composable () -> Unit,
     bar: @Composable () -> Unit,
-    spoken: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     board: @Composable () -> Unit,
 ) {
-    Layout(contents = listOf(usage, bar, board, spoken), modifier = modifier) { slots, constraints ->
-        val (usageSlot, barSlot, boardSlot, spokenSlot) = slots
+    Layout(contents = listOf(usage, bar, board), modifier = modifier) { slots, constraints ->
+        val (usageSlot, barSlot, boardSlot) = slots
         val width = constraints.maxWidth
         val height = constraints.maxHeight
         val loose = Constraints(maxWidth = width, maxHeight = height)
@@ -696,7 +691,6 @@ private fun BoardBody(
         val usages = usageSlot.map { it.measure(loose.copy(maxHeight = Constraints.Infinity)) }
         val top = usages.sumOf { it.height }
         val boards = boardSlot.map { it.measure(Constraints.fixed(width, (height - top - bottom).coerceAtLeast(0))) }
-        val lines = spokenSlot.map { it.measure(loose) }
         layout(width, height) {
             var y = 0
             for (placeable in usages) {
@@ -705,7 +699,6 @@ private fun BoardBody(
             }
             for (placeable in bars) placeable.place(0, height - placeable.height)
             for (placeable in boards) placeable.place(0, top)
-            for (placeable in lines) placeable.place(0, height - bottom - placeable.height)
         }
     }
 }

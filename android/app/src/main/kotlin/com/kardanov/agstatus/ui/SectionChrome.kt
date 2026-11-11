@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +65,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.ProjectSection
 import com.kardanov.agstatus.ProjectSections
@@ -73,6 +77,7 @@ import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 /**
@@ -496,18 +501,23 @@ private const val SPOKEN_HOLD_MILLIS = 5_000L
 private const val SPOKEN_GAP_MILLIS = 250L
 
 /**
- * What the board says aloud ([SpokenLine]): a new block, "Fix the login
- * redirect, in acme-api, needs you" (BlockSpeech), and where a press of the
- * bar went when its card could not take focus. Each sentence holds for a few
- * seconds and goes, so the next one, even in the same words, is news.
+ * What the app says aloud ([SpokenLine]): a new block, "Fix the login
+ * redirect, in acme-api, needs you" (BlockSpeech, through [SpokenAlarm]), and
+ * where a press of the bar went when its card could not take focus. Each
+ * sentence holds for a few seconds and goes, so the next one, even in the
+ * same words, is news.
+ *
+ * One for the whole app, made above the NavHost, and it says everything in
+ * its own [scope], that one's: a sentence handed over from a screen that then
+ * leaves is still let go of on time, not left holding its words.
  */
 @Stable
-internal class Speaker {
+internal class Speaker(private val scope: CoroutineScope) {
     var said: String? by mutableStateOf(null)
         private set
     private var saying: Job? = null
 
-    fun say(sentence: String, scope: CoroutineScope) {
+    fun say(sentence: String) {
         saying?.cancel()
         saying = scope.launch {
             if (said != null) {
@@ -522,12 +532,13 @@ internal class Speaker {
 }
 
 /**
- * Where the board speaks: a polite live region, which TalkBack reads out
+ * Where the app speaks: a polite live region, which TalkBack reads out
  * when its words change, after whatever it is saying. Not an announcement:
  * View.announceForAccessibility is deprecated from Android 16, which asks
  * for a live region instead. Draws nothing, and holds no words between
  * sentences, so TalkBack has nothing to stop on. One dp, because a node
- * without size is left out of what TalkBack is handed.
+ * without size is left out of what TalkBack is handed. It stands over the
+ * NavHost, so it is there on every screen.
  */
 @Composable
 internal fun SpokenLine(speaker: Speaker, modifier: Modifier = Modifier) {
@@ -538,6 +549,28 @@ internal fun SpokenLine(speaker: Speaker, modifier: Modifier = Modifier) {
             if (said != null) contentDescription = said
         },
     )
+}
+
+/**
+ * Hands [speaker] what the store says aloud ([spoken], SessionStore.spoken)
+ * while the app is in front, on whichever screen shows: it is composed
+ * above the NavHost. It was the board's, and a block that landed while
+ * History, Settings or Usage was open was counted as said and said nowhere.
+ *
+ * Not in front, the app says nothing, as iOS says nothing while it is
+ * inactive, and what arrives then is let go rather than kept: by the time
+ * the app is in front again it is not news, and a block standing then is
+ * the bar's to show. "In front" is resumed, so a board left showing in
+ * another window of a split screen still speaks.
+ */
+@Composable
+internal fun SpokenAlarm(spoken: Flow<String>, speaker: Speaker) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(spoken, speaker, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            spoken.collect { sentence -> speaker.say(sentence) }
+        }
+    }
 }
 
 // MARK: - Layout

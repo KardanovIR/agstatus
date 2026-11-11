@@ -86,9 +86,10 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     private val focusTimers = HashMap<String, Job>()
 
     /**
-     * What the board says aloud when sessions become blocked while it is
+     * What the app says aloud when sessions become blocked while it is
      * watching, "Fix the login redirect, in acme-api, needs you" or "2
-     * sessions need you" ([BlockSpeech]), for the board to hand to TalkBack.
+     * sessions need you" ([BlockSpeech]), for the app to hand to TalkBack
+     * while it is in front, on whichever screen shows (ui/SpokenAlarm).
      * Not kept: a sentence nobody is there to hear is not news later.
      */
     private val _spoken = MutableSharedFlow<String>(extraBufferCapacity = 8)
