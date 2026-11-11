@@ -113,20 +113,42 @@ enum ProjectKey: Hashable {
     ///
     /// Compared as UTF-16 code units, the lowercased name first: what
     /// JavaScript's `<` does on `toLowerCase()` and Kotlin's `compareTo` on
-    /// `lowercase()`. Not `localizedStandardCompare`, whose order changes with
-    /// the reader's locale and puts `agstatus` before `AgStatus`.
+    /// `lowercase(Locale.ROOT)`. Not `localizedStandardCompare`, whose order
+    /// changes with the reader's locale and puts `agstatus` before `AgStatus`.
     func precedes(_ other: ProjectKey) -> Bool {
-        switch (self, other) {
-        case (.noProject, _):
-            return false
-        case (.folder, .noProject):
-            return true
-        case let (.folder(a), .folder(b)):
-            let foldedA = Array(a.lowercased().utf16)
-            let foldedB = Array(b.lowercased().utf16)
-            if foldedA != foldedB { return foldedA.lexicographicallyPrecedes(foldedB) }
-            return Array(a.utf16).lexicographicallyPrecedes(Array(b.utf16))
-        }
+        Self.precedes(order, other.order)
+    }
+
+    /// The keys in the shared order. Each name is lowercased once, not once
+    /// a comparison.
+    static func sorted(_ keys: [ProjectKey]) -> [ProjectKey] {
+        keys.map { ($0, $0.order) }.sorted { precedes($0.1, $1.1) }.map(\.0)
+    }
+
+    /// What the order reads of a folder's name: lowercased, then exact, each
+    /// as UTF-16 code units. Nil for No project, which comes last.
+    private var order: (folded: [UInt16], exact: [UInt16])? {
+        guard case .folder(let name) = self else { return nil }
+        return (Array(Self.folded(name).utf16), Array(name.utf16))
+    }
+
+    private static func precedes(_ a: (folded: [UInt16], exact: [UInt16])?,
+                                 _ b: (folded: [UInt16], exact: [UInt16])?) -> Bool {
+        guard let a else { return false }
+        guard let b else { return true }
+        if a.folded != b.folded { return a.folded.lexicographicallyPrecedes(b.folded) }
+        return a.exact.lexicographicallyPrecedes(b.exact)
+    }
+
+    /// A name lowercased as JavaScript's `toLowerCase()` and Kotlin's
+    /// `lowercase(Locale.ROOT)` lowercase it: Unicode's full mapping with no
+    /// locale's rules, the final-sigma rule included, so the Σ that ends a
+    /// word becomes ς (U+03C2) and any other σ. The standard library's
+    /// `lowercased()` maps each character on its own and makes every Σ a σ,
+    /// which put "νομος-api" before "ΝΟΜΟΣ" here and after it on the other
+    /// boards. Foundation's, with no locale, applies the rule (`verify`).
+    static func folded(_ name: String) -> String {
+        name.lowercased(with: nil)
     }
 }
 
@@ -211,7 +233,7 @@ struct ProjectSection: Identifiable, Equatable {
             if members[key] == nil { keys.append(key) }
             members[key, default: []].append(session)
         }
-        return keys.sorted { $0.precedes($1) }.map { ProjectSection(key: $0, sessions: members[$0] ?? []) }
+        return ProjectKey.sorted(keys).map { ProjectSection(key: $0, sessions: members[$0] ?? []) }
     }
 }
 
@@ -1010,6 +1032,28 @@ extension BoardArrangement {
         assert(ProjectSection.make(sessions: mixed.map { card($0, project: $0) }).map(\.key)
                == ["2fa", "my-app", "my_app", "Myapp", "web", "zeta", "ÉTÉ"].map(ProjectKey.folder),
                "code units, case folded first")
+
+        // Lowercased as JavaScript and Kotlin lowercase, the final-sigma rule
+        // included: a Σ that ends a word is ς (03C2), any other σ (03C3).
+        // The standard library's lowercased() makes every Σ a σ.
+        assert(ProjectKey.folded("ΝΟΜΟΣ").isExactly("νομος") && ProjectKey.folded("ΑΣ-Z").isExactly("ας-z")
+               && ProjectKey.folded("ΣΑ").isExactly("σα") && ProjectKey.folded("ΟΔΥΣΣΕΥΣ").isExactly("οδυσσευς")
+               && !"ΝΟΜΟΣ".lowercased().isExactly("νομος"), "final sigma")
+        // The order table's rows past ASCII, which the web's and Android's
+        // tests assert too, from every starting point: café decomposed and
+        // composed as two sections, 'e' (0065) before 'é' (00E9); then the
+        // Greek, where ς (03C2) sorts before σ (03C3).
+        let composed = "caf\u{E9}", decomposed = "cafe\u{301}"
+        let unicode = ["νομος-api", "ΝΟΜΟΣ", composed, "ασ-a", decomposed, "χαος2", "ΑΣ-Z", "ΧΑΟΣ"]
+        let unicodeOrder: [ProjectKey] = [decomposed, composed, "ΑΣ-Z", "ασ-a", "ΝΟΜΟΣ", "νομος-api", "ΧΑΟΣ", "χαος2"]
+            .map(ProjectKey.folder)
+        for shift in unicode.indices {
+            let names = Array(unicode[shift...] + unicode[..<shift])
+            assert(ProjectSection.make(sessions: names.enumerated().map { card("g\($0.offset)", project: $0.element) })
+                   .map(\.key) == unicodeOrder, "past ASCII, from \(shift)")
+        }
+        assert(ProjectKey.folder("ΝΟΜΟΣ").precedes(.folder("νομος-api"))
+               && !ProjectKey.folder("νομος-api").precedes(.folder("ΝΟΜΟΣ")), "[ΝΟΜΟΣ, νομος-api]")
 
         // The section keeps the store's order, and a new card leads it.
         let store = [card("n", home: "api"), card("x", home: "web"), card("o", home: "api"), card("p", home: "api")]
