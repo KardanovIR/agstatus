@@ -494,7 +494,7 @@ fun BoardScreen(
                                 contentPadding = PaddingValues(horizontal = 16.dp),
                             ) {
                                 if (usageLeads) {
-                                    item(key = USAGE_ITEM, contentType = USAGE_ITEM) {
+                                    item(key = ProjectSections.USAGE_KEY, contentType = ProjectSections.USAGE_KEY) {
                                         DisposableEffect(Unit) {
                                             usageComposed = true
                                             onDispose { usageComposed = false }
@@ -637,9 +637,6 @@ fun BoardScreen(
         }
     }
 }
-
-/** The usage blocks' key, as the list's first item. */
-private const val USAGE_ITEM = "usage"
 
 /**
  * The room the list keeps under pinned usage blocks, or they lead it: a

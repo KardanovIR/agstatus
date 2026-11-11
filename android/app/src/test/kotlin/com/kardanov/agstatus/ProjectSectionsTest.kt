@@ -164,6 +164,28 @@ class ProjectSectionsTest {
     }
 
     @Test
+    fun `no key but a card's can be a session id, the usage blocks' included`() {
+        // A card's key is its session id. Every other item in the board's
+        // list, the usage blocks where they lead it and each label, has a key
+        // that no id the server takes can equal, or two items share one and
+        // the LazyColumn throws. A session posted as "usage" did exactly that.
+        val names = listOf("", "usage", "board", "project", "acme-api", "No project", "a/b", "ΝΟΜΟΣ", UUID)
+        val nonCardKeys = names.map { ProjectSection.keyFor(it) } + ProjectSections.USAGE_KEY
+        for (key in nonCardKeys) {
+            assertFalse(key, SESSION_ID.matches(key))
+        }
+        assertEquals(nonCardKeys.size, nonCardKeys.toSet().size)
+
+        // The ids that look most like those keys are on the board at once.
+        val board = listOf("usage", "board", "project", "board.usage", "project:acme")
+            .map { id -> session(id, homeProject = "acme") }
+        val keys = listOf(ProjectSections.USAGE_KEY) +
+            ProjectSections.of(board).flatMap { section -> listOf(section.key) + section.sessions.map { it.id } }
+        assertTrue(board.all { SESSION_ID.matches(it.id) })
+        assertEquals(keys.size, keys.toSet().size)
+    }
+
+    @Test
     fun `the jump's list index counts each label before its cards`() {
         val sections = ProjectSections.of(
             listOf(
@@ -407,6 +429,9 @@ class ProjectSectionsTest {
 
     private companion object {
         const val UUID = "0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b"
+
+        /** The ids the server takes (SESSION_ID_RE, src/app.ts), so the ids a card can be keyed by. */
+        val SESSION_ID = Regex("^[A-Za-z0-9._:-]{1,128}$")
 
         /** docs/design/project-sections.md, "Shared test vector": every client asserts this order. */
         val SHARED_VECTOR = listOf("zeta", "", "Alpha", "alpha", "beta", "AgStatus", "agstatus", UUID)

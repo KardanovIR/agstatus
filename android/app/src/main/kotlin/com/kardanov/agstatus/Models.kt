@@ -370,8 +370,19 @@ object ProjectSections {
     }
 
     /**
+     * The usage blocks' key, where they lead the board's LazyColumn as its
+     * first item. Like a label's ([ProjectSection.keyFor]) it has a slash,
+     * which no session id can: the server takes ids of letters, digits and
+     * `.`, `_`, `:` and `-` alone (SESSION_ID_RE, src/app.ts). It was the
+     * bare word "usage", and a session posted with that id crashed the board
+     * whenever the blocks led the list: two items with one key.
+     */
+    const val USAGE_KEY = "board/usage"
+
+    /**
      * The card's index in the board's LazyColumn, where each section is its
-     * label and then its cards; -1 when it is not on the board.
+     * label and then its cards; -1 when it is not on the board. One more
+     * where the usage blocks ([USAGE_KEY]) lead the list.
      */
     fun listIndex(sections: List<ProjectSection>, sessionId: String): Int {
         var index = 0
