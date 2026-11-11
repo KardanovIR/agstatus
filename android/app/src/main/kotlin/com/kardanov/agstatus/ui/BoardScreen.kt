@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyItemScope
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -292,6 +293,35 @@ internal fun BoardScreen(
     val firstCardId = sections.firstOrNull()?.sessions?.firstOrNull()?.id
     val firstCardComposed = firstCardId != null && composedFirstCard == firstCardId
 
+    // When the bar leaves while it has a keyboard's focus, the focus goes on
+    // to the card the bar last named, where that card is in view, else to
+    // the first card in view: never to the top app bar, where the platform
+    // put it, the reader's place on the board lost and a stray Enter opening
+    // Settings or leaving the demo. It goes as the bar starts to leave, while
+    // the bar still holds it, or, with animations off, the moment the bar
+    // has gone. Nothing scrolls for it. TalkBack keeps a focus of its own,
+    // and a press has already sent the keyboard's to the card it brought.
+    val lastNamed = remember { LastNamed() }
+    SideEffect { reading?.let { lastNamed.id = it.target.id } }
+    val readingNow by rememberUpdatedState(reading)
+    val handFocusOn: () -> Unit = handOn@{
+        if (lastNamed.handedOn) return@handOn
+        val to = focusAfterBar(listState.layoutInfo, lastNamed.id, labelHeight.px) ?: return@handOn
+        lastNamed.handedOn = true
+        focusTarget = to
+        scope.launch {
+            withFrameNanos { }
+            runCatching { jumpFocus.requestFocus() }
+        }
+    }
+    LaunchedEffect(reading == null) {
+        if (reading != null) {
+            lastNamed.handedOn = false
+        } else if (barFocused) {
+            handFocusOn()
+        }
+    }
+
     val currentSections by rememberUpdatedState(sections)
     // A press reads the board as last drawn: a card dismissed or unblocked
     // since the bar named it is passed over for the next.
@@ -449,7 +479,12 @@ internal fun BoardScreen(
                     onPress = pressBar,
                     modifier = Modifier
                         .focusRequester(barFocus)
-                        .onFocusChanged { barFocused = it.isFocused }
+                        .onFocusChanged { state ->
+                            val lost = barFocused && !state.isFocused
+                            barFocused = state.isFocused
+                            // Gone at once, animations off: it lost the focus going.
+                            if (lost && readingNow == null) handFocusOn()
+                        }
                         .focusProperties {
                             if (tabsAround) {
                                 if (usageComposed) previous = usageLast
@@ -549,7 +584,7 @@ internal fun BoardScreen(
                                         )
                                     }
                                     val last = section.sessions.last().id
-                                    items(section.sessions, key = { it.id }, contentType = { "card" }) { session ->
+                                    items(section.sessions, key = { it.id }, contentType = { CARD_TYPE }) { session ->
                                         val current by rememberUpdatedState(session)
                                         // A fresh swipe for each life of a card. The
                                         // swipe was saved with the list, by session
@@ -826,6 +861,31 @@ private class MeasuredHeight {
 /** Whether the usage blocks led the list when the board was last drawn. Plain: updating it must not recompose. */
 private class UsageJoin {
     var leads = false
+}
+
+/** A card's content type in the board's list. */
+private const val CARD_TYPE = "card"
+
+/**
+ * The card the needs-you bar last named, and whether the focus has been
+ * handed on to a card since it left. Plain: updating it must not recompose.
+ */
+private class LastNamed {
+    var id: String? = null
+    var handedOn = false
+}
+
+/**
+ * Where a keyboard's focus goes when the needs-you bar leaves while it has
+ * it: the card the bar last [named], where it is at least partly in view
+ * under the stuck label ([labelPx] tall), else the first card that is. Null
+ * with no card in view, where the focus is left to the platform.
+ */
+internal fun focusAfterBar(layout: LazyListLayoutInfo, named: String?, labelPx: Int): String? {
+    val inView = layout.visibleItemsInfo.filter { item ->
+        item.contentType == CARD_TYPE && item.offset + item.size > labelPx && item.offset < layout.viewportEndOffset
+    }
+    return (inView.firstOrNull { it.key == named } ?: inView.firstOrNull())?.key as? String
 }
 
 /** TalkBack, or another service that explores by touch, is on. */
