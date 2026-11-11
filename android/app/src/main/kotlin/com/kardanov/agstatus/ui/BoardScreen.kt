@@ -79,6 +79,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -258,8 +259,15 @@ internal fun BoardScreen(
     // and the bar left the list 63dp at 100% on a Pixel 7 held sideways and
     // none at 200%, where the bar cut the blocks through their text. They
     // are as tall in either place, so where they stand cannot flap.
-    var usageHeight by remember { mutableIntStateOf(0) }
-    var bodyHeight by remember { mutableIntStateOf(0) }
+    //
+    // Saved with the list's place, which is saved by item and counts the
+    // blocks as its first item where they lead it: a board drawn afresh,
+    // back from a card's history or after a change of text size, starts with
+    // the blocks where that place was counted with them. Not saved, they
+    // joined a frame late, and the list started one item on, the card the
+    // reader had opened half under the label above it.
+    var usageHeight by rememberSaveable { mutableIntStateOf(0) }
+    var bodyHeight by rememberSaveable { mutableIntStateOf(0) }
     val leastList = leastListRoom()
     val leastListPx = with(LocalDensity.current) { leastList.roundToPx() }
     val usageLeads = sessions.isNotEmpty() && !boardGone && visibleUsage.isNotEmpty() &&
