@@ -365,7 +365,12 @@ struct BoardView: View {
     private func reachingBar<Board: View>(_ board: Board, while shows: Bool) -> some View {
         // The board's own place among its neighbours is the first, as it was.
         let contained = board.accessibilityElement(children: .contain).accessibilitySortPriority(0)
-        return shows ? contained.accessibilityAction(.magicTap) { pressBar() } : contained
+        // One action for the board's life, kept with what a press reads
+        // (`DrawnBoard`): a closure made afresh on each pass would be a
+        // changed property on the board's container at every hook event,
+        // which only arrivals, departures and blocks should touch.
+        if drawn.magicTap == nil { drawn.magicTap = { pressBar() } }
+        return shows ? contained.accessibilityAction(.magicTap, drawn.magicTap ?? {}) : contained
     }
 
     /// Forgets every card's side, slots and open list, and where the bar had
@@ -2007,6 +2012,10 @@ private struct BoardPlan {
 private final class DrawnBoard {
     var plan: BoardPlan?
     var scroller: ScrollViewProxy?
+    /// What the board's Magic Tap does, made on the first pass and kept
+    /// (`BoardView.reachingBar`). Like the bar's own action, it presses the
+    /// bar from whatever board is drawn when it runs.
+    var magicTap: (() -> Void)?
 }
 
 /// Which of the phone's List rows are laid out, and the one a jump is waiting
