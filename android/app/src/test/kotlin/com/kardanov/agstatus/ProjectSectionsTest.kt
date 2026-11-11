@@ -464,6 +464,17 @@ class ProjectSectionsTest {
         assertEquals("Claude, s1", ProjectSections.cardLead(session("s1")))
     }
 
+    @Test
+    fun `a card named after its own agent says it once, compared exactly`() {
+        // The hook names an untitled Codex session at "/" after its agent.
+        assertEquals("Codex", ProjectSections.cardLead(session("s-root-shell", name = "Codex", source = "codex")))
+        assertEquals("Claude", ProjectSections.cardLead(session("a", name = "Claude")))
+        assertEquals("Gemini", ProjectSections.cardLead(session("b", name = "Gemini", source = "gemini")))
+        // Another case, or another agent's name, is a name of its own.
+        assertEquals("Codex, codex", ProjectSections.cardLead(session("c", name = "codex", source = "codex")))
+        assertEquals("Claude, Codex", ProjectSections.cardLead(session("d", name = "Codex")))
+    }
+
     private companion object {
         const val UUID = "0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b"
 

@@ -438,9 +438,17 @@ object ProjectSections {
     /**
      * How TalkBack starts a card, "Claude, Fix the login redirect": the
      * agent, taken from the session itself, because Claude's and Codex's
-     * sessions share a section now and the card's mark is not read.
+     * sessions share a section now and the card's mark is not read. A card
+     * named after its own agent says it once: the untitled Codex session at
+     * `/`, which the hook names "Codex", is "Codex", never "Codex, Codex",
+     * as on iOS and the web. Compared exactly, as the bar compares, so a
+     * session named "codex" is still "Codex, codex".
      */
-    fun cardLead(session: Session): String = "${sourceDisplayName(session.source)}, ${session.displayName}"
+    fun cardLead(session: Session): String {
+        val agent = sourceDisplayName(session.source)
+        val name = session.displayName
+        return if (name == agent) name else "$agent, $name"
+    }
 }
 
 // MARK: - The spoken alarm
