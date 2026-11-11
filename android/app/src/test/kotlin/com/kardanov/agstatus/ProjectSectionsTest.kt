@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 /**
  * The board grouped by project (docs/design/project-sections.md): which
@@ -77,6 +78,42 @@ class ProjectSectionsTest {
         val sorted = listOf("acme_web", "acme-api", "acme9", "Acme").sortedWith(ProjectSections.ORDER)
 
         assertEquals(listOf("Acme", "acme-api", "acme9", "acme_web"), sorted)
+    }
+
+    @Test
+    fun `lower case applies the final sigma, as JavaScript's does`() {
+        // ΝΟΜΟΣ lowercases to νομος, its last letter the final ς (U+03C2), as
+        // JavaScript's toLowerCase gives it, so it sorts before νομος-api,
+        // whose ς is final too. Lowercased a letter at a time it would end in
+        // σ (U+03C3), which sorts after ς, and the pair would swap.
+        assertEquals("νομος", "ΝΟΜΟΣ".lowercase(Locale.ROOT))
+        assertEquals("νομοσ", "ΝΟΜΟΣ".map { it.lowercaseChar() }.joinToString(""))
+        val board = listOf(
+            session("a", project = "νομος-api", homeProject = "νομος-api"),
+            session("b", project = "ΝΟΜΟΣ", homeProject = "ΝΟΜΟΣ"),
+        )
+
+        assertEquals(listOf("ΝΟΜΟΣ", "νομος-api"), titles(ProjectSections.of(board)))
+        assertEquals(listOf("ΝΟΜΟΣ", "νομος-api"), listOf("νομος-api", "ΝΟΜΟΣ").sortedWith(ProjectSections.ORDER))
+    }
+
+    @Test
+    fun `café composed and café decomposed are two sections, by code unit`() {
+        // As an older server passes them on, unnormalised: é (U+00E9) from
+        // one machine and e + U+0301 from another. Compared by code unit
+        // they differ, and e (U+0065) comes before é.
+        val composed = "café"
+        val decomposed = "café"
+        for (pinned in listOf(true, false)) {
+            val board = listOf(
+                session("a", project = composed, homeProject = if (pinned) composed else ""),
+                session("b", project = decomposed, homeProject = if (pinned) decomposed else ""),
+            )
+            val sections = ProjectSections.of(board)
+
+            assertEquals(listOf(decomposed, composed), titles(sections))
+            assertEquals(listOf(listOf("b"), listOf("a")), sections.map { ids(it.sessions) })
+        }
     }
 
     @Test
