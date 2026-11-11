@@ -478,13 +478,14 @@
     : null;
   // The webfonts change every width the fits measured, and on a cold load
   // they arrive after the board has drawn in the fallback face, which is
-  // wider. Neither the labels' nor the bar's markup or size changes with
-  // them, so nothing else would ask either to fit again: the bar kept
-  // dropping its word and its project when both would fit.
+  // wider. Neither the labels', the bar's nor the usage heads' markup or
+  // size changes with them, so nothing else would ask any to fit again:
+  // the bar kept dropping its word and its project when both would fit.
   if (document.fonts && typeof document.fonts.addEventListener === 'function') {
     document.fonts.addEventListener('loadingdone', () => {
       for (const { el } of labels.values()) fitLabel(el);
       fitNeeds();
+      for (const line of usageEl.querySelectorAll('.usage-line')) fitUsage(line);
     });
   }
 
@@ -574,11 +575,17 @@
     // a Claude-only evening doesn't need Codex bars. With no sessions there is
     // nothing to disambiguate, and the limits still matter between runs, so
     // show everything rather than nothing.
-    const active = new Set();
-    for (const s of state.values()) active.add(s.source || 'claude');
+    //
+    // Counted as well: every card an agent has on the board, done included,
+    // which its block's name carries, as each client's head does.
+    const sessions = new Map();
+    for (const s of state.values()) {
+      const source = s.source || 'claude';
+      sessions.set(source, (sessions.get(source) || 0) + 1);
+    }
     const blocks = [];
     for (const u of usage) {
-      if (active.size > 0 && !active.has(u.source)) continue;
+      if (sessions.size > 0 && !sessions.has(u.source)) continue;
       const bars = (u.windows || []).map((w) => {
         const pct = Math.min(100, Math.max(0, Number(w.usedPct) || 0));
         const reset = w.resetsAt ? fmtReset(w.resetsAt) : '';
@@ -612,18 +619,59 @@
       // the numbers stay readable as content.
       //
       // The name carries the agent's mark, the legend for the marks that lead
-      // every card's meta line now that Claude and Codex share sections.
-      const label = escape(agentName(u.source));
+      // every card's meta line now that Claude and Codex share sections, and
+      // beside it how many sessions the agent has on the board, "7
+      // sessions", where that fits (fitUsage). The button is named for both,
+      // "Claude, 7 sessions", as iOS names its head, so the count is heard
+      // even where it is not drawn: one string, which no box can come
+      // between, holding every word the button shows.
+      const name = agentName(u.source);
+      const n = sessions.get(u.source) || 0;
+      const count = n ? `${n} session${n === 1 ? '' : 's'}` : '';
       blocks.push(`
         <section class="usage-block" data-source="${escape(u.source)}">
-          <h2 class="usage-src"><button class="usage-open" type="button" data-source="${escape(u.source)}"
-            ><span class="usage-name">${agentMark(u.source)}${label}</span><span class="usage-more" aria-hidden="true">›</span></button></h2>
+          <h2 class="usage-src"><button class="usage-open" type="button" data-source="${escape(u.source)}"${
+            count ? ` aria-label="${escape(`${name}, ${count}`)}"` : ''}
+            ><span class="usage-line"><span class="usage-name">${agentMark(u.source)}${escape(name)}</span>${
+              count ? `<span class="usage-count">${count}</span>` : ''}</span><span class="usage-more" aria-hidden="true">›</span></button></h2>
           ${bars.join('')}
         </section>`);
     }
-    paint(usageEl, blocks.join(''));
     usageEl.hidden = blocks.length === 0;
+    if (paint(usageEl, blocks.join(''))) {
+      if (usageSizes) usageSizes.disconnect();
+      for (const line of usageEl.querySelectorAll('.usage-line')) {
+        if (usageSizes) usageSizes.observe(line);
+        fitUsage(line);
+      }
+    }
   }
+
+  /**
+   * Fits a usage block's head to its one line, as a label is fitted: where
+   * the agent's name and its session count do not both fit, the count goes
+   * first, before any letter of the name, which CSS cuts at its end only
+   * where the name alone does not fit (board.css), as iOS cuts it. Measured
+   * as fitLabel measures, in fractions of a pixel, whenever the head is
+   * painted, changes size, or the webfonts arrive.
+   */
+  function fitUsage(line) {
+    const name = line.querySelector('.usage-name');
+    const count = line.querySelector('.usage-count');
+    const room = roomOf(line);
+    if (!room || !name || !count) return;
+    const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
+    const fits = () => drawnWidth(name) + gap + roomOf(count) <= room;
+    if (!count.hidden && fits()) return;   // read first: no write for a head that fits
+    count.hidden = false;
+    count.hidden = !fits();
+  }
+
+  // A head's line keeps one line's height whatever the count does, so the
+  // fit below never changes the size it answers to.
+  const usageSizes = typeof ResizeObserver === 'function'
+    ? new ResizeObserver((entries) => { for (const e of entries) fitUsage(e.target); })
+    : null;
 
   // The six statuses always, even at zero. A legend that reflows every time a
   // count changes is movement reporting nothing, and this board animates only

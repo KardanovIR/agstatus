@@ -411,6 +411,45 @@ html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(-
   vertical-align: -0.125rem;
 }
 
+/* And how many sessions that agent has on the board, "7 sessions", in a
+ * label count's quiet ink: the count every client's head carries. One line,
+ * as a label is, by its own line height, so a reader's own spacing cuts no
+ * letter: where the name and the count do not both fit, the count goes
+ * first (app.js fitUsage), wrapping out of sight until then, and only a
+ * name that does not fit alone is cut, at its end, as iOS cuts it. The
+ * button's name keeps the count either way. Here and not in card.css,
+ * whose usage block the landing page draws without either. */
+.usage-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-xs);
+  height: calc(var(--t-xs) * var(--lh-body));
+  height: 1lh;
+  overflow: hidden;
+}
+
+.usage-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-count {
+  flex: none;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
 /* ---- Empty state --------------------------------------------------------
  * Teaches the interface rather than announcing its own emptiness. */
 .empty {

@@ -602,11 +602,93 @@ describe('project sections', () => {
       { source: 'codex', windows: [{ id: 'primary', label: '5-hour', usedPct: 20 }] },
     ]);
     const blocks = [...document.querySelectorAll('.usage-block')] as HTMLElement[];
-    expect(blocks.map((el) => el.querySelector('.usage-open')!.textContent!.replace('›', '').trim())).toEqual(['Claude', 'Codex']);
+    expect(blocks.map((el) => el.querySelector('.usage-name')!.textContent)).toEqual(['Claude', 'Codex']);
     const cardMark = (id: string) => meta(b, id).querySelector('svg path')!.getAttribute('d');
     expect(blocks[0].querySelector('.usage-name svg path')!.getAttribute('d')).toBe(cardMark('c'));
     expect(blocks[1].querySelector('.usage-name svg path')!.getAttribute('d')).toBe(cardMark('x'));
     expect(blocks[0].querySelector('.usage-name svg')!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  // Each usage block's name carries how many sessions its agent has on the
+  // board, every card of the agent's, done included, as each client's head
+  // does: "7 sessions", in a label count's quiet ink, and in the button's
+  // name, "Claude, 7 sessions", which holds every word the button shows.
+  it('gives each usage block\'s name its agent\'s session count, done included', async () => {
+    const b = await boardOf([
+      at('c1', 1, { source: 'claude' }), at('c2', 2, { source: 'claude', status: 'done' }),
+      at('c3', 3, { source: 'claude', status: 'blocked' }), at('x1', 4, { source: 'codex' }), at('o1', 5, { source: undefined }),
+    ]);
+    b.emit('usage', [
+      { source: 'claude', windows: [{ id: 'five_hour', label: 'Current session', usedPct: 10 }] },
+      { source: 'codex', windows: [{ id: 'primary', label: '5-hour', usedPct: 20 }] },
+    ]);
+    const heads = [...document.querySelectorAll('.usage-open')] as HTMLElement[];
+    expect(heads.map((h) => h.querySelector('.usage-count')!.textContent)).toEqual(['4 sessions', '1 session']);
+    expect(heads.map((h) => h.getAttribute('aria-label'))).toEqual(['Claude, 4 sessions', 'Codex, 1 session']);
+    // Beside the name, on its line: name, then count.
+    expect([...heads[0].querySelector('.usage-line')!.children].map((el) => el.className)).toEqual(['usage-name', 'usage-count']);
+    // The count follows the board: a card that leaves takes itself off it.
+    b.emit('remove', { id: 'c2' });
+    expect(document.querySelector('.usage-count')!.textContent).toBe('3 sessions');
+    expect(document.querySelector('.usage-open')!.getAttribute('aria-label')).toBe('Claude, 3 sessions');
+  });
+
+  // An empty board shows every agent's limits, and no agent has a session
+  // to count: the name alone, as before.
+  it('counts nothing on a board with no sessions', async () => {
+    const b = await boardOf([]);
+    b.emit('usage', [{ source: 'claude', windows: [{ id: 'five_hour', label: 'Current session', usedPct: 10 }] }]);
+    const head = document.querySelector('.usage-open') as HTMLElement;
+    expect(head.querySelector('.usage-count')).toBe(null);
+    expect(head.hasAttribute('aria-label')).toBe(false);
+    expect(head.querySelector('.usage-name')!.textContent).toBe('Claude');
+  });
+
+  // Where room runs short the count goes first, before any letter of the
+  // name, and comes back where it fits again; it is heard either way. The
+  // stand-in: a head's line is `room` px wide, the name draws `name` px and
+  // the count 60, measured in fractions of a pixel.
+  it.each([
+    ['both, where both fit', 300, 70, false],
+    ['the name alone, where both do not', 120, 70, true],
+    ['the name alone, for a line 0.4px short', 137.6, 78, true],
+    ['both, where they fit to the pixel', 138, 78, false],
+  ])('fits a usage block\'s head: %s', async (_what, room, name, hidden) => {
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    const drawn = (el: Element) => (el.classList.contains('usage-name') ? (name as number)
+      : el.classList.contains('usage-count') ? ((el as HTMLElement).hidden ? 0 : 60)
+        : el.classList.contains('usage-line') ? (room as number) : 0);
+    standIn(b, drawn, drawn);
+    b.emit('snapshot', [at('c1', 1, { source: 'claude' })]);
+    b.emit('usage', [{ source: 'claude', windows: [{ id: 'five_hour', label: 'Current session', usedPct: 10 }] }]);
+    const head = document.querySelector('.usage-open') as HTMLElement;
+    expect((head.querySelector('.usage-count') as HTMLElement).hidden).toBe(hidden);
+    expect(head.getAttribute('aria-label')).toBe('Claude, 1 session');
+  });
+
+  it('fits a usage block\'s head again when it changes size or the webfonts arrive', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    let room = 300;
+    const drawn = (el: Element) => (el.classList.contains('usage-name') ? 70
+      : el.classList.contains('usage-count') ? ((el as HTMLElement).hidden ? 0 : 60)
+        : el.classList.contains('usage-line') ? room : 0);
+    standIn(b, drawn, drawn);
+    b.emit('snapshot', [at('c1', 1, { source: 'claude' })]);
+    b.emit('usage', [{ source: 'claude', windows: [{ id: 'five_hour', label: 'Current session', usedPct: 10 }] }]);
+    const count = () => (document.querySelector('.usage-count') as HTMLElement).hidden;
+    expect(count()).toBe(false);
+    room = 120;                       // the window narrows
+    FakeResizeObserver.fire();
+    expect(count()).toBe(true);
+    room = 300;                       // and widens
+    FakeResizeObserver.fire();
+    expect(count()).toBe(false);
+    room = 120;                       // the same width, with Barlow in
+    fontsArrive(b);
+    expect(count()).toBe(true);
   });
 
   // Focus, the history route and the reconciler find cards where they
@@ -1313,6 +1395,20 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(r).toMatch(/overflow:\s*hidden/);
   });
 
+  // A usage block's head is one line by its own line height, as a label's
+  // is, so its count wraps out of sight until fitUsage takes it away, and a
+  // reader's own spacing cuts no letter; the count is a label count, quiet.
+  it('keeps a usage block\'s head to one line by its own line height, its count in the quiet ink', () => {
+    const r = rule(board, '.usage-line');
+    expect(r).toMatch(/flex-wrap:\s*wrap/);
+    expect(r).toMatch(/height:\s*1lh;/);
+    expect(r).toMatch(/overflow:\s*hidden/);
+    const count = rule(board, '.usage-count');
+    expect(count).toMatch(/color:\s*var\(--text-3\)/);
+    expect(count).toMatch(/text-transform:\s*none/);
+    expect(rule(board, '.section-count')).toMatch(/color:\s*var\(--text-3\)/);
+  });
+
   // A name fitLabel has measured is cut by the script alone, in the middle:
   // CSS's own ellipsis, which only covers the moment before anything is
   // measured, put a second one at the end of a cut a fraction too wide.
@@ -1325,7 +1421,7 @@ describe('the stylesheets behind the sections and the bar', () => {
   // must draw exactly what it drew.
   it('keeps the sections, the mark and the bar out of the sheet the landing page loads', () => {
     const card = read('card.css');
-    for (const name of ['section-', 'meta-agent', 'usage-name', 'needs', 'is-ringed']) {
+    for (const name of ['section-', 'meta-agent', 'usage-name', 'usage-line', 'usage-count', 'needs', 'is-ringed']) {
       expect(card, name).not.toContain(name);
     }
     const landing = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'landing.html'), 'utf8');
