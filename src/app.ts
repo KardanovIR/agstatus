@@ -27,6 +27,7 @@ import {
   normalizeHost,
   PAIR_CODE_TTL_MS,
   Session,
+  sessionName,
   STATUSES,
   Status,
   Store,
@@ -44,7 +45,6 @@ const DEVICE_TOKEN_RE = /^[0-9a-fA-F]{16,200}$/;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F]/g;
 const MAX_SSE_PER_WORKSPACE = 10;
 const WORKSPACE_IDLE_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
-const NAME_MAX = 120;
 const MESSAGE_MAX = 300;
 const USAGE_SOURCE_RE = /^[a-z][a-z0-9_-]{0,23}$/;
 const USAGE_WINDOW_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -127,6 +127,13 @@ const frame = (event: string, data: unknown): string =>
  */
 const clean = (v: unknown, max: number): string | undefined =>
   typeof v === 'string' ? safeClip(v.replace(CONTROL_CHARS_RE, ''), max) : undefined;
+
+/**
+ * clean() for a session's name and project, which are also composed to
+ * Unicode NFC before the cut (sessionName), so a folder sent in either form
+ * is one name on every board.
+ */
+const cleanName = (v: unknown): string | undefined => (typeof v === 'string' ? sessionName(v) : undefined);
 
 const AGENT_ERROR =
   'agent must be an object with id matching ^[A-Za-z0-9._:-]{1,64}$ ' +
@@ -526,9 +533,9 @@ export function createApp(cfg: AppConfig): CreatedApp {
     const input: UpsertInput = {
       id,
       status: body.status,
-      name: clean(body.name, NAME_MAX),
+      name: cleanName(body.name),
       message: clean(body.message, MESSAGE_MAX),
-      project: clean(body.project, NAME_MAX),
+      project: cleanName(body.project),
       source: body.source as string | undefined,
       host,
     };

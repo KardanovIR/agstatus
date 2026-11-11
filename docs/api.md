@@ -53,10 +53,11 @@ its ends trimmed, it is empty, `/`, `.` or a bare UUID: a session started at
 `/` (an empty `project` from the Node hook, `/` from the shell hook), a
 Codex scratch folder, or a raw post's blank name. Such a session has
 `"homeProject": ""` until a post names a real folder, which then claims it;
-a post without a `project` changes nothing. A usable name is kept exactly as
-sent, never trimmed. The key is always present, and it is never read from a
-webhook body: a `homeProject` posted there is ignored. It is stored with the
-session, so it survives a restart of a server with
+a post without a `project` changes nothing. A usable name is kept as sent,
+never trimmed, and in Unicode NFC like every `name` and `project` (below).
+The key is always present, and it is never read from a webhook body: a
+`homeProject` posted there is ignored. It is stored with the session, so it
+survives a restart of a server with
 [Postgres](self-hosting.md#persistence-postgresql); a server without a
 database forgets it with the card. Since 1.7.0.
 
@@ -70,6 +71,13 @@ restart in between forgets it, and the session's next post then starts over
 from the folder it names. A card the session TTL expired
 (`SESSION_TTL_MS`, 24 hours without an update on a hosted board) starts
 over too, as the hook's pinned card name does.
+
+`name` and `project`, and so `homeProject`, are stored and served in
+Unicode NFC. The server composes what it is sent, so one folder that
+reaches it decomposed from one machine (NFD, an `e` and then its accent, as
+a folder made in the macOS Finder often is) and composed from another (NFC,
+one `é`) is one name, and one section on every board. A row an older server
+stored is composed as it loads. Since 1.7.0.
 
 The boards key their project sections by it: `homeProject` when it is
 usable; otherwise `project`, when that is usable by the same rule, which
@@ -168,9 +176,9 @@ the same JSON body and upsert a session by `session_id`:
 | ------------ | ------ | -------- | ----- |
 | `session_id` | string | yes      | Unique session identifier. Must match `^[A-Za-z0-9._:-]{1,128}$`. |
 | `status`     | enum   | yes      | One of `idle`, `planning`, `coding`, `testing`, `blocked`, `done`. |
-| `name`       | string | no       | Human-readable title. Defaults to `session_id` if omitted (and never yet set — on update an omitted `name` carries the stored one forward). Truncated to 120 chars. The bundled Node hook sends a Claude Code session's own title when it has one (the Claude desktop app titles every session, `/rename` titles one in the CLI; never in minimal mode), otherwise the folder it pinned at `SessionStart` — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent's name (`Claude`, `Codex`) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later `SessionStart` for the same id, so `/compact`, `/clear` and `--resume` leave it alone, while a renamed session renames its card. See [Card names and projects](hooks.md#card-names-and-projects). |
+| `name`       | string | no       | Human-readable title. Defaults to `session_id` if omitted (and never yet set — on update an omitted `name` carries the stored one forward). Composed to Unicode NFC, then truncated to 120 chars. The bundled Node hook sends a Claude Code session's own title when it has one (the Claude desktop app titles every session, `/rename` titles one in the CLI; never in minimal mode), otherwise the folder it pinned at `SessionStart` — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent's name (`Claude`, `Codex`) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later `SessionStart` for the same id, so `/compact`, `/clear` and `--resume` leave it alone, while a renamed session renames its card. See [Card names and projects](hooks.md#card-names-and-projects). |
 | `message`    | string | no       | Short description of the current activity (shown on the card). Truncated to 300 chars. |
-| `project`    | string | no       | Project or repo the session is working on. Truncated to 120 chars. Unlike `name`, the bundled hooks recompute it from the session's live working directory on every post, so after a `cd` the two legitimately disagree — the card keeps its original name while `project` follows the session. Per-project spend depends on that; see [Usage history and per-project spend](#usage-history-and-per-project-spend). The Node hook reports a working directory that is exactly a Claude worktree root, `<repo>/.claude/worktrees/<name>`, as `<repo>` — on the card only: the per-project usage rows still file that worktree's spend under its own folder. The server keeps the first usable one as the session's [`homeProject`](#the-session-object), which no later post moves. |
+| `project`    | string | no       | Project or repo the session is working on. Composed to Unicode NFC, then truncated to 120 chars. Unlike `name`, the bundled hooks recompute it from the session's live working directory on every post, so after a `cd` the two legitimately disagree — the card keeps its original name while `project` follows the session. Per-project spend depends on that; see [Usage history and per-project spend](#usage-history-and-per-project-spend). The Node hook reports a working directory that is exactly a Claude worktree root, `<repo>/.claude/worktrees/<name>`, as `<repo>` — on the card only: the per-project usage rows still file that worktree's spend under its own folder. The server keeps the first usable one as the session's [`homeProject`](#the-session-object), which no later post moves. |
 | `source`     | string | no       | Agent kind that owns the session, e.g. `claude` or `codex` (same regex as the usage `source`). Defaults to `claude`; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board. |
 | `host`       | object \| null | no | Where the session runs, sent by hooks that opted in to Focus: `{"machine": {"id", "name"}, "app": {"slug", "name", "kind"}}`. Omitted = carried forward; `null` = cleared (the hook opted out). `machine.id` must match `^[0-9a-f]{32}$` (a per-board hash, never a raw machine id) or the post is `400`. `machine.name` and `app.name` are trimmed and truncated to 32 chars; blank ones become `Machine` and the slug. `app.slug` is one of `agterm`, `iterm2`, `kitty`, `wezterm`, `terminal`, `ghostty`, `alacritty`, `warp`, `vscode`, `cursor`, `windsurf`, `jetbrains`, `zed`, `claude-desktop`, `codex-desktop`, `herdr`, `tmux`, `zellij`, `screen`, `windows-terminal`, `other` — anything else is stored as `other`; `app.kind` is one of `terminal`, `multiplexer`, `ide`, `desktop-app`, `unknown` — anything else becomes `unknown`. Every other key is dropped. |
 | `agent`      | object \| null | no | Makes this a subagent's post, about one subagent of the session: `{"id", "state", "kind"?, "label"?, "activity"?, "at"?}`. It changes that subagent's row and never the session's own reading, and `status` and `message` mean something else on it — see [Agent posts](#agent-posts). A malformed one is a `400`; `null` or absent is the session's own post. |
@@ -939,9 +947,10 @@ To keep a shared instance healthy, multi-tenant workspaces are capped:
 | Per-session total retention | 7 days | Dropped from reads and from memory; see [Per-session token totals](#per-session-token-totals). |
 | Request body | 16 KB | `413`. |
 
-In both modes: `name`/`project` truncate to 120 chars, `message` to 300,
-`host.machine.name`/`host.app.name` to 32; control characters are stripped.
-Push alerts per (session, kind) are debounced to one per minute.
+In both modes: `name`/`project` are composed to Unicode NFC and truncate to
+120 chars, `message` to 300, `host.machine.name`/`host.app.name` to 32;
+control characters are stripped. Push alerts per (session, kind) are
+debounced to one per minute.
 
 [Subagents](#subagents) are bounded in both modes too:
 

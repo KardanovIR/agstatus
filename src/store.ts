@@ -22,6 +22,7 @@ import {
   toWireSubtasks,
   trimmed,
   TurnHint,
+  wellFormed,
   WireSubtasks,
 } from './subtasks';
 
@@ -126,16 +127,41 @@ export const UUID_FOLDER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
  * (path.basename) and `/` from the legacy shell hook, whose POSIX `basename /`
  * prints `/` (hooks/claude-status-hook.sh); a post without a project carries
  * ''; white space alone, `.`, and a UUID with a space before it come from raw
- * posts. A tab or a newline never gets this far, because app.ts's clean()
- * strips control characters from every posted string. A usable name is kept
- * exactly as sent, case and white space included: a section is a folder
- * name, nothing more. Every board applies this same rule to a session's
- * homeProject and to its fallback, project (docs/design/project-sections.md,
- * "Wire contract").
+ * posts. A tab or a newline never gets this far, because sessionName strips
+ * control characters from every posted name. A usable name is kept as sent,
+ * case and white space included, and in Unicode NFC, as every name the
+ * server keeps (sessionName): a section is a folder name, nothing more. NFC
+ * here as well, so a home read back from a row an older server wrote, or
+ * worked out from its project, is held to the same form as one posted now.
+ * Every board applies this same rule to a session's homeProject and to its
+ * fallback, project (docs/design/project-sections.md, "Wire contract").
  */
 export function normalizeProject(project: string): string {
   const name = project.trim();
-  return name === '' || name === '/' || name === '.' || UUID_FOLDER_RE.test(name) ? '' : project;
+  return name === '' || name === '/' || name === '.' || UUID_FOLDER_RE.test(name) ? '' : project.normalize('NFC');
+}
+
+/** A session's name and project are cut to this many UTF-16 units (sessionName). */
+export const SESSION_NAME_MAX = 120;
+
+/**
+ * A session's name or project as the server keeps it and every board gets
+ * it: control characters and unpaired surrogates out, then Unicode NFC, then
+ * cut to SESSION_NAME_MAX without splitting a pair (safeClip). One folder can
+ * reach the server in two forms: a folder made in the macOS Finder is often
+ * named decomposed (NFD, an e and then its accent), a Linux checkout of the
+ * same repository composed (NFC, one é), and the boards compare names by
+ * UTF-16 code unit, by which the two are two sections. Composed here they are
+ * one, on every board.
+ *
+ * In this order because each step needs the one before it. A control
+ * character or a lone surrogate between a letter and its accent keeps the
+ * two from composing. Composing can lengthen a name, since a few characters
+ * (U+0958, say) are always decomposed, and the cut is the bound every size
+ * that counts a name relies on.
+ */
+export function sessionName(v: string): string {
+  return safeClip(wellFormed(v.replace(CONTROL_CHARS_RE, '')).normalize('NFC'), SESSION_NAME_MAX);
 }
 
 /**
@@ -206,7 +232,8 @@ export interface Session {
 export interface UpsertInput {
   id: string;
   status: Status;
-  // undefined = carry the previous value forward (v1 semantics)
+  // undefined = carry the previous value forward (v1 semantics). name and
+  // project as sessionName leaves them, which is in Unicode NFC.
   name?: string;
   message?: string;
   project?: string;
@@ -1031,19 +1058,26 @@ export class Store {
         status = 'idle';
         message = '';
       }
-      const project = row.project as string;
+      // In Unicode NFC, as every name posted now is kept (sessionName): a row
+      // an older server wrote holds them as they were sent. Composed, not cut
+      // again: the server that wrote the row cut them, and a session that
+      // never posted a name is named by its id, up to 128 characters.
+      const project = (row.project as string).normalize('NFC');
       const session: Session = {
         id: row.id as string,
-        name: row.name as string,
+        name: (row.name as string).normalize('NFC'),
         status,
         message,
         project,
-        // NULL on a row only an older server has written: derived once from
-        // the row's own project, the folder the session last reported, which
-        // is the best there is for a session this server never saw start. It
+        // NULL on a row only an older server has written: derived from the
+        // row's own project, the folder the session last reported, which is
+        // the best there is for a session this server never saw start. It
         // goes into the column with the session's next write, so loading
-        // writes nothing, and until then every load derives the same value
-        // from the same row.
+        // writes nothing, and until then every load derives it again from
+        // the row. An older server running in between, as in a rollback, can
+        // change that project, and so the home the next load derives
+        // (docs/design/project-sections.md, "Risks"). In NFC either way
+        // (normalizeProject).
         homeProject: homeProjectFor(typeof row.home_project === 'string' ? row.home_project : '', project),
         source: (row.source as string) || 'claude',
         host,

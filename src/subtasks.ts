@@ -266,14 +266,19 @@ export function trimmed(s: string): string {
 }
 
 /**
+ * `s` without an unpaired surrogate. A regex rather than
+ * String.prototype.toWellFormed(), which Node 18 (engines.node) does not have.
+ */
+export const wellFormed = (s: string): string => s.replace(LONE_SURROGATE_RE, '');
+
+/**
  * Truncates to `max` UTF-16 units without leaving half a surrogate pair: every
- * unpaired surrogate is removed first, then a high surrogate the cut leaves at
- * the end goes too. A regex rather than String.prototype.toWellFormed(), which
- * Node 18 (engines.node) does not have. The cut is a copy (detach), so it
- * keeps nothing of what was cut off.
+ * unpaired surrogate is removed first (wellFormed), then a high surrogate the
+ * cut leaves at the end goes too. The cut is a copy (detach), so it keeps
+ * nothing of what was cut off.
  */
 export function safeClip(s: string, max: number): string {
-  const whole = s.replace(LONE_SURROGATE_RE, '');
+  const whole = wellFormed(s);
   if (whole.length <= max) return whole;
   const cut = whole.slice(0, max);
   return detach(TRAILING_HIGH_SURROGATE_RE.test(cut) ? cut.slice(0, -1) : cut);

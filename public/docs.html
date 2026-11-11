@@ -2426,10 +2426,11 @@ its ends trimmed, it is empty, <code>/</code>, <code>.</code> or a bare UUID: a 
 <code>/</code> (an empty <code>project</code> from the Node hook, <code>/</code> from the shell hook), a
 Codex scratch folder, or a raw post&#39;s blank name. Such a session has
 <code>&quot;homeProject&quot;: &quot;&quot;</code> until a post names a real folder, which then claims it;
-a post without a <code>project</code> changes nothing. A usable name is kept exactly as
-sent, never trimmed. The key is always present, and it is never read from a
-webhook body: a <code>homeProject</code> posted there is ignored. It is stored with the
-session, so it survives a restart of a server with
+a post without a <code>project</code> changes nothing. A usable name is kept as sent,
+never trimmed, and in Unicode NFC like every <code>name</code> and <code>project</code> (below).
+The key is always present, and it is never read from a webhook body: a
+<code>homeProject</code> posted there is ignored. It is stored with the session, so it
+survives a restart of a server with
 <a href="#self-hosting-persistence-postgresql">Postgres</a>; a server without a
 database forgets it with the card. Since 1.7.0.</p>
 <p>A card the board drops on request (dismissed with a <code>DELETE</code> of the
@@ -2442,6 +2443,12 @@ restart in between forgets it, and the session&#39;s next post then starts over
 from the folder it names. A card the session TTL expired
 (<code>SESSION_TTL_MS</code>, 24 hours without an update on a hosted board) starts
 over too, as the hook&#39;s pinned card name does.</p>
+<p><code>name</code> and <code>project</code>, and so <code>homeProject</code>, are stored and served in
+Unicode NFC. The server composes what it is sent, so one folder that
+reaches it decomposed from one machine (NFD, an <code>e</code> and then its accent, as
+a folder made in the macOS Finder often is) and composed from another (NFC,
+one <code>é</code>) is one name, and one section on every board. A row an older server
+stored is composed as it loads. Since 1.7.0.</p>
 <p>The boards key their project sections by it: <code>homeProject</code> when it is
 usable; otherwise <code>project</code>, when that is usable by the same rule, which
 covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
@@ -2614,7 +2621,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>name</code></td>
 <td>string</td>
 <td>no</td>
-<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Truncated to 120 chars. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
+<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Composed to Unicode NFC, then truncated to 120 chars. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
 </tr>
 <tr>
 <td><code>message</code></td>
@@ -2626,7 +2633,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>project</code></td>
 <td>string</td>
 <td>no</td>
-<td>Project or repo the session is working on. Truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder. The server keeps the first usable one as the session&#39;s <a href="#api-the-session-object"><code>homeProject</code></a>, which no later post moves.</td>
+<td>Project or repo the session is working on. Composed to Unicode NFC, then truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder. The server keeps the first usable one as the session&#39;s <a href="#api-the-session-object"><code>homeProject</code></a>, which no later post moves.</td>
 </tr>
 <tr>
 <td><code>source</code></td>
@@ -3775,9 +3782,10 @@ shuts down gets <code>503</code>.</p>
 <td><code>413</code>.</td>
 </tr>
 </tbody></table></div>
-<p>In both modes: <code>name</code>/<code>project</code> truncate to 120 chars, <code>message</code> to 300,
-<code>host.machine.name</code>/<code>host.app.name</code> to 32; control characters are stripped.
-Push alerts per (session, kind) are debounced to one per minute.</p>
+<p>In both modes: <code>name</code>/<code>project</code> are composed to Unicode NFC and truncate to
+120 chars, <code>message</code> to 300, <code>host.machine.name</code>/<code>host.app.name</code> to 32;
+control characters are stripped. Push alerts per (session, kind) are
+debounced to one per minute.</p>
 <p><a href="#api-subagents">Subagents</a> are bounded in both modes too:</p>
 <div class="table-wrap"><table>
 <thead>

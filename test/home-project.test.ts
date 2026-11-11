@@ -45,6 +45,14 @@ const KEYS = ['id', 'name', 'status', 'message', 'project', 'source', 'host', 'c
 
 const HOUR = 60 * 60 * 1000;
 
+/**
+ * One folder in the two Unicode forms it reaches the server in: composed
+ * (NFC, one é), as a Linux checkout names it, and decomposed (NFD, an e and
+ * then its accent), as a folder made in the macOS Finder often is.
+ */
+const CAFE_NFC = 'caf\u00e9';
+const CAFE_NFD = 'cafe\u0301';
+
 /** A fresh in-memory board, posting the way the hook does. */
 async function board() {
   const t = makeApp();
@@ -72,7 +80,7 @@ describe('homeProject: which folders count', () => {
     // Not usable, each with the white space at its ends trimmed first: empty
     // or white space alone, "/" (the legacy shell hook's `basename /`), "."
     // and a bare UUID. A tab only reaches the rule through a direct call; a
-    // posted one is stripped before (app.ts clean(), the next describe).
+    // posted one is stripped before (sessionName, the next describe).
     for (const name of [
       '', '   ', '/', '.', ' / ', '. ', UUID, UUID.toUpperCase(), ` ${UUID}`, `${UUID}  `, `\t${UUID}`,
     ]) {
@@ -123,6 +131,15 @@ describe('homeProject: which folders count', () => {
       expect(UUID_FOLDER_RE.flags, copy).toBe(hook![2]);
     }
   });
+
+  it('keeps a usable name in Unicode NFC, so a home read back from a row is in the form a post gets', () => {
+    expect(normalizeProject(CAFE_NFD)).toBe(CAFE_NFC);
+    expect(normalizeProject(CAFE_NFC)).toBe(CAFE_NFC);
+    expect(normalizeProject(` ${CAFE_NFD}-api `)).toBe(` ${CAFE_NFC}-api `);
+    expect(homeProjectFor(CAFE_NFD, 'web')).toBe(CAFE_NFC);
+    expect(homeProjectFor('', CAFE_NFD)).toBe(CAFE_NFC);
+    expect(homeProjectFor('', '/')).toBe('');
+  });
 });
 
 describe('homeProject on a board without a database', () => {
@@ -155,8 +172,8 @@ describe('homeProject on a board without a database', () => {
 
   it('files a posted "/", ".", white space and a padded UUID under no project, and a padded real name as sent', async () => {
     const b = await board();
-    // The rule never sees a posted tab: clean() strips control characters
-    // from every string a post carries, so "\t<uuid>" arrives a bare UUID.
+    // The rule never sees a posted tab: sessionName strips control characters
+    // from a posted project, so "\t<uuid>" arrives a bare UUID.
     const none: Array<[string, string]> = [
       ['/', '/'], ['.', '.'], ['   ', '   '], [` ${UUID}`, ` ${UUID}`], [`\t${UUID}`, UUID],
     ];
@@ -447,6 +464,60 @@ describe('homeProject on a board without a database', () => {
   });
 });
 
+describe('a name and a folder in Unicode NFC', () => {
+  it('come out composed when posted decomposed: in the reply, on REST, in the snapshot and a session frame, on both boards', async () => {
+    const b = await board();
+    expect(await b.post('s', { name: `Fix ${CAFE_NFD}`, project: CAFE_NFD }))
+      .toMatchObject({ name: `Fix ${CAFE_NFC}`, project: CAFE_NFC, homeProject: CAFE_NFC });
+    const rest = (await b.card('s'))!;
+    expect([rest.name, rest.project, rest.homeProject]).toEqual([`Fix ${CAFE_NFC}`, CAFE_NFC, CAFE_NFC]);
+
+    const { srv, base } = await listen(b.app);
+    const ac = new AbortController();
+    try {
+      const res = await fetch(`${base}/w/${b.token}/events`, { signal: ac.signal, headers: { accept: 'text/event-stream' } });
+      const next = frames(res);
+      expect(await next('snapshot')).toEqual([rest]);
+      await b.post('t', { name: CAFE_NFD, project: `${CAFE_NFD}-api` });
+      expect(await next('session'))
+        .toMatchObject({ id: 't', name: CAFE_NFC, project: `${CAFE_NFC}-api`, homeProject: `${CAFE_NFC}-api` });
+    } finally {
+      ac.abort();
+      await closeServer(srv);
+    }
+
+    const legacy = makeApp({ multiTenant: false });
+    const res = await request(legacy.app).post('/webhook').send(webhookBody('s', { name: CAFE_NFD, project: CAFE_NFD })).expect(200);
+    expect(res.body.session).toMatchObject({ name: CAFE_NFC, project: CAFE_NFC, homeProject: CAFE_NFC });
+    expect((await request(legacy.app).get('/api/sessions').expect(200)).body)
+      .toEqual([expect.objectContaining({ name: CAFE_NFC, project: CAFE_NFC, homeProject: CAFE_NFC })]);
+  });
+
+  it('files a folder sent in both forms under one home, whichever came first, on one session or two', async () => {
+    const b = await board();
+    // A session on a Mac, then the same folder composed: nothing moved, so no
+    // board says "in café" for it.
+    expect(await b.post('mac', { project: CAFE_NFD })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+    expect(await b.post('mac', { project: CAFE_NFC })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+    // The other way round, as a Linux checkout of it would post.
+    expect(await b.post('linux', { project: CAFE_NFC })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+    expect(await b.post('linux', { project: CAFE_NFD })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+    // Two sessions, one folder: one key, so one section on every board.
+    expect([...new Set((await b.list()).map((s) => s.homeProject))]).toEqual([CAFE_NFC]);
+  });
+
+  it('composes before it cuts, and nothing between a letter and its accent keeps them apart', async () => {
+    const b = await board();
+    // 100 decomposed é are 200 UTF-16 units: composed first, all 100 stay.
+    expect((await b.post('long', { name: 'e\u0301'.repeat(100) })).name).toBe('\u00e9'.repeat(100));
+    // U+0958 is always decomposed, into two units: 100 of them are 200, cut at 120.
+    expect((await b.post('qa', { name: '\u0958'.repeat(100) })).name).toBe('\u0915\u093c'.repeat(60));
+    // A control character or a lone surrogate between the e and its accent goes, then the two compose.
+    expect(await b.post('ctl', { project: 'cafe\u0007\u0301' })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+    expect(await b.post('sur', { project: 'cafe\ud800\u0301' })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+  });
+});
+
 describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
   let dbUrl = '';
 
@@ -612,6 +683,44 @@ describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
       await second.shutdown();
     }
     expect(await rows(`WHERE id = 's'`)).toEqual([{ id: 's', project: 'web', home_project: 'web', deleted_at: null }]);
+  });
+
+  it('loads a name, a folder and a home an older server stored decomposed in NFC, and writes nothing until the next post', async () => {
+    // This server's tables, then rows as older servers left them: 1.6.5
+    // wrote no home, and a 1.7.0 build before NFC stored what was posted.
+    const schema = makeApp({ databaseUrl: dbUrl });
+    await schema.ready;
+    await schema.shutdown();
+    const token = `ags_${'n'.repeat(32)}`;
+    const wsId = crypto.createHash('sha256').update(token).digest('hex');
+    const now = Date.now();
+    await sql(dbUrl, 'INSERT INTO workspaces (id, created_at, last_seen_at) VALUES ($1, $2, $2)', [wsId, now]);
+    const insert = (id: string, name: string, project: string, home: string | null) =>
+      sql(dbUrl,
+        `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at, home_project)
+         VALUES ($1, $2, $3, 'coding', '', $4, 'claude', $5, $5, $6)`,
+        [wsId, id, name, project, now, home]);
+    await insert('old', `Fix ${CAFE_NFD}`, CAFE_NFD, null);
+    await insert('tip', CAFE_NFD, 'web', CAFE_NFD);
+    const asLeft = await rows();
+    expect(asLeft.map((r) => [r.id, r.project, r.home_project])).toEqual([['old', CAFE_NFD, null], ['tip', 'web', CAFE_NFD]]);
+
+    const t = makeApp({ databaseUrl: dbUrl });
+    await t.ready;
+    try {
+      const byId = await listed(t.app, token);
+      expect(byId.old).toMatchObject({ name: `Fix ${CAFE_NFC}`, project: CAFE_NFC, homeProject: CAFE_NFC });
+      expect(byId.tip).toMatchObject({ name: CAFE_NFC, project: 'web', homeProject: CAFE_NFC });
+      // Composed in memory only: loading wrote nothing.
+      await t.store.flush();
+      expect(await rows()).toEqual(asLeft);
+      // The next post stores both in NFC, the Mac's form or not.
+      expect(await post(t.app, token, 'old', { project: CAFE_NFD })).toMatchObject({ project: CAFE_NFC, homeProject: CAFE_NFC });
+      await t.store.flush();
+    } finally {
+      await t.shutdown();
+    }
+    expect((await rows(`WHERE id = 'old'`)).map((r) => [r.project, r.home_project])).toEqual([[CAFE_NFC, CAFE_NFC]]);
   });
 });
 
