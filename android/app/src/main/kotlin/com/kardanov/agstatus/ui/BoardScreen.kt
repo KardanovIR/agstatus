@@ -558,7 +558,7 @@ internal fun BoardScreen(
                                         // is unblocked; it lets go of its own accord
                                         // with a fade, unless animations are off.
                                         val ringOn = ringed == session.id && session.isBlocked
-                                        val ring by animateFloatAsState(
+                                        val ring = animateFloatAsState(
                                             targetValue = if (ringOn) 1f else 0f,
                                             animationSpec = if (ringOn || reduceMotion || ringed == session.id) {
                                                 snap()
@@ -611,7 +611,7 @@ internal fun BoardScreen(
                                                 onCommand = { type -> store.sendCommand(session.id, type) },
                                                 onOpenHistory = { subtaskId -> onOpenHistory(session.id, subtaskId) },
                                                 modifier = Modifier
-                                                    .jumpRing { ring }
+                                                    .jumpRing(ring)
                                                     .then(takesFocus)
                                                     .then(tabStop)
                                                     .clickable {

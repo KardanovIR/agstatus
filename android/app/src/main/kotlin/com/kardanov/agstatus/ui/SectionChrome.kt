@@ -31,13 +31,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -45,11 +45,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -466,26 +470,47 @@ internal const val RING_FADE_MILLIS = 600
  * The ring a card the bar brought wears: 2dp in a neutral ink, 2dp clear of
  * the card's 1dp edge so it never reads as the blocked card's own brighter
  * edge. Not a colour, because colour on this board is state, and no glow.
- * Read in the draw phase alone, so its fade recomposes nothing.
+ * [alpha] is read in the draw phase alone, so its fade recomposes nothing.
  *
  * Drawn inside the card's bounds, in its 14dp padding, so no label can cover
  * it. Drawn outside, it lost its top edge whenever the card sat flush under
  * the label that sticks: the list places that label last, over the cards,
  * and at the top of the list the card cannot be moved out from under it.
+ *
+ * Two rings over one [alpha] are equal, so a card's modifier is the same
+ * from one pass of the board to the next and an unchanged card skips. Built
+ * from drawWithContent, the ring was a new lambda on every pass, never equal
+ * to the last, and every card on screen ran again on each hook event.
  */
-internal fun Modifier.jumpRing(alpha: () -> Float): Modifier = drawWithContent {
-    drawContent()
-    val shown = alpha()
-    if (shown <= 0f) return@drawWithContent
-    val stroke = 2.dp.toPx()
-    val inset = 1.dp.toPx() + 2.dp.toPx() + stroke / 2
-    drawRoundRect(
-        color = Theme.textSecondary.copy(alpha = shown),
-        topLeft = Offset(inset, inset),
-        size = Size(size.width - 2 * inset, size.height - 2 * inset),
-        cornerRadius = CornerRadius((16.dp.toPx() - inset).coerceAtLeast(0f)),
-        style = Stroke(width = stroke),
-    )
+internal fun Modifier.jumpRing(alpha: State<Float>): Modifier = this then JumpRingElement(alpha)
+
+private data class JumpRingElement(val alpha: State<Float>) : ModifierNodeElement<JumpRingNode>() {
+    override fun create() = JumpRingNode(alpha)
+
+    override fun update(node: JumpRingNode) {
+        node.alpha = alpha
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "jumpRing"
+    }
+}
+
+private class JumpRingNode(var alpha: State<Float>) : Modifier.Node(), DrawModifierNode {
+    override fun ContentDrawScope.draw() {
+        drawContent()
+        val shown = alpha.value
+        if (shown <= 0f) return
+        val stroke = 2.dp.toPx()
+        val inset = 1.dp.toPx() + 2.dp.toPx() + stroke / 2
+        drawRoundRect(
+            color = Theme.textSecondary.copy(alpha = shown),
+            topLeft = Offset(inset, inset),
+            size = Size(size.width - 2 * inset, size.height - 2 * inset),
+            cornerRadius = CornerRadius((16.dp.toPx() - inset).coerceAtLeast(0f)),
+            style = Stroke(width = stroke),
+        )
+    }
 }
 
 // MARK: - Spoken
