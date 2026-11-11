@@ -257,15 +257,22 @@ internal fun BoardScreen(
     val usageLeads = sessions.isNotEmpty() && !boardGone && visibleUsage.isNotEmpty() &&
         usageHeight > 0 && bodyHeight > 0 && bodyHeight - usageHeight < leastListPx
     val leadsNow by rememberUpdatedState(usageLeads)
-    // The list keeps the card at its top in place when the blocks join it,
-    // which would leave them above the screen; at the list's top, it shows
-    // them.
-    LaunchedEffect(usageLeads) {
-        if (!usageLeads) return@LaunchedEffect
-        withFrameNanos { }
-        if (listState.firstVisibleItemIndex == 1 && listState.firstVisibleItemScrollOffset == 0) {
-            listState.scrollToItem(0)
+    // The blocks join the list as its first item. The list keeps the item at
+    // its top where it was, which would leave them above the screen, and
+    // where what follows them is shorter than the list it scrolls back only
+    // part of the way: one card sideways showed 38dp of a 127dp block. So a
+    // list that stood at its top when they joined is put back at its top,
+    // the blocks whole, whatever it would have made of the insertion. Read
+    // here, after the blocks join the list and before it lays them out, the
+    // list's place is still where it stood; a list scrolled down keeps it.
+    val joining = remember { UsageJoin() }
+    SideEffect {
+        if (usageLeads && !joining.leads &&
+            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+        ) {
+            listState.requestScrollToItem(0)
         }
+        joining.leads = usageLeads
     }
 
     // Tab's order, as the web board's page has it: the usage blocks, the
@@ -814,6 +821,11 @@ private class UnderLabelBringIntoView(
 /** A label's height, as last laid out, for a jump to land under it. Plain: reading it recomposes nothing. */
 private class MeasuredHeight {
     var px = 0
+}
+
+/** Whether the usage blocks led the list when the board was last drawn. Plain: updating it must not recompose. */
+private class UsageJoin {
+    var leads = false
 }
 
 /** TalkBack, or another service that explores by touch, is on. */
