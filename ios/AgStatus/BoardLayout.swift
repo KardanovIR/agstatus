@@ -953,6 +953,7 @@ extension BoardArrangement {
     static func verify() {
         verifySectionKeys()
         verifyExactNames()
+        verifyAgentNames()
         verifyArrangements()
         verifyHeadForms()
         verifySidesAndReading()
@@ -1185,6 +1186,38 @@ extension BoardArrangement {
         assert(card("e", "codex", name: "").lead(agent: "Codex") == "Codex", "no name: the agent's")
         assert(card("f", name: "Fix the login redirect").lead(agent: "Claude") == "Claude, Fix the login redirect",
                "<agent>, <name>")
+    }
+
+    /// What an agent is called, and the mark it wears: one rule on every
+    /// board. Claude and Codex by name; any other agent its own spelling,
+    /// first letter upper-cased, which is what the hook names an untitled
+    /// session with no folder. The mark by prefix, after lowercasing, as the
+    /// web and Android match it.
+    private static func verifyAgentNames() {
+        let names = ["claude": "Claude", "codex": "Codex", "gemini": "Gemini", "codex-cli": "Codex-cli",
+                     "claude-work": "Claude-work", "gemini-cli": "Gemini-cli", "opencode": "Opencode",
+                     "my_agent": "My_agent", "x": "X"]
+        for (source, name) in names {
+            assert(UsageInfo.displayName(for: source).isExactly(name), "\(source) is \(name)")
+        }
+        let marks = ["claude": "asterisk", "claude-work": "asterisk", "claude-code": "asterisk",
+                     "codex": "hexagon", "codex-cli": "hexagon", "gemini": "diamond", "opencode": "diamond",
+                     "my_agent": "diamond", "constructor": "diamond"]
+        for (source, mark) in marks {
+            assert(Theme.agentSymbol(for: source) == mark, "\(source) wears the \(mark)")
+        }
+        // The hook's untitled codex-cli session at /, "Codex-cli": named after
+        // its agent, so the bar and the alarm name it once and a card reads
+        // it once.
+        let cli = card("x", "codex-cli", .blocked, name: "Codex-cli")
+        let words = NeedsYou.words(for: cli)
+        assert(words.name == "Codex-cli" && words.place == nil, "Codex-cli, once")
+        assert(NeedsYou.announcement(for: [cli]) == "Codex-cli needs you", "said once")
+        assert(cli.lead(agent: UsageInfo.displayName(for: cli.source)) == "Codex-cli", "read once")
+        // A titled one in No project gets its agent as its place, spelled so.
+        assert(NeedsYou.words(for: card("p", "gemini", .blocked, name: "Port the parser")).place == "Gemini"
+               && NeedsYou.words(for: card("u", "gemini", .blocked, name: "")).name == "Gemini",
+               "Gemini, as the bar names it")
     }
 
     /// The arrangement rule and the heads' pin rule, at the board widths of

@@ -958,11 +958,19 @@ struct UsageInfo: Identifiable, Codable, Equatable, Sendable {
     }
 
     /// Human name for a bare source id, for screens that only carry the id.
+    ///
+    /// Claude and Codex by name; any other agent keeps its spelling with the
+    /// first letter upper-cased — gemini is "Gemini", codex-cli "Codex-cli" —
+    /// which is what the hook names its untitled sessions (`agentLabel`) and
+    /// what the web and Android call it. Not `capitalized`, which upper-cases
+    /// every word ("Codex-Cli"): a session the hook named "Codex-cli" would
+    /// then not be named after its agent, and the bar and the spoken alarm
+    /// would say the agent twice.
     static func displayName(for source: String) -> String {
         switch source {
         case "claude": return "Claude"
         case "codex": return "Codex"
-        default: return source.capitalized
+        default: return source.prefix(1).uppercased() + source.dropFirst()
         }
     }
 
