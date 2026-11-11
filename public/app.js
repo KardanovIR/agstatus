@@ -143,7 +143,9 @@
   // (agentLabel), where the web used to print the bare lowercase id. Looked
   // up as the table's own key: a source is any lowercase word the server
   // accepts, and SOURCE_NAMES['constructor'] is Object's function, which the
-  // bar printed.
+  // bar printed. The mark goes by the source's start, for Claude as for
+  // Codex, as on iOS and Android: a second Claude account tagged claude-work
+  // is still Claude, where an exact match gave it the diamond.
   const SOURCE_NAMES = { claude: 'Claude', codex: 'Codex' };
   const agentKey = (source) => String(source || 'claude').toLowerCase();
   const agentName = (source) => {
@@ -152,7 +154,7 @@
   };
   const agentMark = (source) => {
     const key = agentKey(source);
-    return (key === 'claude' ? ICON.claude : key.startsWith('codex') ? ICON.codex : ICON.agent) || '';
+    return (key.startsWith('claude') ? ICON.claude : key.startsWith('codex') ? ICON.codex : ICON.agent) || '';
   };
 
   // ---- Painting -------------------------------------------------------------

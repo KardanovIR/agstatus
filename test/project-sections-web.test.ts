@@ -999,6 +999,20 @@ describe('an agent, named and marked as every board does', () => {
     expect(said()).toBe('Gemini needs you');
   });
 
+  // By the source's start, for Claude as for Codex, as iOS and Android mark
+  // them: a second Claude account tagged claude-work is Claude's.
+  it.each([
+    ['claude', 'claude'], ['claude-work', 'claude'], ['claude-code', 'claude'], ['codex', 'codex'],
+    ['codex-cli', 'codex'], ['gemini', 'agent'], ['my-claude', 'agent'], ['constructor', 'agent'],
+  ])('marks %s with the %s mark, on its card and its usage block', async (source, icon) => {
+    const b = await boardOf([at('s', 1, { source })]);
+    b.emit('usage', [{ source, windows: [{ id: 'daily', label: 'Daily', usedPct: 10 }] }]);
+    const marks = (window as unknown as { AGSTATUS_MARKS: { ICON: Record<string, string> } }).AGSTATUS_MARKS.ICON;
+    const path = (svg: string) => /<path d="([^"]+)"/.exec(svg)![1];
+    expect(meta(b, 's').querySelector('.meta-agent svg path')!.getAttribute('d')).toBe(path(marks[icon]));
+    expect(document.querySelector('.usage-name svg path')!.getAttribute('d')).toBe(path(marks[icon]));
+  });
+
   it('names a usage block and its thirty days by the same rule', async () => {
     const b = await boardOf([at('g', 1, { source: 'gemini' }), at('k', 2, { source: 'constructor' })]);
     b.emit('usage', [
