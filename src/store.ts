@@ -20,6 +20,7 @@ import {
   SubtaskState,
   sweepState,
   toWireSubtasks,
+  trimmed,
   TurnHint,
   WireSubtasks,
 } from './subtasks';
@@ -81,10 +82,11 @@ const isHostKind = (s: unknown): s is HostKind =>
 /**
  * A host label: control characters stripped, trimmed, truncated without
  * splitting a surrogate pair (as app.ts cleans every other string); blank or
- * non-string → fallback.
+ * non-string → fallback. Trimmed and cut as copies (trimmed, safeClip), so a
+ * card keeps 32 characters at most, not the post they came from.
  */
 const hostName = (v: unknown, fallback: string): string => {
-  const s = typeof v === 'string' ? safeClip(v.replace(CONTROL_CHARS_RE, '').trim(), HOST_NAME_MAX) : '';
+  const s = typeof v === 'string' ? safeClip(trimmed(v.replace(CONTROL_CHARS_RE, '')), HOST_NAME_MAX) : '';
   return s || fallback;
 };
 
@@ -378,7 +380,12 @@ const MAX_SESSION_TOTALS_WITH_LIVE_CARDS = MAX_SESSION_TOTALS_PER_WORKSPACE + MA
  *
  * In memory only, like the cards of a server without a database: a restart
  * forgets every entry, and a session dropped before the restart starts over
- * when it next posts (docs/api.md, "The session object").
+ * when it next posts (docs/api.md, "The session object"). An entry past the
+ * window goes with the next drop on its board (rememberHome) or with the
+ * session sweep (sweepExpiredSessions), whichever comes first, so a board
+ * nobody posts to any more does not keep its entries until a restart. A
+ * server with no session TTL, as legacy mode is by default, runs no sweep,
+ * and its one board's entries go with its next drop.
  */
 export const DROPPED_HOME_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -398,7 +405,12 @@ export const DROPPED_HOME_TTL_MS = 24 * 60 * 60 * 1000;
  * completely, and what a flood pushes out are its own board's entries. At the
  * bounds (a 128-character id, a 120-character name in three-byte characters)
  * an entry is about 490 bytes of V8 heap, so a workspace holds at most about
- * 240 KB of them; a UUID and a short folder name are about 140 bytes.
+ * 240 KB of them; a UUID and a short folder name are about 140 bytes. A
+ * longer post costs no more, because what is kept is a copy of its cut
+ * (safeClip). Measured through the webhook, 500 entries from posts of 15,000
+ * ASCII characters hold 178 KB, and from 5,000 three-byte characters 237 KB,
+ * by DELETE or by eviction alike; before the copy each entry held its whole
+ * post, and such a board 7.5 MB.
  */
 export const MAX_DROPPED_HOMES_PER_WORKSPACE = 500;
 
@@ -407,6 +419,17 @@ interface DroppedHome {
   homeProject: string;
   /** The session's updatedAt when it was dropped: the clock the window runs on. */
   lastPostAt: number;
+}
+
+/**
+ * Lets go of a board's dropped homes whose window is over. Every entry, not
+ * just the front: the window runs from each session's last post, which is not
+ * the order cards are dropped in.
+ */
+function ageOutDroppedHomes(ws: Map<string, DroppedHome>, now: number): void {
+  for (const [id, home] of ws) {
+    if (now - home.lastPostAt >= DROPPED_HOME_TTL_MS) ws.delete(id);
+  }
 }
 
 /**
@@ -427,8 +450,11 @@ interface DroppedHome {
  * refused rather than an old one evicted, for the reason given at
  * MAX_SESSION_TOTALS_PER_WORKSPACE: eviction only flags, so it bounds memory
  * and leaves the disk to grow. Updates to a key already held always land, and
- * days that age out of the window free their slots (pruneProjectDays). At
- * roughly 260 bytes a row this is about 1.3 MB of heap per workspace.
+ * days that age out of the window free their slots (pruneProjectDays).
+ * Measured through the webhook, a row is about 230 bytes of heap with a short
+ * folder name and 460 at the bound, 120 characters in three-byte characters
+ * (a longer name is cut to that, as a copy: safeClip), so this is 1.1 to
+ * 2.3 MB of heap per workspace.
  */
 export const MAX_PROJECT_DAYS_PER_WORKSPACE = 5000;
 
@@ -659,11 +685,15 @@ const HISTORY_READS_PER_MINUTE = 30;
  * its own, so one /64 is more addresses than anyone needs, and 500 IPv4
  * addresses reach the MAX_WORKSPACES default of 10,000 within an hour. Each
  * of those boards then brings the whole per-board allowance with it — 5,000
- * project days alone are ~1.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE), and
- * subtask state up to ~0.7 MB more for a pathological 50-card board: 256 live
- * rows across the board (MAX_LIVE_ROWS_PER_WORKSPACE in subtasks.ts), plus 8
- * failed rows and 64 tombs per card, at about 500 and 120 bytes each in V8,
- * and up to ~240 KB of dropped cards' homes (MAX_DROPPED_HOMES_PER_WORKSPACE) —
+ * project days alone are up to ~2.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE);
+ * the timelines of 50 cards up to ~3.5 MB (MAX_EVENTS_PER_SESSION events a
+ * card, at about 400 bytes an event with a 300-character message and 700 in
+ * three-byte characters); subtask state up to ~0.7 MB more for a pathological
+ * 50-card board: 256 live rows across the board (MAX_LIVE_ROWS_PER_WORKSPACE
+ * in subtasks.ts), plus 8 failed rows and 64 tombs per card, at about 500 and
+ * 120 bytes each in V8; and up to ~240 KB of dropped cards' homes
+ * (MAX_DROPPED_HOMES_PER_WORKSPACE). A post past a length limit costs no more
+ * than one at it, because only a copy of its cut is kept (safeClip) —
  * and a create-then-delete loop leaves a flagged workspaces row per turn
  * without ever nearing MAX_WORKSPACES. At 200 an hour, filling 10,000 takes
  * at least 50 hours from empty, however many addresses do it, and that loop
@@ -2278,11 +2308,7 @@ export class Store {
       this.droppedHomes.set(wsId, ws);
     }
     // Aged out on the way in, so the cap below only ever counts live entries.
-    // Every entry, not just the front: the window runs from each session's
-    // last post, which is not the order cards are dropped in.
-    for (const [id, home] of ws) {
-      if (now - home.lastPostAt >= DROPPED_HOME_TTL_MS) ws.delete(id);
-    }
+    ageOutDroppedHomes(ws, now);
     // Re-set rather than updated, so a card dropped again moves to the end:
     // insertion order is drop order, and the cap drops from the front.
     ws.delete(session.id);
@@ -2597,9 +2623,20 @@ export class Store {
    * broadcasting. Unlike a dismissal it remembers no home (rememberHome): the
    * hook's name pin ages out with the card, so a session that posts again
    * after this starts over, name and section alike (DROPPED_HOME_TTL_MS).
+   *
+   * It also lets go of every board's dropped homes past their day, which
+   * otherwise leave only with that board's next drop: a board nobody posts to
+   * any more would keep its entries until a restart. The pass is cheap at the
+   * worst a server can hold: over 10,000 boards of 500 entries, none of them
+   * due, it took about 30 ms on Node 20, and the sweep runs once a minute.
    */
   sweepExpiredSessions(ttlMs: number): Array<{ wsId: string; id: string }> {
-    const cutoff = Date.now() - ttlMs;
+    const now = Date.now();
+    for (const [wsId, ws] of this.droppedHomes) {
+      ageOutDroppedHomes(ws, now);
+      if (ws.size === 0) this.droppedHomes.delete(wsId);
+    }
+    const cutoff = now - ttlMs;
     const removed: Array<{ wsId: string; id: string }> = [];
     for (const [wsId, map] of this.sessions) {
       for (const [id, s] of map) {

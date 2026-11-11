@@ -322,6 +322,34 @@ describe('homeProject on a board without a database', () => {
     await store.close();
   });
 
+  it("lets every board's aged homes go with the session sweep, so a board nobody drops on again keeps none", async () => {
+    const start = Date.now();
+    let clock = start;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const store = new Store('');
+    await store.ready;
+    const a = store.resolveToken(store.createWorkspace().token)!;
+    const b = store.resolveToken(store.createWorkspace().token)!;
+    const drop = (ws: string, id: string) => {
+      store.upsertSession(ws, { id, status: 'coding', project: `home-${id}` }, MAX_SESSIONS_PER_WORKSPACE);
+      store.deleteSession(ws, id);
+    };
+    drop(a, 'early');
+    drop(b, 'early');
+    clock = start + HOUR;
+    drop(b, 'late');
+    // A day after the first drops, with nothing dropped on either board since.
+    clock = start + DROPPED_HOME_TTL_MS;
+    expect(store.sweepExpiredSessions(HOUR)).toEqual([]);
+    expect(droppedHomes(store).has(a)).toBe(false);
+    expect([...droppedHomes(store).get(b)!.keys()]).toEqual(['late']);
+    // The late one's day ends an hour later, and the next sweep takes it.
+    clock = start + DROPPED_HOME_TTL_MS + HOUR;
+    store.sweepExpiredSessions(HOUR);
+    expect(droppedHomes(store).size).toBe(0);
+    await store.close();
+  });
+
   it(`remembers at most ${MAX_DROPPED_HOMES_PER_WORKSPACE} dropped cards a board, letting the earliest drop go first`, async () => {
     const store = new Store('');
     await store.ready;

@@ -244,16 +244,39 @@ const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF
 const TRAILING_HIGH_SURROGATE_RE = /[\uD800-\uDBFF]$/;
 
 /**
+ * `s` as a string of its own. V8 keeps a slice or a trim of a string 13
+ * characters or longer as a view into the whole, so a 120-character cut of a
+ * 15,000-character post held on to all 15,000 for as long as the cut was
+ * kept: on a card, in a dropped card's home, in a project day or a
+ * timeline, about 15 KB where the store's sizes count a few hundred bytes.
+ * The copy goes through UTF-16, which is lossless for any string, lone
+ * surrogates included, and V8 stores it at one byte a character whenever
+ * every character fits in one, whatever the whole was stored as.
+ */
+export const detach = (s: string): string => Buffer.from(s, 'utf16le').toString('utf16le');
+
+/**
+ * `s` with the white space at its ends trimmed, as a string of its own when
+ * the trim took anything off (detach): a short name trimmed from a long run
+ * of spaces would otherwise keep every space.
+ */
+export function trimmed(s: string): string {
+  const t = s.trim();
+  return t.length < s.length ? detach(t) : t;
+}
+
+/**
  * Truncates to `max` UTF-16 units without leaving half a surrogate pair: every
  * unpaired surrogate is removed first, then a high surrogate the cut leaves at
  * the end goes too. A regex rather than String.prototype.toWellFormed(), which
- * Node 18 (engines.node) does not have.
+ * Node 18 (engines.node) does not have. The cut is a copy (detach), so it
+ * keeps nothing of what was cut off.
  */
 export function safeClip(s: string, max: number): string {
   const whole = s.replace(LONE_SURROGATE_RE, '');
   if (whole.length <= max) return whole;
   const cut = whole.slice(0, max);
-  return TRAILING_HIGH_SURROGATE_RE.test(cut) ? cut.slice(0, -1) : cut;
+  return detach(TRAILING_HIGH_SURROGATE_RE.test(cut) ? cut.slice(0, -1) : cut);
 }
 
 /**
@@ -264,7 +287,7 @@ export function safeClip(s: string, max: number): string {
  */
 export function cleanLabel(v: unknown, max: number): string | undefined {
   if (typeof v !== 'string') return undefined;
-  return safeClip(v.replace(/\s+/g, ' ').replace(CONTROL_CHARS_RE, '').trim(), max);
+  return safeClip(trimmed(v.replace(/\s+/g, ' ').replace(CONTROL_CHARS_RE, '')), max);
 }
 
 /** Whether a stored message is one the server composes rather than one the parent posted. */
