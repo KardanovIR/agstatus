@@ -468,6 +468,17 @@ class ProjectSectionsTest {
     }
 
     @Test
+    fun `an agent other than Claude or Codex is named as the hook names it, its first letter upper-cased`() {
+        assertEquals("Claude", sourceDisplayName("claude"))
+        assertEquals("Codex", sourceDisplayName("codex"))
+        assertEquals("Gemini", sourceDisplayName("gemini"))
+        // The rest as sent: not "Codex-Cli" or "Claude-Work", as each word upper-cased would have it.
+        assertEquals("Codex-cli", sourceDisplayName("codex-cli"))
+        assertEquals("Claude-work", sourceDisplayName("claude-work"))
+        assertEquals("My_agent", sourceDisplayName("my_agent"))
+    }
+
+    @Test
     fun `a card says its agent first`() {
         assertEquals("Codex, docs-site", ProjectSections.cardLead(session("a", name = "docs-site", source = "codex")))
         assertEquals("Claude, s1", ProjectSections.cardLead(session("s1")))
