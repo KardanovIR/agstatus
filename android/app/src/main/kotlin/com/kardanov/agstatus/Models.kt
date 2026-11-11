@@ -297,9 +297,13 @@ object ProjectSections {
      * one of its cards got busy.
      *
      * Ignoring case means comparing the locale-independent lower case
-     * (Locale.ROOT, as JavaScript's toLowerCase and Swift's lowercased()), and
-     * both comparisons go by UTF-16 code unit, as a JavaScript `<` does. A
-     * collator would put `_` before `-` and differ by locale.
+     * (Locale.ROOT), which, as JavaScript's toLowerCase does, applies
+     * Unicode's final-sigma rule: a Σ that ends a word becomes ς, so ΝΟΜΟΣ
+     * comes before νομος-api. iOS lowercases with lowercased(with: nil) for
+     * the same reason: Swift's plain lowercased() makes every Σ a σ. Both
+     * comparisons go by UTF-16 code unit, as a JavaScript `<` does, so a
+     * composed and a decomposed é stay apart. A collator would put `_` before
+     * `-` and differ by locale.
      */
     val ORDER: Comparator<String> = Comparator { a, b ->
         when {
