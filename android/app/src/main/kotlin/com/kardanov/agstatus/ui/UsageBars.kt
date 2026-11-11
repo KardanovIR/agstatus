@@ -39,7 +39,9 @@ import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Theme
+import com.kardanov.agstatus.agentHeadDescription
 import com.kardanov.agstatus.rememberReduceMotion
 import com.kardanov.agstatus.UsageInfo
 import com.kardanov.agstatus.UsageWindow
@@ -49,13 +51,15 @@ import kotlin.math.roundToInt
 
 /**
  * Full-width plan-limit bars pinned above the board: one row per reported
- * window (current 5-hour session, weekly caps, …).
+ * window (current 5-hour session, weekly caps, …). [sessionCounts] is how
+ * many sessions each agent, by source, has on the board, done included.
  */
 @Composable
 fun UsageBars(
     usage: List<UsageInfo>,
     onOpenDetail: (String) -> Unit,
     modifier: Modifier = Modifier,
+    sessionCounts: Map<String, Int> = emptyMap(),
     firstBlock: Modifier = Modifier,
     lastBlock: Modifier = Modifier,
 ) {
@@ -95,6 +99,7 @@ fun UsageBars(
                         val at = r * columns + c
                         UsageSourceBlock(
                             info = info,
+                            sessions = sessionCounts[info.source] ?: 0,
                             nowMillis = now,
                             narrow = narrow,
                             onOpenDetail = onOpenDetail,
@@ -114,13 +119,15 @@ fun UsageBars(
 
 /**
  * One agent's limits: its name over its own bars, in its own card. The header
- * carries the agent name so the rows inside don't repeat it. Tapping the block
- * opens that agent's 30-day usage detail; the layout is unchanged, so the
- * affordance is carried by the tap label screen readers announce.
+ * carries the agent name so the rows inside don't repeat it, and how many
+ * [sessions] it has on the board. Tapping the block opens that agent's 30-day
+ * usage detail; the layout is unchanged, so the affordance is carried by the
+ * tap label screen readers announce.
  */
 @Composable
 private fun UsageSourceBlock(
     info: UsageInfo,
+    sessions: Int,
     nowMillis: Long,
     narrow: Boolean,
     onOpenDetail: (String) -> Unit,
@@ -140,12 +147,12 @@ private fun UsageSourceBlock(
     ) {
         // The agent's mark beside its name: the legend for the marks that
         // lead every card's meta line, now that Claude's and Codex's cards
-        // share a project's section. TalkBack is not shown the mark; the name
-        // beside it says the same.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
+        // share a project's section. Then how many sessions it has on the
+        // board, in a label's quiet ink, where the line has room for it: the
+        // count goes before any letter of the name does, since the name is
+        // what says whose limits these are. TalkBack is not shown the mark,
+        // and hears the name and the count whether or not the count is drawn.
+        val name = @Composable { nameModifier: Modifier ->
             AgentMark(source = info.source, size = textDp(12.sp), tint = Theme.textSecondary)
             Text(
                 text = info.displayName.uppercase(),
@@ -154,7 +161,33 @@ private fun UsageSourceBlock(
                 color = Theme.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = nameModifier,
             )
+        }
+        FirstFitting(Modifier.clearAndSetSemantics { contentDescription = agentHeadDescription(info.source, sessions) }) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                name(Modifier.alignByBaseline())
+                if (sessions > 0) {
+                    Text(
+                        text = ProjectSections.sessionCount(sessions),
+                        style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
+                        color = Theme.textTertiary,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .alignByBaseline()
+                            .padding(start = 2.dp),
+                    )
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                name(Modifier)
+            }
         }
         val rows = @Composable { stacked: Boolean ->
             for (window in info.windows) {

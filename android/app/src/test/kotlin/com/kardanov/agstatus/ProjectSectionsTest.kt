@@ -459,6 +459,15 @@ class ProjectSectionsTest {
     }
 
     @Test
+    fun `a usage block says its agent and how many sessions it has`() {
+        assertEquals("Claude, 7 sessions", agentHeadDescription("claude", 7))
+        assertEquals("Codex, 1 session", agentHeadDescription("codex", 1))
+        assertEquals("Gemini, 2 sessions", agentHeadDescription("gemini", 2))
+        // A board with no sessions still shows every agent's limits.
+        assertEquals("Claude", agentHeadDescription("claude", 0))
+    }
+
+    @Test
     fun `a card says its agent first`() {
         assertEquals("Codex, docs-site", ProjectSections.cardLead(session("a", name = "docs-site", source = "codex")))
         assertEquals("Claude, s1", ProjectSections.cardLead(session("s1")))

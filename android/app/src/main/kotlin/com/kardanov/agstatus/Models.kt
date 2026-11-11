@@ -967,6 +967,16 @@ fun sourceDisplayName(source: String): String = when (source) {
     else -> source.replaceFirstChar { it.uppercase() }
 }
 
+/**
+ * What TalkBack hears an agent's usage block begin with: its name and how
+ * many sessions it has on the board, done included, "Claude, 7 sessions",
+ * as iOS's head says it, whether or not the count is drawn. The name alone
+ * where it has none, as on a board with no sessions, which still shows every
+ * agent's limits.
+ */
+fun agentHeadDescription(source: String, sessions: Int): String =
+    if (sessions > 0) "${sourceDisplayName(source)}, ${ProjectSections.sessionCount(sessions)}" else sourceDisplayName(source)
+
 // MARK: - Usage history
 
 /** One recorded reading of a limit window's utilization. */

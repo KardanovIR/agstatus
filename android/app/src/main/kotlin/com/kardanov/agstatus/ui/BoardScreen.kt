@@ -243,6 +243,11 @@ internal fun BoardScreen(
         val active = sessions.mapTo(mutableSetOf()) { it.source }
         if (active.isEmpty()) usage else usage.filter { it.source in active }
     }
+    // How many sessions each agent has on the board, done included, for its
+    // usage block. The same map while the counts stay the same, so a message
+    // is no block's news.
+    val counted = sessions.groupingBy { it.source }.eachCount()
+    val sessionCounts = remember(counted) { counted }
 
     // Where the usage blocks stand: pinned over the list while it keeps room
     // under them for a label and a card (leastListRoom), and otherwise the
@@ -464,6 +469,7 @@ internal fun BoardScreen(
                     UsageBars(
                         usage = visibleUsage,
                         onOpenDetail = onOpenUsage,
+                        sessionCounts = sessionCounts,
                         modifier = Modifier
                             .onSizeChanged { usageHeight = it.height }
                             .then(sides)
@@ -536,6 +542,7 @@ internal fun BoardScreen(
                                         UsageBars(
                                             usage = visibleUsage,
                                             onOpenDetail = onOpenUsage,
+                                            sessionCounts = sessionCounts,
                                             modifier = Modifier
                                                 .onSizeChanged { usageHeight = it.height }
                                                 .padding(top = 10.dp, bottom = 2.dp)
