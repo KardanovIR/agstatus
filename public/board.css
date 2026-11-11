@@ -350,7 +350,9 @@ html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(-
 
 /* The name in exact case. It gives way after the count, and then in the
  * middle (app.js fitLabel, which measures); the ellipsis here only cuts its
- * end before there is anything to measure. */
+ * end before there is anything to measure. Once fitLabel has measured a
+ * label it is `fitted`, and the cut is the script's alone: a cut that came
+ * out a fraction of a pixel too wide got a second ellipsis at its end. */
 .section-name {
   flex: 0 1 auto;
   min-width: 0;
@@ -358,6 +360,8 @@ html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(-
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.section-label.fitted .section-name { text-overflow: clip; }
 
 /* The count, quiet, in the board's figures. On a line too narrow for both
  * it wraps under the name, where the line's one-line height hides it, until

@@ -22,6 +22,29 @@ const at = (id: string, minutesAgo: number, over: Record<string, unknown> = {}) 
 
 const reply = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body });
 
+/**
+ * jsdom lays nothing out, so this stands in for a browser's widths: what an
+ * element's contents are drawn as (`drawn`, which a Range over them reads)
+ * and the box they have (`box`, which getBoundingClientRect reads), both in
+ * fractions of a pixel, and the whole-pixel readings a browser rounds them
+ * to, scrollWidth, clientWidth and offsetWidth.
+ */
+function standIn(b: Board, drawn: (el: Element) => number, box: (el: Element) => number) {
+  const rect = (width: number) => ({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0 });
+  const define = (proto: object, prop: string, get: (el: Element) => number) =>
+    Object.defineProperty(proto, prop, { configurable: true, get() { return get(this as Element); } });
+  define(b.win.Element.prototype, 'clientWidth', (el) => Math.round(box(el)));
+  define(b.win.Element.prototype, 'scrollWidth', (el) => Math.round(Math.max(drawn(el), box(el))));
+  define(b.win.HTMLElement.prototype, 'offsetWidth', (el) => Math.round(box(el)));
+  b.win.Element.prototype.getBoundingClientRect = function (this: Element) { return rect(box(this)); } as never;
+  // A Range over an element's contents (selectNodeContents) starts in it.
+  (b.win.Range.prototype as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect =
+    function (this: Range) { return rect(drawn(this.startContainer as Element)); };
+  // A browser global the harness's window stub does not carry. No sheet is
+  // loaded, so a gap between two pieces reads as none.
+  vi.stubGlobal('getComputedStyle', b.win.getComputedStyle.bind(b.win));
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -350,20 +373,15 @@ describe('project sections', () => {
   // emoji is one glyph.
   const segmenter = new Intl.Segmenter('und', { granularity: 'grapheme' });
   const drawnLength = (text: string) => [...segmenter.segment(text)].length;
-  function layOut(b: Board, room: number) {
-    const width = (el: Element) => {
-      if (el.classList.contains('section-name')) return drawnLength(el.textContent!) * 10;
+  function layOut(b: Board, room: number, char = 10) {
+    const drawn = (el: Element) => {
+      if (el.classList.contains('section-name')) return drawnLength(el.textContent!) * char;
       if (el.classList.contains('section-count')) return (el as HTMLElement).hidden ? 0 : el.textContent!.length * 6;
+      if (el.classList.contains('section-line')) return room;
       return 0;
     };
-    const define = (proto: object, prop: string, get: (el: Element) => number) =>
-      Object.defineProperty(proto, prop, { configurable: true, get() { return get(this as Element); } });
-    define(b.win.Element.prototype, 'clientWidth', (el) => (el.classList.contains('section-line') ? room : 0));
-    define(b.win.Element.prototype, 'scrollWidth', width);
-    define(b.win.HTMLElement.prototype, 'offsetWidth', width);
-    // A browser global the harness's window stub does not carry. No sheet is
-    // loaded, so the gap between name and count reads as none.
-    vi.stubGlobal('getComputedStyle', b.win.getComputedStyle.bind(b.win));
+    // A name's box is never wider than its line; its text can be.
+    standIn(b, drawn, (el) => (el.classList.contains('section-name') ? Math.min(drawn(el), room) : drawn(el)));
   }
   const shown = (b: Board, key: string) => {
     const h = b.$(`h2[data-section="${key}"]`)!;
@@ -395,6 +413,23 @@ describe('project sections', () => {
     expect(headings(b)).toEqual([`${name}, 3 sessions`]);
     // The tooltip keeps the whole name too.
     expect(b.$('.section-name')!.getAttribute('title')).toBe(name);
+  });
+
+  // In fractions of a pixel, as a browser draws them. Whole pixels passed a
+  // line 0.4px too narrow for a name and its count, and a cut 0.4px too
+  // wide for its line, which CSS then cut at its end as well.
+  it.each([
+    ['the count goes from a line it overflows by 0.4px', 'acme-api', 140, 10.05, ['acme-api', true]],
+    ['a cut 0.4px too wide is a character shorter', LONG, 200, 10.02, ['agstatus-\u2026-presence', true]],
+  ])('fits a label in fractions of a pixel: %s', async (_what, name, room, char, expected) => {
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    layOut(b, room as number, char as number);
+    b.emit('snapshot', [at('a', 1, { homeProject: name }), at('b', 2, { homeProject: name }), at('c', 3, { homeProject: name })]);
+    expect(shown(b, name as string)).toEqual(expected);
+    // Measured, so the cut is the script's alone, and CSS adds no ellipsis
+    // of its own (board.css).
+    expect(b.$(`h2[data-section="${name}"]`)!.classList.contains('fitted')).toBe(true);
   });
 
   it('fits a label again when its count changes', async () => {
@@ -851,6 +886,43 @@ describe('the needs-you bar', () => {
     expect(bar().hidden).toBe(true);
   });
 
+  // Where room runs out the bar gives way in the spec's order, measured as
+  // a browser draws it. The stand-in's bar: `line` is what the name and its
+  // place share, less the word where it shares their line (one line, as on
+  // a wide board); on a phone the alarm has a line of its own, `alarmRoom`.
+  function layOutBar(b: Board, o: { name: number; where: number; word: number; line: number; alarm?: number; alarmRoom?: number; twoLines?: boolean }) {
+    const has = (cls: string) => bar().classList.contains(cls);
+    const alarm = () => (o.alarm ?? 40) + (has('drop-word') ? 0 : o.word);
+    const drawn = (el: Element) => (el.classList.contains('needs-name') ? o.name
+      : el.classList.contains('needs-alarm') ? alarm() : el.id === 'needs' ? 1000 : 0);
+    standIn(b, drawn, (el) => {
+      if (el.classList.contains('needs-name')) {
+        return Math.min(o.name, o.line - (has('drop-where') ? 0 : o.where) - (o.twoLines || has('drop-word') ? 0 : o.word));
+      }
+      if (el.classList.contains('needs-alarm')) return o.twoLines ? Math.min(alarm(), o.alarmRoom ?? 1000) : alarm();
+      return drawn(el);
+    });
+  }
+  const gaveWay = () => ['drop-word', 'drop-where'].filter((c) => bar().classList.contains(c));
+
+  it.each([
+    // A name 0.3px too wide: whole pixels saw none of it, and CSS cut the
+    // name with the word and the project still showing.
+    ['one line, a name 0.3px too wide: the word goes', { name: 160.3, where: 80, word: 60, line: 300 }, ['drop-word']],
+    ['one line, still too wide without the word: the project goes too', { name: 230, where: 80, word: 60, line: 300 }, ['drop-word', 'drop-where']],
+    ['one line, a name that fits keeps every word', { name: 160, where: 80, word: 60, line: 300 }, []],
+    // On a phone the word is on the alarm's line, where dropping it gives the
+    // name no room: the session line drops its place, and the word stays.
+    ['two lines, a name 0.3px too wide: the place goes, the word stays', { name: 220.3, where: 80, word: 60, line: 300, twoLines: true }, ['drop-where']],
+    ['two lines, an alarm line too narrow for the word: the word goes', { name: 100, where: 80, word: 60, line: 300, twoLines: true, alarmRoom: 99.6 }, ['drop-word']],
+  ])('gives way as the spec orders it: %s', async (_what, o, expected) => {
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    layOutBar(b, o);
+    b.emit('snapshot', [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
+    expect(gaveWay()).toEqual(expected);
+  });
+
   // A keyboard reaches the bar before the cards it leads to, as a real
   // button, which answers Enter and Space itself.
   it('is a stop on the keyboard\'s way, ahead of the grid, only while it shows', async () => {
@@ -1085,6 +1157,14 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(r).toMatch(/background:\s*var\(--ink-950\)/);
     expect(r).toMatch(/z-index:\s*1\b/);
     expect(r).toMatch(/grid-column:\s*1 \/ -1/);
+  });
+
+  // A name fitLabel has measured is cut by the script alone, in the middle:
+  // CSS's own ellipsis, which only covers the moment before anything is
+  // measured, put a second one at the end of a cut a fraction too wide.
+  it('leaves a fitted label\'s cut to the script, with no ellipsis of CSS\'s own', () => {
+    expect(rule(board, '.section-name')).toMatch(/text-overflow:\s*ellipsis/);
+    expect(rule(board, '.section-label.fitted .section-name')).toMatch(/text-overflow:\s*clip/);
   });
 
   // The landing page loads card.css without board.css or shell.css, and

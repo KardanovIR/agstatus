@@ -389,12 +389,27 @@
     ? Array.from(graphemeSegmenter.segment(text), (g) => g.segment)
     : Array.from(text));
 
+  // Widths as drawn, in fractions of a pixel. scrollWidth, clientWidth and
+  // offsetWidth round to whole pixels, so a cut 278.42px wide passed for one
+  // that fits a 278px line, and CSS then cut its end as well, a second
+  // ellipsis on a name already cut in the middle.
+  /** How wide an element's contents are drawn, unclipped: its text and boxes, end to end. */
+  function drawnWidth(el) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().width;
+  }
+  /** How much width an element has for them: its own box, on the boxes measured here, which have no padding or border. */
+  const roomOf = (el) => el.getBoundingClientRect().width;
+
   /**
    * Fits a label to its one line, as iOS fits its own: where room runs short
    * the count goes first, before any letter of the name, and then the name is
    * cut in the middle, "agstatus-list…and-presence", keeping both ends, where
    * a folder's distinguishing part often is. Measured, because CSS can cut
-   * text only at an end; cut between graphemes, never inside one.
+   * text only at an end; cut between graphemes, never inside one. Once
+   * measured, a label is `fitted`, and CSS no longer adds an ellipsis of its
+   * own (board.css).
    *
    * Asked whenever a label is painted, and again when it changes size (the
    * window's width, or the reader's text size, which a label's height
@@ -405,22 +420,24 @@
     const line = el.querySelector('.section-line');
     const name = el.querySelector('.section-name');
     const count = el.querySelector('.section-count');
-    const room = line ? line.clientWidth : 0;
+    const room = line ? roomOf(line) : 0;
     if (!room || !name || !count) return;
+    el.classList.add('fitted');
     const full = name.getAttribute('title') || '';
     const gap = parseFloat(getComputedStyle(line).columnGap) || 0;
+    const fits = (withCount) => drawnWidth(name) + (withCount ? gap + roomOf(count) : 0) <= room;
     // Read first: a label drawn whole that still fits needs no write, so a
     // window being resized lays the page out once for all of them, not once
     // for each.
     const whole = name.textContent === full && !count.hidden;
-    if (whole && name.scrollWidth + gap + count.offsetWidth <= room) return;
+    if (whole && fits(true)) return;
     if (!whole) {
       name.textContent = full;
       count.hidden = false;
-      if (name.scrollWidth + gap + count.offsetWidth <= room) return;
+      if (fits(true)) return;
     }
     count.hidden = true;
-    if (name.scrollWidth <= room) return;
+    if (fits(false)) return;
     const chars = graphemes(full);
     const cut = (k) => `${chars.slice(0, Math.ceil(k / 2)).join('')}\u2026${
       chars.slice(chars.length - Math.floor(k / 2)).join('')}`;
@@ -430,7 +447,7 @@
     while (lo < hi) {
       const k = Math.ceil((lo + hi) / 2);
       name.textContent = cut(k);
-      if (name.scrollWidth <= room) lo = k; else hi = k - 1;
+      if (fits(false)) lo = k; else hi = k - 1;
     }
     name.textContent = cut(lo);
   }
@@ -1323,13 +1340,16 @@
     const name = needsEl.querySelector('.needs-name');
     const alarm = needsEl.querySelector('.needs-alarm');
     if (!name || !alarm || !needsEl.clientWidth) return;
-    const cut = () => name.scrollWidth > name.clientWidth;
-    const crowded = alarm.scrollWidth > alarm.clientWidth;
+    // In fractions of a pixel, as fitLabel measures: whole pixels let a
+    // name a fraction too wide pass, and CSS cut it while the word or the
+    // project still showed, against the order above.
+    const cut = () => drawnWidth(name) > roomOf(name);
+    const crowded = drawnWidth(alarm) > roomOf(alarm);
     if (!cut() && !crowded) return;
-    const room = name.clientWidth;
+    const room = roomOf(name);
     needsEl.classList.add('drop-word');
     if (!cut()) return;
-    if (!crowded && name.clientWidth <= room) needsEl.classList.remove('drop-word');
+    if (!crowded && roomOf(name) <= room) needsEl.classList.remove('drop-word');
     needsEl.classList.add('drop-where');
   }
 
