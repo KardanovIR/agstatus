@@ -273,6 +273,23 @@ describe('project sections', () => {
     expect(layout(b)).toEqual(['# acme-api', 'n1', 'a1']);
   });
 
+  // The one move between sections, out of No project, is drawn, not
+  // animated: the card moves as it stands, and so does the label it opens
+  // its new section with. A label rises in only beside a card that is new.
+  it('draws a label in place when a card that moved opens its section', async () => {
+    const b = await boardOf([at('n1', 1, { homeProject: '', project: '' }), at('a1', 2, { homeProject: 'acme-api' })]);
+    for (const label of b.$$('h2.section-label')) expect(label.classList.contains('entering')).toBe(true);
+    b.emit('session', at('n1', 0, { homeProject: 'web', project: 'web' }));
+    expect(layout(b)).toEqual(['# acme-api', 'a1', '# web', 'n1']);
+    expect(b.$('h2[data-section="web"]')!.classList.contains('entering')).toBe(false);
+    // On a server too old to pin a folder a cd moves a card, and the same holds.
+    b.emit('session', at('o1', 0, { project: 'api' }));
+    expect(b.$('h2[data-section="api"]')!.classList.contains('entering')).toBe(true);
+    b.emit('session', at('o1', 0, { project: 'zoo' }));
+    expect(layout(b)).toEqual(['# acme-api', 'a1', '# web', 'n1', '# zoo', 'o1']);
+    expect(b.$('h2[data-section="zoo"]')!.classList.contains('entering')).toBe(false);
+  });
+
   it('puts a new session on top of its own section, and moves no other card', async () => {
     const b = await boardOf([
       at('a1', 1, { homeProject: 'acme-api' }), at('a2', 2, { homeProject: 'acme-api' }),

@@ -442,13 +442,20 @@
     document.fonts.addEventListener('loadingdone', () => { for (const { el } of labels.values()) fitLabel(el); });
   }
 
-  /** The label for a section, made the first time it is drawn; and whether it was painted. */
-  function labelFor(key, count) {
+  /**
+   * The label for a section, made the first time it is drawn; and whether it
+   * was painted. It arrives with its section's first card, and as that card
+   * does: `arriving` when the card is new on the board, so the two rise in
+   * together, and drawn in place when the card has moved here, out of No
+   * project or, on a server too old to pin a folder, after a cd. The spec
+   * draws that move without motion, and a label that rose over a card that
+   * did not would be motion reporting nothing.
+   */
+  function labelFor(key, count, arriving) {
     let label = labels.get(key);
     if (!label) {
       const el = document.createElement('h2');
-      // It arrives with its section's first card, and as that card does.
-      el.className = `section-label${key === NO_PROJECT ? ' is-none' : ''} entering`;
+      el.className = `section-label${key === NO_PROJECT ? ' is-none' : ''}${arriving ? ' entering' : ''}`;
       if (key !== NO_PROJECT) el.dataset.section = key;
       const settle = (e) => { if (e.animationName === 'card-in') el.classList.remove('entering'); };
       el.addEventListener('animationend', settle);
@@ -1039,10 +1046,12 @@
     if (cards.size === 0 && gridEl.firstChild) paint(gridEl, '');
 
     let withSubs = false;
+    const born = new Set();   // the cards this render made
     for (const s of list) {
       if (subtasksOf(s)) withSubs = true;
       let rec = cards.get(s.id);
       if (!rec) {
+        born.add(s.id);
         const el = document.createElement('article');
         el.className = 'card entering';
         el.dataset.id = s.id;
@@ -1079,7 +1088,7 @@
     const painted = [];
     for (const { key, sessions } of sectionsOf(list)) {
       drawn.add(key);
-      const label = labelFor(key, sessions.length);
+      const label = labelFor(key, sessions.length, born.has(sessions[0].id));
       if (label.painted) painted.push(label.el);
       place(label.el);
       for (const s of sessions) place(cards.get(s.id).el);
