@@ -147,6 +147,12 @@ enum ProjectKey: Hashable {
     /// `lowercased()` maps each character on its own and makes every Σ a σ,
     /// which put "νομος-api" before "ΝΟΜΟΣ" here and after it on the other
     /// boards. Foundation's, with no locale, applies the rule (`verify`).
+    ///
+    /// At the rule's corners the platforms part. A Σ before a full stop and
+    /// a letter, as in "ΝΟΜΟΣ.api", is σ here on iOS 26 and in JavaScript,
+    /// but ς through NSString, which an older iOS may use for this call; and
+    /// the desktop JVM makes the Σ of "ΑΣ-Z" a σ. The spec's Risks has the
+    /// measurements.
     static func folded(_ name: String) -> String {
         name.lowercased(with: nil)
     }
@@ -1089,10 +1095,14 @@ extension BoardArrangement {
         assert(ProjectKey.folded("ΝΟΜΟΣ").isExactly("νομος") && ProjectKey.folded("ΑΣ-Z").isExactly("ας-z")
                && ProjectKey.folded("ΣΑ").isExactly("σα") && ProjectKey.folded("ΟΔΥΣΣΕΥΣ").isExactly("οδυσσευς")
                && !"ΝΟΜΟΣ".lowercased().isExactly("νομος"), "final sigma")
-        // The order table's rows past ASCII, which the web's and Android's
-        // tests assert too, from every starting point: café decomposed and
-        // composed as two sections, 'e' (0065) before 'é' (00E9); then the
-        // Greek, where ς (03C2) sorts before σ (03C3).
+        // The order table's rows past ASCII, from every starting point: café
+        // decomposed and composed as two sections, 'e' (0065) before 'é'
+        // (00E9); then the Greek, where ς (03C2) sorts before σ (03C3). Of
+        // these only decision U3's two pairs are shared, and the web's and
+        // Android's order tests assert those too: the two cafés, and
+        // [ΝΟΜΟΣ, νομος-api]. The other Greek rows are iOS's own. Android's
+        // tests run on the desktop JVM, which lowercases ΑΣ-Z to ασ-z, not
+        // ας-z, and so would put ασ-a first.
         let composed = "caf\u{E9}", decomposed = "cafe\u{301}"
         let unicode = ["νομος-api", "ΝΟΜΟΣ", composed, "ασ-a", decomposed, "χαος2", "ΑΣ-Z", "ΧΑΟΣ"]
         let unicodeOrder: [ProjectKey] = [decomposed, composed, "ΑΣ-Z", "ασ-a", "ΝΟΜΟΣ", "νομος-api", "ΧΑΟΣ", "χαος2"]
