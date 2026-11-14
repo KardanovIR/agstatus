@@ -695,6 +695,35 @@ describe('project sections', () => {
     expect(count()).toBe(true);
   });
 
+  // The usage area is painted again whenever a head's count changes, as a
+  // session arrives or leaves, and whenever a "resets in" countdown moves,
+  // which the board checks every 15 s. Focus on a head comes back to it.
+  // The block around the head carries the same source, came first in the
+  // search for it, and takes no focus, so focus fell to <body> and the
+  // next Tab started again from the top of the page.
+  const usageHead = () => document.querySelector('.usage-open') as HTMLButtonElement;
+  const usageReset = () => document.querySelector('.usage-reset')!.textContent;
+  it.each([
+    ['a session arrives', async (b: Board) => b.emit('session', at('c3', 0, { source: 'claude' })), 'Claude, 3 sessions'],
+    ['a session leaves', async (b: Board) => b.emit('remove', { id: 'c2' }), 'Claude, 1 session'],
+    ['the countdown moves on', async () => {
+      const shown = usageReset();
+      await vi.advanceTimersByTimeAsync(45_000);
+      expect(usageReset()).not.toBe(shown);
+    }, 'Claude, 2 sessions'],
+  ])('keeps a usage head focused while the usage area is painted again: %s', async (_what, change, named) => {
+    const b = await boardOf([at('c1', 1, { source: 'claude' }), at('c2', 2, { source: 'claude' })]);
+    b.emit('usage', [{ source: 'claude', windows: [
+      { id: 'five_hour', label: 'Current session', usedPct: 10, resetsAt: Date.now() + 2 * 3_600_000 },
+    ] }]);
+    usageHead().focus();
+    const was = usageHead();
+    await change(b);
+    expect(usageHead()).not.toBe(was);   // the head really was painted again
+    expect(usageHead().getAttribute('aria-label')).toBe(named);
+    expect(document.activeElement).toBe(usageHead());
+  });
+
   // Focus, the history route and the reconciler find cards where they
   // always were: in the one grid, never re-parented under a label.
   it('keeps every card a child of the grid, so Focus and the way back from history still find it', async () => {

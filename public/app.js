@@ -200,7 +200,11 @@
     if (d.open !== undefined) return '[data-open]';
     if (SUB_ID_RE.test(d.sub || '')) return `[data-sub="${d.sub}"]`;
     if (SESSION_ID_RE.test(d.foot || '')) return `[data-foot="${d.foot}"]`;
-    if (SAFE.test(d.source || '')) return `[data-source="${d.source}"]`;
+    // A usage head's button and the block it heads both carry the agent,
+    // and the block, which takes no focus, comes first: so this key names
+    // the element as well, or focus on a head fell to <body> whenever the
+    // usage area was painted again (a count, a countdown).
+    if (SAFE.test(d.source || '') && SAFE.test(node.localName)) return `${node.localName}[data-source="${d.source}"]`;
     if (SAFE.test(node.id || '')) return `#${node.id}`;
     return null;
   }
