@@ -492,6 +492,15 @@ enum DemoData {
     /// and sessions with no folder at all.
     ///
     /// The launch variables that go with it, all read only in a debug build:
+    ///   AGSTATUS_DEMO           1 (SessionStore: starts in demo mode, on the
+    ///                           board AGSTATUS_DEMO_SCENARIO names, after
+    ///                           the verify() checks, which stop the app at
+    ///                           launch if one fails)
+    ///   AGSTATUS_BOARD_URL      <board URL> (SessionStore: adopts that board
+    ///                           as pairing does, which saves it, and streams
+    ///                           it; read before AGSTATUS_DEMO. A local
+    ///                           server's http://127.0.0.1:<port> gives the
+    ///                           simulator a real stream)
     ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three |
     ///                           three-limits | long | empty, a project
     ///                           board: projects | manyprojects | moved |
@@ -546,6 +555,12 @@ enum DemoData {
     ///                           category `ax`, after any presses — see
     ///                           `AccessibilityDump` for the simulator
     ///                           setting it needs)
+    ///   AGSTATUS_MAGIC_TAP      <words> (BoardView, with AGSTATUS_AX_DUMP:
+    ///                           after the dump, makes VoiceOver's Magic Tap
+    ///                           from the first element whose label holds
+    ///                           the words, logs each step it takes up the
+    ///                           containers until one handles it, then
+    ///                           dumps the tree again)
     ///   AGSTATUS_ANNOUNCE_BLOCKS 1 (BoardView: says a new block aloud as if
     ///                           VoiceOver were running, which in the
     ///                           simulator it never is; the log category
@@ -554,6 +569,8 @@ enum DemoData {
     ///                           with AGSTATUS_OPEN_USAGE: scrolls to that
     ///                           part, which at the accessibility sizes is
     ///                           below a phone's first screen)
+    ///   AGSTATUS_OPEN_SHEET     settings | pair (BoardView: presents that
+    ///                           sheet over the board)
     ///   AGSTATUS_OPEN_HISTORY   1 | <session id> (BoardView: opens the first
     ///                           card's session screen, or that session's)
     ///   AGSTATUS_OPEN_USAGE     <source> (BoardView: opens that agent's usage)
