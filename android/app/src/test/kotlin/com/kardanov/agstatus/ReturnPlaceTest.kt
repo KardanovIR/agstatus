@@ -14,11 +14,13 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
@@ -31,6 +33,11 @@ import org.robolectric.annotation.Config
  * as a phone in the hand is: in a keyboard's, the first card in view takes
  * the focus as the board is drawn afresh, and moves into the room under its
  * label, as focus brings it.
+ *
+ * A change of text size can move the blocks as well: on a phone 360dp wide,
+ * upright and 500dp to 620dp tall, they are pinned at 100% text and lead the
+ * list at 200%. Made again at the new size, the list starts at the card it
+ * was at, wherever the blocks then go.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w915dp-h360dp-land-xxhdpi")
@@ -45,6 +52,7 @@ class ReturnPlaceTest {
     fun close() {
         scenario.close()
         InstrumentationRegistry.getInstrumentation().setInTouchMode(false)
+        RuntimeEnvironment.setFontScale(1f)
     }
 
     private val usage = listOf(
@@ -70,14 +78,35 @@ class ReturnPlaceTest {
 
     private val board = (1..4).map { card(it, "alpha") } + (5..8).map { card(it, "beta") } + (9..12).map { card(it, "gamma") }
 
-    private fun launch() {
+    /** Claude's three windows beside Codex's two, which a Codex card on the board brings. */
+    private val bothAgents = listOf(
+        UsageInfo(
+            source = "claude",
+            windows = listOf(
+                UsageWindow(id = "five_hour", label = "Current session", usedPct = 64.0),
+                UsageWindow(id = "seven_day", label = "Weekly", usedPct = 22.0),
+                UsageWindow(id = "seven_day_opus", label = "Weekly (Opus)", usedPct = 41.0),
+            ),
+        ),
+        UsageInfo(
+            source = "codex",
+            windows = listOf(
+                UsageWindow(id = "five_hour", label = "5-hour", usedPct = 12.0),
+                UsageWindow(id = "week", label = "Weekly", usedPct = 40.0),
+            ),
+        ),
+    )
+
+    private val withCodex = listOf(card(0, "alpha").copy(id = "x0", name = "Codex card", source = "codex")) + board
+
+    private fun launch(sessions: List<Session> = board, limits: List<UsageInfo> = usage) {
         InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
         scenario = ActivityScenario.launch(
             Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
                 .putExtra("agstatus_demo", true)
                 .putExtra("agstatus_demo_freeze", true),
         )
-        scenario.onActivity { ViewModelProvider(it)[SessionStore::class.java].showForTest(board, usage) }
+        scenario.onActivity { ViewModelProvider(it)[SessionStore::class.java].showForTest(sessions, limits) }
         rule.waitForIdle()
     }
 
@@ -97,6 +126,31 @@ class ReturnPlaceTest {
             }
             .sortedBy { it.first }
             .map { it.second }
+    }
+
+    /** The first card in view, top to bottom, by its name: "Card 6". */
+    private fun firstCardInView(): String {
+        val list = rule.onNode(hasScrollToIndexAction()).fetchSemanticsNode()
+        val top = list.positionInRoot.y
+        val bottom = top + list.size.height
+        return rule.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ContentDescription))
+            .fetchSemanticsNodes()
+            .filter { it.positionInRoot.y + it.size.height > top && it.positionInRoot.y < bottom }
+            .sortedBy { it.positionInRoot.y }
+            .firstNotNullOf { node ->
+                val said = node.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull().orEmpty()
+                Regex("^Claude, (Card \\d+)").find(said)?.groupValues?.get(1)
+            }
+    }
+
+    /** Whether the usage blocks stand pinned over the list: Claude's head is above the list's top edge. */
+    private fun blocksPinned(): Boolean {
+        val listTop = rule.onNode(hasScrollToIndexAction()).fetchSemanticsNode().positionInRoot.y
+        return rule.onAllNodes(
+            SemanticsMatcher("Claude's usage head") {
+                it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull()?.startsWith("Claude, 12 sessions") == true
+            },
+        ).fetchSemanticsNodes().any { it.positionInRoot.y < listTop }
     }
 
     /** Scrolled down the list, the blocks out of view, the card it names sitting under beta's stuck label. */
@@ -124,7 +178,7 @@ class ReturnPlaceTest {
     }
 
     @Test
-    fun `drawn afresh, as after a change of text size, the list stands where it stood`() {
+    fun `drawn afresh with the activity made again, the list stands where it stood`() {
         launch()
         val before = scrolledDown()
 
@@ -132,5 +186,39 @@ class ReturnPlaceTest {
         rule.waitForIdle()
 
         assertEquals(before, inView())
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h500dp-port-xxhdpi")
+    fun `made again at a larger text size, where the blocks move into the list, the list starts at the card it was at`() {
+        launch(withCodex, bothAgents)
+        assertTrue("pinned at 100%", blocksPinned())
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(8)
+        rule.waitForIdle()
+        assertEquals("Card 6", firstCardInView())
+
+        RuntimeEnvironment.setFontScale(2f)
+        scenario.recreate()
+        rule.waitForIdle()
+
+        assertFalse("in the list at 200%", blocksPinned())
+        assertEquals("Card 6", firstCardInView())
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h620dp-port-xxhdpi")
+    fun `made again at a smaller text size, where the blocks would leave the list, the list starts at the card it was at`() {
+        RuntimeEnvironment.setFontScale(2f)
+        launch(withCodex, bothAgents)
+        assertFalse("in the list at 200%", blocksPinned())
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(9)
+        rule.waitForIdle()
+        assertEquals("Card 6", firstCardInView())
+
+        RuntimeEnvironment.setFontScale(1f)
+        scenario.recreate()
+        rule.waitForIdle()
+
+        assertEquals("Card 6", firstCardInView())
     }
 }

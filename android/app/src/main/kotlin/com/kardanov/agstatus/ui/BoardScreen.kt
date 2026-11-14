@@ -79,6 +79,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -260,18 +261,23 @@ internal fun BoardScreen(
     // none at 200%, where the bar cut the blocks through their text. They
     // are as tall in either place, so where they stand cannot flap.
     //
-    // Saved with the list's place, which is saved by item and counts the
-    // blocks as its first item where they lead it: a board drawn afresh,
-    // back from a card's history or after a change of text size, starts with
-    // the blocks where that place was counted with them. Not saved, they
-    // joined a frame late, and the list started one item on, the card the
-    // reader had opened half under the label above it.
-    var usageHeight by rememberSaveable { mutableIntStateOf(0) }
-    var bodyHeight by rememberSaveable { mutableIntStateOf(0) }
+    // Where they stood as the board was last drawn is saved with the list's
+    // place, which is saved by item and counts the blocks as its first item
+    // where they led it ([UsageJoin]). A board drawn afresh, back from a
+    // card's history or made again at another text size, keeps them there
+    // until it has measured them, so that place is read as it was counted;
+    // measured, they go where they now fit, and the list keeps the card at
+    // its top as they join it or leave it. Measured afresh with nothing
+    // saved, they joined a frame late and the list started one card on.
+    // Their heights saved instead, heights from one text size placed them
+    // for another: a small phone turned up to 200% started one card back.
+    var usageHeight by remember { mutableIntStateOf(0) }
+    var bodyHeight by remember { mutableIntStateOf(0) }
     val leastList = leastListRoom()
     val leastListPx = with(LocalDensity.current) { leastList.roundToPx() }
+    val joining = rememberSaveable(saver = UsageJoin.Saver) { UsageJoin() }
     val usageLeads = sessions.isNotEmpty() && !boardGone && visibleUsage.isNotEmpty() &&
-        usageHeight > 0 && bodyHeight > 0 && bodyHeight - usageHeight < leastListPx
+        if (usageHeight > 0 && bodyHeight > 0) bodyHeight - usageHeight < leastListPx else joining.leads
     val leadsNow by rememberUpdatedState(usageLeads)
     // The blocks join the list as its first item. The list keeps the item at
     // its top where it was, which would leave them above the screen, and
@@ -281,7 +287,6 @@ internal fun BoardScreen(
     // the blocks whole, whatever it would have made of the insertion. Read
     // here, after the blocks join the list and before it lays them out, the
     // list's place is still where it stood; a list scrolled down keeps it.
-    val joining = remember { UsageJoin() }
     SideEffect {
         if (usageLeads && !joining.leads &&
             listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
@@ -909,9 +914,15 @@ private class MeasuredHeight {
     var px = 0
 }
 
-/** Whether the usage blocks led the list when the board was last drawn. Plain: updating it must not recompose. */
-private class UsageJoin {
-    var leads = false
+/**
+ * Whether the usage blocks led the list when the board was last drawn. Plain:
+ * updating it must not recompose. Saved with the list's place, which counted
+ * them by it.
+ */
+private class UsageJoin(var leads: Boolean = false) {
+    companion object {
+        val Saver = Saver<UsageJoin, Boolean>(save = { it.leads }, restore = { UsageJoin(it) })
+    }
 }
 
 /** A card's content type in the board's list. */
