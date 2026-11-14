@@ -248,6 +248,27 @@ describe('project sections', () => {
     expect(sections(b)).toEqual(['AgStatus', 'agstatus', 'Alpha', 'alpha', 'beta', 'zeta']);
   });
 
+  // U3's two pairs, which every client's order tests also assert. Lowercasing
+  // applies Unicode's final sigma, so ΝΟΜΟΣ lowercases to νομος and comes
+  // before νομος-api. A folder an old server sends both composed and
+  // decomposed stays two sections, by code unit, the decomposed one first:
+  // e (U+0065) sorts before é (U+00E9).
+  it.each([
+    ['ΝΟΜΟΣ', ['ΝΟΜΟΣ', 'νομος-api']],
+    ['νομος-api', ['νομος-api', 'ΝΟΜΟΣ']],
+  ])('orders the final-sigma pair [ΝΟΜΟΣ, νομος-api] whichever comes first (%s)', async (_first, given) => {
+    const b = await boardOf(given.map((project, i) => at(`s${i}`, i, { project })));
+    expect(sections(b)).toEqual(['ΝΟΜΟΣ', 'νομος-api']);
+  });
+
+  it.each([
+    ['composed', ['caf\u00e9', 'cafe\u0301']],
+    ['decomposed', ['cafe\u0301', 'caf\u00e9']],
+  ])('keeps café composed and decomposed as two sections, the decomposed one first (%s first)', async (_first, given) => {
+    const b = await boardOf(given.map((project, i) => at(`s${i}`, i, { project })));
+    expect(sections(b)).toEqual(['cafe\u0301', 'caf\u00e9']);
+  });
+
   // The rule the server and every client hold a folder name to: trimmed, it
   // is not empty, not '/' or '.', and not shaped like a UUID. Anything else
   // names no section, pinned or live, and no place.
