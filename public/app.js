@@ -1443,26 +1443,31 @@
   /**
    * Fits the bar to its line as the spec orders it: where room runs out the
    * word BLOCKED goes first (the mark and the count stay), then the project,
-   * and then the name is cut at its end (shell.css). On a phone the session
-   * has a line of its own, where the word would make it no room, so there
-   * the word goes only if it crowds its own line.
+   * and then the name is cut at its end (shell.css). On a phone the bar
+   * takes two lines, the alarm over the session, and each gives way on its
+   * own: the session's drops the project and then cuts the name, and the
+   * word goes only if it crowds the alarm's line, since dropping it there
+   * gives the session nothing.
    */
   function fitNeeds() {
     needsEl.classList.remove('drop-word', 'drop-where');
     const name = needsEl.querySelector('.needs-name');
     const alarm = needsEl.querySelector('.needs-alarm');
-    if (!name || !alarm || !needsEl.clientWidth) return;
+    const what = needsEl.querySelector('.needs-what');
+    if (!name || !alarm || !what || !needsEl.clientWidth) return;
     // In fractions of a pixel, as fitLabel measures: whole pixels let a
     // name a fraction too wide pass, and CSS cut it while the word or the
     // project still showed, against the order above.
     const cut = () => drawnWidth(name) > roomOf(name);
     const crowded = drawnWidth(alarm) > roomOf(alarm);
-    if (!cut() && !crowded) return;
-    const room = roomOf(name);
-    needsEl.classList.add('drop-word');
-    if (!cut()) return;
-    if (!crowded && roomOf(name) <= room) needsEl.classList.remove('drop-word');
-    needsEl.classList.add('drop-where');
+    // One line or two, as the stylesheet laid the bar out: on two the
+    // session starts below the alarm. Not from whether dropping the word
+    // gave the name more room: a project wider than the line leaves the
+    // name no box with the word or without it, which read as two lines, so
+    // a wide board kept BLOCKED and dropped only the project.
+    const ownLine = what.getBoundingClientRect().top >= alarm.getBoundingClientRect().bottom;
+    if (crowded || (!ownLine && cut())) needsEl.classList.add('drop-word');
+    if (cut()) needsEl.classList.add('drop-where');
   }
 
   if (typeof ResizeObserver === 'function') {

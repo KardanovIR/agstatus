@@ -66,16 +66,20 @@ const reply = (body: unknown, status = 200) => ({ ok: status < 400, status, json
  * element's contents are drawn as (`drawn`, which a Range over them reads)
  * and the box they have (`box`, which getBoundingClientRect reads), both in
  * fractions of a pixel, and the whole-pixel readings a browser rounds them
- * to, scrollWidth, clientWidth and offsetWidth.
+ * to, scrollWidth, clientWidth and offsetWidth. Where a test needs to say
+ * which line a box is on, `rows` gives its top and bottom; otherwise every
+ * box is at the top, and nothing high.
  */
-function standIn(b: Board, drawn: (el: Element) => number, box: (el: Element) => number) {
-  const rect = (width: number) => ({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0 });
+function standIn(b: Board, drawn: (el: Element) => number, box: (el: Element) => number,
+  rows: (el: Element) => [top: number, bottom: number] = () => [0, 0]) {
+  const rect = (width: number, [top, bottom]: [number, number] = [0, 0]) =>
+    ({ x: 0, y: top, top, left: 0, right: width, bottom, width, height: bottom - top });
   const define = (proto: object, prop: string, get: (el: Element) => number) =>
     Object.defineProperty(proto, prop, { configurable: true, get() { return get(this as Element); } });
   define(b.win.Element.prototype, 'clientWidth', (el) => Math.round(box(el)));
   define(b.win.Element.prototype, 'scrollWidth', (el) => Math.round(Math.max(drawn(el), box(el))));
   define(b.win.HTMLElement.prototype, 'offsetWidth', (el) => Math.round(box(el)));
-  b.win.Element.prototype.getBoundingClientRect = function (this: Element) { return rect(box(this)); } as never;
+  b.win.Element.prototype.getBoundingClientRect = function (this: Element) { return rect(box(this), rows(this)); } as never;
   // A Range over an element's contents (selectNodeContents) starts in it.
   (b.win.Range.prototype as unknown as { getBoundingClientRect: () => unknown }).getBoundingClientRect =
     function (this: Range) { return rect(drawn(this.startContainer as Element)); };
@@ -1098,7 +1102,10 @@ describe('the needs-you bar', () => {
   // Where room runs out the bar gives way in the spec's order, measured as
   // a browser draws it. The stand-in's bar: `line` is what the name and its
   // place share, less the word where it shares their line (one line, as on
-  // a wide board); on a phone the alarm has a line of its own, `alarmRoom`.
+  // a wide board); on a phone the alarm has a line of its own, `alarmRoom`,
+  // and the session has the line under it. The name shrinks as a flex item
+  // with no minimum width does: to nothing, and no further, so a place
+  // wider than the line leaves it no box at all.
   function layOutBar(b: Board, o: { name: number; where: number; word: number; line: number; alarm?: number; alarmRoom?: number; twoLines?: boolean }) {
     const has = (cls: string) => bar().classList.contains(cls);
     const alarm = () => (o.alarm ?? 40) + (has('drop-word') ? 0 : o.word);
@@ -1106,10 +1113,16 @@ describe('the needs-you bar', () => {
       : el.classList.contains('needs-alarm') ? alarm() : el.id === 'needs' ? 1000 : 0);
     standIn(b, drawn, (el) => {
       if (el.classList.contains('needs-name')) {
-        return Math.min(o.name, o.line - (has('drop-where') ? 0 : o.where) - (o.twoLines || has('drop-word') ? 0 : o.word));
+        return Math.max(0, Math.min(o.name, o.line - (has('drop-where') ? 0 : o.where) - (o.twoLines || has('drop-word') ? 0 : o.word)));
       }
       if (el.classList.contains('needs-alarm')) return o.twoLines ? Math.min(alarm(), o.alarmRoom ?? 1000) : alarm();
       return drawn(el);
+    }, (el) => {
+      // On one line the session sits beside the alarm, both centred on it;
+      // on two it has the line under the alarm's.
+      if (el.classList.contains('needs-alarm')) return o.twoLines ? [8, 22] : [10, 24];
+      if (el.classList.contains('needs-what')) return o.twoLines ? [26, 44] : [8, 26];
+      return [0, 0];
     });
   }
   const gaveWay = () => ['drop-word', 'drop-where'].filter((c) => bar().classList.contains(c));
@@ -1124,12 +1137,41 @@ describe('the needs-you bar', () => {
     // name no room: the session line drops its place, and the word stays.
     ['two lines, a name 0.3px too wide: the place goes, the word stays', { name: 220.3, where: 80, word: 60, line: 300, twoLines: true }, ['drop-where']],
     ['two lines, an alarm line too narrow for the word: the word goes', { name: 100, where: 80, word: 60, line: 300, twoLines: true, alarmRoom: 99.6 }, ['drop-word']],
+    // So too where the place is wider than the session's whole line, as
+    // Chrome draws the spec's folder at 375px with 200% text: the name has
+    // no box with the place, and its line under the alarm's either way.
+    ['two lines, a place wider than the session\'s line: the place goes, the word stays',
+      { name: 699.03, where: 735.44, word: 101.54, alarm: 47.38, line: 351, twoLines: true, alarmRoom: 267.78 }, ['drop-where']],
   ])('gives way as the spec orders it: %s', async (_what, o, expected) => {
     vi.useFakeTimers();
     const b = await loadBoard();
     layOutBar(b, o);
     b.emit('snapshot', [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
     expect(gaveWay()).toEqual(expected);
+  });
+
+  // On one line a place wider than the room the name and the place share,
+  // with the word and without it, left the name no box either way. Dropping
+  // the word gave it no more room, which the bar took for the phone's two
+  // lines, so it kept BLOCKED and dropped only the place: '(!) 1 BLOCKED
+  // Fix the login redirect a… Show'. On one line the word goes first (B1),
+  // as on iOS, and then the place: '(!) 1 Fix the login redirect after th…
+  // Show'. Widths as headless Chrome draws them.
+  it.each([
+    ['600px wide at 200% text, with the spec\'s long folder', {
+      folder: 'agstatus-listener-windows-terminal-focus-and-presence', title: 'Fix the login redirect after the OAuth callback returns',
+      name: 699.03, where: 735.44, word: 101.54, alarm: 47.38, line: 421.41,
+    }],
+    ['568px wide at the default size, with a 60-character folder', {
+      folder: 'AgStatusWindowsTerminalFocusAndPresenceListenerWorkerMonitor', title: 'Fix the login redirect',
+      name: 135.98, where: 453.42, word: 52.78, alarm: 25.69, line: 444.7,
+    }],
+  ])('drops the word before the place on one line, where the place leaves the name no room: %s', async (_what, o) => {
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    layOutBar(b, o);
+    b.emit('snapshot', [blocked('a', 1, o.folder, { name: o.title })]);
+    expect(gaveWay()).toEqual(['drop-word', 'drop-where']);
   });
 
   // A cold load draws the bar in the fallback face, which is wider. Barlow
