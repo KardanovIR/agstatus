@@ -375,8 +375,9 @@ struct BoardView: View {
         // One action for the board's life, kept with what a press reads
         // (`DrawnBoard`): a closure made afresh on each pass would be a
         // changed property on the board's container at every hook event,
-        // which only arrivals, departures and blocks should touch.
-        if drawn.magicTap == nil { drawn.magicTap = { pressBar() } }
+        // which only arrivals, departures and blocks should touch. It keeps
+        // the press, not the board (`BarPress`).
+        if drawn.magicTap == nil { drawn.magicTap = { [press = barPress] in press() } }
         return shows ? contained.accessibilityAction(.magicTap, drawn.magicTap ?? {}) : contained
     }
 
@@ -843,8 +844,13 @@ struct BoardView: View {
     /// where a card is drawn is what the reading order follows.
     private func cardStack(_ sessions: [Session], in section: ProjectKey) -> some View {
         // What a laid-out side reports to, made once and kept with the edges
-        // (`cardsMoved`).
-        if cardTops.moved == nil { cardTops.moved = { cardsMoved() } }
+        // (`cardsMoved`). Like Magic Tap's action it keeps what it reads and
+        // the one count it writes, not the board (`BarPress` says why).
+        if cardTops.moved == nil {
+            cardTops.moved = { [weak drawn, reorders = $reorders] tops in
+                BoardView.cardsMoved(tops, drawn: drawn, reorders: reorders)
+            }
+        }
         return DrawnSide(spacing: BoardArrangement.cardGap - Self.cardLead, section: section,
                          ids: sessions.map(\.id), tops: cardTops) {
             ForEach(sessions) { session in
@@ -861,12 +867,12 @@ struct BoardView: View {
     /// cards are read in, which is what the bar names and what a press
     /// brings. An event that moves no card asks nothing of this, and one that
     /// moves cards without reordering them draws nothing more.
-    private func cardsMoved() {
-        guard let plan = drawn.plan, plan.arrangement == .stacked else { return }
-        cardTops.forget(allBut: plan.order)
-        let order = ReadingOrder.make(plan.sections, arrangement: .stacked, sides: plan.sides, tops: cardTops.edges)
+    private static func cardsMoved(_ tops: CardTops, drawn: DrawnBoard?, reorders: Binding<Int>) {
+        guard let plan = drawn?.plan, plan.arrangement == .stacked else { return }
+        tops.forget(allBut: plan.order)
+        let order = ReadingOrder.make(plan.sections, arrangement: .stacked, sides: plan.sides, tops: tops.edges)
         if !order.lazy.map(\.id).elementsEqual(plan.order.lazy.map(\.id)) {
-            reorders &+= 1
+            reorders.wrappedValue &+= 1
         }
     }
 
@@ -904,30 +910,81 @@ struct BoardView: View {
     }
 
     /// Brings the card the bar names into view, rings it, and moves VoiceOver
-    /// onto it; the bar then names the next blocked card.
+    /// onto it; the bar then names the next blocked card (`BarPress`).
     ///
     /// This is the other half of "a card keeps its place". A card that
     /// becomes blocked is recoloured where it stands, which may be a screen
-    /// down, so the bar is the way to it. Read from the board as last drawn,
-    /// so a card dismissed or unblocked since is not the one brought.
-    private func pressBar() {
-        guard let plan = drawn.plan, let scroller = drawn.scroller, let target = plan.needsYou?.target else { return }
-        withAnimation(jumpAnimation) {
-            switch plan.arrangement {
-            case .list:
-                // List rows answer to their session's own id.
-                scroller.scrollTo(target, anchor: listAnchor)
-            case .stacked:
-                // 8pt below what is pinned: the card's own lead (`cardStack`).
-                scroller.scrollTo(JumpTarget.card(target), anchor: .top)
+    /// down, so the bar is the way to it.
+    private func pressBar() { barPress() }
+
+    /// A press of the bar, holding the parts of this board it touches.
+    private var barPress: BarPress {
+        BarPress(drawn: drawn, landing: landing, jumped: $jumped, jumpStamp: $jumpStamp,
+                 barAfter: $barAfter, jumpFocus: $jumpFocus)
+    }
+
+    /// What a press of the bar does, holding only what it reads and writes:
+    /// the board as last drawn, weakly; where the List's rows are; and the
+    /// four pieces of the board's state a press changes, as bindings.
+    ///
+    /// Never the board itself. Magic Tap's action is kept for the board's
+    /// life in `DrawnBoard`, and a closure that called a method of the board
+    /// held the board's value, and with it every piece of its state:
+    /// `DrawnBoard` among them, which held the closure. Neither was ever
+    /// freed. Each board that left the screen, when the demo ended or this
+    /// device was disconnected, stayed in memory with everything its state
+    /// held. The bar's own action presses through this too, so the two
+    /// presses are one.
+    private struct BarPress {
+        weak var drawn: DrawnBoard?
+        let landing: JumpLanding
+        let jumped: Binding<String?>
+        let jumpStamp: Binding<Int>
+        let barAfter: Binding<String?>
+        let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
+
+        /// Read from the board as last drawn, so a card dismissed or
+        /// unblocked since is not the one brought.
+        func callAsFunction() {
+            guard let drawn, let plan = drawn.plan, let scroller = drawn.scroller,
+                  let target = plan.needsYou?.target else { return }
+            withAnimation(BoardView.jumpAnimation) {
+                switch plan.arrangement {
+                case .list:
+                    // List rows answer to their session's own id.
+                    scroller.scrollTo(target, anchor: BoardView.listAnchor)
+                case .stacked:
+                    // 8pt below what is pinned: the card's own lead (`cardStack`).
+                    scroller.scrollTo(JumpTarget.card(target), anchor: .top)
+                }
+                jumped.wrappedValue = target
+                jumpStamp.wrappedValue += 1
             }
-            jumped = target
-            jumpStamp += 1
+            // Outside the animation: the bar's words change in place, and are
+            // never cross-faded.
+            barAfter.wrappedValue = target
+            moveVoiceOver(to: .card(target), in: plan)
         }
-        // Outside the animation: the bar's words change in place, and are
-        // never cross-faded.
-        barAfter = target
-        moveVoiceOver(to: .card(target), in: plan)
+
+        /// Moves VoiceOver to the card a press of the bar has just brought
+        /// into view.
+        ///
+        /// The wide board's stacks are eager, so every card already has its
+        /// element and the cursor is sent at once. The phone's List is lazy: a
+        /// row more than about a screen away has not been made when the jump
+        /// fires, and a request then has nothing to land on — and since the
+        /// focus state would already hold the target, setting it again later
+        /// would be no change at all. So unless the row is laid out, the
+        /// target waits with `landing`, and the row takes the cursor when the
+        /// scroll lays it out (`reportsLanding`).
+        private func moveVoiceOver(to target: JumpTarget, in plan: BoardPlan) {
+            if plan.arrangement == .list && !landing.isLaidOut(target) {
+                landing.wait(for: target)
+            } else {
+                landing.stopWaiting()
+                jumpFocus.wrappedValue = target
+            }
+        }
     }
 
     /// A jump's scroll: .snappy, drawn in one step under Reduce Motion as
@@ -936,28 +993,8 @@ struct BoardView: View {
     /// at the edge of the screen when the cursor arrives is one it may scroll
     /// again on its own, to show it whole, against the scroll in flight. Drawn
     /// in one step, the card is already where the jump leaves it.
-    private var jumpAnimation: Animation? {
+    private static var jumpAnimation: Animation? {
         UIAccessibility.isReduceMotionEnabled || UIAccessibility.isVoiceOverRunning ? nil : .snappy
-    }
-
-    /// Moves VoiceOver to the card a press of the bar has just brought into
-    /// view.
-    ///
-    /// The wide board's stacks are eager, so every card already has its
-    /// element and the cursor is sent at once. The phone's List is lazy: a
-    /// row more than about a screen away has not been made when the jump
-    /// fires, and a request then has nothing to land on — and since the focus
-    /// state would already hold the target, setting it again later would be
-    /// no change at all. So unless the row is laid out, the target waits with
-    /// `landing`, and the row takes the cursor when the scroll lays it out
-    /// (`reportsLanding`).
-    private func moveVoiceOver(to target: JumpTarget, in plan: BoardPlan) {
-        if plan.arrangement == .list && !landing.isLaidOut(target) {
-            landing.wait(for: target)
-        } else {
-            landing.stopWaiting()
-            jumpFocus = target
-        }
     }
 
     /// A List row's part in a jump: it tells `landing` it exists while it is
@@ -992,7 +1029,7 @@ struct BoardView: View {
     /// before 26 the row goes to the centre, which no version can put under
     /// anything. Every section has a label now, so there is no list without
     /// one to allow for.
-    private var listAnchor: UnitPoint {
+    private static var listAnchor: UnitPoint {
         if #available(iOS 26.0, *) { return .top }
         return .center
     }
@@ -2050,7 +2087,8 @@ private final class DrawnBoard {
     var scroller: ScrollViewProxy?
     /// What the board's Magic Tap does, made on the first pass and kept
     /// (`BoardView.reachingBar`). Like the bar's own action, it presses the
-    /// bar from whatever board is drawn when it runs.
+    /// bar from whatever board is drawn when it runs. It holds the press and
+    /// not the board, which holds this (`BoardView.BarPress`).
     var magicTap: (() -> Void)?
 }
 
@@ -2067,8 +2105,9 @@ private final class DrawnBoard {
 private final class CardTops {
     private(set) var edges: [String: DrawnTop] = [:]
     /// What the board does when edges have moved (`BoardView.cardsMoved`),
-    /// made on its first pass and kept, as the bar's Magic Tap is.
-    var moved: (() -> Void)?
+    /// made on its first pass and kept, as the bar's Magic Tap is. Handed
+    /// these edges when it runs, it holds neither them nor the board.
+    var moved: ((CardTops) -> Void)?
     private var settling = false
 
     /// Keeps where a side has placed a card. True when that is somewhere
@@ -2088,7 +2127,7 @@ private final class CardTops {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.settling = false
-            self.moved?()
+            self.moved?(self)
         }
     }
 
