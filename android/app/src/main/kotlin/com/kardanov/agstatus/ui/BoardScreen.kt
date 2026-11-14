@@ -105,6 +105,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.semantics
@@ -139,12 +140,13 @@ import kotlin.math.abs
  * Each project is a section: a label that sticks while its cards pass under
  * it, then its cards, in the store's stable order. Sections run in name order
  * (ProjectSections.ORDER) and never move because one got busy. The usage
- * bars stay pinned above the list, and while anything is blocked the
- * needs-you bar runs along the screen's bottom edge: the board's one alarm,
- * and the way to the card that needs you. A block that lands while the app
- * is in front is also said aloud, for TalkBack, on whichever screen shows:
- * the app's [speaker] says it ([SpokenAlarm]), and the board's press uses it
- * too, where its card could not take focus.
+ * blocks are pinned above the list where it keeps room under them, and lead
+ * it otherwise. While anything is blocked the needs-you bar runs along the
+ * screen's bottom edge: the board's one alarm, and the way to the card that
+ * needs you. A block that lands while the app is in front is also said
+ * aloud, for TalkBack, on whichever screen shows: the app's [speaker] says it
+ * ([SpokenAlarm]), and the board's press uses it too, where its card could
+ * not take focus.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -260,6 +262,15 @@ internal fun BoardScreen(
     // and the bar left the list 63dp at 100% on a Pixel 7 held sideways and
     // none at 200%, where the bar cut the blocks through their text. They
     // are as tall in either place, so where they stand cannot flap.
+    //
+    // They are measured wherever they stand, out of view too: pinned; in
+    // the list while its item for them is composed; and otherwise, with the
+    // reader further down, unplaced over the list ([BoardBody]), where
+    // nothing draws them, TalkBack never hears them and focus never reaches
+    // them. So a turn or a fresh board puts them where they now fit, however
+    // far down the list stands. Measured only where they were drawn, they
+    // stayed in the list once it had scrolled past them, out of view on a
+    // phone turned upright, until the reader went back to its very top.
     //
     // Where they stood as the board was last drawn is saved with the list's
     // place, which is saved by item and counts the blocks as its first item
@@ -481,19 +492,25 @@ internal fun BoardScreen(
                         }
                     }
                 },
+            usagePinned = !usageLeads,
             usage = {
-                if (visibleUsage.isNotEmpty() && !boardGone && !usageLeads) {
+                // Pinned; or, while they lead the list and its item for them
+                // is not composed, only measured here, so where they stand
+                // follows the room they need now. Measured only, they carry
+                // nothing a reader or a test could find, and no requester.
+                if (visibleUsage.isNotEmpty() && !boardGone && (!usageLeads || !usageComposed)) {
                     UsageBars(
                         usage = visibleUsage,
                         onOpenDetail = onOpenUsage,
                         sessionCounts = sessionCounts,
                         modifier = Modifier
                             .onSizeChanged { usageHeight = it.height }
+                            .then(if (usageLeads) Modifier.clearAndSetSemantics {} else Modifier)
                             .then(sides)
                             .padding(horizontal = 16.dp)
                             .padding(top = 10.dp, bottom = 2.dp),
                         // Where the focus goes when the bar leaves with no card in view.
-                        firstBlock = Modifier.focusRequester(usageFirst),
+                        firstBlock = if (usageLeads) Modifier else Modifier.focusRequester(usageFirst),
                     )
                 }
             },
@@ -755,11 +772,16 @@ private fun leastListRoom(): Dp {
  * [bottomInset] is the system bar under the board: the list keeps above it
  * while no bar shows, and the bar, which runs to the bottom edge, pads itself.
  *
- * [usage] is empty while the usage blocks lead the list instead.
+ * [usage] is placed over the list while [usagePinned]. While the usage blocks
+ * lead the list instead it is empty, or, while the list's item for them is
+ * not composed, the blocks measured and never placed: Compose leaves an
+ * unplaced node out of what TalkBack reads and out of focus search, and the
+ * list keeps its whole height.
  */
 @Composable
 private fun BoardBody(
     bottomInset: Dp,
+    usagePinned: Boolean,
     usage: @Composable () -> Unit,
     bar: @Composable () -> Unit,
     modifier: Modifier = Modifier,
@@ -785,13 +807,15 @@ private fun BoardBody(
         // the blocks move into it (BoardScreen's usageLeads), and they must
         // be measured whole to know.
         val usages = usageSlot.map { it.measure(loose.copy(maxHeight = Constraints.Infinity)) }
-        val top = usages.sumOf { it.height }
+        val top = if (usagePinned) usages.sumOf { it.height } else 0
         val boards = boardSlot.map { it.measure(Constraints.fixed(width, (height - top - bottom).coerceAtLeast(0))) }
         layout(width, height) {
-            var y = 0
-            for (placeable in usages) {
-                placeable.place(0, y)
-                y += placeable.height
+            if (usagePinned) {
+                var y = 0
+                for (placeable in usages) {
+                    placeable.place(0, y)
+                    y += placeable.height
+                }
             }
             for (placeable in bars) placeable.place(0, height - placeable.height)
             for (placeable in boards) placeable.place(0, top)

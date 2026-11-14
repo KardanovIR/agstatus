@@ -19,9 +19,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowViewRootImpl
+import org.robolectric.util.ReflectionHelpers
 
 /**
  * Where the list stands when the board is drawn afresh while the usage blocks
@@ -36,8 +41,11 @@ import org.robolectric.annotation.Config
  *
  * A change of text size can move the blocks as well: on a phone 360dp wide,
  * upright and 500dp to 620dp tall, they are pinned at 100% text and lead the
- * list at 200%. Made again at the new size, the list starts at the card it
- * was at, wherever the blocks then go.
+ * list at 200%. So can a turn while a card's history shows, which the app
+ * takes in place. Drawn afresh, the board puts them where a board drawn for
+ * the first time would, pinned or leading the list, and the list starts at
+ * the card it was at. Once, saved as leading, they stayed in the list out of
+ * view, because nothing measured them there.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w915dp-h360dp-land-xxhdpi")
@@ -48,9 +56,13 @@ class ReturnPlaceTest {
 
     private lateinit var scenario: ActivityScenario<MainActivity>
 
+    /** The board held by its controller instead, for a turn in place ([turn]). */
+    private var controller: ActivityController<MainActivity>? = null
+
     @After
     fun close() {
-        scenario.close()
+        if (::scenario.isInitialized) scenario.close()
+        controller?.close()
         InstrumentationRegistry.getInstrumentation().setInTouchMode(false)
         RuntimeEnvironment.setFontScale(1f)
     }
@@ -143,14 +155,70 @@ class ReturnPlaceTest {
             }
     }
 
-    /** Whether the usage blocks stand pinned over the list: Claude's head is above the list's top edge. */
+    /**
+     * Whether the usage blocks stand pinned over the list: Claude's head is
+     * above the list's top edge. Only for a list scrolled to an item, never
+     * partway into the blocks, where a head leading it is above that edge too.
+     */
     private fun blocksPinned(): Boolean {
         val listTop = rule.onNode(hasScrollToIndexAction()).fetchSemanticsNode().positionInRoot.y
+        val head = Regex("^Claude, \\d+ sessions?$")
         return rule.onAllNodes(
             SemanticsMatcher("Claude's usage head") {
-                it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull()?.startsWith("Claude, 12 sessions") == true
+                it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull()?.matches(head) == true
             },
         ).fetchSemanticsNodes().any { it.positionInRoot.y < listTop }
+    }
+
+    /** A board long enough that the card the reader stops at is far from its end, upright and sideways. */
+    private val longBoard = (1..8).map { card(it, "alpha") } + (9..16).map { card(it, "beta") } + (17..24).map { card(it, "gamma") }
+
+    /**
+     * The board as [launch] has it, but held by its controller, so that the
+     * phone can [turn] in place, as the app takes a turn (MainActivity's
+     * configChanges): the activity stays, and a board under another screen is
+     * drawn afresh only when the reader goes back to it.
+     */
+    private fun launchTurnable(sessions: List<Session>) {
+        InstrumentationRegistry.getInstrumentation().setInTouchMode(true)
+        val launched = Robolectric.buildActivity(
+            MainActivity::class.java,
+            Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
+                .putExtra("agstatus_demo", true)
+                .putExtra("agstatus_demo_freeze", true),
+        ).setup()
+        controller = launched
+        ViewModelProvider(launched.get())[SessionStore::class.java].showForTest(sessions, usage)
+        rule.waitForIdle()
+    }
+
+    /**
+     * The phone turned in place to [qualifiers]: the new configuration, and
+     * the window at the new screen's size, which Robolectric's configuration
+     * change alone leaves as it was.
+     */
+    private fun turn(qualifiers: String) {
+        val turning = checkNotNull(controller)
+        RuntimeEnvironment.setQualifiers(qualifiers)
+        turning.configurationChange()
+        val root = ReflectionHelpers.callInstanceMethod<Any>(turning.get().window.decorView, "getViewRootImpl")
+        Shadow.extract<ShadowViewRootImpl>(root).callDispatchResized()
+        rule.waitForIdle()
+    }
+
+    /** A tap on the card named [card] ("Card 12"), which opens its history. */
+    private fun openHistory(card: String) {
+        rule.onNode(
+            SemanticsMatcher(card) {
+                it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull()?.startsWith("Claude, $card") == true
+            },
+        ).performClick()
+        rule.waitForIdle()
+    }
+
+    private fun back() {
+        checkNotNull(controller).get().onBackPressedDispatcher.onBackPressed()
+        rule.waitForIdle()
     }
 
     /** Scrolled down the list, the blocks out of view, the card it names sitting under beta's stuck label. */
@@ -219,6 +287,35 @@ class ReturnPlaceTest {
         scenario.recreate()
         rule.waitForIdle()
 
+        assertTrue("pinned at 100%", blocksPinned())
         assertEquals("Card 6", firstCardInView())
+    }
+
+    @Test
+    fun `turned while a card's history shows, the blocks go where they now fit and the list starts at the card it was at`() {
+        launchTurnable(longBoard)
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(14)
+        rule.waitForIdle()
+        assertFalse("in the list sideways", blocksPinned())
+        assertEquals("Card 12", firstCardInView())
+
+        openHistory("Card 12")
+        turn(UPRIGHT)
+        back()
+
+        assertTrue("pinned upright", blocksPinned())
+        assertEquals("Card 12", firstCardInView())
+
+        openHistory("Card 12")
+        turn(SIDEWAYS)
+        back()
+
+        assertFalse("in the list sideways again", blocksPinned())
+        assertEquals("Card 12", firstCardInView())
+    }
+
+    private companion object {
+        const val UPRIGHT = "w360dp-h915dp-port-xxhdpi"
+        const val SIDEWAYS = "w915dp-h360dp-land-xxhdpi"
     }
 }
