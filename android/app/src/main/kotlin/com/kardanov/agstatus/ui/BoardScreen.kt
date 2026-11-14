@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -79,7 +80,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -286,7 +287,7 @@ internal fun BoardScreen(
     var bodyHeight by remember { mutableIntStateOf(0) }
     val leastList = leastListRoom()
     val leastListPx = with(LocalDensity.current) { leastList.roundToPx() }
-    val joining = rememberSaveable(saver = UsageJoin.Saver) { UsageJoin() }
+    val joining = rememberSaveable(saver = remember(listState) { UsageJoin.saver(listState) }) { UsageJoin() }
     val usageLeads = sessions.isNotEmpty() && !boardGone && visibleUsage.isNotEmpty() &&
         if (usageHeight > 0 && bodyHeight > 0) bodyHeight - usageHeight < leastListPx else joining.leads
     val leadsNow by rememberUpdatedState(usageLeads)
@@ -298,12 +299,26 @@ internal fun BoardScreen(
     // the blocks whole, whatever it would have made of the insertion. Read
     // here, after the blocks join the list and before it lays them out, the
     // list's place is still where it stood; a list scrolled down keeps it.
+    //
+    // Leaving it, they take with them the first item the list would keep
+    // its place by, and it kept how far down that item it stood instead: a
+    // list stopped partway into them, turned upright, began that far into
+    // its first section, the first card's top under the label. Made again
+    // at a smaller text size, how far down them it stood was counted in the
+    // larger size's pixels, and it began a section or more further on. So
+    // a list whose first item was the blocks, as last drawn or as saved,
+    // starts at its top as they leave it, as a board drawn afresh with them
+    // pinned does. As saved, because a board made again can be drawn twice
+    // over, and the second drawing finds the list already past them.
     SideEffect {
-        if (usageLeads && !joining.leads &&
-            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        ) {
+        val blocksFirst = listState.firstVisibleItemIndex == 0
+        if (usageLeads && !joining.leads && blocksFirst && listState.firstVisibleItemScrollOffset == 0) {
             listState.requestScrollToItem(0)
         }
+        if (!usageLeads && joining.leads && (blocksFirst || joining.inBlocks)) {
+            listState.requestScrollToItem(0)
+        }
+        if (usageHeight > 0 && bodyHeight > 0) joining.inBlocks = false
         joining.leads = usageLeads
     }
 
@@ -939,13 +954,19 @@ private class MeasuredHeight {
 }
 
 /**
- * Whether the usage blocks led the list when the board was last drawn. Plain:
- * updating it must not recompose. Saved with the list's place, which counted
- * them by it.
+ * Whether the usage blocks led the list when the board was last drawn
+ * ([leads]), and, on a board drawn afresh until it has measured them again,
+ * whether the list's saved place was in them, its first item ([inBlocks]).
+ * Plain: updating it must not recompose. Saved with the list's place, which
+ * counted them by it.
  */
-private class UsageJoin(var leads: Boolean = false) {
+private class UsageJoin(var leads: Boolean = false, var inBlocks: Boolean = false) {
     companion object {
-        val Saver = Saver<UsageJoin, Boolean>(save = { it.leads }, restore = { UsageJoin(it) })
+        /** Reads the place of [list] as it saves: in the blocks where they lead it and it stands in its first item. */
+        fun saver(list: LazyListState) = listSaver<UsageJoin, Boolean>(
+            save = { listOf(it.leads, it.inBlocks || (it.leads && list.firstVisibleItemIndex == 0)) },
+            restore = { UsageJoin(leads = it[0], inBlocks = it[1]) },
+        )
     }
 }
 

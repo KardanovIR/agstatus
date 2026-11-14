@@ -1,6 +1,7 @@
 package com.kardanov.agstatus
 
 import android.content.Intent
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
@@ -8,6 +9,8 @@ import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -292,6 +295,31 @@ class ReturnPlaceTest {
     }
 
     @Test
+    @Config(qualifiers = "w360dp-h620dp-port-xxhdpi")
+    fun `made again at a smaller text size while partway into the blocks, the list starts at its top as a fresh board does`() {
+        launch(withCodex, bothAgents)
+        val fresh = inView()
+        scenario.close()
+
+        RuntimeEnvironment.setFontScale(2f)
+        launch(withCodex, bothAgents)
+        // All but the blocks' last 20dp scrolled away: the list's first item
+        // is still the blocks, which are less than half as tall at 100%.
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
+        rule.waitForIdle()
+        rule.onNode(hasScrollToIndexAction()).performSemanticsAction(SemanticsActions.ScrollBy) {
+            it(0f, -with(rule.density) { 20.dp.toPx() })
+        }
+        rule.waitForIdle()
+
+        RuntimeEnvironment.setFontScale(1f)
+        scenario.recreate()
+        rule.waitForIdle()
+
+        assertEquals(fresh, inView())
+    }
+
+    @Test
     fun `turned while a card's history shows, the blocks go where they now fit and the list starts at the card it was at`() {
         launchTurnable(longBoard)
         rule.onNode(hasScrollToIndexAction()).performScrollToIndex(14)
@@ -312,6 +340,27 @@ class ReturnPlaceTest {
 
         assertFalse("in the list sideways again", blocksPinned())
         assertEquals("Card 12", firstCardInView())
+    }
+
+    @Test
+    fun `stopped partway into the blocks and turned upright while a history shows, the list starts at its top as a fresh board does`() {
+        RuntimeEnvironment.setQualifiers(UPRIGHT)
+        launchTurnable(longBoard)
+        val fresh = inView()
+        checkNotNull(controller).close()
+
+        RuntimeEnvironment.setQualifiers(SIDEWAYS)
+        launchTurnable(longBoard)
+        // 40dp into the blocks, the first card whole below them.
+        rule.onNode(hasScrollToIndexAction()).performSemanticsAction(SemanticsActions.ScrollBy) {
+            it(0f, with(rule.density) { 40.dp.toPx() })
+        }
+        rule.waitForIdle()
+        openHistory("Card 1")
+        turn(UPRIGHT)
+        back()
+
+        assertEquals(fresh, inView())
     }
 
     private companion object {
