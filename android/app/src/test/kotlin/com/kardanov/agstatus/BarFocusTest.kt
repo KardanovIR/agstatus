@@ -31,9 +31,9 @@ import org.robolectric.annotation.Config
  * A keyboard's focus when the needs-you bar leaves under it: the last
  * blocked card is approved on the Mac while the reader has Tabbed to the bar
  * and not pressed it. The focus goes on to the card the bar named, else the
- * first card in view, and never to the top app bar, where a stray Enter
- * would end the demo or open Settings. The real app, on a phone-sized
- * screen.
+ * first card in view, else, with none in view, the first usage block, and
+ * never to the top app bar, where a stray Enter would end the demo or open
+ * Settings. The real app, on a phone-sized screen.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-xxhdpi")
@@ -178,8 +178,20 @@ class BarFocusTest {
         assertTrue("no card in view: $cardsInView", cardsInView.isEmpty())
         focusTheBar()
 
+        // The board asks for the block as the bar starts to leave, while the
+        // bar still holds the focus: a few frames in, the bar is still there,
+        // shrinking, and the focus is already on the block. Left to the
+        // platform, it stays on the leaving bar until the bar's node goes,
+        // and goes wherever the platform puts it then.
+        rule.mainClock.autoAdvance = false
         approve(alone, "c1")
+        repeat(4) { rule.mainClock.advanceTimeByFrame() }
+        rule.onNode(bar).assertExists()
+        assertEquals(listOf("Claude, 1 session"), focused().map { it.substringBefore(" Claude ") })
 
+        rule.mainClock.autoAdvance = true
+        rule.waitForIdle()
+        rule.onNode(bar).assertDoesNotExist()
         assertEquals(listOf("Claude, 1 session"), focused().map { it.substringBefore(" Claude ") })
     }
 }
