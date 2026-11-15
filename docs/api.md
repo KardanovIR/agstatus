@@ -84,11 +84,13 @@ usable; otherwise `project`, when that is usable by the same rule, which
 covers servers older than 1.7.0 that send no `homeProject`; otherwise the
 **No project** section. A UUID here is what the bundled hook takes for one:
 32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
-Sections run in name order: the names lowercased and compared by UTF-16 code
-unit, then the exact names (`AgStatus` before `agstatus`), with No project
-last; activity, state and arrival never reorder them. A section is a folder
-name and nothing more: the same name on two machines is one section, and
-one repository checked out under two names is two.
+Sections run in name order: the names lowercased, with Unicode's final-sigma
+rule as JavaScript's `toLowerCase` applies it (a `Σ` that ends a word is `ς`,
+any other `σ`), and compared by UTF-16 code unit, then the exact names
+(`AgStatus` before `agstatus`), with No project last; activity, state and
+arrival never reorder them. A section is a folder name and nothing more: the
+same name on two machines is one section, and one repository checked out
+under two names is two.
 
 `tokens` is the lifetime token total this session's agent reports for it (see
 [Per-session token totals](#per-session-token-totals)). Unlike `host` the key

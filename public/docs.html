@@ -2454,11 +2454,13 @@ usable; otherwise <code>project</code>, when that is usable by the same rule, wh
 covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
 <strong>No project</strong> section. A UUID here is what the bundled hook takes for one:
 32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
-Sections run in name order: the names lowercased and compared by UTF-16 code
-unit, then the exact names (<code>AgStatus</code> before <code>agstatus</code>), with No project
-last; activity, state and arrival never reorder them. A section is a folder
-name and nothing more: the same name on two machines is one section, and
-one repository checked out under two names is two.</p>
+Sections run in name order: the names lowercased, with Unicode&#39;s final-sigma
+rule as JavaScript&#39;s <code>toLowerCase</code> applies it (a <code>Σ</code> that ends a word is <code>ς</code>,
+any other <code>σ</code>), and compared by UTF-16 code unit, then the exact names
+(<code>AgStatus</code> before <code>agstatus</code>), with No project last; activity, state and
+arrival never reorder them. A section is a folder name and nothing more: the
+same name on two machines is one section, and one repository checked out
+under two names is two.</p>
 <p><code>tokens</code> is the lifetime token total this session&#39;s agent reports for it (see
 <a href="#api-per-session-token-totals">Per-session token totals</a>). Unlike <code>host</code> the key
 is <strong>absent</strong>, not <code>null</code>, when the board holds no total — and absent means
