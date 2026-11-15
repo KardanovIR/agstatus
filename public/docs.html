@@ -2424,13 +2424,14 @@ reported, kept for the rest of its life. A session that starts in
 <code>project</code> says <code>web</code>. A <code>project</code> is usable unless, with the white space at
 its ends trimmed, it is empty, <code>/</code>, <code>.</code> or a bare UUID: a session started at
 <code>/</code> (an empty <code>project</code> from the Node hook, <code>/</code> from the shell hook), a
-Codex scratch folder, or a raw post&#39;s blank name. Such a session has
-<code>&quot;homeProject&quot;: &quot;&quot;</code> until a post names a real folder, which then claims it;
-a post without a <code>project</code> changes nothing. A usable name is kept as sent,
-never trimmed, and in Unicode NFC like every <code>name</code> and <code>project</code> (below).
-The key is always present, and it is never read from a webhook body: a
-<code>homeProject</code> posted there is ignored. It is stored with the session, so it
-survives a restart of a server with
+Codex scratch folder, a folder whose name is white space alone, which the
+bundled hooks post as it is named, or a raw post&#39;s blank <code>project</code>. Such a
+session has <code>&quot;homeProject&quot;: &quot;&quot;</code> until a post names a real folder, which
+then claims it; a post without a <code>project</code> changes nothing. A usable name
+is kept as sent, never trimmed, and in Unicode NFC like every <code>name</code> and
+<code>project</code> (below). The key is always present, and it is never read from a
+webhook body: a <code>homeProject</code> posted there is ignored. It is stored with
+the session, so it survives a restart of a server with
 <a href="#self-hosting-persistence-postgresql">Postgres</a>; a server without a
 database forgets it with the card. Since 1.7.0.</p>
 <p>A card the board drops on request (dismissed with a <code>DELETE</code> of the
@@ -2454,13 +2455,17 @@ usable; otherwise <code>project</code>, when that is usable by the same rule, wh
 covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
 <strong>No project</strong> section. A UUID here is what the bundled hook takes for one:
 32 hex digits in the hyphenated 8-4-4-4-12 form, in either case.
-Sections run in name order: the names lowercased, with Unicode&#39;s final-sigma
-rule as JavaScript&#39;s <code>toLowerCase</code> applies it (a <code>Σ</code> that ends a word is <code>ς</code>,
-any other <code>σ</code>), and compared by UTF-16 code unit, then the exact names
-(<code>AgStatus</code> before <code>agstatus</code>), with No project last; activity, state and
-arrival never reorder them. A section is a folder name and nothing more: the
-same name on two machines is one section, and one repository checked out
-under two names is two.</p>
+Sections run in name order: the names lowercased as JavaScript&#39;s
+<code>toLowerCase</code> lowercases them, and compared by UTF-16 code unit, then the
+exact names (<code>AgStatus</code> before <code>agstatus</code>), with No project last; activity,
+state and arrival never reorder them. That lowercasing applies Unicode&#39;s
+final-sigma rule: a <code>Σ</code> becomes <code>ς</code> when a cased letter comes before it and
+none after it, looking past case-ignorable characters only, such as an
+apostrophe, a full stop, a colon or a combining mark, so that a digit, a
+hyphen, an underscore or a space ends the look; any other <code>Σ</code> becomes <code>σ</code>.
+So <code>ΑΣ1</code> lowercases to <code>ας1</code>, <code>ΑΣ.Z</code> to <code>ασ.z</code>, and a <code>Σ</code> alone to <code>σ</code>.
+A section is a folder name and nothing more: the same name on two machines
+is one section, and one repository checked out under two names is two.</p>
 <p><code>tokens</code> is the lifetime token total this session&#39;s agent reports for it (see
 <a href="#api-per-session-token-totals">Per-session token totals</a>). Unlike <code>host</code> the key
 is <strong>absent</strong>, not <code>null</code>, when the board holds no total — and absent means
@@ -2623,7 +2628,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>name</code></td>
 <td>string</td>
 <td>no</td>
-<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). An empty <code>name</code> counts as omitted, and since 1.7.0 so does one of white space alone once control characters are stripped (what JavaScript&#39;s <code>trim()</code> removes, and U+0085): no board is sent a blank name, and a card an older server stored with one is named by its <code>session_id</code> as it loads. Composed to Unicode NFC, then truncated to 120 chars. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
+<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Composed to Unicode NFC, then truncated to 120 chars. An empty <code>name</code> counts as omitted, and since 1.7.0 so does one that is white space alone once control characters are stripped and it is truncated (what JavaScript&#39;s <code>trim()</code> removes, and U+0085), as 120 spaces and then a word is: no board is sent a blank name, and a card an older server stored with one is named by its <code>session_id</code> as it loads. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
 </tr>
 <tr>
 <td><code>message</code></td>
