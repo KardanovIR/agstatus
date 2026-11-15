@@ -24,6 +24,7 @@ import {
   MAX_DROPPED_HOMES_PER_WORKSPACE,
   MAX_SESSIONS_PER_WORKSPACE,
   normalizeProject,
+  SESSION_NAME_MAX,
   sessionName,
   sessionText,
   Store,
@@ -526,10 +527,18 @@ describe('a name and a folder in Unicode NFC', () => {
 // was served as sent, and a board read the card after its agent as "Codex,"
 // and the spaces (iOS and the web) or showed the id (Android).
 describe('a name of white space alone', () => {
-  /** Each is white space alone on the way in; a tab, a control character, is stripped first. */
+  /**
+   * Each is white space alone once its control characters are stripped and
+   * it is cut to SESSION_NAME_MAX, which is when the check is made. A tab is
+   * stripped first, and so is U+0001, which is not white space; a word after
+   * 120 spaces is cut off. Checked on the name as sent, those two would be
+   * names, and the board would be sent white space alone.
+   */
   const BLANK: Array<[string, string]> = [
     ['spaces', '   '],
     ['a tab between spaces', ' \t '],
+    ['U+0001, a control character, then spaces', '\u0001   '],
+    ['120 spaces, then a word past the cut', `${' '.repeat(SESSION_NAME_MAX)}Fix`],
     ['U+3000, the ideographic space', '\u3000'],
     ['no-break, narrow and line-separator spaces', '\u00a0\u202f\u2028 \u2029'],
     ['U+0085, which Swift trims and JavaScript does not', '\u0085'],
@@ -540,8 +549,11 @@ describe('a name of white space alone', () => {
   it('is no name to sessionName, while a name with words in it is kept as sent and a project is untouched', () => {
     for (const [what, sent] of BLANK) {
       expect(sessionName(sent), what).toBe('');
-      expect(isBlankName(sent), what).toBe(true);
+      expect(isBlankName(sessionText(sent)), what).toBe(true);
     }
+    // Not blank as sent: what is left after the strip and the cut is.
+    expect(isBlankName('\u0001   ')).toBe(false);
+    expect(isBlankName(`${' '.repeat(SESSION_NAME_MAX)}Fix`)).toBe(false);
     expect(sessionName('\t')).toBe('');
     // Kept as sent, its white space included: none of this is a blank name.
     for (const name of ['  Fix the login redirect  ', '\u3000ios', '.', '\u200b', '-']) {
