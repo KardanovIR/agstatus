@@ -28,6 +28,7 @@ import {
   PAIR_CODE_TTL_MS,
   Session,
   sessionName,
+  sessionText,
   STATUSES,
   Status,
   Store,
@@ -129,9 +130,16 @@ const clean = (v: unknown, max: number): string | undefined =>
   typeof v === 'string' ? safeClip(v.replace(CONTROL_CHARS_RE, ''), max) : undefined;
 
 /**
- * clean() for a session's name and project, which are also composed to
- * Unicode NFC before the cut (sessionName), so a folder sent in either form
- * is one name on every board.
+ * clean() for a session's project, which is also composed to Unicode NFC
+ * before the cut (sessionText), so a folder sent in either form is one name
+ * on every board.
+ */
+const cleanProject = (v: unknown): string | undefined => (typeof v === 'string' ? sessionText(v) : undefined);
+
+/**
+ * The same for a session's name, where white space alone is no name and
+ * comes out '' (sessionName): the store then keeps the session's previous
+ * name, or names the card by its id, as for a name posted empty.
  */
 const cleanName = (v: unknown): string | undefined => (typeof v === 'string' ? sessionName(v) : undefined);
 
@@ -535,7 +543,7 @@ export function createApp(cfg: AppConfig): CreatedApp {
       status: body.status,
       name: cleanName(body.name),
       message: clean(body.message, MESSAGE_MAX),
-      project: cleanName(body.project),
+      project: cleanProject(body.project),
       source: body.source as string | undefined,
       host,
     };

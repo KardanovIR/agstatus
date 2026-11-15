@@ -19,10 +19,13 @@ import {
 import {
   DROPPED_HOME_TTL_MS,
   homeProjectFor,
+  isBlankName,
   LEGACY_WS,
   MAX_DROPPED_HOMES_PER_WORKSPACE,
   MAX_SESSIONS_PER_WORKSPACE,
   normalizeProject,
+  sessionName,
+  sessionText,
   Store,
   UUID_FOLDER_RE,
 } from '../src/store';
@@ -80,7 +83,7 @@ describe('homeProject: which folders count', () => {
     // Not usable, each with the white space at its ends trimmed first: empty
     // or white space alone, "/" (the legacy shell hook's `basename /`), "."
     // and a bare UUID. A tab only reaches the rule through a direct call; a
-    // posted one is stripped before (sessionName, the next describe).
+    // posted one is stripped before (sessionText, the next describe).
     for (const name of [
       '', '   ', '/', '.', ' / ', '. ', UUID, UUID.toUpperCase(), ` ${UUID}`, `${UUID}  `, `\t${UUID}`,
     ]) {
@@ -172,7 +175,7 @@ describe('homeProject on a board without a database', () => {
 
   it('files a posted "/", ".", white space and a padded UUID under no project, and a padded real name as sent', async () => {
     const b = await board();
-    // The rule never sees a posted tab: sessionName strips control characters
+    // The rule never sees a posted tab: sessionText strips control characters
     // from a posted project, so "\t<uuid>" arrives a bare UUID.
     const none: Array<[string, string]> = [
       ['/', '/'], ['.', '.'], ['   ', '   '], [` ${UUID}`, ` ${UUID}`], [`\t${UUID}`, UUID],
@@ -518,6 +521,77 @@ describe('a name and a folder in Unicode NFC', () => {
   });
 });
 
+// A name of white space alone is no name, as an empty one already was: the
+// session keeps the name it had, or its card is named by its id. Before, one
+// was served as sent, and a board read the card after its agent as "Codex,"
+// and the spaces (iOS and the web) or showed the id (Android).
+describe('a name of white space alone', () => {
+  /** Each is white space alone on the way in; a tab, a control character, is stripped first. */
+  const BLANK: Array<[string, string]> = [
+    ['spaces', '   '],
+    ['a tab between spaces', ' \t '],
+    ['U+3000, the ideographic space', '\u3000'],
+    ['no-break, narrow and line-separator spaces', '\u00a0\u202f\u2028 \u2029'],
+    ['U+0085, which Swift trims and JavaScript does not', '\u0085'],
+    ['U+FEFF, which JavaScript trims and Swift does not', '\ufeff'],
+  ];
+  const agent = { id: 'a1b2c3d4e5f6a7b8c9d0e1f2', state: 'coding' };
+
+  it('is no name to sessionName, while a name with words in it is kept as sent and a project is untouched', () => {
+    for (const [what, sent] of BLANK) {
+      expect(sessionName(sent), what).toBe('');
+      expect(isBlankName(sent), what).toBe(true);
+    }
+    expect(sessionName('\t')).toBe('');
+    // Kept as sent, its white space included: none of this is a blank name.
+    for (const name of ['  Fix the login redirect  ', '\u3000ios', '.', '\u200b', '-']) {
+      expect(sessionName(name), JSON.stringify(name)).toBe(name);
+    }
+    // A project of white space alone is kept, and files under No project.
+    expect(sessionText('   ')).toBe('   ');
+    expect(sessionText('\u3000')).toBe('\u3000');
+  });
+
+  it.each(BLANK)('names a new card by its id, and leaves a named one its name, when posted with %s', async (_what, sent) => {
+    const b = await board();
+    expect((await b.post('first', { name: sent })).name).toBe('first');
+    expect((await b.card('first'))!.name).toBe('first');
+    expect((await b.post('named', { name: 'Fix the login redirect' })).name).toBe('Fix the login redirect');
+    expect((await b.post('named', { name: sent })).name).toBe('Fix the login redirect');
+    expect((await b.card('named'))!.name).toBe('Fix the login redirect');
+    // A subagent's post names only a card it creates, by the same rule.
+    expect((await b.post('spawned', { name: sent, agent: { ...agent, at: Date.now() } })).name).toBe('spawned');
+
+    const legacy = makeApp({ multiTenant: false });
+    const first = await request(legacy.app).post('/webhook').send(webhookBody('first', { name: sent })).expect(200);
+    expect(first.body.session.name).toBe('first');
+    await request(legacy.app).post('/webhook').send(webhookBody('named', { name: 'Ship it' })).expect(200);
+    const named = await request(legacy.app).post('/webhook').send(webhookBody('named', { name: sent })).expect(200);
+    expect(named.body.session.name).toBe('Ship it');
+    expect(((await request(legacy.app).get('/api/sessions').expect(200)).body as Json[]).map((s) => [s.id, s.name]))
+      .toEqual(expect.arrayContaining([['first', 'first'], ['named', 'Ship it']]));
+  });
+
+  it('never reaches the event stream: the snapshot and every session frame carry the name kept', async () => {
+    const b = await board();
+    await b.post('named', { name: 'Fix the login redirect' });
+    const { srv, base } = await listen(b.app);
+    const ac = new AbortController();
+    try {
+      const res = await fetch(`${base}/w/${b.token}/events`, { signal: ac.signal, headers: { accept: 'text/event-stream' } });
+      const next = frames(res);
+      expect((await next('snapshot')).map((s: Json) => s.name)).toEqual(['Fix the login redirect']);
+      await b.post('named', { name: '\u3000 ' });
+      expect(await next('session')).toMatchObject({ id: 'named', name: 'Fix the login redirect' });
+      await b.post('fresh', { name: '   ' });
+      expect(await next('session')).toMatchObject({ id: 'fresh', name: 'fresh' });
+    } finally {
+      ac.abort();
+      await closeServer(srv);
+    }
+  });
+});
+
 describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
   let dbUrl = '';
 
@@ -721,6 +795,48 @@ describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
       await t.shutdown();
     }
     expect((await rows(`WHERE id = 'old'`)).map((r) => [r.project, r.home_project])).toEqual([[CAFE_NFC, CAFE_NFC]]);
+  });
+
+  it('loads a name an older server kept as white space alone as no name: named by its id, and nothing written until the next post', async () => {
+    // 1.6.5, and this branch before it, stored such a name as it was posted.
+    const schema = makeApp({ databaseUrl: dbUrl });
+    await schema.ready;
+    await schema.shutdown();
+    const token = `ags_${'b'.repeat(32)}`;
+    const wsId = crypto.createHash('sha256').update(token).digest('hex');
+    const now = Date.now();
+    await sql(dbUrl, 'INSERT INTO workspaces (id, created_at, last_seen_at) VALUES ($1, $2, $2)', [wsId, now]);
+    const insert = (id: string, name: string) =>
+      sql(dbUrl,
+        `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, created_at, updated_at, home_project)
+         VALUES ($1, $2, $3, 'coding', '', 'acme-api', 'codex', $4, $4, 'acme-api')`,
+        [wsId, id, name, now]);
+    await insert('spaces', '   ');
+    await insert('ideographic', '　');
+    await insert('named', 'Fix the login redirect');
+    const names = () => sql<{ id: string; name: string }>(dbUrl, 'SELECT id, name FROM sessions ORDER BY id');
+    const asLeft = await names();
+
+    const t = makeApp({ databaseUrl: dbUrl });
+    await t.ready;
+    try {
+      const byId = await listed(t.app, token);
+      expect([byId.spaces.name, byId.ideographic.name, byId.named.name]).toEqual(['spaces', 'ideographic', 'Fix the login redirect']);
+      // In memory only: loading wrote nothing.
+      await t.store.flush();
+      expect(await names()).toEqual(asLeft);
+      // Its id is the name it has now: another blank post keeps it, a real one replaces it.
+      expect((await post(t.app, token, 'spaces', { name: '  ' })).name).toBe('spaces');
+      expect((await post(t.app, token, 'ideographic', { name: 'Ship it' })).name).toBe('Ship it');
+      await t.store.flush();
+    } finally {
+      await t.shutdown();
+    }
+    expect(await names()).toEqual([
+      { id: 'ideographic', name: 'Ship it' },
+      { id: 'named', name: 'Fix the login redirect' },
+      { id: 'spaces', name: 'spaces' },
+    ]);
   });
 });
 

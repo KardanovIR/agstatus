@@ -127,10 +127,10 @@ export const UUID_FOLDER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
  * (path.basename) and `/` from the legacy shell hook, whose POSIX `basename /`
  * prints `/` (hooks/claude-status-hook.sh); a post without a project carries
  * ''; white space alone, `.`, and a UUID with a space before it come from raw
- * posts. A tab or a newline never gets this far, because sessionName strips
+ * posts. A tab or a newline never gets this far, because sessionText strips
  * control characters from every posted name. A usable name is kept as sent,
  * case and white space included, and in Unicode NFC, as every name the
- * server keeps (sessionName): a section is a folder name, nothing more. NFC
+ * server keeps (sessionText): a section is a folder name, nothing more. NFC
  * here as well, so a home read back from a row an older server wrote, or
  * worked out from its project, is held to the same form as one posted now.
  * Every board applies this same rule to a session's homeProject and to its
@@ -141,7 +141,7 @@ export function normalizeProject(project: string): string {
   return name === '' || name === '/' || name === '.' || UUID_FOLDER_RE.test(name) ? '' : project.normalize('NFC');
 }
 
-/** A session's name and project are cut to this many UTF-16 units (sessionName). */
+/** A session's name and project are cut to this many UTF-16 units (sessionText). */
 export const SESSION_NAME_MAX = 120;
 
 /**
@@ -152,7 +152,8 @@ export const SESSION_NAME_MAX = 120;
  * named decomposed (NFD, an e and then its accent), a Linux checkout of the
  * same repository composed (NFC, one é), and the boards compare names by
  * UTF-16 code unit, by which the two are two sections. Composed here they are
- * one, on every board.
+ * one, on every board. A project is kept as this leaves it; a name goes on
+ * through sessionName.
  *
  * In this order because each step needs the one before it. A control
  * character or a lone surrogate between a letter and its accent keeps the
@@ -160,8 +161,38 @@ export const SESSION_NAME_MAX = 120;
  * (U+0958, say) are always decomposed, and the cut is the bound every size
  * that counts a name relies on.
  */
-export function sessionName(v: string): string {
+export function sessionText(v: string): string {
   return safeClip(wellFormed(v.replace(CONTROL_CHARS_RE, '')).normalize('NFC'), SESSION_NAME_MAX);
+}
+
+/**
+ * Nothing at all, or white space alone. White space is what JavaScript's
+ * trim takes, and U+0085 (NEXT LINE) too, which Unicode and Swift count as
+ * white space where JavaScript does not: so a name that trims to nothing on
+ * any board is blank here.
+ */
+const BLANK_RE = /^[\s\u0085]*$/;
+
+/**
+ * Whether a session's name is no name at all: empty, or white space alone
+ * (BLANK_RE). Every place a name comes in treats such a name as none, so the
+ * store keeps the session's previous name, or else names the card by its id,
+ * and no board is sent a name of white space alone. Sent one, iOS and the
+ * web read the card as its agent and a comma, "Codex,", and Android shows
+ * the card's id.
+ */
+export const isBlankName = (name: string): boolean => BLANK_RE.test(name);
+
+/**
+ * A session's name as the server takes it in: kept as sessionText keeps it,
+ * and '' — no name — when nothing but white space is left (isBlankName). The
+ * store treats '' as a post with no name: the session keeps the name it has,
+ * or is named by its id. A name with words in it is kept as sent, white space
+ * at its ends included, as a folder name is.
+ */
+export function sessionName(v: string): string {
+  const name = sessionText(v);
+  return isBlankName(name) ? '' : name;
 }
 
 /**
@@ -232,8 +263,9 @@ export interface Session {
 export interface UpsertInput {
   id: string;
   status: Status;
-  // undefined = carry the previous value forward (v1 semantics). name and
-  // project as sessionName leaves them, which is in Unicode NFC.
+  // undefined = carry the previous value forward (v1 semantics). name as
+  // sessionName leaves it, where '' is no name and carries the previous one
+  // forward too; project as sessionText leaves it. Both in Unicode NFC.
   name?: string;
   message?: string;
   project?: string;
@@ -1058,14 +1090,19 @@ export class Store {
         status = 'idle';
         message = '';
       }
-      // In Unicode NFC, as every name posted now is kept (sessionName): a row
+      // In Unicode NFC, as every name posted now is kept (sessionText): a row
       // an older server wrote holds them as they were sent. Composed, not cut
       // again: the server that wrote the row cut them, and a session that
-      // never posted a name is named by its id, up to 128 characters.
+      // never posted a name is named by its id, up to 128 characters. An
+      // older server also kept a name of white space alone as it was sent;
+      // that is no name (isBlankName), so the card is named by its id, as a
+      // post of it would leave a new card, until the session posts a name.
+      // In memory only, like the composing: loading writes nothing.
       const project = (row.project as string).normalize('NFC');
+      const name = (row.name as string).normalize('NFC');
       const session: Session = {
         id: row.id as string,
-        name: (row.name as string).normalize('NFC'),
+        name: isBlankName(name) ? (row.id as string) : name,
         status,
         message,
         project,
