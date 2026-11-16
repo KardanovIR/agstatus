@@ -98,7 +98,7 @@ class StatusGlyphTest {
     }
 
     @Test
-    fun `at 200% the glyph grows with the text`() {
+    fun `at twice the text size the glyph grows with it`() {
         val (glyph, expected) = glyphWidthPx(2f)
         assertEquals(expected, glyph, 1.5f)
     }
