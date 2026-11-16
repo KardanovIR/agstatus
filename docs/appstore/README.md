@@ -32,7 +32,7 @@ Upload in this order — the first one is what people see in search results:
 
 | # | File | Shows |
 | --- | --- | --- |
-| 1 | `02-board.png` | The board sorted by agent: Claude's and Codex's heads with their plan limits, then each agent's sessions (on iPad, a column under each head) |
+| 1 | `02-board.png` | The board grouped by project: Claude's and Codex's heads with their plan limits, then a labelled section per project, and the needs-you bar along the bottom naming the blocked session (on iPad, the heads are full-width strips over the sections) |
 | 2 | `04-usage.png` | Usage detail: tokens per day, the plan limit charted over it, and spend per project |
 | 3 | `03-history.png` | A session timeline, every status change timestamped |
 | 4 | `01-welcome.png` | Setup options and "Try the demo" — no account required |

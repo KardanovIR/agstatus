@@ -73,13 +73,19 @@ Details in [docs/hooks.md](docs/hooks.md).
 - **Claude Code + OpenAI Codex** — one hook script speaks both tools'
   hook systems; sessions from both land on the same board.
 - **Live board** — SSE-streamed updates, no polling, no refresh.
+- **A section per project** — sessions are grouped by the folder each one
+  started in, one labelled section per project, in name order. A session that
+  runs `cd` keeps its card where it was, and every card carries its agent's
+  mark. See [docs/hooks.md](docs/hooks.md#card-names-and-projects).
+- **The needs-you bar** — while anything is blocked, one bar along the bottom
+  edge names the session and its project. Press it and that card comes into
+  view, ringed for two seconds; press again for the next one.
 - **Subagents on the card** — each running subagent of a session (Agent
   tool, background, workflow, Codex sub-agent) is a row on its parent's card:
   what it was asked to do, what it is doing, its state. One waiting on approval
   turns the card blocked and names itself; background ones keep the card from
-  reading done until they have finished. On the web board now; the phone apps
-  get the rows with their next store builds. See
-  [docs/hooks.md](docs/hooks.md#subagents).
+  reading done until they have finished. On the web board, and since 1.7.0 in
+  the phone apps too. See [docs/hooks.md](docs/hooks.md#subagents).
 - **No accounts** — a board is a capability URL with an unguessable token,
   like a Slack webhook. The server stores only a hash of it.
 - **Push when blocked** — APNs notification the moment an agent needs you;
