@@ -1046,12 +1046,21 @@ const barShows = () => ({
 const titleOf = (b: Board, id: string) => card(b, id).querySelector('[data-open]');
 const blocked = (id: string, minutesAgo: number, homeProject: string, over: Record<string, unknown> = {}) =>
   at(id, minutesAgo, { homeProject, status: 'blocked', message: 'Approve: git push', ...over });
+/** What the bar draws, its ground, edge and words, inside the button. */
+const face = () => document.getElementById('needs-face') as HTMLElement;
+/** An animation's end, as a browser reports it once the animation has run (or is cut short): jsdom runs none. */
+const ended = (b: Board, el: Element, name: string, type: 'animationend' | 'animationcancel' = 'animationend') => {
+  const e = new b.win.Event(type, { bubbles: true });
+  Object.assign(e, { animationName: name });
+  el.dispatchEvent(e);
+};
 
 describe('the needs-you bar', () => {
   it('is absent while nothing is blocked, and done never counts', async () => {
     const b = await boardOf([at('a', 1, { homeProject: 'acme-api', status: 'done' }), at('c', 2, { homeProject: 'docs' })]);
     expect(bar().hidden).toBe(true);
-    expect(bar().childElementCount).toBe(0);
+    expect(face().childElementCount).toBe(0);
+    expect(bar().textContent).toBe('');
     expect(document.body.classList.contains('needs-up')).toBe(false);
   });
 
@@ -1811,6 +1820,347 @@ describe('a new block, aloud', () => {
   });
 });
 
+// ---- The needs-you bar's beat -----------------------------------------------
+//
+// A second block changed one figure on the bar, too small for the corner of
+// the eye. When the count rises while the bar shows, the bar comes in from
+// the bottom edge again, once, with the new count in it (the owner's call of
+// 2026-11-16): its face replays the bar's arrival (shell.css). It hears what
+// the voice hears, after the voice's half second, and beats by the rule iOS
+// keeps (BarBeat).
+
+/** The tab showing, which jsdom's never is: its document is hidden unless it pretends to be drawn. */
+const tabShows = (b: Board, showing = true) =>
+  Object.defineProperty(b.win.document, 'hidden', { configurable: true, get: () => !showing });
+
+/** Reduced motion asked for, or not, through the matchMedia the board reads. */
+const reduceMotion = (on: boolean) => Object.assign(window, {
+  matchMedia: (q: string) => ({ media: q, matches: on && q === '(prefers-reduced-motion: reduce)', addEventListener() {}, removeEventListener() {} }),
+});
+
+/**
+ * The bar's beats as they start, each as the count the bar shows then. Each
+ * one's end is heard straight away, as a browser reports it 420 ms on, so the
+ * next can start.
+ */
+function watchBeats(b: Board) {
+  const beats: string[] = [];
+  new b.win.MutationObserver((records) => {
+    for (const r of records) {
+      if ((r.oldValue || '').split(/\s+/).includes('beat') || !face().classList.contains('beat')) continue;
+      beats.push(bar().querySelector('.needs-n')!.textContent!);
+      ended(b, face(), 'needs-in');
+    }
+  }).observe(face(), { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+  return beats;
+}
+
+/**
+ * A board drawn from its first snapshot with its bar up and arrived, the tab
+ * showing, and ten seconds gone by, so the count its blocks make is the one
+ * the bar rests on.
+ */
+async function barUp(list: unknown[]) {
+  const b = await boardOf(list);
+  tabShows(b);
+  ended(b, bar(), 'needs-in');
+  await vi.advanceTimersByTimeAsync(10_000);
+  return b;
+}
+
+const unblocked = (id: string, homeProject: string) => at(id, 0, { homeProject, status: 'coding' });
+
+describe('the needs-you bar\'s beat', () => {
+  it('comes in again once when the count rises while it shows, with the new count already in it', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('w', 2, { homeProject: 'web', name: 'Write the docs' })]);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w', 0, 'web', { name: 'Write the docs' }));
+    expect(barShows().count).toBe('2');                    // in place, at once
+    await vi.advanceTimersByTimeAsync(400);
+    expect(beats).toEqual([]);                             // nothing until the half second is over
+    await vi.advanceTimersByTimeAsync(300);
+    expect(beats).toEqual(['2']);
+    expect(said()).toBe('Write the docs, in web, needs you');   // the voice, said once, as before
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(beats).toEqual(['2']);                          // never a loop, nor a reminder while it stands
+  });
+
+  it('beats once for blocks that land together, and again for a later rise', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), ...['w1', 'w2', 'w3'].map((id, i) => at(id, i + 2, { homeProject: 'web' }))]);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w1', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(15);                 // two hook events posted at once
+    b.emit('session', blocked('w2', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['3']);
+    await vi.advanceTimersByTimeAsync(5000);
+    b.emit('session', blocked('w3', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['3', '4']);
+  });
+
+  it('never beats for the first block, whose arrival is the beat, nor for one that lands as it arrives', async () => {
+    const b = await boardOf([at('w1', 1, { homeProject: 'web' }), at('w2', 2, { homeProject: 'web' })]);
+    tabShows(b);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w1', 0, 'web'));
+    expect(bar().classList.contains('entering')).toBe(true);   // its arrival, from the bottom edge
+    await vi.advanceTimersByTimeAsync(300);
+    b.emit('session', blocked('w2', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(120);
+    ended(b, bar(), 'needs-in');                           // arrived, 420 ms on
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('2');
+    expect(beats).toEqual([]);
+  });
+
+  it('never beats for a fall: an unblock or a dismissal', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), blocked('b', 2, 'billing'), blocked('c', 3, 'claude-status')]);
+    const beats = watchBeats(b);
+    b.emit('session', unblocked('b', 'billing'));
+    await vi.advanceTimersByTimeAsync(1000);
+    b.tap('c', 'dismiss');
+    await vi.advanceTimersByTimeAsync(1000);
+    b.emit('remove', { id: 'c' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('1');
+    expect(beats).toEqual([]);
+  });
+
+  // The count the bar rests on is one that stood for half a second, so one
+  // block in place of another is no rise whichever comes first.
+  it.each([
+    ['the new block first', ['w', 'a']],
+    ['the answered block first', ['a', 'w']],
+  ])('never beats for one block in place of another, %s', async (_first, order) => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), blocked('b', 2, 'billing'), at('w', 3, { homeProject: 'web' })]);
+    const beats = watchBeats(b);
+    for (const id of order) {
+      b.emit('session', id === 'w' ? blocked('w', 0, 'web') : unblocked('a', 'acme-api'));
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('2');
+    expect(beats).toEqual([]);
+  });
+
+  // The bar went, and came back with the next block: that is its arrival.
+  it('never beats when the bar empties and comes back within the half second', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('w1', 2, { homeProject: 'web' }), at('w2', 3, { homeProject: 'web' })]);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w1', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(100);
+    b.emit('session', unblocked('a', 'acme-api'));
+    b.emit('session', unblocked('w1', 'web'));          // none blocked: the bar leaves
+    await vi.advanceTimersByTimeAsync(100);
+    b.emit('session', blocked('w1', 0, 'web'));
+    b.emit('session', blocked('w2', 0, 'web'));          // and comes back at once
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('2');
+    expect(bar().hidden).toBe(false);
+    expect(beats).toEqual([]);
+  });
+
+  // None of the half second's blocks stands at its end: nothing it heard is
+  // news, whatever else moved the count meanwhile (here a session already
+  // said within its minute, which is no news of its own).
+  it('never beats when the half second\'s own blocks were answered within it', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('x', 2, { homeProject: 'docs' }), at('w', 3, { homeProject: 'web' })]);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('x', 0, 'docs'));
+    await vi.advanceTimersByTimeAsync(1000);
+    b.emit('session', unblocked('x', 'docs'));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(beats).toEqual(['2']);
+    b.emit('session', blocked('w', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(100);
+    b.emit('session', blocked('x', 0, 'docs'));          // said within its minute
+    b.emit('session', unblocked('w', 'web'));           // answered within the half second
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('2');
+    expect(beats).toEqual(['2']);
+  });
+
+  // Seconds apart, the count the reader saw fell and then rose.
+  it('beats for a block seconds after another was answered', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), blocked('b', 2, 'billing'), at('w', 3, { homeProject: 'web' })]);
+    const beats = watchBeats(b);
+    b.emit('session', unblocked('a', 'acme-api'));
+    await vi.advanceTimersByTimeAsync(5000);
+    b.emit('session', blocked('w', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['2']);
+  });
+
+  // Blocks that were standing before the board looked: no frame brought them.
+  it('never beats for the blocks a snapshot, a reconnect or a refetch brings', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('b', 2, { homeProject: 'billing' }),
+      at('c', 3, { homeProject: 'docs' }), at('d', 4, { homeProject: 'etl' })]);
+    const beats = watchBeats(b);
+    // What a reconnect sends: a snapshot, with a block that landed while the stream was down.
+    b.emit('snapshot', [blocked('a', 1, 'acme-api'), blocked('b', 0, 'billing'), at('c', 3, { homeProject: 'docs' }),
+      at('d', 4, { homeProject: 'etl' })]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('2');
+    // A refused dismissal: the fetch after it puts the card back, and brings another blocked.
+    vi.stubGlobal('fetch', async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'DELETE') return reply({ error: 'nope' }, 500);
+      return url.endsWith('/api/sessions')
+        ? reply([blocked('a', 1, 'acme-api'), blocked('b', 0, 'billing'), blocked('c', 0, 'docs'), at('d', 4, { homeProject: 'etl' })])
+        : reply({});
+    });
+    b.tap('b', 'dismiss');
+    await b.settle();
+    await b.settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('3');
+    // ...and that block's own frame, when it comes.
+    b.emit('session', blocked('c', 0, 'docs', { message: 'Approve: deploy' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual([]);
+  });
+
+  it('never beats for a session said within its minute, and beats for it after', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('w', 2, { homeProject: 'web' })]);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    b.emit('session', unblocked('w', 'web'));
+    await vi.advanceTimersByTimeAsync(20_000);
+    b.emit('session', blocked('w', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['2']);
+    await vi.advanceTimersByTimeAsync(60_000);
+    b.emit('session', unblocked('w', 'web'));
+    await vi.advanceTimersByTimeAsync(5000);
+    b.emit('session', blocked('w', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['2', '2']);
+  });
+
+  it('keeps still under reduced motion: the count changes in place, and the voice still says it', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('w', 2, { homeProject: 'web', name: 'Write the docs' })]);
+    reduceMotion(true);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w', 0, 'web', { name: 'Write the docs' }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(barShows().count).toBe('2');
+    expect(said()).toBe('Write the docs, in web, needs you');
+    expect(beats).toEqual([]);
+  });
+
+  it('keeps still while the tab is hidden or a detail screen covers the board, and on the way back', async () => {
+    const ws = ['w1', 'w2', 'w3', 'w4', 'w5'];
+    const b = await barUp([blocked('a', 1, 'acme-api'), ...ws.map((id, i) => at(id, i + 2, { homeProject: 'web' }))]);
+    const beats = watchBeats(b);
+    const land = (id: string) => b.emit('session', blocked(id, 0, 'web'));
+    tabShows(b, false);
+    land('w1');                                            // hidden as it lands
+    await vi.advanceTimersByTimeAsync(1000);
+    land('w2');                                            // hidden as it lands, showing again within its half second
+    await vi.advanceTimersByTimeAsync(200);
+    tabShows(b, true);
+    await vi.advanceTimersByTimeAsync(1000);
+    land('w3');                                            // showing as it lands, hidden within its half second
+    await vi.advanceTimersByTimeAsync(200);
+    tabShows(b, false);
+    await vi.advanceTimersByTimeAsync(1000);
+    tabShows(b, true);
+    location.hash = 'usage/claude';                       // a detail screen over the board
+    await b.settle();
+    land('w4');
+    await vi.advanceTimersByTimeAsync(1000);
+    location.hash = '';
+    await b.settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('5');
+    expect(beats).toEqual([]);
+    land('w5');                                            // in front again: a rise beats
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['6']);
+  });
+
+  // A bar that appeared under a detail screen has run no arrival yet: it
+  // runs when the board shows again, and nothing beats until it is over.
+  it('keeps still while the bar is still arriving', async () => {
+    const b = await boardOf([at('w1', 1, { homeProject: 'web' }), at('w2', 2, { homeProject: 'web' }), at('w3', 3, { homeProject: 'web' })]);
+    tabShows(b);
+    const beats = watchBeats(b);
+    location.hash = 'usage/claude';
+    await b.settle();
+    b.emit('session', blocked('w1', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    location.hash = '';
+    await b.settle();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(bar().classList.contains('entering')).toBe(true);
+    b.emit('session', blocked('w2', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual([]);
+    ended(b, bar(), 'needs-in');
+    b.emit('session', blocked('w3', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['3']);
+  });
+
+  // A detail screen opened mid-beat hides the bar, which cancels the face's
+  // animation rather than ending it. Left with its class, the face would
+  // beat again the moment the board came back, with no news.
+  it('forgets a beat cut short, so nothing replays when the board comes back', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), at('w', 2, { homeProject: 'web' })]);
+    b.emit('session', blocked('w', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(face().classList.contains('beat')).toBe(true);
+    ended(b, face(), 'needs-in', 'animationcancel');
+    expect(face().classList.contains('beat')).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(false);
+  });
+
+  // Only its face moves. The button keeps its box, so the page's padding and
+  // scroll padding measured from it stay where they are, and so do focus and
+  // the scroll; a press while the face rises lands on the bar and brings its
+  // card, and the beat carries on through the repaint the press makes.
+  it('moves only its face: the bar keeps its place, the page its padding, the reader focus and the scroll', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    tabShows(b);
+    b.emit('snapshot', [blocked('a', 1, 'acme-api'), at('w', 2, { homeProject: 'web' })]);
+    ended(b, bar(), 'needs-in');
+    Object.defineProperty(b.win.HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.id === 'needs' && !this.hidden ? 55 : 0; },
+    });
+    FakeResizeObserver.fire();
+    await vi.advanceTimersByTimeAsync(10_000);
+    const scrolled: Element[] = [];
+    b.win.Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); } as never;
+    const needsH = () => document.documentElement.style.getPropertyValue('--needs-h');
+    const place = () => ({ bar: bar().className, inert: bar().hasAttribute('inert'), h: needsH(), up: document.body.className });
+    const drawn = face();
+    bar().focus();
+    b.emit('session', blocked('w', 0, 'web'));
+    const before = { ...place(), label: bar().getAttribute('aria-label') };
+    expect(before.h).toBe('55px');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(face().classList.contains('beat')).toBe(true);   // mid-beat
+    expect(face()).toBe(drawn);
+    expect({ ...place(), label: bar().getAttribute('aria-label') }).toEqual(before);
+    expect(document.activeElement).toBe(bar());
+    expect(scrolled).toEqual([]);
+    b.click(bar());
+    expect(document.activeElement).toBe(titleOf(b, 'a'));
+    expect(face()).toBe(drawn);
+    expect(face().classList.contains('beat')).toBe(true);
+    ended(b, face(), 'needs-in');
+    expect(face().classList.contains('beat')).toBe(false);
+    // The press renamed the bar; nothing else about its place changed.
+    const { label: _renamed, ...kept } = before;
+    expect(place()).toEqual(kept);
+  });
+});
+
 // ---- An agent, named and marked as every board does -------------------------
 
 describe('an agent, named and marked as every board does', () => {
@@ -2014,12 +2364,16 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(rule(shell, '.needs')).toMatch(/line-height:\s*var\(--lh-tight\)/);
   });
 
+  // The button is the bar's place, and its face draws it: the words above
+  // the safe-area inset, the ground running under it to the edge.
   it('fixes the bar to the bottom edge above the safe-area inset, at least 44px tall', () => {
     const r = rule(shell, '.needs');
     expect(r).toMatch(/position:\s*fixed/);
     expect(r).toMatch(/bottom:\s*0/);
     expect(r).toMatch(/min-height:\s*44px/);
-    expect(r).toMatch(/env\(safe-area-inset-bottom\)/);
+    expect(r).toMatch(/padding:\s*0/);
+    expect(r).toMatch(/background:\s*none/);
+    expect(rule(shell, '.needs-face')).toMatch(/env\(safe-area-inset-bottom\)/);
   });
 
   // One bar on every client: at rest it wears a blocked card's own surface
@@ -2030,16 +2384,17 @@ describe('the stylesheets behind the sections and the bar', () => {
   it('grounds the bar on a blocked card\'s own surface under its own edge, at either contrast', () => {
     const card = read('card.css');
     const r = rule(shell, '.needs');
+    const drawn = rule(shell, '.needs-face');   // what the bar draws, inside it
     expect(r).toMatch(/--state:\s*var\(--st-blocked\);/);
     // card.css sets a blocked card's --state in one rule and draws it in another.
     const blocked = [...card.matchAll(/\n\.card\.status-blocked \{([^}]*)\}/g)].map((m) => m[1]).join('');
     const surface = /background:\s*([^;]+);/.exec(blocked)![1];
     expect(surface).toBe('color-mix(in oklab, var(--ink-900) 86%, var(--state))');
-    expect(r).toContain(`background: ${surface};`);
+    expect(drawn).toContain(`background: ${surface};`);
     expect(blocked).toMatch(/border-color:\s*var\(--state-line\)/);
     const line = /--state-line:\s*([^;]+);/.exec(rule(card, '.card'))![1];
     expect(r).toContain(`--state-line: ${line};`);
-    expect(r).toMatch(/border-top:\s*1px solid var\(--state-line\);/);
+    expect(drawn).toMatch(/border-top:\s*1px solid var\(--state-line\);/);
     // Increased contrast raises the edge as it raises a card's.
     const more = (css: string, selector: string) => new RegExp(
       `@media \\(prefers-contrast: more\\) \\{\\s*${selector.replace(/\./g, '\\.')} \\{\\s*--state-line:\\s*([^;]+);\\s*\\}`).exec(css)?.[1];
@@ -2056,6 +2411,16 @@ describe('the stylesheets behind the sections and the bar', () => {
       if (m[1].includes(':hover')) expect(m[2], m[1].trim()).not.toMatch(/background|border/);
     }
     expect(rule(shell, '.needs:hover .needs-verb')).toMatch(/color:\s*var\(--text-1\)/);
+  });
+
+  // The beat is the bar's own arrival, run on its face alone: the button
+  // keeps its box, and with it the page's padding and a press.
+  it('beats by replaying the bar\'s arrival on its face, and on nothing else', () => {
+    const arrival = /animation:\s*needs-in var\(--d-slow\) var\(--ease\) both/;
+    expect(rule(shell, '.needs.entering')).toMatch(arrival);
+    expect(rule(shell, '.needs-face.beat')).toMatch(arrival);
+    const beating = [...shell.matchAll(/([^{}]*\.beat\b[^{}]*)\{/g)].map((m) => m[1].trim());
+    expect(beating).toEqual(['.needs-face.beat']);
   });
 
   // Motion for news only, and only on the compositor.

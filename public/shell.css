@@ -832,8 +832,12 @@ body.detail-open > .footer { display: none; }
  * resting bar was a line of text whose only colour was a 12px word, found by
  * reading it; on the blocked surface, 1.28:1, under the blocked edge, 2.46:1,
  * it is a band the corner of the eye finds, in a colour the board already
- * uses for exactly this. No glow, and no motion but its arrival and
- * departure. Its content lines up with the board's own gutters. */
+ * uses for exactly this. No glow, and no motion but its arrival, its
+ * departure and its beat. Its content lines up with the board's own gutters.
+ *
+ * The button is the bar's place, and its face (.needs-face) is what it
+ * draws: the ground, the edge and the words. Arriving and leaving, the
+ * button moves with its face; beating, the face moves alone (below). */
 .needs {
   --state: var(--st-blocked);
   --state-line: oklch(from var(--state) l c h / 0.42);
@@ -845,18 +849,13 @@ body.detail-open > .footer { display: none; }
   /* Over the cards and the stuck labels (board.css). */
   z-index: 2;
   appearance: none;
+  /* One cell, which the face fills. */
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: 'alarm what verb';
-  align-items: center;
-  column-gap: var(--space-md);
   min-height: 44px;
   margin: 0;
-  padding: var(--space-sm) max(var(--gutter), env(safe-area-inset-right))
-    calc(var(--space-sm) + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
-  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+  padding: 0;
+  background: none;
   border: 0;
-  border-top: 1px solid var(--state-line);
   border-radius: 0;
   color: var(--text-1);
   font: inherit;
@@ -864,6 +863,18 @@ body.detail-open > .footer { display: none; }
   line-height: var(--lh-tight);
   text-align: left;
   cursor: pointer;
+}
+
+.needs-face {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'alarm what verb';
+  align-items: center;
+  column-gap: var(--space-md);
+  padding: var(--space-sm) max(var(--gutter), env(safe-area-inset-right))
+    calc(var(--space-sm) + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
+  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+  border-top: 1px solid var(--state-line);
 }
 
 /* The blocked edge goes from 42% of the state colour to 70%, as a card's
@@ -971,6 +982,15 @@ body.detail-open > .footer { display: none; }
 
 .needs.entering { animation: needs-in var(--d-slow) var(--ease) both; }
 .needs.leaving { animation: needs-out var(--d-mid) var(--ease) both; }
+
+/* Its beat (app.js, "The bar's beat"): when the count rises while it shows,
+ * it comes in from the bottom edge again, once, by its own arrival, with the
+ * new count already in it. The face alone: the button keeps its box, so the
+ * page's padding and scroll padding measured from it stay put, and a press
+ * while the face rises lands on the bar, never on a card that shows through
+ * above it. Never asked for under reduced motion, where the count changes
+ * in place. */
+.needs-face.beat { animation: needs-in var(--d-slow) var(--ease) both; }
 
 /* While it shows, the page ends above it rather than under it: its measured
  * height (app.js), the safe-area inset included, then the usual air. And
@@ -1165,8 +1185,9 @@ html:has(body.needs-up:not(.detail-open)) { scroll-padding-bottom: calc(var(--ne
 
   /* The bar takes two lines on a phone, the alarm and its verb over the
    * session, which gets a line of its own; the phone's 12px gutters. */
-  .needs {
-    --gutter: var(--space-sm);
+  .needs { --gutter: var(--space-sm); }
+
+  .needs-face {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas: 'alarm verb' 'what what';
     row-gap: var(--space-2xs);

@@ -41,6 +41,8 @@
   const authEl = document.getElementById('auth-note');
   const detailEl = document.getElementById('detail');
   const needsEl = document.getElementById('needs');
+  // What the bar draws, its ground, edge and words: the part that beats.
+  const faceEl = document.getElementById('needs-face');
   const saidEl = document.getElementById('needs-said');
 
   let webhookUrl = '';
@@ -1327,6 +1329,7 @@
   function renderNeeds() {
     const drawn = drawnOrder();
     const { blocked } = drawn;
+    noteBlocked(blocked);
     // Gone sooner than two seconds when its card is no longer blocked.
     if (bar.ring && !blocked.includes(bar.ring.id)) clearRing();
     if (blocked.length === 0) {
@@ -1356,7 +1359,9 @@
     // bar kept the give-way of the card it named before, dropping a place
     // or BLOCKED that fit, or keeping a place that left the name no room.
     // A bar still hidden has no width to fit to, and waits for the observer.
-    if (paint(needsEl, needsHTML(blocked.length, s, verb))) fitNeeds();
+    // Painted into the face, which outlives its words, so a beat in flight
+    // carries on through a press or a rename.
+    if (paint(faceEl, needsHTML(blocked.length, s, verb))) fitNeeds();
     showNeeds();
   }
 
@@ -1384,6 +1389,7 @@
     // is handed on first, before the bar forgets what it brought.
     if (needsEl.contains(document.activeElement)) handFocusOn();
     needsEl.classList.remove('entering');
+    faceEl.classList.remove('beat');
     needsEl.classList.add('leaving');
     needsEl.setAttribute('inert', '');
     const gone = () => {
@@ -1391,7 +1397,7 @@
       if (!needsEl.classList.contains('leaving')) return;
       needsEl.classList.remove('leaving');
       needsEl.hidden = true;
-      paint(needsEl, '');
+      paint(faceEl, '');
       needsEl.removeAttribute('aria-label');
       document.body.classList.remove('needs-up');
     };
@@ -1463,12 +1469,13 @@
     return r.top >= top && r.bottom <= bottom;
   }
 
-  needsEl.addEventListener('animationend', (e) => {
-    if (e.animationName === 'needs-in') needsEl.classList.remove('entering');
-  });
-  needsEl.addEventListener('animationcancel', (e) => {
-    if (e.animationName === 'needs-in') needsEl.classList.remove('entering');
-  });
+  // The bar's own arrival, not its face's beat, which runs the same
+  // animation and whose end reaches the bar too.
+  const arrived = (e) => {
+    if (e.target === needsEl && e.animationName === 'needs-in') needsEl.classList.remove('entering');
+  };
+  needsEl.addEventListener('animationend', arrived);
+  needsEl.addEventListener('animationcancel', arrived);
 
   /**
    * The page is padded by the bar's height while it shows, so nothing ends
@@ -1590,7 +1597,10 @@
     for (const [k, t] of saidAt) if (now - t >= SAID_MS) saidAt.delete(k);
     if (saidAt.has(id) || gathered.includes(id)) return;
     gathered.push(id);
-    if (!gatherTimer) gatherTimer = setTimeout(sayBlocks, GATHER_MS);
+    if (!gatherTimer) {
+      gatherBeat();
+      gatherTimer = setTimeout(sayBlocks, GATHER_MS);
+    }
   }
 
   function sayBlocks() {
@@ -1598,6 +1608,7 @@
     // Only those still blocked: one answered within the half second is not news.
     const still = gathered.map((id) => state.get(id)).filter((s) => s && s.status === 'blocked');
     gathered = [];
+    endBeat(still.length === 0);
     if (still.length === 0) return;
     const now = Date.now();
     for (const s of still) saidAt.set(s.id, now);
@@ -1619,6 +1630,116 @@
       saidTimer = setTimeout(() => { saidEl.textContent = ''; }, SAID_KEPT_MS);
     }, 100);
   }
+
+  // ---- The bar's beat
+  //
+  // A second block changes one figure on the bar, its count: a glyph far too
+  // small for the corner of the eye, which is where this board is read. The
+  // bar's arrival is the one motion on the board that peripheral vision
+  // catches, so when the count rises while the bar already shows, the bar
+  // comes in from the bottom edge again, once, with the new count already in
+  // it, and nothing else changes: no word, no colour, no focus, no sound. The
+  // rule below is the one iOS keeps (BarBeat), so the clients agree.
+  //
+  // Only its face moves, by the bar's own arrival (shell.css). The button's
+  // box stays where it is, and with it the page's padding and scroll padding
+  // measured from it, the scroll position and focus, and a press while the
+  // face is still rising lands on the bar, never on a card showing through
+  // above it.
+  //
+  // It hears what the voice hears, a session's transition into blocked while
+  // the board watches (gatherBlock): never a snapshot's block, a reconnect's
+  // or a fetch's, and never one said within its minute. It gathers them for
+  // the voice's half second, so blocks that land together make one beat, and
+  // when the half second is over (sayBlocks) the bar beats only if all of
+  // these hold:
+  // - one of its blocks is still blocked;
+  // - the bar rested on a count when the first of them landed, and has not
+  //   emptied since. A bar that showed nothing arrives with them, and its
+  //   arrival is their beat; so are blocks within half a second of it.
+  // - the count is higher than the one the bar rested on: never on a fall,
+  //   nor for one block in place of another, whichever lands first;
+  // - the board was in front of the reader when the first landed and is
+  //   now: the tab showing, and no detail screen over the board. So never for
+  //   blocks that landed while the reader was away, nor on the way back.
+  // - the bar is neither arriving nor leaving, and motion is not reduced.
+  //   Under reduced motion the count changes in place, as everything here
+  //   does, and the voice carries the news.
+
+  const beat = {
+    // The count the bar rests on: one that stood for half a second, or that
+    // a half second ended on; nothing while the bar is empty. A rise is
+    // measured from it, so a block that lands just after another was
+    // answered is no rise at all, and one within half a second of the bar's
+    // arrival finds it resting on nothing.
+    rest: 0,
+    // The blocked cards as the bar last drew them, and when they changed.
+    drawn: [],
+    changedAt: -Infinity,
+    // The half second in flight: the count the bar rested on as its first
+    // block landed, whether the bar has emptied since, and whether the board
+    // was out of the reader's sight then.
+    gathering: null,
+  };
+
+  /** Whether the board is in front of the reader: the tab showing, and no detail screen over it. */
+  const boardInFront = () => !document.hidden && !document.body.classList.contains('detail-open');
+
+  /** Every render of the bar hands over the blocked cards as drawn (renderNeeds). */
+  function noteBlocked(blocked) {
+    const was = beat.drawn;
+    if (was.length === blocked.length && blocked.every((id) => was.includes(id))) return;
+    const now = Date.now();
+    if (now - beat.changedAt >= GATHER_MS) beat.rest = was.length;
+    if (blocked.length === 0) {
+      beat.rest = 0;
+      if (beat.gathering) beat.gathering.emptied = true;
+    }
+    beat.changedAt = now;
+    beat.drawn = blocked;
+  }
+
+  /**
+   * The first block of a half second has landed. Called once the frame that
+   * brought it is drawn, so the count it rests on is already brought up to
+   * date for that frame (the session listener renders, then gathers).
+   */
+  function gatherBeat() {
+    beat.gathering = { rest: beat.rest, emptied: false, away: !boardInFront() };
+  }
+
+  /** The half second is over: the bar beats, or does not (above). `answered`: none of its blocks still stands. */
+  function endBeat(answered) {
+    const done = beat.gathering;
+    beat.gathering = null;
+    const count = beat.drawn.length;
+    beat.rest = count;
+    if (!done || answered) return;
+    const rest = done.emptied ? 0 : done.rest;
+    if (rest === 0 || count <= rest) return;
+    if (done.away || !boardInFront() || reducedMotion()) return;
+    if (needsEl.hidden || needsEl.classList.contains('entering') || needsEl.classList.contains('leaving')) return;
+    beatBar();
+  }
+
+  /** The face comes in from the bottom edge again (shell.css, .needs-face.beat). */
+  function beatBar() {
+    if (!faceEl.classList.contains('beat')) {
+      faceEl.classList.add('beat');
+      return;
+    }
+    // A beat whose end has not been heard yet starts again, from the edge.
+    if (typeof faceEl.getAnimations === 'function') for (const a of faceEl.getAnimations()) a.currentTime = 0;
+  }
+
+  // Ended, or cancelled: a face hidden mid-beat, with the detail screen
+  // opened over the board, never ends, and left with the class it would
+  // beat again the moment the board came back.
+  const beaten = (e) => {
+    if (e.target === faceEl && e.animationName === 'needs-in') faceEl.classList.remove('beat');
+  };
+  faceEl.addEventListener('animationend', beaten);
+  faceEl.addEventListener('animationcancel', beaten);
 
   async function refreshSessions() {
     try {
@@ -2044,13 +2165,15 @@
       paintScreenSubs();
     });
 
+    // A block is gathered once its frame is drawn, so the bar's beat knows
+    // the count it rested on before this one landed (gatherBeat).
     es.addEventListener('session', (e) => {
       const s = JSON.parse(e.data);
       const was = state.get(s.id);
       state.set(s.id, s);
-      if (s.status === 'blocked' && !(was && was.status === 'blocked')) gatherBlock(s.id);
       pruneFocus();
       renderGrid();
+      if (s.status === 'blocked' && !(was && was.status === 'blocked')) gatherBlock(s.id);
       if (screen && screen.id === s.id) paintScreenSubs();
     });
 

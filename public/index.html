@@ -39,9 +39,12 @@
   <!-- The board's one alarm: present only while a session is blocked, fixed
        to the bottom edge (shell.css), and one button that brings the card it
        names. Before the grid in reading order, so a keyboard reaches it ahead
-       of the cards it leads to. The region beside it says a new block aloud;
-       it is in the page from the start, as a live region has to be. -->
-  <button class="needs" id="needs" type="button" aria-describedby="needs-hint" hidden></button>
+       of the cards it leads to. Its face draws it, ground, edge and words, so
+       that when another session blocks the face alone comes in from the
+       bottom edge again, and the button stays where it is under the pointer.
+       The region beside it says a new block aloud; it is in the page from the
+       start, as a live region has to be. -->
+  <button class="needs" id="needs" type="button" aria-describedby="needs-hint" hidden><span class="needs-face" id="needs-face"></span></button>
   <span id="needs-hint" hidden>Shows that session</span>
   <div class="sr-only" id="needs-said" aria-live="polite"></div>
 
