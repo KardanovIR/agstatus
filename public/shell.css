@@ -824,11 +824,19 @@ body.detail-open > .footer { display: none; }
  * tall, its words above the safe-area inset and its ground running under it
  * to the edge. "(!) 2 BLOCKED   Fix the login redirect · in acme-api   Show":
  * the mark, count and word in the blocked ink, the session in the primary
- * ink, the project and the verb in the secondary. Nothing else is coloured;
- * the ground is a card's, on a hairline, with no glow and no motion but its
- * arrival and departure. Its content lines up with the board's own gutters. */
+ * ink, the project and the verb in the secondary.
+ *
+ * Its ground and its top edge are a blocked card's own (card.css), written
+ * as card.css writes them and resolved against the bar's own --state, as on
+ * iOS and Android. On a card's neutral ground, 1.07:1 against the page, the
+ * resting bar was a line of text whose only colour was a 12px word, found by
+ * reading it; on the blocked surface, 1.28:1, under the blocked edge, 2.46:1,
+ * it is a band the corner of the eye finds, in a colour the board already
+ * uses for exactly this. No glow, and no motion but its arrival and
+ * departure. Its content lines up with the board's own gutters. */
 .needs {
   --state: var(--st-blocked);
+  --state-line: oklch(from var(--state) l c h / 0.42);
   --gutter: var(--space-md);
   position: fixed;
   right: 0;
@@ -846,9 +854,9 @@ body.detail-open > .footer { display: none; }
   margin: 0;
   padding: var(--space-sm) max(var(--gutter), env(safe-area-inset-right))
     calc(var(--space-sm) + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
-  background: var(--ink-900);
+  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
   border: 0;
-  border-top: 1px solid var(--ink-800);
+  border-top: 1px solid var(--state-line);
   border-radius: 0;
   color: var(--text-1);
   font: inherit;
@@ -856,10 +864,20 @@ body.detail-open > .footer { display: none; }
   line-height: var(--lh-tight);
   text-align: left;
   cursor: pointer;
-  transition: background var(--d-fast) var(--ease);
 }
 
-.needs:hover { background: var(--ink-850); }
+/* The blocked edge goes from 42% of the state colour to 70%, as a card's
+ * does (card.css). */
+@media (prefers-contrast: more) {
+  .needs { --state-line: oklch(from var(--state) l c h / 0.70); }
+}
+
+/* Under the pointer the verb lights, and the ground holds. A usage block or a
+ * card's action lifts its ground a step on hover (--ink-850), and the blocked
+ * mix over that step takes the bar's 12px red word to 4.27:1 and its
+ * separator to 4.10:1, under AA: the red has 4.80:1 on the ground it rests
+ * on, and any lighter ground spends it. So the hover is the same mix, and
+ * the word that answers the pointer is the one a press would do. */
 .needs:hover .needs-verb { color: var(--text-1); }
 
 /* Inside the bar: a ring outside it would be cut off by the window's edges. */
@@ -935,6 +953,7 @@ body.detail-open > .footer { display: none; }
 .needs-verb {
   grid-area: verb;
   color: var(--text-2);
+  transition: color var(--d-fast) var(--ease);
 }
 
 .needs.drop-word .needs-word,

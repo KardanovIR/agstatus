@@ -2022,6 +2022,42 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(r).toMatch(/env\(safe-area-inset-bottom\)/);
   });
 
+  // One bar on every client: at rest it wears a blocked card's own surface
+  // under a blocked card's own edge, as iOS's and Android's do. On a card's
+  // neutral ground, 1.07:1 against the page, it was a line of text found by
+  // reading it. Written as card.css writes them, against the bar's own
+  // --state, and held to card.css's text here, so the two never drift.
+  it('grounds the bar on a blocked card\'s own surface under its own edge, at either contrast', () => {
+    const card = read('card.css');
+    const r = rule(shell, '.needs');
+    expect(r).toMatch(/--state:\s*var\(--st-blocked\);/);
+    // card.css sets a blocked card's --state in one rule and draws it in another.
+    const blocked = [...card.matchAll(/\n\.card\.status-blocked \{([^}]*)\}/g)].map((m) => m[1]).join('');
+    const surface = /background:\s*([^;]+);/.exec(blocked)![1];
+    expect(surface).toBe('color-mix(in oklab, var(--ink-900) 86%, var(--state))');
+    expect(r).toContain(`background: ${surface};`);
+    expect(blocked).toMatch(/border-color:\s*var\(--state-line\)/);
+    const line = /--state-line:\s*([^;]+);/.exec(rule(card, '.card'))![1];
+    expect(r).toContain(`--state-line: ${line};`);
+    expect(r).toMatch(/border-top:\s*1px solid var\(--state-line\);/);
+    // Increased contrast raises the edge as it raises a card's.
+    const more = (css: string, selector: string) => new RegExp(
+      `@media \\(prefers-contrast: more\\) \\{\\s*${selector.replace(/\./g, '\\.')} \\{\\s*--state-line:\\s*([^;]+);\\s*\\}`).exec(css)?.[1];
+    expect(more(card, '.card')).toBe('oklch(from var(--state) l c h / 0.70)');
+    expect(more(shell, '.needs')).toBe(more(card, '.card'));
+  });
+
+  // Under the pointer the verb lights and the ground holds: a ground a step
+  // lighter takes the 12px red word under AA (4.27:1). And no glow, at rest
+  // or under the pointer.
+  it('answers the pointer with its verb, never a lighter ground or a glow', () => {
+    for (const m of shell.matchAll(/([^{}]*\.needs[^{}]*)\{([^}]*)\}/g)) {
+      expect(m[2], m[1].trim()).not.toMatch(/box-shadow|text-shadow|filter|blur/);
+      if (m[1].includes(':hover')) expect(m[2], m[1].trim()).not.toMatch(/background|border/);
+    }
+    expect(rule(shell, '.needs:hover .needs-verb')).toMatch(/color:\s*var\(--text-1\)/);
+  });
+
   // Motion for news only, and only on the compositor.
   it('moves the bar by transform alone, and the board stills it under reduced motion', () => {
     for (const name of ['needs-in', 'needs-out']) {
