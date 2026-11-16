@@ -1528,6 +1528,56 @@ describe('the needs-you bar', () => {
     expect(gaveWay()).toEqual(['drop-where']);
   });
 
+  // While the bar shows, its words change and its size does not: a press
+  // names the next card, a frame renames the card it names, a block arrives
+  // between the card a press brought and the next. The bar is as wide as the
+  // window, and its session line is one line box (shell.css), so no observer
+  // fires, and the fit as its words are painted is the only one. Without it
+  // the bar kept the give-way of the card it named first: Chrome at 375px
+  // dropped 'in alpha' and 'in beta', which fit, at 568px BLOCKED as well,
+  // and the other way round it kept a folder wider than the line and left
+  // the name no box. The stand-in measures each card's name and place by
+  // the words the bar shows, as headless Chrome draws them.
+  it.each([
+    ['two lines, at 375x812', { word: 52.78, alarm: 25.69, line: 351, twoLines: true, alarmRoom: 306.27 }, {
+      'Fix the login redirect': [135.98, 375.72], 'Fix flaky test': [84.69, 66.41],
+      'Fix the flaky integration test in the nightly pipeline': [328.63, 66.41], 'Ship it': [41.73, 59.97],
+    }, [['drop-where'], [], ['drop-where'], ['drop-where'], []]],
+    ['one line, at 568x320', { word: 52.78, alarm: 25.69, line: 449.58 }, {
+      'Fix the login redirect': [135.98, 375.72], 'Fix flaky test': [84.69, 66.41],
+      'Fix the flaky integration test in the nightly pipeline': [328.63, 66.41], 'Ship it': [41.73, 59.97],
+    }, [['drop-word', 'drop-where'], [], [], ['drop-word', 'drop-where'], []]],
+    ['one line, at 600x800 with 200% text', { word: 101.55, alarm: 47.38, line: 431.17 }, {
+      'Fix the login redirect': [271.95, 735.44], 'Fix flaky test': [169.36, 116.81],
+      'Fix the flaky integration test in the nightly pipeline': [657.25, 116.81], 'Ship it': [83.47, 103.94],
+    }, [['drop-word', 'drop-where'], [], ['drop-word', 'drop-where'], ['drop-word', 'drop-where'], []]],
+  ])('fits itself again whenever its words change and its size does not: %s', async (_what, layout, words, gave) => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    const shown = () => (words as Record<string, number[]>)[bar().querySelector('.needs-name')!.textContent!];
+    layOutBar(b, { ...layout, get name() { return shown()[0]; }, get where() { return shown()[1]; } });
+    showBar(b, [
+      blocked('a', 1, 'agstatus-listener-windows-terminal-focus-and-presence', { name: 'Fix the login redirect' }),
+      blocked('c', 2, 'alpha', { name: 'Fix flaky test' }),
+    ]);
+    expect(gaveWay()).toEqual(gave[0]);
+    b.click(bar());                                   // brings a, names c
+    expect(barShows().where).toBe('·in alpha');
+    expect(gaveWay()).toEqual(gave[1]);
+    b.emit('session', blocked('c', 0, 'alpha', { name: 'Fix the flaky integration test in the nightly pipeline' }));
+    expect(gaveWay()).toEqual(gave[2]);
+    b.click(bar());                                   // brings c, names a, round to the first
+    expect(barShows().name).toBe('Fix the login redirect');
+    expect(gaveWay()).toEqual(gave[3]);
+    b.emit('session', blocked('d', 0, 'beta', { name: 'Ship it' }));   // after c, so the next
+    expect(barShows()).toEqual({ count: '3', name: 'Ship it', where: '·in beta', verb: 'Next' });
+    expect(gaveWay()).toEqual(gave[4]);
+    b.click(bar());                                   // brings d, names a: from words that fit to the long folder
+    expect(barShows().name).toBe('Fix the login redirect');
+    expect(gaveWay()).toEqual(gave[3]);
+  });
+
   // A cold load draws the bar in the fallback face, which is wider. Barlow
   // arriving changes neither its markup nor its size, which is all that
   // fitted it again, so it kept dropping words that would now fit.

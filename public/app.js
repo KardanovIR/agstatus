@@ -1350,6 +1350,12 @@
     // reaches it.
     const label = `${blocked.length} blocked: ${name}${place ? `, ${place}` : ''}, ${verb}`;
     if (needsEl.getAttribute('aria-label') !== label) needsEl.setAttribute('aria-label', label);
+    // Fitted as its words are painted. A press, a rename or a block that
+    // arrives changes them and not the bar's size, so the observer that
+    // fits a bar as it appears never fires for them: without this fit the
+    // bar kept the give-way of the card it named before, dropping a place
+    // or BLOCKED that fit, or keeping a place that left the name no room.
+    // A bar still hidden has no width to fit to, and waits for the observer.
     if (paint(needsEl, needsHTML(blocked.length, s, verb))) fitNeeds();
     showNeeds();
   }
