@@ -865,7 +865,16 @@ body.detail-open > .footer { display: none; }
   cursor: pointer;
 }
 
+/* Under the bar's own focus ring. The ring is the button's outline, and a
+ * face in motion is a layer of its own, which drew over it: with focus on
+ * the bar, its ring went where the face rose over it, and from a quarter of
+ * a second into a beat until its end it was gone. Behind the button's own
+ * paint, in the button's stacking context (it is fixed, at z-index 2), the
+ * face stays over the page and under the ring, and the ring holds where the
+ * focus is. */
 .needs-face {
+  position: relative;
+  z-index: -1;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas: 'alarm what verb';

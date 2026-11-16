@@ -2423,6 +2423,23 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(beating).toEqual(['.needs-face.beat']);
   });
 
+  // The bar's focus ring is the button's outline, and a face in motion is a
+  // layer of its own, which drew over it: with focus on the bar, the ring
+  // went wherever the face rose over it, and from a quarter of a second into
+  // a beat until its end it was gone (headless Chrome). Behind the button's
+  // own paint, in the stacking context the fixed button makes, the face
+  // stays over the page and under the ring.
+  it('keeps the bar\'s focus ring over its face through a beat', () => {
+    const face = rule(shell, '.needs-face');
+    expect(face).toMatch(/position:\s*relative/);
+    expect(face).toMatch(/z-index:\s*-1/);
+    const button = rule(shell, '.needs');
+    expect(button).toMatch(/position:\s*fixed/);
+    expect(button).toMatch(/z-index:\s*2/);
+    expect(button).toMatch(/background:\s*none/);
+    expect(rule(shell, '.needs:focus-visible')).toMatch(/outline-offset:\s*-4px/);
+  });
+
   // Motion for news only, and only on the compositor.
   it('moves the bar by transform alone, and the board stills it under reduced motion', () => {
     for (const name of ['needs-in', 'needs-out']) {
