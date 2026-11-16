@@ -714,7 +714,6 @@
  * dismiss target grows. Lives with the card rather than with the board,
  * because the landing page shows these cards without the board's page shell. */
 @media (max-width: 560px) {
-  .grid { grid-template-columns: 1fr; }
   .message { -webkit-line-clamp: 2; }
 }
 
@@ -726,7 +725,10 @@
  *
  * The old board grid was capped at two columns above 700px, so a 27-inch
  * monitor showed two enormous cards. This is the breakpoint-free version:
- * cards keep a sane measure and the column count follows the space. */
+ * cards keep a sane measure and the column count follows the space. A phone
+ * gets its one column from this rule too: two 320px tracks do not fit in a
+ * window under about 680px. A phone-only column rule before this one would never apply,
+ * and one after it would let a long title widen every card past the screen. */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));

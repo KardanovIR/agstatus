@@ -20,8 +20,8 @@
   // cards keep the same rule.
   const STALE_MS = 10 * 60 * 1000;
   // Phone rules for subagent rows: two of them, and a footer that opens the
-  // session screen instead of expanding in place. The one-column grid's own
-  // breakpoint (card.css), so the two change together.
+  // session screen instead of expanding in place. The same breakpoint as
+  // card.css's phone rules, so the two change together.
   const PHONE_QUERY = '(max-width: 560px)';
   // How long a row you arrived at stays lit on the session screen.
   const ARRIVAL_MS = 2000;
