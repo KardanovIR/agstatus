@@ -205,9 +205,21 @@ internal fun BoardScreen(
     // alike, is the room under the stuck label: a focused card is never left
     // with its top under a label. The ring is drawn inside the card, so the
     // room starts at the label's own edge.
-    val underLabel = remember(listState) {
+    //
+    // Except for the usage blocks where they lead the list. No label sticks
+    // above the list's first item, and asked to put a block under one, the
+    // list was asked for more than it had: from a card, Shift+Tab or the Up
+    // arrow back into blocks the list had scrolled past asked for a label's
+    // height more than its way back to its top, and with animations off the
+    // pull-to-refresh took the rest as a pull no finger let go. Their room
+    // starts where the list's top puts them, below their own top padding, so
+    // the first row brought into view puts the list back at its top, as a
+    // fresh board has it, and no block asks for more than that.
+    val focusInBlocks = remember { FocusInBlocks() }
+    val blocksTop = with(LocalDensity.current) { USAGE_TOP.toPx() }
+    val underLabel = remember(listState, blocksTop) {
         UnderLabelBringIntoView(
-            top = { labelHeight.px.toFloat() },
+            top = { if (focusInBlocks.held) blocksTop else labelHeight.px.toFloat() },
             backRoom = {
                 if (listState.firstVisibleItemIndex == 0) {
                     listState.firstVisibleItemScrollOffset.toFloat()
@@ -525,7 +537,7 @@ internal fun BoardScreen(
                             .then(if (usageLeads) Modifier.clearAndSetSemantics {} else Modifier)
                             .then(sides)
                             .padding(horizontal = 16.dp)
-                            .padding(top = 10.dp, bottom = 2.dp),
+                            .padding(top = USAGE_TOP, bottom = 2.dp),
                         // Where the focus goes when the bar leaves with no card in view.
                         firstBlock = if (usageLeads) Modifier else Modifier.focusRequester(usageFirst),
                     )
@@ -590,7 +602,10 @@ internal fun BoardScreen(
                                     item(key = ProjectSections.USAGE_KEY, contentType = ProjectSections.USAGE_KEY) {
                                         DisposableEffect(Unit) {
                                             usageComposed = true
-                                            onDispose { usageComposed = false }
+                                            onDispose {
+                                                usageComposed = false
+                                                focusInBlocks.held = false
+                                            }
                                         }
                                         UsageBars(
                                             usage = visibleUsage,
@@ -598,7 +613,11 @@ internal fun BoardScreen(
                                             sessionCounts = sessionCounts,
                                             modifier = Modifier
                                                 .onSizeChanged { usageHeight = it.height }
-                                                .padding(top = 10.dp, bottom = 2.dp)
+                                                .padding(top = USAGE_TOP, bottom = 2.dp)
+                                                // Read by the room focus is brought
+                                                // into (underLabel), before the list
+                                                // is asked to bring a block in.
+                                                .onFocusChanged { focusInBlocks.held = it.hasFocus }
                                                 // From the bar, Tab goes on to
                                                 // the cards. Where the first is
                                                 // not composed, the blocks pass
@@ -926,11 +945,18 @@ private class DrawnBoard {
  * it is, one taller than the room has its top just under the label, and one
  * above or below moves the least that brings it into the room.
  *
- * Never further back than the list can go, which [backRoom] says. A scroll
- * asked of the list and not given goes on up as if a finger had pulled, and
- * at the list's top the pull-to-refresh took it as a pull that no lifted
- * finger ever let go: focus on the first card, from the bar or a keyboard's
- * Tab, left the spinner stuck in view.
+ * Never further back than the list can go. A scroll asked of the list and
+ * not given goes on up as if a finger had pulled, and at the list's top the
+ * pull-to-refresh took it as a pull that no lifted finger ever let go: focus
+ * on the first card, from the bar or a keyboard's Tab, left the spinner stuck
+ * in view. While the list's first item is the first in view, [backRoom]
+ * says exactly how far back it can go. Further on, the list cannot say: the
+ * first item is laid out beyond its bounds when focus goes there, and is not
+ * among the items it reports. So nothing focusable sits nearer the list's top
+ * than where its room starts ([top]): a card is a label's height down at
+ * least, and the usage blocks, where they lead the list, start their room at
+ * their own top padding rather than under a label, while focus is in them
+ * ([FocusInBlocks]).
  */
 private class UnderLabelBringIntoView(
     private val top: () -> Float,
@@ -954,6 +980,18 @@ private class UnderLabelBringIntoView(
 private class MeasuredHeight {
     var px = 0
 }
+
+/**
+ * Whether a keyboard's focus is in the usage blocks where they lead the list.
+ * Plain: the room focus is brought into reads it ([UnderLabelBringIntoView]),
+ * and nothing is drawn from it.
+ */
+private class FocusInBlocks {
+    var held = false
+}
+
+/** The usage blocks' top padding, pinned or leading the list: where the list's top puts them. */
+private val USAGE_TOP = 10.dp
 
 /**
  * Whether the usage blocks led the list when the board was last drawn
