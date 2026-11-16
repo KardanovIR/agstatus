@@ -153,6 +153,13 @@ final class SessionStore {
     /// over from before a gap is simply not used.
     @ObservationIgnored private var statusSince: [String: StatusSince] = [:]
 
+    /// The blocked cards the board took in with no frame of the stream: one
+    /// a refused dismissal put back, or a block a fetch or a snapshot brought.
+    /// They are never said aloud (`StandingBlocks`). Not observed: nothing
+    /// draws it, and the board reads it only when a card has just become
+    /// blocked.
+    @ObservationIgnored private(set) var standingBlocks = StandingBlocks()
+
     /// Consecutive days this board did any work. Derived on this device from
     /// the per-project token rows the board already stores, so it costs one
     /// request and no new storage anywhere. `.none` until the first fetch
@@ -216,6 +223,7 @@ final class SessionStore {
         self.board = board
         BoardKeychain.save(board)
         sessions = []
+        standingBlocks = StandingBlocks()
         usage = []
         machines = [:]
         clearFocus()
@@ -237,6 +245,7 @@ final class SessionStore {
         board = nil
         BoardKeychain.clear()
         sessions = []
+        standingBlocks = StandingBlocks()
         usage = []
         machines = [:]
         clearFocus()
@@ -316,7 +325,7 @@ final class SessionStore {
                     for try await event in sse.events(for: board) {
                         switch event {
                         case .snapshot(let list):
-                            sessions = Self.stableOrder(current: sessions, incoming: list)
+                            setSessions(Self.stableOrder(current: sessions, incoming: list))
                             connection = .live
                             delay = 1
                             pruneFocus()
@@ -346,13 +355,17 @@ final class SessionStore {
                                 // old session is still here beside the new one;
                                 // after the assignment its status and timestamp
                                 // are gone and the wait is unrecoverable.
-                                noteBeat(was: sessions[index], is: session)
+                                let old = sessions[index]
+                                noteBeat(was: old, is: session)
+                                standingBlocks.noteFrame(session.id, was: old.status, is: session.status)
                                 sessions[index] = session
                             } else {
+                                standingBlocks.noteFrame(session.id, was: nil, is: session.status)
                                 sessions.insert(session, at: 0)
                             }
                             lastActivityAt = Date()
                         case .remove(let id):
+                            standingBlocks.noteFrame(id, was: nil, is: nil)
                             sessions.removeAll { $0.id == id }
                             setFocus(id, nil)
                             statusSince[id] = nil
@@ -404,7 +417,8 @@ final class SessionStore {
 
     /// Fetches the session list and merges it in, never resurrecting local
     /// sessions that are newer than what the server returned, nor sessions
-    /// removed while the fetch was in flight.
+    /// removed while the fetch was in flight. A block it brings in is
+    /// standing, never said aloud: no frame brought it (`StandingBlocks`).
     func refresh() async {
         guard !isDemo, let board else { return }
         let fetchStart = Int64(Date().timeIntervalSince1970 * 1000)
@@ -450,12 +464,15 @@ final class SessionStore {
                 merged[local.id] = local // arrived via SSE mid-fetch
             }
         }
-        sessions = Self.stableOrder(current: sessions, incoming: Array(merged.values))
+        setSessions(Self.stableOrder(current: sessions, incoming: Array(merged.values)))
         pruneFocus()
     }
 
     /// Optimistically removes the session, then deletes it on the server.
     /// On failure the session returns to its old spot and the list refreshes.
+    /// A card put back is the one that left, not news: blocked, it was
+    /// blocked all along on the server, and is not said aloud again
+    /// (`StandingBlocks`).
     func dismiss(_ session: Session) async {
         if isDemo {
             sessions.removeAll { $0.id == session.id }
@@ -469,7 +486,7 @@ final class SessionStore {
         let successorID = index.flatMap { i in
             sessions.indices.contains(i + 1) ? sessions[i + 1].id : nil
         }
-        sessions.removeAll { $0.id == session.id }
+        setSessions(sessions.filter { $0.id != session.id })
         do {
             try await AgStatusAPI.deleteSession(session.id, from: board)
         } catch let error as APIError where error == .boardNotFound {
@@ -486,7 +503,9 @@ final class SessionStore {
                 } else {
                     at = min(index ?? 0, sessions.count)
                 }
-                sessions.insert(session, at: at)
+                var restored = sessions
+                restored.insert(session, at: at)
+                setSessions(restored)
             }
             await refresh()
         }
@@ -930,6 +949,7 @@ final class SessionStore {
         BoardArrangement.verify()
         #endif
         sessions = Self.sortedByUpdate(DemoData.initialSessions())
+        standingBlocks = StandingBlocks()
         usage = DemoData.usage()
         machines = DemoData.machines()
         clearFocus()
@@ -981,6 +1001,7 @@ final class SessionStore {
         stopDemoTask()
         guard connection == .demo else { return }
         sessions = []
+        standingBlocks = StandingBlocks()
         usage = []
         machines = [:]
         clearFocus()
@@ -1003,6 +1024,15 @@ final class SessionStore {
     private func stopDemoTask() {
         demoTask?.cancel()
         demoTask = nil
+    }
+
+    /// Puts `list` on the board in place of the cards it holds, as everything
+    /// but a frame of the stream does: a snapshot, a fetch, a dismissal, a
+    /// card put back. A block it brings is standing, and is never said aloud
+    /// (`StandingBlocks`).
+    private func setSessions(_ list: [Session]) {
+        standingBlocks.noteList(was: sessions, is: list)
+        sessions = list
     }
 
     private static func sortedByUpdate(_ sessions: [Session]) -> [Session] {

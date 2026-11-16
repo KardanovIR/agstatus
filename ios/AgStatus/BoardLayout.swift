@@ -6,8 +6,8 @@
 //  order the projects come in, which agents get a head and whether the heads
 //  are pinned, which of two arrangements a width allows, which form a head
 //  takes at the width it is given, which side a card sits on where cards run
-//  two across, the order a reader meets the cards in, and which card the
-//  needs-you bar names.
+//  two across, the order a reader meets the cards in, which card the
+//  needs-you bar names, and which blocks are not news.
 //
 //  Values only — no views. Everything here is arithmetic on a measured width
 //  and on the store's own array, which is what lets it be checked by the
@@ -820,6 +820,59 @@ struct NeedsYou: Equatable {
     }
 }
 
+// MARK: - Standing blocks
+
+/// The blocked cards the board took in by itself, with no frame of the
+/// stream: never said aloud.
+///
+/// A block is spoken only on a session's transition into `blocked`
+/// (`BoardView.announceBlocks`), and the board hears of transitions in the
+/// stream's frames. A card can also turn up blocked on this device with no
+/// frame at all:
+/// - a dismissal the server refused puts the card back as it was, blocked
+///   all along on the server;
+/// - a fetch (a pull to refresh, or the one that follows a refusal) brings
+///   in what the server holds, which the stream has brought or soon will;
+/// - a snapshot hands over what stood while the stream was down.
+/// Those blocks are standing, not news. The web and Android say none of
+/// them, since they listen for blocks only in the stream's `session`
+/// frames, and nor does iOS: the store notes here every list it takes in
+/// without a frame, and the board leaves what is here unsaid.
+///
+/// A card stays here until a frame moves it out of `blocked` or brings it
+/// anew, or the board loses it. So a card put back, then answered and
+/// blocked again, is said once, as the new block it is. A frame that only
+/// repeats a standing block, as a subagent's report does, changes nothing.
+///
+/// The store keeps it beside its cards, and nothing draws it. A frame
+/// costs it one look at an empty set, which is what it nearly always is.
+struct StandingBlocks {
+    private(set) var ids: Set<String> = []
+
+    /// A frame of the stream about the card `id`, which was `old` and is
+    /// `new`, nil for a card the frame brings or removes. Any frame but one
+    /// that finds the card blocked and leaves it blocked makes it news again.
+    mutating func noteFrame(_ id: String, was old: AgentStatus?, is new: AgentStatus?) {
+        guard !ids.isEmpty, old != .blocked || new != .blocked else { return }
+        ids.remove(id)
+    }
+
+    /// The board taking in `new` in place of `old` with no frame: a snapshot,
+    /// a fetch, a dismissal, a card put back. A card it makes blocked is
+    /// standing, and one that was standing and is still blocked stays so.
+    /// A card no longer blocked, or no longer on the board, leaves.
+    mutating func noteList(was old: [Session], is new: [Session]) {
+        let held = ids
+        let blocked = Set(old.lazy.filter { $0.status == .blocked }.map(\.id))
+        ids = Set(new.lazy.filter { $0.status == .blocked && (held.contains($0.id) || !blocked.contains($0.id)) }
+            .map(\.id))
+    }
+
+    func contains(_ id: String) -> Bool {
+        ids.contains(id)
+    }
+}
+
 // MARK: - SubtaskSlots
 
 /// Which of a card's subagents stand in its row slots, and in which slot.
@@ -1013,6 +1066,7 @@ extension BoardArrangement {
         verifySidesAndReading()
         verifyDrawnOrder()
         verifyNews()
+        verifyStandingBlocks()
         verifyMatrix()
         verifySubtaskSlots()
     }
@@ -1690,6 +1744,122 @@ extension BoardArrangement {
             return copy
         }
         assert(drawn(calm).bar == nil, "no bar")
+    }
+
+    /// Which new blocks are news, as the store's paths decide it
+    /// (`StandingBlocks`): a block a frame brings is, and one the board took
+    /// in by itself is not, whatever took it in. The connection's silences,
+    /// the minute and the half second are `announceBlocks`' own and are not
+    /// modelled: this is the live stream between them.
+    private static func verifyStandingBlocks() {
+        // The store in miniature: its cards and its standing blocks, changed
+        // as its paths change them. `update` is one update of the board, which
+        // can hold more than one of them, and `news` what it would say: the
+        // cards that have just become blocked, less the standing ones.
+        var cards: [Session] = []
+        var standing = StandingBlocks()
+        var news: [String] = []
+        func blocked() -> [String] { cards.filter { $0.status == .blocked }.map(\.id) }
+        func update(_ change: () -> Void) {
+            let before = blocked()
+            change()
+            news = blocked().filter { !before.contains($0) && !standing.contains($0) }
+        }
+        // A session frame, as `.upsert` takes it in, and a remove frame.
+        func frame(_ id: String, _ status: AgentStatus) {
+            if let index = cards.firstIndex(where: { $0.id == id }) {
+                standing.noteFrame(id, was: cards[index].status, is: status)
+                cards[index] = card(id, "claude", status)
+            } else {
+                standing.noteFrame(id, was: nil, is: status)
+                cards.insert(card(id, "claude", status), at: 0)
+            }
+        }
+        func removed(_ id: String) {
+            standing.noteFrame(id, was: nil, is: nil)
+            cards.removeAll { $0.id == id }
+        }
+        // A list taken in with no frame: a snapshot, a fetch, a dismissal, a
+        // card put back (`setSessions`).
+        func take(_ list: [Session]) {
+            standing.noteList(was: cards, is: list)
+            cards = list
+        }
+        func without(_ id: String) -> [Session] { cards.filter { $0.id != id } }
+
+        update { take([card("login"), card("limit"), card("etl")]) }
+        update { frame("login", .blocked) }
+        assert(news == ["login"], "a frame that turns a card blocked is news")
+        // The finding's case: the reader dismisses it, the server refuses,
+        // and the card comes back where it was, blocked all along on the
+        // server; the fetch after the refusal brings it once more.
+        let refused = cards
+        update { take(without("login")) }
+        update { take(refused) }
+        assert(news.isEmpty && standing.ids == ["login"], "a card a refused dismissal puts back is not news")
+        update { take(refused) }
+        assert(news.isEmpty && standing.ids == ["login"], "nor is the fetch after the refusal")
+        // A frame that repeats the block, as a subagent's report does, and
+        // one about another card, leave it as it was.
+        update { frame("login", .blocked) }
+        update { frame("limit", .testing) }
+        assert(news.isEmpty && standing.ids == ["login"], "a frame that repeats a standing block changes nothing")
+        // Answered, then blocked again: the new block it is, said once.
+        update { frame("login", .coding) }
+        assert(news.isEmpty && standing.ids.isEmpty, "answered, it is news again")
+        update { frame("login", .blocked) }
+        assert(news == ["login"], "blocked again, it is said")
+        // Put back, and a frame repeating the block, in one update: still not
+        // news. Two of the store's paths can land between two of the board's
+        // updates.
+        let blockedBoard = cards
+        update { take(without("login")) }
+        update {
+            take(blockedBoard)
+            frame("login", .blocked)
+        }
+        assert(news.isEmpty && standing.ids == ["login"], "put back and repeated in one update")
+        update { frame("login", .coding) }
+        // A card put back that was not blocked is not standing, and its next
+        // block, from a frame, is news.
+        let calm = cards
+        update { take(without("limit")) }
+        update { take(calm) }
+        assert(news.isEmpty && standing.ids.isEmpty, "a calm card put back")
+        update { frame("limit", .blocked) }
+        assert(news == ["limit"], "then blocked by a frame: news")
+        // A pull to refresh that brings in a block the stream has not
+        // brought: standing; nor is the frame that brings it after a
+        // transition; a later block from a frame is.
+        let fetched = cards.map { $0.id == "etl" ? card("etl", "claude", .blocked) : $0 }
+        update { take(fetched) }
+        assert(news.isEmpty && standing.contains("etl"), "a block a fetch brings in is not news")
+        update { frame("etl", .blocked) }
+        assert(news.isEmpty, "nor is the frame that brings it after")
+        update { frame("etl", .testing) }
+        update { frame("etl", .blocked) }
+        assert(news == ["etl"], "answered and blocked again by a frame: news")
+        // A snapshot's blocks are standing as well, whatever the connection
+        // does besides; anything gone or answered with it leaves.
+        let snapshot = [card("login", "claude", .blocked), card("limit", "claude", .blocked), card("api", "codex", .blocked)]
+        update { take(snapshot) }
+        assert(news.isEmpty && standing.ids == ["login", "api"], "a snapshot's blocks are standing")
+        update { take(snapshot.filter { $0.id != "api" }) }
+        assert(standing.ids == ["login"], "a card gone with a list leaves")
+        // A card that arrives blocked is news. Dismissed, with the server's
+        // consent: the stream removes it, and its next post, blocked, is news
+        // again, as on the web and Android.
+        update { frame("new", .blocked) }
+        assert(news == ["new"], "a card that arrives blocked is news")
+        update { take(without("new")) }
+        update { removed("new") }
+        update { frame("new", .blocked) }
+        assert(news == ["new"], "a dismissed card that posts again blocked is news")
+        // A standing card the stream removes, and brings back blocked: news.
+        update { removed("login") }
+        assert(!standing.contains("login"), "a removed card leaves")
+        update { frame("login", .blocked) }
+        assert(news == ["login"], "and comes back as news")
     }
 
     /// Every board the rules have to hold on: the six widths and the

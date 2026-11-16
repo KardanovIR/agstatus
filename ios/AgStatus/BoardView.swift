@@ -1091,9 +1091,12 @@ struct BoardView: View {
     /// snapshot (connecting or reconnecting to live) and the demo's seed
     /// bring blocks that were standing before the board looked, and those
     /// are drawn, not said — for the reason a snapshot clears the closing
-    /// beats. Nor is anything a fetch brings in while the stream is down. A
-    /// session that has been said is not said again for a minute, which is
-    /// as often as the server would push it.
+    /// beats. Nor is anything a fetch brings in while the stream is down,
+    /// nor, with the stream live, a block the board took in by itself with
+    /// no frame: a card a refused dismissal put back, or a block a fetch
+    /// brought in (`StandingBlocks`). A session that has been said is not
+    /// said again for a minute, which is as often as the server would push
+    /// it.
     ///
     /// A block is gathered, and said half a second later with any that came
     /// with it, as one sentence (`sayGatheredBlocks`), if it is still
@@ -1112,14 +1115,18 @@ struct BoardView: View {
             traceBlocks("\(Self.change(old, new)) \(fresh) \(standing ? "standing" : "off the stream"), not said")
             return
         }
+        // Standing too, though the stream is live: cards the board took in
+        // with no frame, one put back or one fetched (`StandingBlocks`).
+        let taken = fresh.filter { store.standingBlocks.contains($0) }
         let speech = blockSpeech
         let now = Date()
         speech.saidAt = speech.saidAt.filter { now.timeIntervalSince($0.value) < Self.blockRepeatWait }
-        let held = fresh.filter { speech.saidAt[$0] != nil }
-        let news = fresh.filter { !held.contains($0) && !speech.gathered.contains($0) }
+        let held = fresh.filter { !taken.contains($0) && speech.saidAt[$0] != nil }
+        let news = fresh.filter { !taken.contains($0) && !held.contains($0) && !speech.gathered.contains($0) }
         traceBlocks("\(Self.change(old, new)) " + [
             news.isEmpty ? nil : "\(news) gathered",
             held.isEmpty ? nil : "\(held) held, said within the minute",
+            taken.isEmpty ? nil : "\(taken) standing, taken in with no frame, not said",
         ].compactMap { $0 }.joined(separator: "; "))
         guard !news.isEmpty else { return }
         speech.gathered += news
