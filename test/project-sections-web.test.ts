@@ -1744,6 +1744,24 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(html.indexOf('/shell.css')).toBeGreaterThan(html.indexOf('/card.css'));
   });
 
+  // The bar's session line is one line box, the name's, as a label's line
+  // is. Left to its contents it ended where the deeper of its two boxes
+  // did, and the place's, in the smaller face, ends 0.6px below the name's,
+  // so a press that added or dropped the place moved the bar's top edge on
+  // a phone. By its own line height, so a reader's own (WCAG 1.4.12) makes
+  // it taller rather than cutting the name; the token for a browser without
+  // lh. Nothing clips it.
+  it('holds the bar\'s session line to the name\'s one line box, by its own line height', () => {
+    const r = rule(shell, '.needs-what');
+    expect(r).toMatch(/font-size:\s*var\(--t-md\)/);
+    expect(r).toMatch(/height:\s*calc\(var\(--t-md\) \* var\(--lh-tight\)\);\s*height:\s*1lh;/);
+    expect(r).not.toMatch(/overflow/);
+    // The name is set at that size, and the place keeps its own smaller one.
+    expect(rule(shell, '.needs-name')).toMatch(/font-size:\s*var\(--t-md\)/);
+    expect(rule(shell, '.needs-where')).toMatch(/font-size:\s*var\(--t-sm\)/);
+    expect(rule(shell, '.needs')).toMatch(/line-height:\s*var\(--lh-tight\)/);
+  });
+
   it('fixes the bar to the bottom edge above the safe-area inset, at least 44px tall', () => {
     const r = rule(shell, '.needs');
     expect(r).toMatch(/position:\s*fixed/);

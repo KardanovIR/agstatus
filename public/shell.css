@@ -887,11 +887,25 @@ body.detail-open > .footer { display: none; }
 
 .needs-n { font-variant-numeric: tabular-nums; }
 
+/* The session's line is one line box, the name's, as a project label's line
+ * is (board.css): set at the name's size, so 1lh is the name's own line,
+ * and held to it. Left to its contents, the line ended wherever the deeper
+ * of its two boxes did, and the place's, in the smaller face, ends 0.6px
+ * below the name's: so a press that added or dropped the place moved the
+ * bar's top edge on a phone (55.19px tall with a place, 54.59 without), and
+ * its text on one line. By its own line height, 1lh, and not by the token
+ * alone, so a reader's own line height (WCAG 1.4.12) makes the line taller
+ * with the name rather than cutting it; the token stays for a browser
+ * without lh. The place may run that 0.6px past the line, which clips
+ * nothing. */
 .needs-what {
   grid-area: what;
   display: flex;
   align-items: baseline;
   min-width: 0;
+  font-size: var(--t-md);
+  height: calc(var(--t-md) * var(--lh-tight));
+  height: 1lh;
   white-space: nowrap;
 }
 
@@ -909,6 +923,7 @@ body.detail-open > .footer { display: none; }
 
 .needs-where {
   flex: none;
+  font-size: var(--t-sm);
   color: var(--text-2);
 }
 
