@@ -297,6 +297,22 @@ describe('board script: focus lifecycle', () => {
   describe('a working card that goes quiet', () => {
     const MIN = 60_000;
 
+    /**
+     * What a screen reader is given from an element, as card.css shows it:
+     * its text, less whatever is hidden from the tree, with the stale words
+     * only on a stale card. jsdom loads no stylesheet; this stands in for it.
+     */
+    const heard = (el: Element): string => [...el.childNodes].map((n) => {
+      if (n.nodeType === 3) return n.textContent;
+      const e = n as Element;
+      if (e.getAttribute('aria-hidden') === 'true') return '';
+      if (e.classList.contains('stale-said') && !e.closest('.card')!.classList.contains('stale')) return '';
+      return heard(e);
+    }).join('');
+    /** A control's description: what each element it is described by gives, joined by a space. */
+    const described = (el: Element) => el.getAttribute('aria-describedby')!.split(' ')
+      .map((id) => heard(el.ownerDocument.getElementById(id)!)).join(' ');
+
     it('goes stale in place on the clock, with nothing repainted and nothing animated', async () => {
       vi.useFakeTimers();
       const b = await loadBoard();
@@ -326,15 +342,16 @@ describe('board script: focus lifecycle', () => {
       // The short form the CSS falls back to on a line too narrow for the words.
       expect(card.querySelector('.ts-ago')!.textContent).toBe('14m ago');
 
-      // Heard straight after the state, with its units in words.
+      // Heard straight after the state, with its units in words, inside the
+      // state's hidden sentence.
       const row = card.querySelector('.card-state-row')!;
       expect(row.querySelector('.badge')!.textContent).toBe('coding');
-      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
-      expect(row.querySelector('.stale-said')!.classList.contains('sr-only')).toBe(true);
+      expect(row.querySelector('.sr-only .stale-said')!.textContent).toBe(', no update for 14 minutes');
+      expect(heard(row.querySelector('.sr-only')!)).toBe('Coding, no update for 14 minutes.');
 
       await vi.advanceTimersByTimeAsync(47 * MIN);
       expect(words.textContent).toBe('no update for 1h');
-      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 1 hour');
+      expect(heard(row.querySelector('.sr-only')!)).toBe('Coding, no update for 1 hour.');
     });
 
     it('is stale from its first paint when it arrives already quiet', async () => {
@@ -380,23 +397,74 @@ describe('board script: focus lifecycle', () => {
 
       const refs = title('s1').getAttribute('aria-describedby')!.split(' ');
       expect(refs).toEqual(['card-s1-state', 'card-s1-msg']);
-      const [row, msg] = refs.map((id) => doc.getElementById(id)!);
-      expect(row.classList.contains('card-state-row')).toBe(true);
-      expect(row.closest('.card')).toBe(b.$('.card[data-id="s1"]'));
+      const [said, msg] = refs.map((id) => doc.getElementById(id)!);
+      // The state row's sentence, hidden from the eye, in the card's own row.
+      expect(said.classList.contains('sr-only')).toBe(true);
+      expect(said.parentElement!.classList.contains('card-state-row')).toBe(true);
+      expect(said.closest('.card')).toBe(b.$('.card[data-id="s1"]'));
       expect(msg.textContent).toBe('editing src/app.ts');
-      // The badge, the stale words (shown to the tree only by .card.stale),
-      // and a full stop between the state and the message.
-      expect(row.querySelector('.badge')!.textContent).toBe('coding');
-      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
-      expect(row.lastElementChild!.className).toBe('sr-only');
-      expect(row.lastElementChild!.textContent).toBe('.');
+      // The state, the stale words (shown to the tree only by .card.stale),
+      // and a full stop between the state and the message, in one sentence.
+      expect(heard(said)).toBe('Coding, no update for 14 minutes.');
+      expect(described(title('s1'))).toBe('Coding, no update for 14 minutes. editing src/app.ts');
       // The name still holds the words on the button, for Voice Control,
       // after the card's agent (1.7.0).
       expect(title('s1').getAttribute('aria-label')).toBe("Claude, Fix the parser — open this session's history");
 
       // No message, no reference to one; every card's ids are its own.
       expect(title('s2').getAttribute('aria-describedby')).toBe('card-s2-state');
+      expect(described(title('s2'))).toBe('Blocked.');
       expect(doc.querySelectorAll('[id="card-s1-state"]')).toHaveLength(1);
+    });
+
+    // Chrome sets each box of a description apart with a space, a flex item
+    // or an element out of the flow, so the row described as its boxes, the
+    // badge, the stale words and a hidden full stop, read "CODING , no update
+    // for 14 minutes ." and NVDA at its default punctuation said "dot". So
+    // the description is one hidden sentence with every word inline in it,
+    // and the badge and marks the eye reads are hidden from the tree; the
+    // word is in sentence case, as iOS and Android say it.
+    it('describes the title in one sentence, its words inline in one element, kept current', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [
+        session({ id: 'fresh', host: null, message: '' }),
+        session({ id: 'quiet', host: null, message: '', updatedAt: Date.now() - 14 * MIN }),
+        session({ id: 'said', host: null, message: 'Editing src/auth/token.ts' }),
+        ...['idle', 'done', 'blocked', 'planning', 'testing'].map((status) => session({ id: status, host: null, status, message: '' })),
+      ]);
+      const title = (id: string) => b.$(`.card[data-id="${id}"] .name-open`) as HTMLElement;
+      const all = () => (b.$$('.name-open') as HTMLElement[]).map((t) => described(t));
+      expect(described(title('fresh'))).toBe('Coding.');
+      expect(described(title('quiet'))).toBe('Coding, no update for 14 minutes.');
+      expect(described(title('said'))).toBe('Coding. Editing src/auth/token.ts');
+      expect(['idle', 'done', 'blocked', 'planning', 'testing'].map((id) => described(title(id))))
+        .toEqual(['Idle.', 'Done.', 'Blocked.', 'Planning.', 'Testing.']);
+
+      for (const card of b.$$('.card')) {
+        const row = card.querySelector('.card-state-row')!;
+        const said = row.querySelector('.sr-only')!;
+        // One element holds the sentence, and nothing inside it is a box of
+        // its own: the stale words and their time are inline spans.
+        expect(said.id).toBe(`card-${(card as HTMLElement).dataset.id}-state`);
+        expect(row.querySelectorAll('.sr-only')).toHaveLength(1);
+        for (const el of said.querySelectorAll('*')) {
+          expect(el.tagName).toBe('SPAN');
+          expect(el.classList.contains('sr-only')).toBe(false);
+        }
+        // What the eye reads is not read twice.
+        for (const el of row.children) if (el !== said) expect(el.getAttribute('aria-hidden')).toBe('true');
+      }
+
+      // A change of state, and the clock: the sentence follows the row.
+      b.emit('session', session({ id: 'fresh', host: null, status: 'blocked', message: 'May I push?' }));
+      expect(described(title('fresh'))).toBe('Blocked. May I push?');
+      // One tick of the board's 15 s clock past the minute, as above.
+      await vi.advanceTimersByTimeAsync(11 * MIN + 15_000);
+      expect(described(title('said'))).toBe('Coding, no update for 11 minutes. Editing src/auth/token.ts');
+      expect(described(title('quiet'))).toBe('Coding, no update for 25 minutes.');
+      // Never a space before a comma or a full stop.
+      for (const d of all()) expect(d).not.toMatch(/ [,.]/);
     });
 
     it('is only ever a working card: idle, blocked and done carry no stale form', async () => {

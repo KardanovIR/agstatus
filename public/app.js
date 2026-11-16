@@ -1055,11 +1055,15 @@
   }
 
   // On a working card, what a screen reader hears straight after the state once
-  // the card is stale: "coding, no update for 14 minutes", the units in words.
+  // the card is stale: "Coding, no update for 14 minutes.", the units in words.
   // Hidden from everyone until .card.stale shows it (card.css), and then only to
-  // the accessibility tree (.sr-only); the eye reads the "?" and the meta line.
-  const staleSaid = (s) => `<span class="stale-said sr-only">, no update for <span data-ts="${
+  // the accessibility tree, inside the state's hidden sentence (cardInner); the
+  // eye reads the "?" and the meta line.
+  const staleSaid = (s) => `<span class="stale-said">, no update for <span data-ts="${
     Number(s.updatedAt)}" data-form="spoken"></span></span>`;
+
+  /** A state's word as a sentence starts with it: "Coding", as iOS and Android say it. */
+  const stateWord = (shown) => String(shown).charAt(0).toUpperCase() + String(shown).slice(1);
 
   // The name is first and largest — it is how you know WHICH session this is,
   // and the state only matters once you have found the right card. They were on
@@ -1072,14 +1076,23 @@
   // to control heard only its name — "api-server — open this session's
   // history" — on every card: no state, and on a stale card nothing of how
   // long it had been quiet. That lived in the row beneath, reached only by
-  // reading on. So the button is described by that row and by what the
-  // session last said, the reading iOS's card gives as its one element's
+  // reading on. So the button is described by the row's state and by what
+  // the session last said, the reading iOS's card gives as its one element's
   // value ("Coding, no update for 14 minutes. Editing src/auth/token.ts").
   // Described, not labelled: the name stays the words on the button (WCAG
   // 2.5.3), and a description is computed from the live row when it is read,
   // so a stale card's age stays current without its markup changing every
-  // minute. The row's last word is a hidden full stop, the pause between the
-  // state and the message that the two elements would otherwise run together.
+  // minute.
+  //
+  // What it is described by is one hidden sentence in the row, every word of
+  // it inline, "Coding." or "Coding, no update for 14 minutes.", its full
+  // stop the pause before the message; the badge and the marks the eye reads
+  // are hidden from the tree. Chrome sets each box of a description apart
+  // with a space (a flex item, an element taken out of the flow), so the row
+  // itself, described as its boxes, read "CODING , no update for 14 minutes
+  // ." and NVDA, at its default punctuation, said "dot". The word is in
+  // sentence case, as iOS and Android say it, where the badge's capitals
+  // came through as the description's.
   //
   // The name leads with the card's agent (cardLead), "Claude, Fix the login
   // redirect — open this session's history": since 1.7.0 Claude and Codex
@@ -1106,8 +1119,9 @@
             ><span class="name-more" aria-hidden="true">›</span></button>
           <button class="dismiss" type="button" data-dismiss="${escape(s.id)}" aria-label="Dismiss session" title="Dismiss">×</button>
         </div>
-        <div class="card-state-row" id="${escape(stateId)}">${stateMark(shown)}${working ? STALE_MARK : ''}<span class="badge">${
-          escape(shown)}</span>${working ? staleSaid(s) : ''}<span class="sr-only">.</span></div>
+        <div class="card-state-row">${stateMark(shown)}${working ? STALE_MARK : ''}<span class="badge" aria-hidden="true">${
+          escape(shown)}</span><span class="sr-only" id="${escape(stateId)}">${escape(stateWord(shown))}${
+          working ? staleSaid(s) : ''}.</span></div>
       </div>${
         s.message ? `<p class="message" id="${escape(msgId)}">${escape(s.message)}</p>` : ''
       }${rows}${cardMeta(s)}${renderFocus(s)}`;

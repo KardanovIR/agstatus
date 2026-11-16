@@ -569,8 +569,8 @@
  *     state's colour: it is what the board last heard. The row is a line of its
  *     own, so the word moving in by the glyph's spare width re-wraps nothing;
  *   - "no update for 14m" where the time was, in the secondary ink.
- * A screen reader hears ", no update for 14 minutes" after the state instead
- * (app.js cardInner), with its units in words.
+ * A screen reader hears "Coding, no update for 14 minutes." instead, one
+ * sentence with its units in words (app.js cardInner).
  *
  * Both forms of everything are in a working card's markup from its first paint,
  * and this one class picks between them, so the clock crossing the line flips
@@ -593,7 +593,8 @@
 
 .card.stale .state-mark { display: none; }
 .card.stale .stale-mark { display: block; }
-/* Visually hidden by .sr-only (board.css): this is only what is heard. */
+/* Inside the state's sentence, which .sr-only hides from the eye (board.css):
+ * this is only what is heard, and inline, so no space comes before its comma. */
 .card.stale .stale-said { display: inline; }
 
 /* The words outrank the machine and the directory: .ts never shrinks, so on a

@@ -122,9 +122,23 @@ describe('a card without subagents is the 1.6.5 card, but for its meta line', ()
   // which puts a label above each section and changes two things on every
   // card: its meta line, and its title's name, which leads with the card's
   // agent now that Claude and Codex share sections ("Claude, Fix the parser
-  // — open this session's history"). Everything else is held to 1.6.5's
-  // markup.
-  it('draws the same card, byte for byte, outside its meta line and its title\'s agent', async () => {
+  // — open this session's history").
+  //
+  // And a third, for a screen reader alone: what the title is described by
+  // is one hidden sentence in the state row, "Coding, no update for 14
+  // minutes.", every word inline, where 1.6.5 described it by the row's
+  // boxes, which Chrome set apart with spaces ("CODING , no update for 14
+  // minutes ."). The badge is hidden from the tree, the stale words move
+  // into the sentence, and the row keeps its look. Everything else is held
+  // to 1.6.5's markup.
+  const sentence = (rest: string) => rest.replace(
+    /<div class="card-state-row" id="([^"]+)">([\s\S]*?)<span class="badge">([^<]*)<\/span>((?:<span class="stale-said sr-only">[\s\S]*?<\/span><\/span>)?)<span class="sr-only">\.<\/span><\/div>/,
+    (_, id, marks, word, stale) => `<div class="card-state-row">${marks}<span class="badge" aria-hidden="true">${word}</span>`
+      + `<span class="sr-only" id="${id}">${word.charAt(0).toUpperCase()}${word.slice(1)}${
+        stale.replace('class="stale-said sr-only"', 'class="stale-said"')}.</span></div>`,
+  );
+
+  it('draws the same card, byte for byte, outside its meta line, its title\'s agent and its state\'s sentence', async () => {
     const b = await pinnedBoard();
     const now = cardsIn(b.grid());
     const then = pinned();
@@ -133,8 +147,10 @@ describe('a card without subagents is the 1.6.5 card, but for its meta line', ()
       // 1.6.5's chip named the agent in capitals, CLAUDE or CODEX.
       const word = /<\/svg>([A-Z]+)<\/span>/.exec(card.meta)![1];
       const agent = word.charAt(0) + word.slice(1).toLowerCase();
-      const rest = card.rest.replace(/(class="name-open"[^>]*?aria-label=")/, `$1${agent}, `);
-      expect(rest, `${id}: the fixture's title`).not.toBe(card.rest);
+      const titled = card.rest.replace(/(class="name-open"[^>]*?aria-label=")/, `$1${agent}, `);
+      expect(titled, `${id}: the fixture's title`).not.toBe(card.rest);
+      const rest = sentence(titled);
+      expect(rest, `${id}: the fixture's state row`).not.toBe(titled);
       expect(now.get(id)!.rest, id).toBe(rest);
     }
     expect(b.grid().classList.contains('has-subs')).toBe(false);
