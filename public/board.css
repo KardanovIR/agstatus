@@ -450,6 +450,17 @@ html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(-
   color: var(--text-3);
 }
 
+/* An agent with sessions and no plan limits has a block all the same
+ * (app.js renderUsage), and this one line where the meters would be: iOS's
+ * words, in the count's face and its quiet ink, since it reports an absence
+ * and is no reading. It wraps rather than losing a word to an ellipsis. */
+.usage-none {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  color: var(--text-3);
+}
+
 /* ---- Empty state --------------------------------------------------------
  * Teaches the interface rather than announcing its own emptiness. */
 .empty {

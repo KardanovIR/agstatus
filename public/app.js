@@ -574,11 +574,24 @@
   const meterName = (text) => escape(text).replace(/(\S)-(?=\S)/g, '$1\u2011');
   const meterReset = (text) => escape(text).replace(/(\d+[dhm]) (\d+[dhm])$/, '$1\u00a0$2');
 
+  // The order iOS gives its heads (AgentSummary.make): by the agent's key,
+  // compared by UTF-16 code unit, and never by activity, so a block stays
+  // where it is while the same agents are on the board. Not the order the
+  // usage arrives in: the server sorts it with localeCompare, which puts
+  // claude_x before claude-x, and a block for an agent with no report has
+  // no place in it at all.
+  const byKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
   function renderUsage() {
-    // Only show limits for agents that actually have sessions on the board —
-    // a Claude-only evening doesn't need Codex bars. With no sessions there is
-    // nothing to disambiguate, and the limits still matter between runs, so
-    // show everything rather than nothing.
+    // A block for every agent with sessions on the board, whether or not it
+    // reports plan limits, as iOS gives each a head. An agent run on an API
+    // key, with AGSTATUS_USAGE=off, from the shell hook or a raw post, or
+    // any source such as gemini, reports none, and used to get no block: the
+    // mark its cards wear explained nothing, and its session count showed
+    // nowhere. Only agents with sessions, though: a Claude-only evening
+    // doesn't need Codex bars. With no sessions there is nothing to
+    // disambiguate, and the limits still matter between runs, so every
+    // agent that reports limits gets one rather than nothing.
     //
     // Counted as well: every card an agent has on the board, done included,
     // which its block's name carries, as each client's head does.
@@ -587,10 +600,15 @@
       const source = s.source || 'claude';
       sessions.set(source, (sessions.get(source) || 0) + 1);
     }
-    const blocks = [];
+    // Each agent's limits, from its report. A report with no windows, which
+    // a tolerant reader lets through, is no report, as on iOS.
+    const reports = new Map();
     for (const u of usage) {
-      if (sessions.size > 0 && !sessions.has(u.source)) continue;
-      const bars = (u.windows || []).map((w) => {
+      if (!reports.has(u.source) && Array.isArray(u.windows) && u.windows.length > 0) reports.set(u.source, u.windows);
+    }
+    const blocks = [];
+    for (const source of [...(sessions.size > 0 ? sessions.keys() : reports.keys())].sort(byKey)) {
+      const bars = (reports.get(source) || []).map((w) => {
         const pct = Math.min(100, Math.max(0, Number(w.usedPct) || 0));
         const reset = w.resetsAt ? fmtReset(w.resetsAt) : '';
         // board.css's .meter, which is what it was written for: "a percentage
@@ -610,7 +628,6 @@
             </div>
           </div>`;
       });
-      if (bars.length === 0) continue;
       // One block per agent; the block header carries the source name, so the
       // rows inside it don't repeat it.
       // A REAL button inside the block, not role="button" on the block.
@@ -629,16 +646,20 @@
       // "Claude, 7 sessions", as iOS names its head, so the count is heard
       // even where it is not drawn: one string, which no box can come
       // between, holding every word the button shows.
-      const name = agentName(u.source);
-      const n = sessions.get(u.source) || 0;
+      //
+      // An agent that reports no limits has the same block and the same
+      // button, which opens its thirty days as any does, and in place of
+      // the meters one line in the quiet ink, iOS's words for such a head.
+      const name = agentName(source);
+      const n = sessions.get(source) || 0;
       const count = n ? `${n} session${n === 1 ? '' : 's'}` : '';
       blocks.push(`
-        <section class="usage-block" data-source="${escape(u.source)}">
-          <h2 class="usage-src"><button class="usage-open" type="button" data-source="${escape(u.source)}"${
+        <section class="usage-block" data-source="${escape(source)}">
+          <h2 class="usage-src"><button class="usage-open" type="button" data-source="${escape(source)}"${
             count ? ` aria-label="${escape(`${name}, ${count}`)}"` : ''}
-            ><span class="usage-line"><span class="usage-name">${agentMark(u.source)}${escape(name)}</span>${
+            ><span class="usage-line"><span class="usage-name">${agentMark(source)}${escape(name)}</span>${
               count ? `<span class="usage-count">${count}</span>` : ''}</span><span class="usage-more" aria-hidden="true">›</span></button></h2>
-          ${bars.join('')}
+          ${bars.length > 0 ? bars.join('') : '<p class="usage-none">No plan limits reported</p>'}
         </section>`);
     }
     usageEl.hidden = blocks.length === 0;

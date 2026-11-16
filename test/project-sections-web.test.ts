@@ -745,6 +745,198 @@ describe('project sections', () => {
     expect(document.activeElement).toBe(usageHead());
   });
 
+  // H2: every agent with sessions has a block, whether or not it reports
+  // plan limits, as iOS gives each a head. An agent run on an API key, with
+  // AGSTATUS_USAGE=off, from the shell hook or any source such as gemini
+  // reports none, and had no block: its cards' mark had no legend and its
+  // session count showed nowhere. Such a block is its mark, its name and
+  // its count like any other, and in place of meters iOS's words.
+  describe('a usage block for every agent with sessions', () => {
+    /** Each usage block as drawn: its name, count and button name, and what stands under its head. */
+    const usageBlocks = () => ([...document.querySelectorAll('.usage-block')] as HTMLElement[]).map((el) => ({
+      name: el.querySelector('.usage-name')!.textContent,
+      count: el.querySelector('.usage-count')?.textContent ?? null,
+      label: el.querySelector('.usage-open')!.getAttribute('aria-label'),
+      meters: el.querySelectorAll('.meter').length,
+      none: el.querySelector('.usage-none')?.textContent ?? null,
+    }));
+    const head = (source: string) => document.querySelector(`.usage-block[data-source="${source}"] .usage-open`) as HTMLButtonElement;
+    const usageShown = () => !document.getElementById('usage')!.hidden;
+    const NONE = 'No plan limits reported';
+
+    // board.mjs's sessions and then edge.mjs's, with each one's agent, folder
+    // and state: Claude 9, Codex 5, Gemini 2 and Claude-work 1.
+    const EDGE_BOARD: Array<[id: string, source: string, project: string, status: string]> = [
+      ['s-acme-done', 'claude', 'acme-api', 'done'], ['s-zeta', 'claude', 'zeta', 'coding'],
+      ['s-alpha-cap', 'claude', 'Alpha', 'idle'], ['s-space', 'claude', '   ', 'idle'],
+      ['s-uuid', 'codex', UUID, 'coding'], ['s-agstatus-low', 'codex', 'agstatus', 'coding'],
+      ['s-moved', 'claude', 'web', 'coding'], ['s-root-shell', 'codex', '/', 'blocked'],
+      ['s-beta', 'claude', 'beta', 'blocked'], ['s-alpha-low', 'codex', 'alpha', 'blocked'],
+      ['s-agstatus-cap', 'claude', 'AgStatus', 'blocked'],
+      ['s-cafe-nfc', 'claude', 'café', 'coding'], ['s-cafe-nfd', 'codex', 'café', 'idle'],
+      ['usage', 'claude', 'zeta', 'idle'], ['s-gemini', 'gemini', 'beta', 'coding'],
+      ['s-claude-work', 'claude-work', '/', 'idle'], ['s-gemini-root', 'gemini', '/', 'blocked'],
+    ];
+    const edgeBoard = () => EDGE_BOARD.map(([id, source, project, status], i) =>
+      at(id, EDGE_BOARD.length - i, { source, project, status, homeProject: id === 's-moved' ? 'acme-api' : undefined }));
+    // The limits board.mjs posts for Claude and Codex, as the hooks post them.
+    const limits = () => [
+      { source: 'claude', windows: [
+        { id: 'five_hour', label: 'Current session', usedPct: 42, resetsAt: Date.now() + 3 * 3_600_000 },
+        { id: 'seven_day', label: 'Current week (all models)', usedPct: 18, resetsAt: Date.now() + 4 * 86_400_000 },
+      ] },
+      { source: 'codex', windows: [
+        { id: 'five_hour', label: '5-hour', usedPct: 7, resetsAt: Date.now() + 2 * 3_600_000 },
+        { id: 'weekly', label: 'Weekly', usedPct: 40, resetsAt: Date.now() + 6 * 86_400_000 },
+      ] },
+    ];
+
+    it('gives edge.mjs\'s board, with limits for Claude and Codex only, a block for each of its four agents', async () => {
+      const b = await boardOf(edgeBoard());
+      b.emit('usage', limits());
+      expect(usageShown()).toBe(true);
+      // In iOS's order of heads, by key: claude, claude-work, codex, gemini.
+      expect(usageBlocks()).toEqual([
+        { name: 'Claude', count: '9 sessions', label: 'Claude, 9 sessions', meters: 2, none: null },
+        { name: 'Claude-work', count: '1 session', label: 'Claude-work, 1 session', meters: 0, none: NONE },
+        { name: 'Codex', count: '5 sessions', label: 'Codex, 5 sessions', meters: 2, none: null },
+        { name: 'Gemini', count: '2 sessions', label: 'Gemini, 2 sessions', meters: 0, none: NONE },
+      ]);
+      // The legend for every mark on the cards: Claude-work's asterisk and
+      // Gemini's diamond, drawn as each of its cards draws it.
+      const mark = (el: Element | null) => el!.querySelector('svg path')!.getAttribute('d');
+      expect(mark(head('claude-work'))).toBe(mark(meta(b, 's-claude-work')));
+      expect(mark(head('gemini'))).toBe(mark(meta(b, 's-gemini')));
+      expect(mark(head('gemini'))).not.toBe(mark(head('claude')));
+      // The same button as any block's, and the line under it is content.
+      const gemini = head('gemini');
+      expect(gemini.tagName).toBe('BUTTON');
+      expect(gemini.closest('h2')).not.toBe(null);
+      expect(gemini.contains(document.querySelector('.usage-block[data-source="gemini"] .usage-none'))).toBe(false);
+    });
+
+    it('gives one block per agent with sessions to a board that reports no limits at all', async () => {
+      const b = await boardOf([
+        at('c1', 1, { source: 'claude' }), at('g1', 2, { source: 'gemini' }), at('c2', 3, { source: 'claude', status: 'done' }),
+      ]);
+      const expected = [
+        { name: 'Claude', count: '2 sessions', label: 'Claude, 2 sessions', meters: 0, none: NONE },
+        { name: 'Gemini', count: '1 session', label: 'Gemini, 1 session', meters: 0, none: NONE },
+      ];
+      expect(usageShown()).toBe(true);
+      expect(usageBlocks()).toEqual(expected);
+      // A report with no windows is no report, as on iOS, and limits for an
+      // agent with no sessions on the board still draw nothing.
+      b.emit('usage', [{ source: 'claude', windows: [] }, { source: 'codex', windows: [{ id: 'weekly', label: 'Weekly', usedPct: 40 }] }]);
+      expect(usageBlocks()).toEqual(expected);
+      // Limits that arrive take the place of the words.
+      b.emit('usage', [{ source: 'gemini', windows: [{ id: 'daily', label: 'Daily', usedPct: 12 }] }]);
+      expect(usageBlocks()[1]).toEqual({ name: 'Gemini', count: '1 session', label: 'Gemini, 1 session', meters: 1, none: null });
+    });
+
+    // On a board with no sessions nothing changes: every agent that reports
+    // limits, by its name alone, and nothing for one that reports none.
+    it('leaves the idle board as it was', async () => {
+      const b = await boardOf([]);
+      expect(usageShown()).toBe(false);
+      b.emit('usage', [
+        { source: 'claude', windows: [{ id: 'five_hour', label: 'Current session', usedPct: 10 }] },
+        { source: 'codex', windows: [{ id: 'weekly', label: 'Weekly', usedPct: 40 }] },
+        { source: 'gemini', windows: [] },
+      ]);
+      expect(usageShown()).toBe(true);
+      expect(usageBlocks()).toEqual([
+        { name: 'Claude', count: null, label: null, meters: 1, none: null },
+        { name: 'Codex', count: null, label: null, meters: 1, none: null },
+      ]);
+      b.emit('usage', []);
+      expect(usageShown()).toBe(false);
+      expect(b.grid().textContent).toContain('No sessions yet');
+    });
+
+    // By key, by code unit, as iOS's AgentSummary.make sorts them, and not
+    // in the order the usage arrives: the server sorts it with
+    // localeCompare, which puts claude_x before claude-x, and an agent with
+    // no report has no place in it.
+    it('orders the blocks as iOS orders its heads, by agent and by code unit', async () => {
+      const W = [{ id: 'daily', label: 'Daily', usedPct: 12 }];
+      const b = await boardOf([
+        at('a', 1, { source: 'claude_x' }), at('b', 2, { source: 'gemini' }), at('c', 3, { source: 'claude-x' }), at('d', 4, { source: 'claude' }),
+      ]);
+      b.emit('usage', [{ source: 'claude', windows: W }, { source: 'claude_x', windows: W }, { source: 'claude-x', windows: W }]);
+      expect(usageBlocks().map((x) => x.name)).toEqual(['Claude', 'Claude-x', 'Claude_x', 'Gemini']);
+      // The idle board too.
+      b.emit('snapshot', []);
+      expect(usageBlocks().map((x) => x.name)).toEqual(['Claude', 'Claude-x', 'Claude_x']);
+    });
+
+    // The count goes first where room runs short, as on any head, and is
+    // heard either way.
+    it('fits a limits-less head as any head: the count goes before the name', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      const drawn = (el: Element) => (el.classList.contains('usage-name') ? 70
+        : el.classList.contains('usage-count') ? ((el as HTMLElement).hidden ? 0 : 60)
+          : el.classList.contains('usage-line') ? 120 : 0);
+      standIn(b, drawn, drawn);
+      b.emit('snapshot', [at('g1', 1, { source: 'gemini' })]);
+      expect((head('gemini').querySelector('.usage-count') as HTMLElement).hidden).toBe(true);
+      expect(head('gemini').getAttribute('aria-label')).toBe('Gemini, 1 session');
+      expect(head('gemini').querySelector('.usage-name')!.textContent).toBe('Gemini');
+    });
+
+    // The usage area is painted again for a count, a reading or a
+    // countdown, and focus on a head without limits comes back to it too.
+    it.each([
+      ['its agent gains a session', async (b: Board) => b.emit('session', at('g2', 0, { source: 'gemini' })), 'Gemini, 2 sessions'],
+      ['another agent\'s countdown moves on', async () => { await vi.advanceTimersByTimeAsync(45_000); }, 'Gemini, 1 session'],
+      ['another agent\'s reading changes', async (b: Board) => b.emit('usage', [{ source: 'claude', windows: [
+        { id: 'five_hour', label: 'Current session', usedPct: 55, resetsAt: Date.now() + 2 * 3_600_000 },
+      ] }]), 'Gemini, 1 session'],
+    ])('keeps a limits-less head focused while the usage area is painted again: %s', async (_what, change, named) => {
+      const b = await boardOf([at('c1', 1, { source: 'claude' }), at('g1', 2, { source: 'gemini' })]);
+      b.emit('usage', [{ source: 'claude', windows: [
+        { id: 'five_hour', label: 'Current session', usedPct: 10, resetsAt: Date.now() + 2 * 3_600_000 },
+      ] }]);
+      head('gemini').focus();
+      const was = head('gemini');
+      await change(b);
+      expect(head('gemini')).not.toBe(was);   // painted again
+      expect(head('gemini').getAttribute('aria-label')).toBe(named);
+      expect(document.activeElement).toBe(head('gemini'));
+    });
+
+    // When the head itself goes, with its agent's last session, there is
+    // nothing to put focus back on.
+    it('lets focus on a limits-less head fall to the page when it goes with its agent\'s last session', async () => {
+      const b = await boardOf([at('c1', 1, { source: 'claude' }), at('g1', 2, { source: 'gemini' })]);
+      head('gemini').focus();
+      b.emit('remove', { id: 'g1' });
+      expect(head('gemini')).toBe(null);
+      expect(usageBlocks().map((x) => x.name)).toEqual(['Claude']);
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    // A press opens the agent's thirty days, as any block's does, and that
+    // page says plainly what it has not been told, as iOS's says it.
+    it('opens a limits-less agent\'s thirty days, which say what has not been reported', async () => {
+      const b = await boardOf([at('g1', 1, { source: 'gemini' })]);
+      b.click(head('gemini'));
+      await b.settle();
+      await b.settle();   // openDetail awaits a fetch before it paints
+      expect(b.hash()).toBe('#usage/gemini');
+      const detail = document.getElementById('detail')!;
+      expect(detail.querySelector('.dv-title')!.textContent).toBe('Gemini · last 30 days');
+      expect(detail.querySelector('.dv-sub')!.textContent).toBe('· 0 total');
+      expect(detail.querySelector('.dv-key-none')!.textContent).toBe('limit history starts once reported');
+      expect(detail.querySelector('.dv-empty')!.textContent).toBe('No per-project token data reported yet.');
+      // And Back lands on the block it was opened from.
+      b.click(document.getElementById('dv-back'));
+      await b.settle();
+      expect(document.activeElement).toBe(head('gemini'));
+    });
+  });
+
   // Focus, the history route and the reconciler find cards where they
   // always were: in the one grid, never re-parented under a label.
   it('keeps every card a child of the grid, so Focus and the way back from history still find it', async () => {
@@ -1448,7 +1640,8 @@ describe('an agent, named and marked as every board does', () => {
       { source: 'gemini', windows: [{ id: 'daily', label: 'Daily', usedPct: 10 }] },
       { source: 'constructor', windows: [{ id: 'daily', label: 'Daily', usedPct: 20 }] },
     ]);
-    expect([...document.querySelectorAll('.usage-name')].map((el) => el.textContent)).toEqual(['Gemini', 'Constructor']);
+    // By key, as iOS orders its heads, whatever order the usage came in.
+    expect([...document.querySelectorAll('.usage-name')].map((el) => el.textContent)).toEqual(['Constructor', 'Gemini']);
     location.hash = 'usage/constructor';
     await b.settle();
     await b.settle();   // openDetail awaits a fetch before it paints
@@ -1499,6 +1692,17 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(count).toMatch(/color:\s*var\(--text-3\)/);
     expect(count).toMatch(/text-transform:\s*none/);
     expect(rule(board, '.section-count')).toMatch(/color:\s*var\(--text-3\)/);
+  });
+
+  // An agent with no plan limits says so where the meters would be, in the
+  // count's face and quiet ink, and never in the landing page's sheet.
+  it('sets "No plan limits reported" in the count\'s face and quiet ink', () => {
+    const r = rule(board, '.usage-none');
+    expect(r).toMatch(/color:\s*var\(--text-3\)/);
+    expect(r).toMatch(/font-family:\s*var\(--font-ui\)/);
+    expect(r).toMatch(/font-size:\s*var\(--t-xs\)/);
+    expect(r).toMatch(/margin:\s*0/);
+    expect(read('card.css')).not.toContain('usage-none');
   });
 
   // A name fitLabel has measured is cut by the script alone, in the middle:
