@@ -546,12 +546,15 @@ each session, as its `homeProject`, and keeps it for the session's life (see
 never moves a card: a session that starts in `acme-api` and runs `cd web`
 stays in the acme-api section. The hook sends nothing new for this — the
 server works it out from what it already gets — so the grouping is right on
-every machine as soon as the server is, with no reinstall. A Claude worktree
-root counts as its repository, as its `project` does. A session with no
+every machine as soon as the server is, with no reinstall. With the Node
+hook a Claude worktree root counts as its repository, as its `project` does;
+the deprecated bash hook posts the worktree's own folder, so there each
+worktree is a section of its own. A session with no
 usable folder sits in **No project**, the last section, and leaves it once,
 when its first real folder arrives: an agent macOS started at `/`, which
 the Node hook reports as an empty `project` and the bash hook as `/`; a
-folder named by a bare UUID; a raw webhook post with a blank `project` or
+folder named by a bare UUID; a folder whose name is white space alone, which
+both hooks post as named; a raw webhook post with a blank `project` or
 none. The server and every board apply one rule for that (see
 [the session object](api.md#the-session-object)). A session
 started inside a subfolder, say `ios/`, lives under that subfolder's name.
@@ -564,8 +567,8 @@ folder, "in web", only when it is a real folder that differs from both the
 card's section and its name: when the session has moved away from where it
 started. A session that never left home shows nothing extra, titled or not,
 since its section already says where it is; one titled "Fix the login bug"
-that ran `cd web` says "in web" under its acme-api label. A session at a
-Claude worktree root sits in its repository's section, so
+that ran `cd web` says "in web" under its acme-api label. With the Node hook
+a session at a Claude worktree root sits in its repository's section, so
 `claude --worktree feature-x` with no `/rename` is a card called "feature-x"
 under my-repo. (Up to 1.6.5 the boards printed the project whenever it
 differed from the name, so a titled card nearly always carried it.)

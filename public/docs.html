@@ -826,12 +826,15 @@ each session, as its <code>homeProject</code>, and keeps it for the session&#39;
 never moves a card: a session that starts in <code>acme-api</code> and runs <code>cd web</code>
 stays in the acme-api section. The hook sends nothing new for this — the
 server works it out from what it already gets — so the grouping is right on
-every machine as soon as the server is, with no reinstall. A Claude worktree
-root counts as its repository, as its <code>project</code> does. A session with no
+every machine as soon as the server is, with no reinstall. With the Node
+hook a Claude worktree root counts as its repository, as its <code>project</code> does;
+the deprecated bash hook posts the worktree&#39;s own folder, so there each
+worktree is a section of its own. A session with no
 usable folder sits in <strong>No project</strong>, the last section, and leaves it once,
 when its first real folder arrives: an agent macOS started at <code>/</code>, which
 the Node hook reports as an empty <code>project</code> and the bash hook as <code>/</code>; a
-folder named by a bare UUID; a raw webhook post with a blank <code>project</code> or
+folder named by a bare UUID; a folder whose name is white space alone, which
+both hooks post as named; a raw webhook post with a blank <code>project</code> or
 none. The server and every board apply one rule for that (see
 <a href="#api-the-session-object">the session object</a>). A session
 started inside a subfolder, say <code>ios/</code>, lives under that subfolder&#39;s name.
@@ -843,8 +846,8 @@ folder, &quot;in web&quot;, only when it is a real folder that differs from both
 card&#39;s section and its name: when the session has moved away from where it
 started. A session that never left home shows nothing extra, titled or not,
 since its section already says where it is; one titled &quot;Fix the login bug&quot;
-that ran <code>cd web</code> says &quot;in web&quot; under its acme-api label. A session at a
-Claude worktree root sits in its repository&#39;s section, so
+that ran <code>cd web</code> says &quot;in web&quot; under its acme-api label. With the Node hook
+a session at a Claude worktree root sits in its repository&#39;s section, so
 <code>claude --worktree feature-x</code> with no <code>/rename</code> is a card called &quot;feature-x&quot;
 under my-repo. (Up to 1.6.5 the boards printed the project whenever it
 differed from the name, so a titled card nearly always carried it.)</p>
@@ -2154,13 +2157,25 @@ requests already running finish, writes what is still queued to Postgres and
 exits, normally within a fraction of a second. If that is not done 4 s after
 the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
 enough, and Docker&#39;s default is 10 s.</p>
-<p>Schema changes are applied at boot. 1.7.0 adds one nullable column,
-<code>sessions.subtasks</code>, holding a session&#39;s <a href="#api-subagents">subagent rows</a>, so
-they survive a restart; a soft-deleted session keeps it with the rest of its
-row, and the purge above removes it with the row. Rolling back to an older
-server is safe: it never touches the column, and the next 1.7.0 start ignores
-the stored rows of any session the older server updated in between, rather
-than bring back rows it never kept current.</p>
+<p>Schema changes are applied at boot. 1.7.0 adds two nullable columns to
+<code>sessions</code>: <code>subtasks</code>, holding a session&#39;s <a href="#api-subagents">subagent rows</a>,
+so they survive a restart, and <code>home_project</code>, the folder the boards group the
+session under (its <a href="#api-the-session-object"><code>homeProject</code></a>), so its card
+keeps its section across a restart. A soft-deleted session keeps both with the
+rest of its row, and the purge above removes them with the row. A row with no
+<code>home_project</code>, as an older server or the SQLite migration below writes it,
+has its home worked out from the folder the row last reported, at every load
+until the session&#39;s next post stores it.</p>
+<p>Rolling back to an older server loses nothing: it never touches either column.
+The next 1.7.0 start ignores the stored subagent rows of any session the older
+server updated in between, rather than bring back rows it never kept current.
+A rollback can move a card, though. A row 1.7.0 never wrote, such as one for a
+session that started during the rollback, has no <code>home_project</code>, so a <code>cd</code>
+that the older server records for it moves that card to another section on
+the roll-forward. And a card the older server brings back, after a dismissal
+or its expiry, keeps the home 1.7.0 gave it, where 1.7.0 after a restart
+starts such a card over from the folder its session then reports. Either way
+a card is filed under a folder its own session reported.</p>
 <h4 id="self-hosting-flagging-rows-written-before-162s-bounds"><a class="anchor" href="#self-hosting-flagging-rows-written-before-162s-bounds">Flagging rows written before 1.6.2&#39;s bounds</a></h4>
 <p>Servers before 1.6.2 stored project days with any date, and capped some
 tables by flagging old rows rather than refusing new ones, so their database
@@ -2449,11 +2464,12 @@ from the folder it names. A card the session TTL expired
 (<code>SESSION_TTL_MS</code>, 24 hours without an update on a hosted board) starts
 over too, as the hook&#39;s pinned card name does.</p>
 <p><code>name</code> and <code>project</code>, and so <code>homeProject</code>, are stored and served in
-Unicode NFC. The server composes what it is sent, so one folder that
-reaches it decomposed from one machine (NFD, an <code>e</code> and then its accent, as
-a folder made in the macOS Finder often is) and composed from another (NFC,
-one <code>é</code>) is one name, and one section on every board. A row an older server
-stored is composed as it loads. Since 1.7.0.</p>
+Unicode NFC. The server composes what it is sent, the first 512 UTF-16
+units of it (see <a href="#api-limits">Limits</a>), so one folder that reaches it
+decomposed from one machine (NFD, an <code>e</code> and then its accent, as a folder
+made in the macOS Finder often is) and composed from another (NFC, one <code>é</code>)
+is one name, and one section on every board. A row an older server stored is
+composed as it loads. Since 1.7.0.</p>
 <p>The boards key their project sections by it: <code>homeProject</code> when it is
 usable; otherwise <code>project</code>, when that is usable by the same rule, which
 covers servers older than 1.7.0 that send no <code>homeProject</code>; otherwise the
@@ -2650,7 +2666,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>source</code></td>
 <td>string</td>
 <td>no</td>
-<td>Agent kind that owns the session, e.g. <code>claude</code> or <code>codex</code> (same regex as the usage <code>source</code>). Defaults to <code>claude</code>; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board.</td>
+<td>Agent kind that owns the session, e.g. <code>claude</code> or <code>codex</code> (same regex as the usage <code>source</code>). Defaults to <code>claude</code>; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board, and, since 1.7.0, to give every agent present a usage block of its own (a head, in the iOS app), whether or not it reports limits.</td>
 </tr>
 <tr>
 <td><code>host</code></td>

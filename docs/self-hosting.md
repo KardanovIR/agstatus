@@ -169,13 +169,26 @@ exits, normally within a fraction of a second. If that is not done 4 s after
 the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
 enough, and Docker's default is 10 s.
 
-Schema changes are applied at boot. 1.7.0 adds one nullable column,
-`sessions.subtasks`, holding a session's [subagent rows](api.md#subagents), so
-they survive a restart; a soft-deleted session keeps it with the rest of its
-row, and the purge above removes it with the row. Rolling back to an older
-server is safe: it never touches the column, and the next 1.7.0 start ignores
-the stored rows of any session the older server updated in between, rather
-than bring back rows it never kept current.
+Schema changes are applied at boot. 1.7.0 adds two nullable columns to
+`sessions`: `subtasks`, holding a session's [subagent rows](api.md#subagents),
+so they survive a restart, and `home_project`, the folder the boards group the
+session under (its [`homeProject`](api.md#the-session-object)), so its card
+keeps its section across a restart. A soft-deleted session keeps both with the
+rest of its row, and the purge above removes them with the row. A row with no
+`home_project`, as an older server or the SQLite migration below writes it,
+has its home worked out from the folder the row last reported, at every load
+until the session's next post stores it.
+
+Rolling back to an older server loses nothing: it never touches either column.
+The next 1.7.0 start ignores the stored subagent rows of any session the older
+server updated in between, rather than bring back rows it never kept current.
+A rollback can move a card, though. A row 1.7.0 never wrote, such as one for a
+session that started during the rollback, has no `home_project`, so a `cd`
+that the older server records for it moves that card to another section on
+the roll-forward. And a card the older server brings back, after a dismissal
+or its expiry, keeps the home 1.7.0 gave it, where 1.7.0 after a restart
+starts such a card over from the folder its session then reports. Either way
+a card is filed under a folder its own session reported.
 
 ### Flagging rows written before 1.6.2's bounds
 
