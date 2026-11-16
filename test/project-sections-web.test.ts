@@ -352,6 +352,55 @@ describe('project sections', () => {
     expect(document.activeElement).toBe(other);
   });
 
+  // A card or a label leaving takes itself out of the grid and nothing
+  // else. The ordering pass used to meet them still in place, before every
+  // node that stays below them, and put each of those back after them:
+  // the top card of eight leaving took the other seven and three labels
+  // out and back, which cleared a reader's text selection in them,
+  // restarted an animation in flight and rebuilt each one for a screen
+  // reader. Every frame at one instant, so cards are moved, not repainted.
+  it('takes only what leaves out of the grid, and moves nothing that stays', async () => {
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    b.emit('snapshot', [0, 1, 2, 3, 4, 5, 6, 7].map((i) => at(`c${i}`, 1, { homeProject: `proj-${Math.floor(i / 2)}` })));
+    const before = layout(b);
+    expect(before).toEqual(['# proj-0', 'c0', 'c1', '# proj-1', 'c2', 'c3', '# proj-2', 'c4', 'c5', '# proj-3', 'c6', 'c7']);
+    const name = (n: Node) => {
+      const el = n as HTMLElement;
+      return el.matches('h2.section-label') ? `# ${el.querySelector('.section-name')!.textContent}` : el.dataset.id;
+    };
+    const watch = () => {
+      const seen = new b.win.MutationObserver(() => {});
+      seen.observe(b.grid(), { childList: true });
+      return () => {
+        const records = seen.takeRecords();
+        seen.disconnect();
+        return {
+          removed: records.flatMap((r) => [...r.removedNodes].map(name)),
+          added: records.flatMap((r) => [...r.addedNodes].map(name)),
+        };
+      };
+    };
+    const title = card(b, 'c6').querySelector('[data-open]') as HTMLElement;
+    title.focus();
+    // The top card's session ends.
+    let moves = watch();
+    b.emit('remove', { id: 'c0' });
+    expect(moves()).toEqual({ removed: ['c0'], added: [] });
+    expect(layout(b)).toEqual(before.filter((x) => x !== 'c0'));
+    // Its section's last card goes, and the label with it.
+    moves = watch();
+    b.emit('remove', { id: 'c1' });
+    expect(moves()).toEqual({ removed: ['# proj-0', 'c1'], added: [] });
+    // A snapshot that drops a card from the middle of each of two sections.
+    moves = watch();
+    b.emit('snapshot', ['c2', 'c4', 'c5', 'c6', 'c7'].map((id) => at(id, 1, { homeProject: `proj-${Math.floor(Number(id[1]) / 2)}` })));
+    expect(moves()).toEqual({ removed: ['c3'], added: [] });
+    expect(layout(b)).toEqual(['# proj-1', 'c2', '# proj-2', 'c4', 'c5', '# proj-3', 'c6', 'c7']);
+    // Focus below them was never disturbed.
+    expect(document.activeElement).toBe(title);
+  });
+
   it('moves a card out of No project once, when its first real folder arrives', async () => {
     const b = await boardOf([at('n1', 1, { homeProject: '', project: '' }), at('a1', 2, { homeProject: 'acme-api' })]);
     expect(layout(b)).toEqual(['# acme-api', 'a1', '# No project', 'n1']);

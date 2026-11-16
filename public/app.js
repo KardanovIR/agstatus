@@ -1197,31 +1197,41 @@
     // between) takes focus with it out of the document, so the control that
     // had it before the pass gets it back after, without scrolling the page.
     const held = gridEl.contains(document.activeElement) ? document.activeElement : null;
+    const sections = sectionsOf(list);
+
+    // What leaves goes first, so the pass meets only nodes that stay: a
+    // section that emptied takes its label with it, and a card no longer on
+    // the board goes. Left in place until after the pass, each stood before
+    // every node below it that stays, so the pass put every one of those
+    // back after it: one card leaving the top of a board of eight in four
+    // sections took the seven cards and three labels under it out of the
+    // grid and back, which cleared a reader's text selection in them,
+    // restarted an animation in flight and rebuilt each one's node for a
+    // screen reader.
+    const drawn = new Set(sections.map(({ key }) => key));
+    for (const key of [...labels.keys()]) if (!drawn.has(key)) dropLabels(key);
+    for (const [id, rec] of cards) {
+      if (state.has(id)) continue;
+      rec.el.remove();
+      cards.delete(id);
+    }
+
     let anchor = null;
     const place = (el) => {
       const next = anchor ? anchor.nextSibling : gridEl.firstChild;
       if (next !== el) gridEl.insertBefore(el, next);
       anchor = el;
     };
-    const drawn = new Set();
     const painted = [];
-    for (const { key, sessions } of sectionsOf(list)) {
-      drawn.add(key);
+    for (const { key, sessions } of sections) {
       const label = labelFor(key, sessions.length, born.has(sessions[0].id));
       if (label.painted) painted.push(label.el);
       place(label.el);
       for (const s of sessions) place(cards.get(s.id).el);
     }
 
-    // A section that emptied takes its label with it.
-    for (const key of [...labels.keys()]) if (!drawn.has(key)) dropLabels(key);
     // In place now, so there is a line to measure.
     for (const el of painted) fitLabel(el);
-    for (const [id, rec] of cards) {
-      if (state.has(id)) continue;
-      rec.el.remove();
-      cards.delete(id);
-    }
     if (held && held.isConnected && document.activeElement !== held) held.focus({ preventScroll: true });
 
     // Each card keeps its own height while any of them carries subagent rows
