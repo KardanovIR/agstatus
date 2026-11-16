@@ -744,8 +744,9 @@ validates a command, which terminals get pane-level focus — is in
 
 Codex users: what Codex trusts is a hash of the registered command string, so
 an upgrade that changes that command leaves the stored hash stale and the hook
-unrun — silently. If Codex sessions stop reporting after an upgrade, run
-`/hooks` inside Codex and re-approve the AgStatus entries; see
+unrun — silently. If Codex sessions stop reporting after an upgrade, trust
+the AgStatus entries again: in Codex Desktop under Settings → Hooks, in the
+Codex CLI with `/hooks`; see
 [OpenAI Codex specifics](#openai-codex-specifics).
 
 ### Installing the listener (macOS)
@@ -994,15 +995,17 @@ commands print which switch is in force, where the launcher is, and
 1. The same hook script is copied to `~/.codex/hooks/agstatus-hook.js`.
 2. Hook registrations are merged into `~/.codex/hooks.json` (backup written
    alongside; existing hooks are preserved; re-running replaces only the
-   AgStatus entries). Codex has no settings `env` block, so the board URL is
-   embedded in the registered command string — you can read or change it
-   right in `hooks.json`.
-3. **One-time step:** Codex requires you to trust new hooks. Run `/hooks`
-   inside Codex and approve the AgStatus entries — until then they won't fire.
-   Codex trusts a hook by hashing its command, so a release that changes that
-   command invalidates the stored hash: an existing install stays silent —
-   no error anywhere — until you re-run `/hooks`. Both `agstatus init` and
-   the installer say so when they finish setting Codex up.
+   AgStatus entries). Codex has no settings `env` block, so the board URL,
+   and the secret if there is one, go in `~/.codex/hooks/agstatus-hook.json`
+   beside the script, where you can read or change them; the registered
+   command is a bare `node "<script>"` on every platform.
+3. **One-time step:** Codex requires you to trust new hooks. In Codex
+   Desktop, open Settings → Hooks; in the Codex CLI, run `/hooks`. Approve
+   the AgStatus entries there — until then they won't fire. Codex trusts a
+   hook by hashing its command, so a release that changes that command
+   invalidates the stored hash: an existing install stays silent — no error
+   anywhere — until you trust it again. Both `agstatus init` and the
+   installer say so when they finish setting Codex up.
 
 Events wired: `SessionStart`, `PreToolUse` (matcher
 `^(Bash|apply_patch|Edit|Write)$`), `PermissionRequest`, `Stop`,
@@ -1017,9 +1020,10 @@ change of state.
 
 An upgrade from 1.6 adds those three entries under the command Codex already
 trusts. Whether Codex wants entries added that way trusted again is not known,
-so `agstatus init` says so when it adds them: if `/hooks` in Codex lists an
-AgStatus entry as untrusted, trust it once. Until then each sub-agent is
-reported as before 1.7.0, on its root's line.
+so `agstatus init` says so when it adds them: if Codex lists an AgStatus
+entry as untrusted (Settings → Hooks in Codex Desktop, `/hooks` in the Codex
+CLI), trust it once. Until then each sub-agent is reported as before 1.7.0,
+on its root's line.
 
 Codex Desktop also starts short threads of its own and keeps no rollout for
 them. Examples are its suggestions (a run in the project folder, then a check

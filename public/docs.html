@@ -1015,8 +1015,9 @@ validates a command, which terminals get pane-level focus — is in
 <a href="https://github.com/KardanovIR/agstatus/blob/master/docs/design/focus-protocol.md">docs/design/focus-protocol.md</a>.</p>
 <p>Codex users: what Codex trusts is a hash of the registered command string, so
 an upgrade that changes that command leaves the stored hash stale and the hook
-unrun — silently. If Codex sessions stop reporting after an upgrade, run
-<code>/hooks</code> inside Codex and re-approve the AgStatus entries; see
+unrun — silently. If Codex sessions stop reporting after an upgrade, trust
+the AgStatus entries again: in Codex Desktop under Settings → Hooks, in the
+Codex CLI with <code>/hooks</code>; see
 <a href="#hooks-openai-codex-specifics">OpenAI Codex specifics</a>.</p>
 <h4 id="hooks-installing-the-listener-macos"><a class="anchor" href="#hooks-installing-the-listener-macos">Installing the listener (macOS)</a></h4>
 <p>The listener is the process on your Mac that receives a tap from the board
@@ -1238,15 +1239,17 @@ commands print which switch is in force, where the launcher is, and
 <li>The same hook script is copied to <code>~/.codex/hooks/agstatus-hook.js</code>.</li>
 <li>Hook registrations are merged into <code>~/.codex/hooks.json</code> (backup written
 alongside; existing hooks are preserved; re-running replaces only the
-AgStatus entries). Codex has no settings <code>env</code> block, so the board URL is
-embedded in the registered command string — you can read or change it
-right in <code>hooks.json</code>.</li>
-<li><strong>One-time step:</strong> Codex requires you to trust new hooks. Run <code>/hooks</code>
-inside Codex and approve the AgStatus entries — until then they won&#39;t fire.
-Codex trusts a hook by hashing its command, so a release that changes that
-command invalidates the stored hash: an existing install stays silent —
-no error anywhere — until you re-run <code>/hooks</code>. Both <code>agstatus init</code> and
-the installer say so when they finish setting Codex up.</li>
+AgStatus entries). Codex has no settings <code>env</code> block, so the board URL,
+and the secret if there is one, go in <code>~/.codex/hooks/agstatus-hook.json</code>
+beside the script, where you can read or change them; the registered
+command is a bare <code>node &quot;&lt;script&gt;&quot;</code> on every platform.</li>
+<li><strong>One-time step:</strong> Codex requires you to trust new hooks. In Codex
+Desktop, open Settings → Hooks; in the Codex CLI, run <code>/hooks</code>. Approve
+the AgStatus entries there — until then they won&#39;t fire. Codex trusts a
+hook by hashing its command, so a release that changes that command
+invalidates the stored hash: an existing install stays silent — no error
+anywhere — until you trust it again. Both <code>agstatus init</code> and the
+installer say so when they finish setting Codex up.</li>
 </ol>
 <p>Events wired: <code>SessionStart</code>, <code>PreToolUse</code> (matcher
 <code>^(Bash|apply_patch|Edit|Write)$</code>), <code>PermissionRequest</code>, <code>Stop</code>,
@@ -1260,9 +1263,10 @@ sub-agent turn, so a sub-agent you re-task comes back as a row with its next
 change of state.</p>
 <p>An upgrade from 1.6 adds those three entries under the command Codex already
 trusts. Whether Codex wants entries added that way trusted again is not known,
-so <code>agstatus init</code> says so when it adds them: if <code>/hooks</code> in Codex lists an
-AgStatus entry as untrusted, trust it once. Until then each sub-agent is
-reported as before 1.7.0, on its root&#39;s line.</p>
+so <code>agstatus init</code> says so when it adds them: if Codex lists an AgStatus
+entry as untrusted (Settings → Hooks in Codex Desktop, <code>/hooks</code> in the Codex
+CLI), trust it once. Until then each sub-agent is reported as before 1.7.0,
+on its root&#39;s line.</p>
 <p>Codex Desktop also starts short threads of its own and keeps no rollout for
 them. Examples are its suggestions (a run in the project folder, then a check
 in <code>/</code>), commit and PR messages, and inline edits. Their hook payloads carry

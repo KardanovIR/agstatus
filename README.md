@@ -46,8 +46,9 @@ so you step away from the keyboard without losing the thread.
    dependency-free Node hook, registers it in `~/.claude/settings.json` (with
    a backup) — and in `~/.codex/hooks.json` when Codex is detected — then
    prints your board URL plus a QR code to open it on your phone. (Codex asks
-   you to trust the hook: run `/hooks` inside Codex — and again after an
-   upgrade that changes the hook command, or Codex silently stops firing it.)
+   you to trust the hook: in Codex Desktop under Settings → Hooks, in the
+   Codex CLI with `/hooks` — and again after an upgrade that changes the hook
+   command, or Codex silently stops firing it.)
    Re-run the same command to upgrade: it keeps this machine's server,
    `--minimal` and webhook secret (only `--no-codex` has to be given again).
    On macOS it also sets up [Focus](docs/design/focus-protocol.md) — it

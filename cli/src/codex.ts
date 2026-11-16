@@ -19,9 +19,10 @@ import { HOOK_MARKER, hookCommandFor } from './settings';
  * registered command is the same bare `node "<script>"` on every platform —
  * which is what lets a Linux test run exercise the Windows path.
  *
- * Codex requires the user to trust new hooks once via `/hooks` in the TUI, and
- * that trust is a hash of the command string: changing it invalidates every
- * existing trusted_hash, so upgraders must re-run /hooks once.
+ * Codex requires the user to trust new hooks once — in Codex Desktop under
+ * Settings → Hooks, in the Codex CLI with `/hooks` in the TUI — and that trust
+ * is a hash of the command string: changing it invalidates every existing
+ * trusted_hash, so upgraders must trust the hook once more.
  */
 
 /**
@@ -186,7 +187,7 @@ export function codexHookCommand(): string {
  * Exported because Codex keys its trust on a hash of the command: comparing
  * what is registered against what we are about to write is what tells an
  * upgrade that CHANGED the command from one that did not, and therefore
- * whether the user has to re-run /hooks or can ignore the subject.
+ * whether the user has to trust the hook again or can ignore the subject.
  */
 export function ourCommands(input: HooksFile): string[] {
   if (!isPlainObject(input.hooks)) return [];

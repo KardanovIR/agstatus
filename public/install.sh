@@ -930,9 +930,10 @@ $CODEX_CMDS_BEFORE
 "*) return 0 ;;
   esac
   say ''
-  warn 'One-time step: run /hooks inside Codex to trust the AgStatus hook.'
+  warn 'One-time step: trust the AgStatus hook in Codex.'
+  note 'In Codex Desktop: Settings → Hooks. In the Codex CLI: /hooks.'
   note 'Codex trusts a hook by hashing its command, and this upgrade changed'
-  note 'that command — an existing install stays silent until you re-run /hooks.'
+  note 'that command — an existing install stays silent until you trust it again.'
 }
 
 # What Focus puts on the wire, printed before it is turned on. The wording

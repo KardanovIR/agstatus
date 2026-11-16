@@ -29,6 +29,12 @@ import { resolveBoardUrl, resolveSecret } from '../src/listener/config';
 
 const CMD = 'node "$HOME/.codex/hooks/agstatus-hook.js"';
 
+/**
+ * Where the installer says a Codex hook is trusted: both places, written out,
+ * since Codex Desktop has no /hooks and the Codex CLI no settings screen.
+ */
+const TRUST_WHERE = 'In Codex Desktop: Settings → Hooks. In the Codex CLI: /hooks.';
+
 /** What an install made before the sidecar wrote into hooks.json. */
 const LEGACY_CMD = (url: string, secret?: string): string =>
   `CLAUDE_STATUS_URL="${url}" AGSTATUS_SOURCE=codex` +
@@ -580,6 +586,8 @@ describe('init/uninstall with a detected Codex install', () => {
     const lines: string[] = [];
     await runStatus((l) => lines.push(l));
     expect(lines.join('\n')).toMatch(/older env-prefix command/);
+    // The second step is Codex's, and it names both of Codex's places for it.
+    expect(lines.join('\n')).toMatch(/Settings → Hooks in Codex\s+Desktop, \/hooks in the Codex CLI\./);
 
     // And it is quiet once init has written the sidecar.
     await runInit({ url: base, noQr: true, log });
@@ -643,14 +651,16 @@ describe('init/uninstall with a detected Codex install', () => {
     expect(fs.readFileSync(codexHooksPath(), 'utf8')).not.toContain('ags_oldtoken');
   });
 
-  it('prints the sidecar path, and asks for /hooks without claiming a change', async () => {
+  it('prints the sidecar path, and says where to trust the hook without claiming a change', async () => {
     const lines: string[] = [];
     await runInit({ url: base, noQr: true, log: (l) => lines.push(l) });
     const out = lines.join('\n');
     expect(out).toContain(codexConfigPath());
     // Codex will not run a hook it has not been told to trust, so a FIRST
-    // install still has to say "go and run /hooks".
-    expect(out).toMatch(/run \/hooks inside Codex/);
+    // install still has to say "go and trust it", and where: Codex Desktop
+    // has no /hooks to run, and the CLI no settings screen.
+    expect(out).toContain('One-time step: trust the AgStatus hook in Codex.');
+    expect(out).toContain(TRUST_WHERE);
     // But it must not claim the command changed — nothing was registered
     // before. That sentence used to print on every install and every upgrade
     // whether it was true or not.
@@ -662,7 +672,8 @@ describe('init/uninstall with a detected Codex install', () => {
     await runInit({ url: base, noQr: true, log: () => {} });
     const again: string[] = [];
     await runInit({ url: base, noQr: true, log: (l) => again.push(l) });
-    expect(again.join('\n')).not.toMatch(/run \/hooks inside Codex/);
+    expect(again.join('\n')).not.toContain('One-time step');
+    expect(again.join('\n')).not.toContain(TRUST_WHERE);
 
     // An older registration with a different command string: say so.
     const old = JSON.parse(fs.readFileSync(codexHooksPath(), 'utf8'));
@@ -673,6 +684,7 @@ describe('init/uninstall with a detected Codex install', () => {
     const upgraded: string[] = [];
     await runInit({ url: base, noQr: true, log: (l) => upgraded.push(l) });
     expect(upgraded.join('\n')).toMatch(/changed/);
+    expect(upgraded.join('\n')).toContain(TRUST_WHERE);
     // The re-trust warning already covers it: no second notice.
     expect(upgraded.join('\n')).not.toContain('now also listens');
   });
@@ -688,7 +700,8 @@ describe('init/uninstall with a detected Codex install', () => {
     await runInit({ url: base, noQr: true, log: (l) => upgraded.push(l) });
     const out = upgraded.join('\n');
     expect(out).toContain('Codex: AgStatus now also listens for UserPromptSubmit, SubagentStart and SubagentStop.');
-    expect(out).toContain('If `/hooks` in Codex lists an AgStatus entry as untrusted, trust it once.');
+    expect(out).toContain('If Codex lists an AgStatus entry as untrusted, trust it once.');
+    expect(out).toContain(TRUST_WHERE);
     expect(out).not.toMatch(/changed/);
     expect(readCodexHooks(codexHooksPath()).hooks).toHaveProperty('SubagentStart');
 
