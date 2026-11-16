@@ -7,7 +7,7 @@
 //  are pinned, which of two arrangements a width allows, which form a head
 //  takes at the width it is given, which side a card sits on where cards run
 //  two across, the order a reader meets the cards in, which card the
-//  needs-you bar names, and which blocks are not news.
+//  needs-you bar names, which blocks are not news, and when the bar beats.
 //
 //  Values only — no views. Everything here is arithmetic on a measured width
 //  and on the store's own array, which is what lets it be checked by the
@@ -873,6 +873,153 @@ struct StandingBlocks {
     }
 }
 
+// MARK: - The bar's beat
+
+/// When the needs-you bar comes in from the bottom edge again: once for each
+/// rise in the blocked count while it already shows (the owner's decision of
+/// 2026-11-16).
+///
+/// A second block changes one digit on the bar, a glyph far too small for
+/// the corner of the eye, which is where the board is read. The bar's
+/// arrival is the one motion on the board that peripheral vision catches, so
+/// a rise replays it, with the new count already in it, and nothing else
+/// changes: no word, no colour, no focus, no sound.
+///
+/// It hears what the voice hears (`BoardView.announceBlocks`): a session's
+/// transition into blocked on a board watching the stream, never a block
+/// that came with a snapshot or a demo's seed, nor one the board took in
+/// with no frame (`StandingBlocks`). It gathers them for the voice's half
+/// second, so blocks that land together make one beat, and a session that
+/// was news here within the last minute is not news again. The minute is its
+/// own: the voice's runs from what it said, and it says nothing while push
+/// is on or VoiceOver is off, which are no reason to keep the bar still.
+///
+/// When the half second is over the bar beats only if all of these hold:
+/// - one of its blocks is still blocked;
+/// - the bar rested on a count when the first of them landed, and has not
+///   emptied since. A bar that showed nothing is arriving with them, and its
+///   arrival is their beat; so are blocks that land within half a second of
+///   it (`rest`). One that emptied and came back has arrived again.
+/// - the count is higher than the one the bar rested on: never on a fall,
+///   nor for one block in place of another, whichever lands first;
+/// - the board was in front of the reader when the first landed and is now:
+///   the app active, and no other screen or sheet over the board. So never
+///   for blocks that landed while the reader was away, nor on the way back.
+/// - Reduce Motion is off. Under it the count changes in place, as
+///   everything on the board does, and the voice carries the news.
+///
+/// A value, so that its rule is checked on its own (`verifyBarBeat`). The
+/// board keeps it, waits out its half second, and draws the beat
+/// (`BoardView.noteBeat`, `NeedsYouStyle`).
+struct BarBeat {
+    /// Why the bar beat when a half second was over, or why it did not.
+    enum Verdict: Equatable, CustomStringConvertible {
+        case beats
+        /// None of the half second's blocks is blocked any more.
+        case answered
+        /// The bar rested on no count: this is its arrival, the beat itself.
+        case arrival
+        /// The count is no higher than the one the bar rested on.
+        case noRise
+        /// The board was not in front of the reader.
+        case away
+        /// Reduce Motion is on.
+        case still
+
+        var description: String {
+            switch self {
+            case .beats: "the bar beats"
+            case .answered: "no beat, answered"
+            case .arrival: "no beat, the bar's arrival"
+            case .noRise: "no beat, no rise"
+            case .away: "no beat, the board was not in front"
+            case .still: "no beat, Reduce Motion"
+            }
+        }
+    }
+
+    /// A half second in flight.
+    struct Gathering: Equatable {
+        /// The count the bar rested on when the first block landed.
+        let rest: Int
+        /// Its blocks, as they landed.
+        var ids: [String]
+        /// The bar emptied while it ran: what came after arrived with it.
+        var emptied = false
+        /// The board was not in front of the reader when the first landed.
+        let away: Bool
+    }
+
+    /// How long blocks are gathered for, by the voice and the beat alike
+    /// (`BoardView.blockGathering`), and how long a count has to stand to be
+    /// the one the bar rests on.
+    static let gathers: TimeInterval = 0.5
+    /// How long a session that was news is not news again: the voice's
+    /// minute (`BoardView.blockRepeatWait`).
+    static let repeatWait: TimeInterval = 60
+
+    private(set) var gathering: Gathering?
+    /// When each session's block was last news here, for a minute.
+    private(set) var newsAt: [String: Date] = [:]
+    /// The count the bar rests on: one that stood for half a second, or that
+    /// a half second ended on; nothing while the bar is empty. Brought up to
+    /// date when the blocked cards change and when a half second ends. A rise
+    /// is measured from it, so a block that lands just after another was
+    /// answered is no rise at all, and a block within half a second of the
+    /// bar's arrival finds it resting on nothing.
+    private(set) var rest = 0
+    /// When the blocked cards last changed.
+    private var changedAt: Date?
+
+    /// An update of the board: the blocked cards `old` became `new`, of which
+    /// `news` are sessions' transitions into blocked, as the voice hears them,
+    /// while the board was in front of the reader or not. True when it starts
+    /// a half second: the caller waits it out and then calls `end`.
+    mutating func note(old: [String], new: [String], news: [String], inFront: Bool, at now: Date) -> Bool {
+        if old.count != new.count || !new.allSatisfy(old.contains) {
+            if changedAt.map({ now.timeIntervalSince($0) >= Self.gathers }) ?? true { rest = old.count }
+            if new.isEmpty {
+                rest = 0
+                gathering?.emptied = true
+            }
+            changedAt = now
+        }
+        newsAt = newsAt.filter { now.timeIntervalSince($0.value) < Self.repeatWait }
+        let fresh = news.filter { newsAt[$0] == nil && gathering?.ids.contains($0) != true }
+        guard !fresh.isEmpty else { return false }
+        guard gathering == nil else {
+            gathering?.ids += fresh
+            return false
+        }
+        gathering = Gathering(rest: rest, ids: fresh, away: !inFront)
+        return true
+    }
+
+    /// The half second is over, with `blocked` the blocked cards now: what the
+    /// bar does. Nil when no half second ran. Its blocks still blocked are
+    /// news for the next minute, whatever the verdict.
+    mutating func end(blocked: [String], inFront: Bool, moves: Bool, at now: Date) -> Verdict? {
+        guard let done = gathering else { return nil }
+        gathering = nil
+        let still = done.ids.filter { blocked.contains($0) }
+        for id in still { newsAt[id] = now }
+        rest = blocked.count
+        return Self.verdict(rest: done.emptied ? 0 : done.rest, answered: still.isEmpty, count: blocked.count,
+                            inFront: inFront && !done.away, moves: moves)
+    }
+
+    /// The rule itself, for a half second whose bar rested on `rest`, now
+    /// that `count` are blocked.
+    static func verdict(rest: Int, answered: Bool, count: Int, inFront: Bool, moves: Bool) -> Verdict {
+        if answered { return .answered }
+        if rest == 0 { return .arrival }
+        if count <= rest { return .noRise }
+        if !inFront { return .away }
+        if !moves { return .still }
+        return .beats
+    }
+}
+
 // MARK: - SubtaskSlots
 
 /// Which of a card's subagents stand in its row slots, and in which slot.
@@ -1067,6 +1214,7 @@ extension BoardArrangement {
         verifyDrawnOrder()
         verifyNews()
         verifyStandingBlocks()
+        verifyBarBeat()
         verifyMatrix()
         verifySubtaskSlots()
     }
@@ -1860,6 +2008,309 @@ extension BoardArrangement {
         assert(!standing.contains("login"), "a removed card leaves")
         update { frame("login", .blocked) }
         assert(news == ["login"], "and comes back as news")
+    }
+
+    /// When the needs-you bar beats (`BarBeat`), as the board drives it: the
+    /// store's paths change its cards, the board hands each update to the
+    /// beat with the news in it as the voice hears it, and waits out the half
+    /// second the beat asks for. The clock is the table's own.
+    private static func verifyBarBeat() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        var now = start
+        var cards: [Session] = []
+        var standing = StandingBlocks()
+        var beat = BarBeat()
+        var due: Date?
+        var starts = 0
+        var verdicts: [BarBeat.Verdict] = []
+        // The board in front of the reader, and Reduce Motion off, unless a
+        // case says otherwise.
+        var inFront = true
+        var moves = true
+        func blocked() -> [String] { cards.filter { $0.status == .blocked }.map(\.id) }
+        // One update of the board. `heard` is false for a list that came with
+        // the connection, a snapshot or a demo's seed, whose blocks the voice
+        // leaves unsaid; a block the board took in with no frame is not news
+        // either (`StandingBlocks`).
+        func update(heard: Bool = true, _ change: () -> Void) {
+            let old = blocked()
+            change()
+            let new = blocked()
+            let news = heard ? new.filter { !old.contains($0) && !standing.contains($0) } : []
+            if beat.note(old: old, new: new, news: news, inFront: inFront, at: now) {
+                assert(due == nil, "one half second at a time")
+                due = now.addingTimeInterval(BarBeat.gathers)
+                starts += 1
+            }
+        }
+        // Time passing, and the half second ending when it is due, with the
+        // board as it is then.
+        func pass(_ seconds: TimeInterval) {
+            let then = now.addingTimeInterval(seconds)
+            if let at = due, at <= then {
+                now = at
+                due = nil
+                if let verdict = beat.end(blocked: blocked(), inFront: inFront, moves: moves, at: now) {
+                    verdicts.append(verdict)
+                }
+            }
+            now = then
+        }
+        // The store's paths, as in `verifyStandingBlocks`: a frame of the
+        // stream, and a list taken in with no frame.
+        func frame(_ id: String, _ status: AgentStatus) {
+            if let index = cards.firstIndex(where: { $0.id == id }) {
+                standing.noteFrame(id, was: cards[index].status, is: status)
+                cards[index] = card(id, "claude", status)
+            } else {
+                standing.noteFrame(id, was: nil, is: status)
+                cards.insert(card(id, "claude", status), at: 0)
+            }
+        }
+        func take(_ list: [Session]) {
+            standing.noteList(was: cards, is: list)
+            cards = list
+        }
+        func without(_ id: String) -> [Session] { cards.filter { $0.id != id } }
+        // A board drawn from its first snapshot, its blocks standing, and left
+        // to rest.
+        func board(blocked ids: [String], working: [String] = ["w1", "w2", "w3"]) {
+            now = start
+            cards = []
+            standing = StandingBlocks()
+            beat = BarBeat()
+            due = nil
+            starts = 0
+            verdicts = []
+            inFront = true
+            moves = true
+            update(heard: false) { take(ids.map { card($0, "claude", .blocked) } + working.map { card($0) }) }
+            pass(10)
+        }
+
+        // The first draw: its blocks were standing before the board looked.
+        board(blocked: ["a", "b"])
+        assert(starts == 0 && verdicts.isEmpty, "a first draw is no beat")
+
+        // A rise while the bar shows: one beat, when the half second is over,
+        // with the count already risen. Another, later: another beat.
+        board(blocked: ["a"])
+        update { frame("w1", .blocked) }
+        pass(0.4)
+        assert(verdicts.isEmpty && beat.gathering != nil, "nothing until the half second is over")
+        pass(0.2)
+        assert(verdicts == [.beats], "a rise while the bar shows beats")
+        pass(10)
+        update { frame("w2", .blocked) }
+        pass(1)
+        assert(verdicts == [.beats, .beats] && starts == 2, "one beat for each rise")
+        assert(beat.rest == 3, "and the bar rests on the count it beat with")
+
+        // Blocks that land together, 15 ms apart as two hook events do: one beat.
+        board(blocked: ["a"])
+        update { frame("w1", .blocked) }
+        pass(0.015)
+        update { frame("w2", .blocked) }
+        pass(1)
+        assert(verdicts == [.beats] && starts == 1, "blocks that land together make one beat")
+
+        // The first block: the bar arrives with it, and that is its beat. So
+        // is a block within half a second of the arrival, which the bar was
+        // still making.
+        board(blocked: [])
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.arrival], "the first block is the bar's arrival, no beat")
+        board(blocked: [])
+        update { frame("w1", .blocked) }
+        pass(0.3)
+        update { frame("w2", .blocked) }
+        pass(1)
+        assert(verdicts == [.arrival], "nor for one that lands as the bar arrives")
+        // An arrival that is no news of its own (its session said within the
+        // minute), and a block a third of a second after it: still the arrival.
+        update { frame("w1", .coding); frame("w2", .coding) }
+        pass(5)
+        update { frame("w1", .blocked) }
+        assert(starts == 1, "a session that was news within the minute is no news")
+        pass(0.3)
+        update { frame("w3", .blocked) }
+        pass(1)
+        assert(verdicts == [.arrival, .arrival], "a block a third of a second after any arrival is part of it")
+        // Half a second later the bar rests on the count, and a rise beats.
+        pass(5)
+        update { frame("x", .blocked) }
+        pass(1)
+        assert(verdicts == [.arrival, .arrival, .beats], "a rise once the bar has arrived beats")
+
+        // A fall, an unblock or a dismissal: no beat, and nothing gathered.
+        board(blocked: ["a", "b", "c"])
+        update { frame("b", .coding) }
+        pass(1)
+        update { take(without("c")) }
+        pass(1)
+        update { take(without("a")) }
+        pass(1)
+        assert(starts == 0 && verdicts.isEmpty, "a fall is no beat")
+
+        // One block in place of another: no rise. In one update; the new one
+        // first; the answered one first.
+        board(blocked: ["a", "b"])
+        update {
+            frame("w1", .blocked)
+            frame("a", .coding)
+        }
+        pass(1)
+        assert(verdicts == [.noRise], "a swap in one update is no beat")
+        board(blocked: ["a", "b"])
+        update { frame("w1", .blocked) }
+        pass(0.1)
+        update { frame("a", .coding) }
+        pass(1)
+        assert(verdicts == [.noRise], "nor a block answered just after another lands")
+        board(blocked: ["a", "b"])
+        update { frame("a", .coding) }
+        pass(0.1)
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.noRise], "nor a block that lands just after another is answered")
+        // Seconds apart, the count the reader saw fell and then rose: a rise.
+        board(blocked: ["a", "b"])
+        update { frame("a", .coding) }
+        pass(5)
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.beats], "a block seconds after another was answered is a rise")
+        // A beat, then within half a second one answered and another
+        // blocked: the bar rests on the count it beat with, so no rise.
+        board(blocked: ["a"])
+        update { frame("w1", .blocked) }
+        pass(0.3)
+        update { frame("w2", .blocked) }
+        pass(0.3)
+        update { frame("a", .coding) }
+        pass(0.3)
+        update { frame("w3", .blocked) }
+        pass(1)
+        assert(verdicts == [.beats, .noRise], "a swap just after a beat is no second beat")
+
+        // A card the board puts back after a refused dismissal, and the fetch
+        // after it: no frame brought them, so they are no news (A1), though
+        // the count rises.
+        board(blocked: ["a", "b"])
+        let refused = cards
+        update { take(without("b")) }
+        pass(0.2)
+        update { take(refused) }
+        pass(1)
+        update { take(refused) }
+        pass(1)
+        assert(starts == 0 && verdicts.isEmpty, "a restored card is no beat")
+        // Nor a block a pull to refresh brings in ahead of its frame, nor
+        // that frame when it comes; nor a reconnect's snapshot with a block
+        // that landed while the stream was down.
+        update { take(cards.map { $0.id == "w1" ? card("w1", "claude", .blocked) : $0 }) }
+        pass(1)
+        update { frame("w1", .blocked) }
+        pass(1)
+        update(heard: false) { take(cards.map { $0.id == "w2" ? card("w2", "claude", .blocked) : $0 }) }
+        pass(1)
+        assert(starts == 0 && verdicts.isEmpty, "nor a refetch's block, nor a reconnect's")
+
+        // A session that was news within the minute: no beat on its next
+        // block, whatever the first did. After the minute, a beat again.
+        board(blocked: ["a"])
+        update { frame("w1", .blocked) }
+        pass(1)
+        update { frame("w1", .coding) }
+        pass(20)
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.beats] && starts == 1, "a repeat within the minute is no beat")
+        pass(60)
+        update { frame("w1", .coding) }
+        pass(5)
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.beats, .beats], "past the minute it beats again")
+        // The first block's own minute runs from its arrival.
+        board(blocked: [])
+        update { frame("w1", .blocked) }
+        pass(5)
+        update { frame("w2", .blocked) }
+        pass(5)
+        update { frame("w1", .coding) }
+        pass(5)
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.arrival, .beats], "the arrival's session is held for its minute too")
+
+        // Answered within the half second: no news by then.
+        board(blocked: ["a"])
+        update { frame("w1", .blocked) }
+        pass(0.2)
+        update { frame("w1", .coding) }
+        pass(1)
+        assert(verdicts == [.answered], "a block answered within the half second is no beat")
+        // The bar empties and comes back within it: an arrival again.
+        board(blocked: ["a"])
+        update { frame("w1", .blocked) }
+        pass(0.1)
+        update {
+            frame("a", .coding)
+            frame("w1", .coding)
+        }
+        pass(0.1)
+        update {
+            frame("w1", .blocked)
+            frame("w2", .blocked)
+        }
+        pass(1)
+        assert(verdicts == [.arrival], "a bar that empties and comes back has arrived again")
+
+        // Reduce Motion: nothing moves. The session is news for its minute
+        // all the same.
+        board(blocked: ["a"])
+        moves = false
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.still], "under Reduce Motion, no beat")
+        moves = true
+        update { frame("w1", .coding) }
+        pass(5)
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.still], "and its session is held for the minute")
+
+        // The board not in front of the reader: the app inactive or in the
+        // background, a pushed screen or a sheet. When the block lands, when
+        // the half second ends, or both: no beat, nor on the way back.
+        board(blocked: ["a"])
+        inFront = false
+        update { frame("w1", .blocked) }
+        pass(1)
+        assert(verdicts == [.away], "a block while the board is not in front is no beat")
+        update { frame("w2", .blocked) }
+        pass(0.2)
+        inFront = true
+        pass(1)
+        assert(verdicts == [.away, .away], "nor on the way back, within its half second")
+        update { frame("w3", .blocked) }
+        pass(0.2)
+        inFront = false
+        pass(1)
+        assert(verdicts == [.away, .away, .away], "nor when the reader leaves within it")
+        inFront = true
+        update { frame("x", .blocked) }
+        pass(1)
+        assert(verdicts == [.away, .away, .away, .beats], "back in front, a rise beats")
+
+        // The rule's order: what the trace says first.
+        assert(BarBeat.verdict(rest: 0, answered: false, count: 1, inFront: false, moves: false) == .arrival
+               && BarBeat.verdict(rest: 2, answered: false, count: 2, inFront: false, moves: false) == .noRise
+               && BarBeat.verdict(rest: 2, answered: false, count: 3, inFront: false, moves: false) == .away
+               && BarBeat.verdict(rest: 2, answered: true, count: 3, inFront: true, moves: true) == .answered,
+               "the verdict's order")
     }
 
     /// Every board the rules have to hold on: the six widths and the

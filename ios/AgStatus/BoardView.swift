@@ -73,6 +73,13 @@ struct BoardView: View {
     /// What the board has said about blocks, and what it is about to say
     /// (`announceBlocks`).
     @State private var blockSpeech = BlockSpeech()
+    /// The needs-you bar's beat: its half second and its minute (`BarBeat`),
+    /// kept as the voice's are, unobserved (`noteBeat`).
+    @State private var beat = BeatClock()
+    /// How many times the bar has beaten: each one more brings it in from the
+    /// bottom edge again (`NeedsYouStyle`). The one part of the beat the board
+    /// observes, and it changes on a beat and at no other time.
+    @State private var barBeats = 0
 
     /// The narrowest a column may be, growing with the reader's text size.
     ///
@@ -233,11 +240,13 @@ struct BoardView: View {
             // card is no longer blocked it would be saying something untrue.
             // With nothing blocked the bar goes, and the next one to come
             // starts from the first. A card that has just become blocked is
-            // said aloud.
+            // said aloud, and, where the bar already shows, makes it beat.
             .onChange(of: blockedCards) { old, new in
                 if let jumped, !new.ids.contains(jumped) { self.jumped = nil }
                 if new.ids.isEmpty { barAfter = nil }
-                announceBlocks(from: old, to: new)
+                let blocks = newBlocks(from: old, to: new)
+                if let blocks { announceBlocks(blocks, from: old, to: new) }
+                noteBeat(blocks, from: old, to: new)
             }
             .task(id: jumpStamp) { await fadeRing() }
         }
@@ -298,6 +307,7 @@ struct BoardView: View {
             // in view.
             NeedsYouSlot(face: bar,
                          lines: plan.compactHeight ? .one : plan.wide ? .oneOrTwo : .two,
+                         beats: barBeats,
                          onPress: barAction)
                 .equatable()
                 // Before the cards, though it is drawn below them.
@@ -1077,8 +1087,41 @@ struct BoardView: View {
     /// arrive together do not arrive in one update: two hook events posted at
     /// once reached the board 15 ms apart, as two. Said as they came, the
     /// second announcement would cut the first off mid-word, which a default
-    /// priority does to whatever is being spoken.
-    private static let blockGathering: Duration = .milliseconds(500)
+    /// priority does to whatever is being spoken. Half a second, and the bar's
+    /// beat gathers for the same half second (`BarBeat.gathers`).
+    private static let blockGathering: Duration = .seconds(BarBeat.gathers)
+
+    /// The cards an update has just made blocked, and which of them are
+    /// news: a session's transition into blocked on a board watching the
+    /// stream. What the voice says (`announceBlocks`) and what makes the bar
+    /// beat (`noteBeat`), worked out once for both.
+    private struct NewBlocks {
+        let fresh: [String]
+        /// Why none of them is news, for the trace: "standing", for blocks
+        /// that came with the connection, or "off the stream". Nil while the
+        /// board is watching.
+        let unheard: String?
+        /// Standing too, though the stream is live: cards the board took in
+        /// with no frame, one put back or one fetched (`StandingBlocks`).
+        let taken: [String]
+
+        var news: [String] { unheard == nil ? fresh.filter { !taken.contains($0) } : [] }
+    }
+
+    /// What an update of the blocked cards brings (`NewBlocks`); nil when it
+    /// made no card blocked.
+    private func newBlocks(from old: BlockedCards, to new: BlockedCards) -> NewBlocks? {
+        let fresh = new.ids.filter { !old.ids.contains($0) }
+        guard !fresh.isEmpty else { return nil }
+        // Standing, not news: blocks that came with the connection, as a
+        // first snapshot's do, or with a demo's seed — its first, or the one
+        // an emptied demo board is given on its next tick.
+        let standing = old.connection != new.connection || (new.connection == .demo && old.empty)
+        guard !standing, new.connection == .live || new.connection == .demo else {
+            return NewBlocks(fresh: fresh, unheard: standing ? "standing" : "off the stream", taken: [])
+        }
+        return NewBlocks(fresh: fresh, unheard: nil, taken: fresh.filter { store.standingBlocks.contains($0) })
+    }
 
     /// Says aloud that a card has just become blocked — an agent waiting on
     /// you, the board's main event. A sighted reader sees the needs-you bar
@@ -1104,20 +1147,16 @@ struct BoardView: View {
     /// interrupts what VoiceOver is reading, and the reader's next swipe
     /// interrupts it. Nothing is said while the app is not in front, while
     /// VoiceOver is off, or while push is on (`blockSilence`).
-    private func announceBlocks(from old: BlockedCards, to new: BlockedCards) {
-        let fresh = new.ids.filter { !old.ids.contains($0) }
-        guard !fresh.isEmpty else { return }
-        // Standing, not news: blocks that came with the connection, as a
-        // first snapshot's do, or with a demo's seed — its first, or the one
-        // an emptied demo board is given on its next tick.
-        let standing = old.connection != new.connection || (new.connection == .demo && old.empty)
-        guard !standing, new.connection == .live || new.connection == .demo else {
-            traceBlocks("\(Self.change(old, new)) \(fresh) \(standing ? "standing" : "off the stream"), not said")
+    ///
+    /// What is news is worked out once, for the voice and the bar's beat
+    /// alike (`newBlocks`); the minute and the silences are the voice's own.
+    private func announceBlocks(_ blocks: NewBlocks, from old: BlockedCards, to new: BlockedCards) {
+        let fresh = blocks.fresh
+        if let unheard = blocks.unheard {
+            traceBlocks("\(Self.change(old, new)) \(fresh) \(unheard), not said")
             return
         }
-        // Standing too, though the stream is live: cards the board took in
-        // with no frame, one put back or one fetched (`StandingBlocks`).
-        let taken = fresh.filter { store.standingBlocks.contains($0) }
+        let taken = blocks.taken
         let speech = blockSpeech
         let now = Date()
         speech.saidAt = speech.saidAt.filter { now.timeIntervalSince($0.value) < Self.blockRepeatWait }
@@ -1202,6 +1241,53 @@ struct BoardView: View {
     private static func change(_ old: BlockedCards, _ new: BlockedCards) -> String {
         let board = old.connection == new.connection ? "\(new.connection)" : "\(old.connection) → \(new.connection)"
         return "board \(board): blocked \(old.ids) → \(new.ids):"
+    }
+
+    // MARK: - The bar's beat
+
+    /// Hands the bar's beat an update of the blocked cards, with the news in
+    /// it as the voice hears it (`BarBeat`), and waits out the half second
+    /// when it starts one.
+    ///
+    /// Not the voice's silences: push on and VoiceOver off are no reason to
+    /// keep the bar still. Its own are an app not in front, another screen or
+    /// a sheet over the board, and Reduce Motion (`boardInFront`, `endBeat`).
+    /// It runs only when the blocked cards change, and costs nothing to the
+    /// hook events that do not change them.
+    private func noteBeat(_ blocks: NewBlocks?, from old: BlockedCards, to new: BlockedCards) {
+        let clock = beat
+        let gathered = clock.rule.gathering?.ids ?? []
+        guard clock.rule.note(old: old.ids, new: new.ids, news: blocks?.news ?? [], inFront: boardInFront,
+                              at: Date()) else {
+            let joined = (clock.rule.gathering?.ids ?? []).filter { !gathered.contains($0) }
+            if !joined.isEmpty { traceBlocks("beat: \(joined) gathered with \(gathered)") }
+            return
+        }
+        if let gathering = clock.rule.gathering {
+            traceBlocks("beat: \(gathering.ids) gathered, the bar resting on \(gathering.rest)\(gathering.away ? ", away" : "")")
+        }
+        clock.wait = Task {
+            try? await Task.sleep(for: Self.blockGathering)
+            endBeat()
+        }
+    }
+
+    /// The half second is over: the bar beats, or the trace says why not.
+    private func endBeat() {
+        let clock = beat
+        clock.wait = nil
+        let gathered = clock.rule.gathering?.ids ?? []
+        let blocked = blockedCards.ids
+        guard let verdict = clock.rule.end(blocked: blocked, inFront: boardInFront && store.connection != .boardGone,
+                                           moves: !UIAccessibility.isReduceMotionEnabled, at: Date()) else { return }
+        traceBlocks("beat: \(gathered), \(blocked.count) blocked: \(verdict)")
+        if verdict == .beats { barBeats += 1 }
+    }
+
+    /// Whether the board is in front of the reader, where the bar's beat can
+    /// be seen: the app active, and no other screen or sheet over the board.
+    private var boardInFront: Bool {
+        scenePhase == .active && path.isEmpty && !showSettings && !showPairSheet
     }
 
     // MARK: - Push tip
@@ -2256,6 +2342,17 @@ private final class BlockSpeech {
     var wait: Task<Void, Never>?
 }
 
+/// The needs-you bar's beat (`BarBeat`), and the half second it is waiting
+/// out (`BoardView.noteBeat`).
+///
+/// Held in @State and not observable, as `BlockSpeech` is: it changes with
+/// every new block, and none of that is anything to redraw. What is drawn is
+/// the count of beats, which changes only on a beat. Main thread only.
+private final class BeatClock {
+    var rule = BarBeat()
+    var wait: Task<Void, Never>?
+}
+
 private extension View {
     /// Applies a change of `shape` at once, whatever animation it arrived in.
     ///
@@ -2278,10 +2375,11 @@ private extension View {
 /// blocked, the bar while one is.
 ///
 /// It enters from the bottom edge when the first block lands and leaves when
-/// none remain, and that is the only motion it has: under Reduce Motion it
+/// none remain. Those are its only transitions: under Reduce Motion it
 /// appears and goes in place (`motion`), and its words change in place. The
 /// animation is the slot's own, never the board's: a card turning blocked in
-/// the same update must not cross-fade its word into the new one.
+/// the same update must not cross-fade its word into the new one. Its one
+/// other motion is its beat (`beats`), which is drawn, never a transition.
 ///
 /// A view of its own, made with `.equatable()`, and handed only what the bar
 /// draws: a hook event that changes none of it — a message, a token figure,
@@ -2300,12 +2398,15 @@ private extension View {
 private struct NeedsYouSlot: View, Equatable {
     let face: NeedsYou.Face?
     let lines: NeedsYouBar.Lines
+    /// How many times the bar has beaten (`BarBeat`). It changes on a beat
+    /// and at no other time, so it costs a hook event nothing.
+    let beats: Int
     let onPress: BoardAction<Void>
 
     var body: some View {
         VStack(spacing: 0) {
             if let face {
-                NeedsYouBar(face: face, lines: lines, onPress: onPress)
+                NeedsYouBar(face: face, lines: lines, beats: beats, onPress: onPress)
                     .fixedSize(horizontal: false, vertical: true)
                     // From behind the streak, which is drawn after it.
                     .transition(.move(edge: .bottom))
@@ -2334,6 +2435,10 @@ private struct NeedsYouSlot: View, Equatable {
 /// end, and the alarm line drops BLOCKED only when that line itself lacks
 /// room, since dropping it there gives the session line nothing. The web
 /// and Android give way the same way.
+///
+/// When the count rises while it shows, it comes in from the bottom edge
+/// again, once, with the new count already in it (`BarBeat`,
+/// `NeedsYouStyle`).
 private struct NeedsYouBar: View {
     /// How many lines the bar may take (`BoardView.board`).
     enum Lines: Equatable {
@@ -2349,6 +2454,8 @@ private struct NeedsYouBar: View {
 
     let face: NeedsYou.Face
     let lines: Lines
+    /// How many times the bar has beaten (`NeedsYouSlot`).
+    let beats: Int
     let onPress: BoardAction<Void>
 
     var body: some View {
@@ -2381,7 +2488,7 @@ private struct NeedsYouBar: View {
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(NeedsYouStyle())
+        .buttonStyle(NeedsYouStyle(beats: beats))
         // "2 blocked: Fix the login redirect, in acme-api", and what a press
         // does. Not .updatesFrequently: a new block is said aloud on its own
         // (`BoardView.announceBlocks`).
@@ -2514,9 +2621,22 @@ private struct NeedsYouBar: View {
 /// the bar is already the loudest thing on the board, and a pressed state
 /// that added a surface would make it louder at the one moment it has been
 /// heard.
+///
+/// And its beat (`BarBeat`): each time `beats` goes up, the ground, the edge
+/// and the words are drawn their own height below where they stand and come
+/// back with the bar's .snappy, as `.move(edge: .bottom)` first brought them
+/// in. Drawn only, as an offset that layout never sees: the bar's place, the
+/// board's frame, the scroll position and VoiceOver's cursor stay where they
+/// are, and a press lands on the bar's place throughout. Once for each beat,
+/// never on appearing, and nothing moves under Reduce Motion, where no beat
+/// is called for in the first place.
 private struct NeedsYouStyle: ButtonStyle {
+    let beats: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
+        let travel = reduceMotion ? 0.0 : 1.0
+        return configuration.label
             .opacity(configuration.isPressed ? 0.55 : 1)
             .background(Theme.cardSurface(for: .blocked))
             .overlay(alignment: .top) {
@@ -2524,6 +2644,15 @@ private struct NeedsYouStyle: ButtonStyle {
                     .fill(Theme.cardEdge(for: .blocked))
                     .frame(height: 1)
             }
+            .keyframeAnimator(initialValue: 0.0, trigger: beats) { bar, below in
+                // `below` is the share of its own height it is drawn below
+                // its place.
+                bar.visualEffect { bar, place in bar.offset(y: below * place.size.height) }
+            } keyframes: { _ in
+                MoveKeyframe(travel)
+                SpringKeyframe(0.0, spring: .snappy)
+            }
+            .contentShape(Rectangle())
     }
 }
 
