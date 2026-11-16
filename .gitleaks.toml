@@ -1,15 +1,20 @@
 # Gitleaks configuration for AgStatus.
 #
-# Starts from the upstream rule set and narrows it in exactly one place: the
-# Focus protocol's machine key is a SHA-256 of two PUBLIC constants
+# Starts from the upstream rule set and narrows it in exactly one place here:
+# the Focus protocol's machine key is a SHA-256 of two PUBLIC constants
 # (`sha256(machineId + "\n" + boardBase)`, docs/design/focus-protocol.md §3.2),
 # and the tests pin the derivation by writing the expected 64-hex output next
 # to the inputs that produce it. That is indistinguishable from a leaked API
-# key by shape, so `generic-api-key` fires on it.
+# key by shape, so `generic-api-key` fires on it. Single findings of the same
+# kind are skipped by fingerprint in .gitleaksignore, which exempts nothing
+# else: three subagent keys in test/fixtures/subtasks/keys.json.
 #
-# The allowlist is deliberately narrow: named constants, in test files, whose
-# value the repo can recompute from the two lines above them. Anything else in
-# these files is still scanned, and no other path is exempted.
+# The allowlist was written for named constants, in test files, whose value
+# the repo can recompute from the two lines above them, and it exempts more
+# than those. It sets no `condition`, so its paths and its patterns are
+# alternatives (gitleaks' default, OR): `generic-api-key` skips the four files
+# below whole, and skips a line that matches either pattern in any file.
+# Every other rule still scans them.
 [extend]
 useDefault = true
 
