@@ -226,8 +226,18 @@ struct SessionCardView: View {
 
     /// Name, message and metadata — everything the card says, and the only part
     /// the whole-card tap belongs to.
+    ///
+    /// Built in four statements, not one chain, so that the compiler
+    /// type-checks each on its own. As one expression it weighed the overloads
+    /// of every accessibility modifier together, and checked the actions'
+    /// closure again for each combination it tried, 4,608 times. The project's
+    /// line in More Content, new in 1.7.0, doubled that work: over 11 s in
+    /// Xcode 26.6, and in CI's Xcode 26.3 "unable to type-check this
+    /// expression in reasonable time". The modifiers are the same, in the same
+    /// order, so the view is the one the chain built. Add a modifier to one of
+    /// the four: joined back into one chain, they fail CI's build.
     private func content(now: Date, stale: Bool) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+        let column = VStack(alignment: .leading, spacing: Theme.Space.xs) {
             if stacked {
                 statusBadge(stale: stale)
             }
@@ -255,6 +265,7 @@ struct SessionCardView: View {
         // machine is not, so only the harmless one is a whole-column gesture.
         .contentShape(Rectangle())
         .onTapGesture { openSession(SessionRoute(sessionId: session.id)) }
+
         // One element, built rather than combined, and read in the order the
         // card is read by eye: whose session and which (the label), then its
         // state — the card's one reading — and what it last said (the value).
@@ -262,54 +273,58 @@ struct SessionCardView: View {
         // drawn in the rail outside it, came after the name, the message and
         // the whole meta line: a jump landed on the half of the card
         // without it. The badge's word is hidden, so it is not read twice.
-        //
+        let element = column
+            .accessibilityElement(children: .ignore)
+            // "Claude, Fix the login redirect"; a Codex Desktop session that
+            // started at / is named after its agent, and is "Codex" once
+            // (`Session.lead`).
+            .accessibilityLabel(session.lead(agent: agentName))
+            .accessibilityValue(spokenState(stale: stale, now: now))
+            .accessibilityAddTraits(.isButton)
+            // The tap, stated, so a double-tap opens history wherever the
+            // element's centre happens to fall.
+            .accessibilityAction { openSession(SessionRoute(sessionId: session.id)) }
+            .accessibilityHint("Opens this session's history")
+            .accessibilityFocused(jumpFocus, equals: .card(session.id))
+
         // The meta line is the lean-in, and waits where VoiceOver keeps one:
         // the More Content rotor. With the children ignored VoiceOver reads
         // nothing else in this column, so whatever is added to the column has
         // to be added here as well.
-        .accessibilityElement(children: .ignore)
-        // "Claude, Fix the login redirect"; a Codex Desktop session that
-        // started at / is named after its agent, and is "Codex" once
-        // (`Session.lead`).
-        .accessibilityLabel(session.lead(agent: agentName))
-        .accessibilityValue(spokenState(stale: stale, now: now))
-        .accessibilityAddTraits(.isButton)
-        // The tap, stated, so a double-tap opens history wherever the
-        // element's centre happens to fall.
-        .accessibilityAction { openSession(SessionRoute(sessionId: session.id)) }
-        .accessibilityHint("Opens this session's history")
-        .accessibilityFocused(jumpFocus, equals: .card(session.id))
-        .accessibilityCustomContent(.machine, machineFact.map { Text($0) })
-        .accessibilityCustomContent(.project, projectFact.map { Text($0) })
-        .accessibilityCustomContent(.directory, directoryFact.map { Text($0) })
-        .accessibilityCustomContent(.updated, Text(Self.spokenRelativeTime(from: session.updatedDate, to: now)))
-        .accessibilityCustomContent(.tokens, session.tokensLabel.map { Text($0) })
-        // Voice Control: "Tap data-pipeline", with or without its agent.
-        .accessibilityInputLabels(session.isNamed(for: agentName) ? [agentName]
-                                  : [session.name, "\(agentName) \(session.name)"])
-        .accessibilityActions {
-            if let host = session.host, store.isMachineOnline(host.machine.id) {
-                Button("Bring to front on \(store.machineLabel(for: host))") {
-                    send(.focus)
+        let leanIn = element
+            .accessibilityCustomContent(.machine, machineFact.map { Text($0) })
+            .accessibilityCustomContent(.project, projectFact.map { Text($0) })
+            .accessibilityCustomContent(.directory, directoryFact.map { Text($0) })
+            .accessibilityCustomContent(.updated, Text(Self.spokenRelativeTime(from: session.updatedDate, to: now)))
+            .accessibilityCustomContent(.tokens, session.tokensLabel.map { Text($0) })
+
+        return leanIn
+            // Voice Control: "Tap data-pipeline", with or without its agent.
+            .accessibilityInputLabels(session.isNamed(for: agentName) ? [agentName]
+                                      : [session.name, "\(agentName) \(session.name)"])
+            .accessibilityActions {
+                if let host = session.host, store.isMachineOnline(host.machine.id) {
+                    Button("Bring to front on \(store.machineLabel(for: host))") {
+                        send(.focus)
+                    }
+                    // Offered beside it once a session has ended, as the Resume
+                    // button is.
+                    if store.focus[session.id]?.resumeOffered == true {
+                        Button("Resume on \(store.machineLabel(for: host))") {
+                            send(.resume)
+                        }
+                    }
                 }
-                // Offered beside it once a session has ended, as the Resume
-                // button is.
-                if store.focus[session.id]?.resumeOffered == true {
-                    Button("Resume on \(store.machineLabel(for: host))") {
-                        send(.resume)
+                // The long-press menu is not something VoiceOver's rotor offers,
+                // so where there is no swipe to stand in for it, Dismiss is an
+                // action in its own right. In the list the swipe already puts one
+                // there, and a second would read "Dismiss, Dismiss".
+                if !swipesToDismiss {
+                    Button("Dismiss") {
+                        Task { await store.dismiss(session) }
                     }
                 }
             }
-            // The long-press menu is not something VoiceOver's rotor offers,
-            // so where there is no swipe to stand in for it, Dismiss is an
-            // action in its own right. In the list the swipe already puts one
-            // there, and a second would read "Dismiss, Dismiss".
-            if !swipesToDismiss {
-                Button("Dismiss") {
-                    Task { await store.dismiss(session) }
-                }
-            }
-        }
     }
 
     /// Whose, machine, when, how much — four different facts. The agent's
