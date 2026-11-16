@@ -981,6 +981,34 @@ fun sourceDisplayName(source: String): String = when (source) {
 fun agentHeadDescription(source: String, sessions: Int): String =
     if (sessions > 0) "${sourceDisplayName(source)}, ${ProjectSections.sessionCount(sessions)}" else sourceDisplayName(source)
 
+/**
+ * The agents that get a usage block, which on Android is each agent's head
+ * (docs/design/project-sections.md, THE AGENTS' HEADS), by iOS's rule and in
+ * its order (AgentSummary.make): on a board with sessions, every agent with
+ * sessions, with its limits where it reports them and none where it does not;
+ * on an empty board, every agent that reports limits, which still matter
+ * between runs. By source, never by activity, so a block keeps its place
+ * while the same agents are on the board.
+ *
+ * Blocks came from the reports alone, so an agent run with an API key or with
+ * AGSTATUS_USAGE=off, posted by the shell hook or a raw post, or any source
+ * such as gemini, had none: its mark on the cards had no legend, and its
+ * session count was shown nowhere. Such an agent's block has no windows, and
+ * says so ([NO_PLAN_LIMITS]). A report with no windows, which tolerant
+ * decoding allows, is no report, as on iOS.
+ */
+fun agentHeads(sessions: List<Session>, usage: List<UsageInfo>): List<UsageInfo> {
+    val reports = LinkedHashMap<String, UsageInfo>()
+    for (info in usage) if (info.windows.isNotEmpty() && info.source !in reports) reports[info.source] = info
+    val sources = if (sessions.isEmpty()) reports.keys else sessions.mapTo(HashSet()) { it.source }
+    // By UTF-16 code unit, as Swift sorts them: the server takes sources of
+    // a-z, 0-9, '_' and '-' only, where code units and Swift's order agree.
+    return sources.sorted().map { source -> reports[source] ?: UsageInfo(source = source) }
+}
+
+/** What an agent's usage block says in place of its meters when it reports none: iOS's head's words. */
+const val NO_PLAN_LIMITS = "No plan limits reported"
+
 // MARK: - Usage history
 
 /** One recorded reading of a limit window's utilization. */

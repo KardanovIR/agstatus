@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kardanov.agstatus.NO_PLAN_LIMITS
 import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.agentHeadDescription
@@ -50,9 +51,11 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * Full-width plan-limit bars pinned above the board: one row per reported
- * window (current 5-hour session, weekly caps, …). [sessionCounts] is how
- * many sessions each agent, by source, has on the board, done included.
+ * The agents' usage blocks, each agent's head on the board: one row per
+ * reported window (current 5-hour session, weekly caps, …), or a line saying
+ * it reports none. [usage] is the agents that get a block, in their order
+ * (agentHeads). [sessionCounts] is how many sessions each agent, by source,
+ * has on the board, done included.
  */
 @Composable
 fun UsageBars(
@@ -118,11 +121,12 @@ fun UsageBars(
 }
 
 /**
- * One agent's limits: its name over its own bars, in its own card. The header
- * carries the agent name so the rows inside don't repeat it, and how many
- * [sessions] it has on the board. Tapping the block opens that agent's 30-day
- * usage detail; the layout is unchanged, so the affordance is carried by the
- * tap label screen readers announce.
+ * One agent's limits: its name over its own bars, in its own card, or over
+ * "No plan limits reported" where it reports none. The header carries the
+ * agent name so the rows inside don't repeat it, and how many [sessions] it
+ * has on the board. Tapping the block opens that agent's 30-day usage detail,
+ * whether or not it reports limits; the layout is unchanged, so the
+ * affordance is carried by the tap label screen readers announce.
  */
 @Composable
 private fun UsageSourceBlock(
@@ -199,7 +203,21 @@ private fun UsageSourceBlock(
                 )
             }
         }
-        if (narrow) {
+        if (info.windows.isEmpty()) {
+            // An agent with sessions and no report (agentHeads): one line in
+            // the count's quiet ink where the meters would be, iOS's words,
+            // so the block says why it has none rather than looking broken.
+            // It takes a second line rather than being cut, balanced, as a
+            // limit's name does, and TalkBack hears it after the name and
+            // the count.
+            Text(
+                text = NO_PLAN_LIMITS,
+                style = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, lineBreak = LineBreak.Heading),
+                color = Theme.textTertiary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else if (narrow) {
             rows(true)
         } else {
             // Every name beside its reading while all of them fit a line, and

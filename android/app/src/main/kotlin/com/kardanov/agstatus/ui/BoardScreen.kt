@@ -128,6 +128,7 @@ import com.kardanov.agstatus.ProjectSection
 import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.SessionStore
 import com.kardanov.agstatus.Theme
+import com.kardanov.agstatus.agentHeads
 import com.kardanov.agstatus.rememberReduceMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -242,14 +243,11 @@ internal fun BoardScreen(
         if (focusTarget != null) focusTarget = null
     }
 
-    // Only limits of agents that actually have sessions on the board — a
-    // Claude-only evening doesn't need Codex bars. With no sessions there is
-    // nothing to disambiguate, and the limits still matter between runs, so
-    // everything is shown rather than nothing.
-    val visibleUsage = remember(sessions, usage) {
-        val active = sessions.mapTo(mutableSetOf()) { it.source }
-        if (active.isEmpty()) usage else usage.filter { it.source in active }
-    }
+    // A block for every agent with sessions, its limits or "No plan limits
+    // reported" — a Claude-only evening doesn't need Codex bars — and with no
+    // sessions every agent that reports limits, which still matter between
+    // runs (agentHeads).
+    val visibleUsage = remember(sessions, usage) { agentHeads(sessions, usage) }
     // How many sessions each agent has on the board, done included, for its
     // usage block. The same map while the counts stay the same, so a message
     // is no block's news.
