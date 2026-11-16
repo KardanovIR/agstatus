@@ -182,22 +182,31 @@ enum DemoData {
     }
     #endif
 
+    /// The plan limits the demo's heads draw.
+    ///
+    /// The reset times are counted in typed units. Written as integer literals
+    /// multiplied out inside the one array literal, they took 240,000 solver
+    /// scopes and 62 MB to type-check with the solver set up as in CI's Xcode
+    /// 26.3 (Swift 6.2, its old performance hacks on): a quarter and an eighth
+    /// of what it allows an expression before it gives up. Typed, the literal
+    /// takes under 300 scopes. The values are the same.
     private static func claudeAndCodex(now: Int64, claudeWeek: Double) -> [UsageInfo] {
-        [
+        let minute: Int64 = 60_000, hour: Int64 = 3_600_000, day: Int64 = 86_400_000
+        return [
             UsageInfo(source: "claude",
                       windows: [
                           UsageWindow(id: "session",
                                       label: "Current session",
                                       usedPct: 34,
-                                      resetsAt: now + 137 * 60_000),
+                                      resetsAt: now + 137 * minute),
                           UsageWindow(id: "week",
                                       label: "Weekly (all models)",
                                       usedPct: claudeWeek,
-                                      resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
+                                      resetsAt: now + 2 * day + 5 * hour),
                           UsageWindow(id: "week_fable",
                                       label: "Weekly (Fable)",
                                       usedPct: 41,
-                                      resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
+                                      resetsAt: now + 2 * day + 5 * hour),
                       ],
                       updatedAt: now),
             UsageInfo(source: "codex",
@@ -205,15 +214,15 @@ enum DemoData {
                           UsageWindow(id: "week",
                                       label: "Weekly (all models)",
                                       usedPct: 47,
-                                      resetsAt: now + 4 * 86_400_000 + 2 * 3_600_000),
+                                      resetsAt: now + 4 * day + 2 * hour),
                           UsageWindow(id: "session_gpt_6_astra",
                                       label: "Session (GPT-6-Astra)",
                                       usedPct: 22,
-                                      resetsAt: now + 96 * 60_000),
+                                      resetsAt: now + 96 * minute),
                           UsageWindow(id: "week_gpt_6_astra",
                                       label: "Weekly (GPT-6-Astra)",
                                       usedPct: 38,
-                                      resetsAt: now + 4 * 86_400_000 + 2 * 3_600_000),
+                                      resetsAt: now + 4 * day + 2 * hour),
                       ],
                       updatedAt: now),
         ]
