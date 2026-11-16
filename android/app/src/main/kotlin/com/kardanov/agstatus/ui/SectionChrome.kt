@@ -73,7 +73,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.kardanov.agstatus.AgentStatus
-import com.kardanov.agstatus.ProjectSection
 import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.Theme
@@ -215,16 +214,21 @@ private val LABEL_TEXT = 15.sp
  * alarm. It sits on the board's opaque ground so cards pass under it while it
  * sticks, and TalkBack hears one heading, "acme-api, 3 sessions", count
  * included even where the count is not drawn.
+ *
+ * Handed only what it draws, as plain values: its [title] (the section's),
+ * whether it [isNoProject], and how many sessions it holds ([count]). Handed
+ * the section, which carries its sessions and is made afresh on every hook
+ * event, every label in view ran again for a message on one card.
  */
 @Composable
-internal fun ProjectLabel(section: ProjectSection, modifier: Modifier = Modifier) {
+internal fun ProjectLabel(title: String, isNoProject: Boolean, count: Int, modifier: Modifier = Modifier) {
     val name = @Composable { nameModifier: Modifier ->
         Text(
-            text = section.title,
+            text = title,
             fontSize = LABEL_TEXT,
             lineHeight = 20.sp,
-            fontWeight = if (section.isNoProject) FontWeight.Normal else FontWeight.SemiBold,
-            color = if (section.isNoProject) Theme.textSecondary else Theme.textPrimary,
+            fontWeight = if (isNoProject) FontWeight.Normal else FontWeight.SemiBold,
+            color = if (isNoProject) Theme.textSecondary else Theme.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.MiddleEllipsis,
             modifier = nameModifier,
@@ -237,13 +241,13 @@ internal fun ProjectLabel(section: ProjectSection, modifier: Modifier = Modifier
             .padding(start = 2.dp, end = 2.dp, top = LABEL_TOP, bottom = LABEL_TO_CARD)
             .clearAndSetSemantics {
                 heading()
-                contentDescription = ProjectSections.labelDescription(section)
+                contentDescription = ProjectSections.labelDescription(title, count)
             },
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             name(Modifier.alignByBaseline())
             Text(
-                text = ProjectSections.sessionCount(section.sessions.size),
+                text = ProjectSections.sessionCount(count),
                 fontSize = 13.sp,
                 lineHeight = 20.sp,
                 style = LocalTextStyle.current.copy(fontFeatureSettings = "tnum"),
@@ -258,15 +262,32 @@ internal fun ProjectLabel(section: ProjectSection, modifier: Modifier = Modifier
 
 // MARK: - Needs-you bar
 
-/** What the bar says. [walks] is whether its verb is "Next" rather than "Show". */
+/**
+ * What the bar says, in its own words and nothing else: how many are
+ * [blocked], the [name] of the session it names and [where] it is
+ * (ProjectSections.barName, barWhere), and whether its verb is "Next" rather
+ * than "Show" ([walks]). Equal while the words are, so a hook event that
+ * leaves them as they were is not the bar's news. It held the session it
+ * names, made afresh on every event, and the bar ran again for a message on
+ * any card.
+ */
 internal data class BarReading(
     val blocked: Int,
-    val target: Session,
+    val name: String,
+    val where: String?,
     val walks: Boolean,
 ) {
-    val name: String get() = ProjectSections.barName(target)
-    val where: String? get() = ProjectSections.barWhere(target)
-    val said: String get() = ProjectSections.barDescription(blocked, target, walks)
+    val said: String get() = ProjectSections.barDescription(blocked, name, where, walks)
+
+    companion object {
+        /** The bar's words for [target], the card it names, with [blocked] cards blocked. */
+        fun of(blocked: Int, target: Session, walks: Boolean) = BarReading(
+            blocked = blocked,
+            name = ProjectSections.barName(target),
+            where = ProjectSections.barWhere(target),
+            walks = walks,
+        )
+    }
 }
 
 /** The board's ease (public/tokens.css `--ease`) and its `--d-mid`, as the subagent rows move. */

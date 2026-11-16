@@ -405,8 +405,10 @@ object ProjectSections {
     fun sessionCount(count: Int): String = if (count == 1) "1 session" else "$count sessions"
 
     /** What TalkBack hears for a label, the one heading per project: "acme-api, 3 sessions". */
-    fun labelDescription(section: ProjectSection): String =
-        "${section.title}, ${sessionCount(section.sessions.size)}"
+    fun labelDescription(section: ProjectSection): String = labelDescription(section.title, section.sessions.size)
+
+    /** A label's heading from what it draws: its [title] and how many sessions it holds. */
+    fun labelDescription(title: String, count: Int): String = "$title, ${sessionCount(count)}"
 
     /**
      * What the bar and the spoken alarm call a session: its name, or its
@@ -436,7 +438,11 @@ object ProjectSections {
      * (WCAG 2.5.3). No place, no comma for it.
      */
     fun barDescription(blocked: Int, target: Session, walks: Boolean): String =
-        listOfNotNull(barName(target), barWhere(target), if (walks) "Next" else "Show")
+        barDescription(blocked, barName(target), barWhere(target), walks)
+
+    /** The bar's accessible name from its own words: the session's [name], [where] it is, and the verb. */
+    fun barDescription(blocked: Int, name: String, where: String?, walks: Boolean): String =
+        listOfNotNull(name, where, if (walks) "Next" else "Show")
             .joinToString(", ", prefix = "$blocked blocked: ")
 
     /**

@@ -229,9 +229,13 @@ internal fun BoardScreen(
             },
         )
     }
-    val reading = remember(sections, shown) {
-        ProjectSections.barTarget(sections, shown)?.let { target ->
-            BarReading(
+    // The card the bar names, which its next press brings, and the bar's own
+    // words for it: only the words go to the bar, so an event that leaves
+    // them as they were is not the bar's news.
+    val barTarget = remember(sections, shown) { ProjectSections.barTarget(sections, shown) }
+    val reading = remember(sections, shown, barTarget) {
+        barTarget?.let { target ->
+            BarReading.of(
                 blocked = sections.sumOf { section -> section.sessions.count { it.isBlocked } },
                 target = target,
                 walks = ProjectSections.barWalks(sections, shown),
@@ -364,7 +368,7 @@ internal fun BoardScreen(
     // keeps a focus of its own, and a press has already sent the keyboard's
     // to the card it brought.
     val lastNamed = remember { LastNamed() }
-    SideEffect { reading?.let { lastNamed.id = it.target.id } }
+    SideEffect { barTarget?.let { lastNamed.id = it.id } }
     val readingNow by rememberUpdatedState(reading)
     val handFocusOn: () -> Unit = handOn@{
         if (lastNamed.handedOn) return@handOn
@@ -649,7 +653,9 @@ internal fun BoardScreen(
                                 for (section in sections) {
                                     stickyHeader(key = section.key, contentType = "label") {
                                         ProjectLabel(
-                                            section = section,
+                                            title = section.title,
+                                            isNoProject = section.isNoProject,
+                                            count = section.sessions.size,
                                             // A label that goes takes no fade:
                                             // its last card has already gone, by a
                                             // swipe or to another section.
