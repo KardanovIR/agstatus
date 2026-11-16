@@ -347,8 +347,12 @@ internal fun BoardScreen(
     // blocks fill a phone held sideways at large text, it goes to the first
     // block, which is. It goes as the bar starts to leave, while the bar
     // still holds it, or, with animations off, the moment the bar has gone.
-    // Nothing scrolls for it. TalkBack keeps a focus of its own, and a press
-    // has already sent the keyboard's to the card it brought.
+    // What takes it is brought into view as any focus in the list is
+    // (underLabel): nothing moves where it shows whole under the stuck
+    // label, and otherwise the list moves the least way that shows it, so a
+    // card partly under the label comes down to just under it. TalkBack
+    // keeps a focus of its own, and a press has already sent the keyboard's
+    // to the card it brought.
     val lastNamed = remember { LastNamed() }
     SideEffect { reading?.let { lastNamed.id = it.target.id } }
     val readingNow by rememberUpdatedState(reading)
