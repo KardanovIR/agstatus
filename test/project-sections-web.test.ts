@@ -583,6 +583,38 @@ describe('project sections', () => {
     expect(shown(b, 'acme-api')).toEqual(['acme-api', true]);       // "10 sessions": 80 + 66
   });
 
+  // And when its room changes with nothing drawn again: the window's width
+  // or the reader's text size (its ResizeObserver), or the webfonts
+  // arriving, which a cold load draws without, in a wider face. Here the
+  // label's line narrows under it each time.
+  it('fits a label again when it changes size or the webfonts arrive', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    let room = 200;
+    const drawn = (el: Element) => {
+      if (el.classList.contains('section-name')) return drawnLength(el.textContent!) * 10;
+      if (el.classList.contains('section-count')) return (el as HTMLElement).hidden ? 0 : el.textContent!.length * 6;
+      if (el.classList.contains('section-line')) return room;
+      return 0;
+    };
+    standIn(b, drawn, (el) => (el.classList.contains('section-name') ? Math.min(drawn(el), room) : drawn(el)));
+    b.emit('snapshot', [at('a', 1, { homeProject: 'acme-api' }), at('b', 2, { homeProject: 'acme-api' })]);
+    expect(shown(b, 'acme-api')).toEqual(['acme-api', false]);      // 80 + 60 in 200
+    room = 100;                                                       // the window narrows
+    FakeResizeObserver.fire();
+    expect(shown(b, 'acme-api')).toEqual(['acme-api', true]);
+    room = 200;                                                       // and widens
+    FakeResizeObserver.fire();
+    expect(shown(b, 'acme-api')).toEqual(['acme-api', false]);
+    room = 60;                                                        // the fonts come in
+    fontsArrive(b);
+    expect(shown(b, 'acme-api')).toEqual(['acm…pi', true]);
+    room = 200;
+    fontsArrive(b);
+    expect(shown(b, 'acme-api')).toEqual(['acme-api', false]);
+  });
+
   // Where a browser cannot find graphemes the cut falls back to code points:
   // there an accent can part from its letter, and a surrogate pair still
   // cannot be halved.
@@ -1397,11 +1429,18 @@ describe('the needs-you bar', () => {
   // and the session has the line under it. The name shrinks as a flex item
   // with no minimum width does: to nothing, and no further, so a place
   // wider than the line leaves it no box at all.
+  //
+  // A hidden bar has no width, as in a browser. The bar is painted before
+  // it is shown, so the first fit of a bar that has just appeared comes
+  // from its ResizeObserver once layout gives it a size: these tests watch
+  // sizes and fire it as it shows (`showBar`). A stand-in that gave the
+  // hidden bar a width fitted it at paint time, which a browser never does,
+  // and so the observer's fit could be deleted with every test still green.
   function layOutBar(b: Board, o: { name: number; where: number; word: number; line: number; alarm?: number; alarmRoom?: number; twoLines?: boolean }) {
     const has = (cls: string) => bar().classList.contains(cls);
     const alarm = () => (o.alarm ?? 40) + (has('drop-word') ? 0 : o.word);
     const drawn = (el: Element) => (el.classList.contains('needs-name') ? o.name
-      : el.classList.contains('needs-alarm') ? alarm() : el.id === 'needs' ? 1000 : 0);
+      : el.classList.contains('needs-alarm') ? alarm() : el.id === 'needs' ? ((el as HTMLElement).hidden ? 0 : 1000) : 0);
     standIn(b, drawn, (el) => {
       if (el.classList.contains('needs-name')) {
         return Math.max(0, Math.min(o.name, o.line - (has('drop-where') ? 0 : o.where) - (o.twoLines || has('drop-word') ? 0 : o.word)));
@@ -1417,6 +1456,11 @@ describe('the needs-you bar', () => {
     });
   }
   const gaveWay = () => ['drop-word', 'drop-where'].filter((c) => bar().classList.contains(c));
+  /** A board laid out as the bar shows: its observers fire, as a browser's do once layout has sized what they watch. */
+  const showBar = (b: Board, list: unknown[]) => {
+    b.emit('snapshot', list);
+    FakeResizeObserver.fire();
+  };
 
   it.each([
     // A name 0.3px too wide: whole pixels saw none of it, and CSS cut the
@@ -1435,9 +1479,10 @@ describe('the needs-you bar', () => {
       { name: 699.03, where: 735.44, word: 101.54, alarm: 47.38, line: 351, twoLines: true, alarmRoom: 267.78 }, ['drop-where']],
   ])('gives way as the spec orders it: %s', async (_what, o, expected) => {
     vi.useFakeTimers();
+    observeSizes();
     const b = await loadBoard();
     layOutBar(b, o);
-    b.emit('snapshot', [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
+    showBar(b, [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
     expect(gaveWay()).toEqual(expected);
   });
 
@@ -1459,10 +1504,28 @@ describe('the needs-you bar', () => {
     }],
   ])('drops the word before the place on one line, where the place leaves the name no room: %s', async (_what, o) => {
     vi.useFakeTimers();
+    observeSizes();
     const b = await loadBoard();
     layOutBar(b, o);
-    b.emit('snapshot', [blocked('a', 1, o.folder, { name: o.title })]);
+    showBar(b, [blocked('a', 1, o.folder, { name: o.title })]);
     expect(gaveWay()).toEqual(['drop-word', 'drop-where']);
+  });
+
+  // The usual way a bar appears: a card on a board already drawn becomes
+  // blocked. It is painted while still hidden, with no width to fit to, and
+  // fitted once layout gives it one. A bar that showed unfitted kept a
+  // project wider than a phone, and left the name no box at all.
+  it('fits a bar that has just appeared, once layout gives it a size', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    layOutBar(b, { name: 220.3, where: 80, word: 60, line: 300, twoLines: true });
+    showBar(b, [at('a', 1, { homeProject: 'acme-api', name: 'Fix the login redirect' }), at('c', 2, { homeProject: 'docs' })]);
+    expect(bar().hidden).toBe(true);
+    b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix the login redirect' }));
+    FakeResizeObserver.fire();   // the bar laid out, as it shows
+    expect(bar().hidden).toBe(false);
+    expect(gaveWay()).toEqual(['drop-where']);
   });
 
   // A cold load draws the bar in the fallback face, which is wider. Barlow
@@ -1470,10 +1533,11 @@ describe('the needs-you bar', () => {
   // fitted it again, so it kept dropping words that would now fit.
   it('fits itself again when the webfonts arrive', async () => {
     vi.useFakeTimers();
+    observeSizes();
     const b = await loadBoard();
     const o = { name: 165, where: 80, word: 60, line: 300 };
     layOutBar(b, o);
-    b.emit('snapshot', [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
+    showBar(b, [blocked('a', 1, 'acme-api', { name: 'Fix the login redirect' })]);
     expect(gaveWay()).toEqual(['drop-word']);
     o.name = 150;
     fontsArrive(b);
@@ -1481,6 +1545,95 @@ describe('the needs-you bar', () => {
     o.name = 240;
     fontsArrive(b);
     expect(gaveWay()).toEqual(['drop-word', 'drop-where']);
+  });
+
+  // While it shows, the page is padded by the bar's height, so nothing ends
+  // under it, and whatever is scrolled into view stops clear of it: both
+  // read --needs-h on the root (shell.css). Measured, as it shows and
+  // whenever it changes size, since it takes one line or two and grows with
+  // the reader's text.
+  it('pads the page by the bar\'s measured height while it shows', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard();
+    let height = 55;
+    Object.defineProperty(b.win.HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.id === 'needs' && !this.hidden ? height : 0; },
+    });
+    const needsH = () => document.documentElement.style.getPropertyValue('--needs-h');
+    b.emit('snapshot', [at('a', 1, { homeProject: 'acme-api' }), at('c', 2, { homeProject: 'docs' })]);
+    expect(needsH()).toBe('');
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    expect(needsH()).toBe('55px');                  // as it shows
+    expect(document.body.classList.contains('needs-up')).toBe(true);
+    height = 88;                                     // the reader's text grows
+    FakeResizeObserver.fire();
+    expect(needsH()).toBe('88px');
+    // Gone, it measures nothing: its last height stands, and the padding
+    // goes with the class that reads it.
+    b.emit('session', at('a', 0, { homeProject: 'acme-api' }));
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(true);
+    FakeResizeObserver.fire();
+    expect(needsH()).toBe('88px');
+    expect(document.body.classList.contains('needs-up')).toBe(false);
+  });
+
+  // A press scrolls only for a card that does not show whole below the
+  // stuck label and above the bar, and then brings it to the root's scroll
+  // padding under its label, in one step under reduced motion. jsdom has no
+  // scrollIntoView, so the stand-in records each call: a 375x812 window,
+  // the stuck label 34px tall, the bar 56.
+  describe('a press scrolls only for a card out of view', () => {
+    function layOutPress(b: Board, top: number, reduced = false) {
+      const scrolled: Array<[string | undefined, unknown]> = [];
+      b.win.Element.prototype.scrollIntoView = function (this: Element, how: unknown) {
+        scrolled.push([(this as HTMLElement).dataset.id, how]);
+      } as never;
+      b.win.Element.prototype.getBoundingClientRect = function (this: Element) {
+        const [t, h] = this.matches('.card[data-id="a"]') ? [top, 120] : [0, 0];
+        return { x: 0, y: t, top: t, left: 0, right: 343, bottom: t + h, width: 343, height: h };
+      } as never;
+      Object.defineProperty(b.win.HTMLElement.prototype, 'offsetHeight', {
+        configurable: true,
+        get(this: HTMLElement) { return this.matches('h2.section-label') ? 34 : this.id === 'needs' && !this.hidden ? 56 : 0; },
+      });
+      Object.assign(window, {
+        innerHeight: 812,
+        matchMedia: (q: string) => ({ media: q, matches: reduced && q === '(prefers-reduced-motion: reduce)', addEventListener() {}, removeEventListener() {} }),
+      });
+      return scrolled;
+    }
+    async function press(top: number, reduced = false) {
+      const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+      const scrolled = layOutPress(b, top, reduced);
+      b.click(bar());
+      expect(document.activeElement).toBe(titleOf(b, 'a'));
+      expect(card(b, 'a').classList.contains('is-ringed')).toBe(true);
+      return scrolled;
+    }
+
+    it.each([
+      ['whole between the label and the bar', 300],
+      ['just clear of the label', 34],
+      ['just clear of the bar', 812 - 56 - 120],
+    ])('leaves the page still for a card %s', async (_where, top) => {
+      expect(await press(top)).toEqual([]);
+    });
+
+    it.each([
+      ['partly under the stuck label', 20],
+      ['partly under the bar', 700],
+      ['below the window', 1500],
+      ['above the window', -400],
+    ])('brings a card %s to the top of its section', async (_where, top) => {
+      expect(await press(top)).toEqual([['a', { block: 'start', behavior: 'smooth' }]]);
+    });
+
+    it('brings it in one step under reduced motion', async () => {
+      expect(await press(1500, true)).toEqual([['a', { block: 'start', behavior: 'auto' }]]);
+    });
   });
 
   // A keyboard reaches the bar before the cards it leads to, as a real
