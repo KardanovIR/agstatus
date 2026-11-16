@@ -2628,7 +2628,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>name</code></td>
 <td>string</td>
 <td>no</td>
-<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Composed to Unicode NFC, then truncated to 120 chars. An empty <code>name</code> counts as omitted, and since 1.7.0 so does one that is white space alone once control characters are stripped and it is truncated (what JavaScript&#39;s <code>trim()</code> removes, and U+0085), as 120 spaces and then a word is: no board is sent a blank name, and a card an older server stored with one is named by its <code>session_id</code> as it loads. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
+<td>Human-readable title. Defaults to <code>session_id</code> if omitted (and never yet set — on update an omitted <code>name</code> carries the stored one forward). Cut to 512 UTF-16 units, composed to Unicode NFC, then truncated to 120 (see <a href="#api-limits">Limits</a>). An empty <code>name</code> counts as omitted, and since 1.7.0 so does one that is white space alone once control characters are stripped and it is truncated (what JavaScript&#39;s <code>trim()</code> removes, and U+0085), as 120 spaces and then a word is: no board is sent a blank name, and a card an older server stored with one is named by its <code>session_id</code> as it loads. The bundled Node hook sends a Claude Code session&#39;s own title when it has one (the Claude desktop app titles every session, <code>/rename</code> titles one in the CLI; never in minimal mode), otherwise the folder it pinned at <code>SessionStart</code> — the name a session is given there is the name it keeps, even if the session later changes directory — and the agent&#39;s name (<code>Claude</code>, <code>Codex</code>) for a session with no folder at all. It holds folder and title in a small local map and re-sends the name on every post rather than leaning on carry-forward; a folder pin on file wins over any later <code>SessionStart</code> for the same id, so <code>/compact</code>, <code>/clear</code> and <code>--resume</code> leave it alone, while a renamed session renames its card. See <a href="#hooks-card-names-and-projects">Card names and projects</a>.</td>
 </tr>
 <tr>
 <td><code>message</code></td>
@@ -2640,7 +2640,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>project</code></td>
 <td>string</td>
 <td>no</td>
-<td>Project or repo the session is working on. Composed to Unicode NFC, then truncated to 120 chars. Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder. The server keeps the first usable one as the session&#39;s <a href="#api-the-session-object"><code>homeProject</code></a>, which no later post moves.</td>
+<td>Project or repo the session is working on. Cut to 512 UTF-16 units, composed to Unicode NFC, then truncated to 120 (see <a href="#api-limits">Limits</a>). Unlike <code>name</code>, the bundled hooks recompute it from the session&#39;s live working directory on every post, so after a <code>cd</code> the two legitimately disagree — the card keeps its original name while <code>project</code> follows the session. Per-project spend depends on that; see <a href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a>. The Node hook reports a working directory that is exactly a Claude worktree root, <code>&lt;repo&gt;/.claude/worktrees/&lt;name&gt;</code>, as <code>&lt;repo&gt;</code> — on the card only: the per-project usage rows still file that worktree&#39;s spend under its own folder. The server keeps the first usable one as the session&#39;s <a href="#api-the-session-object"><code>homeProject</code></a>, which no later post moves.</td>
 </tr>
 <tr>
 <td><code>source</code></td>
@@ -3789,10 +3789,16 @@ shuts down gets <code>503</code>.</p>
 <td><code>413</code>.</td>
 </tr>
 </tbody></table></div>
-<p>In both modes: <code>name</code>/<code>project</code> are composed to Unicode NFC and truncate to
-120 chars, <code>message</code> to 300, <code>host.machine.name</code>/<code>host.app.name</code> to 32;
-control characters are stripped. Push alerts per (session, kind) are
-debounced to one per minute.</p>
+<p>In both modes: <code>name</code>/<code>project</code> are cut to 512 UTF-16 units, composed to
+Unicode NFC, then truncated to 120 chars, <code>message</code> to 300,
+<code>host.machine.name</code>/<code>host.app.name</code> to 32; control characters are stripped.
+The first cut bounds the work of composing, which grows with the square of
+a run of combining marks. Nothing the bundled hooks send is that long, and a
+composed character stands for at most four UTF-16 units, so the 120 kept
+never come from more than the first 480: only a raw post with a run of more
+than about 30 combining marks across unit 480 can come out other than it
+would if all of it were composed, and then still in NFC and within 120. Push
+alerts per (session, kind) are debounced to one per minute.</p>
 <p><a href="#api-subagents">Subagents</a> are bounded in both modes too:</p>
 <div class="table-wrap"><table>
 <thead>

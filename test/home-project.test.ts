@@ -17,6 +17,7 @@ import {
   sql,
 } from './helpers';
 import {
+  COMPOSE_MAX,
   DROPPED_HOME_TTL_MS,
   homeProjectFor,
   isBlankName,
@@ -30,6 +31,7 @@ import {
   Store,
   UUID_FOLDER_RE,
 } from '../src/store';
+import { safeClip, wellFormed } from '../src/subtasks';
 
 // The board grouped by project (docs/design/project-sections.md, "Wire
 // contract"). Every session goes out with `homeProject`: the first usable
@@ -522,6 +524,177 @@ describe('a name and a folder in Unicode NFC', () => {
   });
 });
 
+// A name or folder is cut to COMPOSE_MAX before it is composed, and to 120
+// after. Composing puts each run of combining marks in canonical order, and
+// ICU's sort takes time that grows with the square of the run: composed
+// whole, a 16 KB post of marks in the worst order held the server's one
+// thread for about 60 ms. Nothing here times anything, which would flake on
+// a loaded machine: the tests watch what String.prototype.normalize is
+// handed instead.
+
+/**
+ * One combining mark for each of 37 canonical combining classes, from 240
+ * down to 1, each two bytes in UTF-8 and left as it is by NFC. Composing
+ * sorts a run of marks by class, and in this order every mark has to pass
+ * every mark of a higher class before it: the most sorting there is.
+ */
+const WORST_ORDER = [
+  0x0345, 0x035d, 0x035c, 0x0315, 0x0300, 0x05ae, 0x059a, 0x0316, 0x031b, 0x0321,
+  0x0711, 0x0670, 0x0652, 0x0651, 0x061a, 0x0619, 0x0618, 0x064d, 0x064c, 0x064b,
+  0x05c2, 0x05c1, 0x05bf, 0x05bd, 0x05bc, 0x05bb, 0x05b9, 0x05b8, 0x05b7, 0x05b6,
+  0x05b5, 0x05b4, 0x05b3, 0x05b2, 0x05b1, 0x05b0, 0x0334,
+].map((unit) => String.fromCharCode(unit));
+
+/** An underscore, then `each` of every WORST_ORDER mark in turn. */
+const worstOrder = (each: number): string => `_${WORST_ORDER.map((mark) => mark.repeat(each)).join('')}`;
+
+/** The most a request body may hold (express.json in app.ts), in bytes. */
+const BODY_MAX = 16 * 1024;
+
+/** A webhook body whose name and folder are the most worst-order marks BODY_MAX holds. */
+function worstOrderBody(id: string): Json {
+  const body = (each: number) => webhookBody(id, { name: worstOrder(each), project: worstOrder(each) });
+  let each = 1;
+  while (Buffer.byteLength(JSON.stringify(body(each + 1))) <= BODY_MAX) each += 1;
+  return body(each);
+}
+
+/** sessionText as 1.7.0 first had it: all of the value composed, then cut to 120. */
+const composedWhole = (v: string): string =>
+  safeClip(wellFormed(v.replace(/[\u0000-\u001F\u007F]/g, '')).normalize('NFC'), SESSION_NAME_MAX);
+
+const isNfc = (s: string): boolean => s === s.normalize('NFC');
+
+/** The length, in UTF-16 units, of every string String.prototype.normalize is handed while `run` runs. */
+async function composedLengths(run: () => unknown): Promise<number[]> {
+  const lengths: number[] = [];
+  const normalize = String.prototype.normalize;
+  const spy = vi.spyOn(String.prototype, 'normalize').mockImplementation(function (this: string, form?: string) {
+    lengths.push(this.length);
+    return normalize.call(this, form);
+  } as typeof normalize);
+  try {
+    await run();
+  } finally {
+    spy.mockRestore();
+  }
+  return lengths;
+}
+
+describe('a long name or folder, cut before it is composed', () => {
+  it('builds the worst order from marks in descending combining class', () => {
+    // Composing swaps every pair of neighbours: the second sorts first.
+    for (let i = 1; i < WORST_ORDER.length; i += 1) {
+      const [first, second] = [WORST_ORDER[i - 1], WORST_ORDER[i]];
+      expect(`_${first}${second}`.normalize('NFC'), `mark ${i}`).toBe(`_${second}${first}`);
+    }
+  });
+
+  it('never hands normalize more than COMPOSE_MAX units, given 16 KB of marks in the worst order', async () => {
+    const sent = worstOrder(Math.floor((BODY_MAX - 1) / 2 / WORST_ORDER.length));
+    expect(Buffer.byteLength(sent)).toBeGreaterThan(BODY_MAX - 4 * WORST_ORDER.length);
+    let text = '';
+    let name = '';
+    const lengths = await composedLengths(() => {
+      text = sessionText(sent);
+      name = sessionName(sent);
+    });
+    expect(lengths.length).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...lengths)).toBeLessThanOrEqual(COMPOSE_MAX);
+    for (const kept of [text, name]) {
+      expect(kept).toHaveLength(SESSION_NAME_MAX);
+      expect(isNfc(kept)).toBe(true);
+    }
+  });
+
+  it.each([
+    ['/w/:token/webhook', true],
+    ['/webhook', false],
+  ])('keeps a 16 KB post of marks in the worst order in NFC and cut to 120 on %s, composing no more than COMPOSE_MAX of it', async (_route, multiTenant) => {
+    const sent = worstOrderBody('worst');
+    expect(Buffer.byteLength(JSON.stringify(sent))).toBeGreaterThan(BODY_MAX - 8 * WORST_ORDER.length);
+    const t = makeApp({ multiTenant });
+    await t.ready;
+    const root = multiTenant ? `/w/${await createWorkspace(t.app)}` : '';
+    let reply: Json = {};
+    const lengths = await composedLengths(async () => {
+      reply = (await request(t.app).post(`${root}/webhook`).send(sent).expect(200)).body.session;
+    });
+    expect(lengths.length).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...lengths)).toBeLessThanOrEqual(COMPOSE_MAX);
+    const listed = ((await request(t.app).get(`${root}/api/sessions`).expect(200)).body as Json[]).find((s) => s.id === 'worst')!;
+    for (const kept of [reply.name, reply.project, reply.homeProject, listed.name, listed.project, listed.homeProject]) {
+      expect(kept).toHaveLength(SESSION_NAME_MAX);
+      expect(isNfc(kept)).toBe(true);
+    }
+  });
+
+  it('keeps what composing all of it would keep, for text as people write it, longer than COMPOSE_MAX in every form', () => {
+    // Each letter of polytonic Greek whose decomposition is four units: an
+    // alpha, eta or omega with a breathing, an accent and the iota subscript.
+    // 120 of them decomposed are 480 units, the most 120 units kept come from.
+    const greek = [0x1f82, 0x1f8a, 0x1f92, 0x1f9a, 0x1fa2, 0x1faa]
+      .flatMap((first) => [0, 1, 2, 3, 4, 5].map((k) => String.fromCodePoint(first + k)))
+      .join('');
+    for (const letter of greek) expect(letter.normalize('NFD'), letter).toHaveLength(4);
+    // Ten marks on every letter, above, through and below it, as Zalgo text
+    // generators stack them; some compose with the letter, all are reordered.
+    const ZALGO = ['\u0301', '\u0316', '\u0334', '\u0308', '\u0323', '\u030a', '\u0327', '\u0336', '\u0300', '\u0331', '\u0342', '\u0359', '\u0345'];
+    const zalgo = [...'AgStatus board, quite unreadable; '.repeat(4)]
+      .map((letter, i) => letter + Array.from({ length: 10 }, (_, j) => ZALGO[(3 * i + 5 * j) % ZALGO.length]).join(''))
+      .join('');
+    // Devanagari's nukta letters, U+0958 to U+095F, come precomposed from
+    // some keyboards, and NFC decomposes them: composing lengthens this text.
+    const hindi = '\u095b\u093f\u0902\u0926\u0917\u0940 \u0915\u0940 \u095e\u093f\u0932\u094d\u092e, \u0958\u093f\u0932\u0947 \u0915\u0940 \u0959\u092c\u0930, \u095a\u095b\u0932, \u0938\u095c\u0915 \u0914\u0930 \u092a\u095d\u093e\u0908\u0964 ';
+    expect(hindi.normalize('NFC').length).toBeGreaterThan(hindi.length);
+    const texts: Array<[string, string]> = [
+      ['Vietnamese', 'D\u1ef1 \u00e1n qu\u1ea3n l\u00fd c\u00f4ng vi\u1ec7c: ph\u1edf b\u00f2 t\u00e1i ch\u00edn, b\u00e1nh m\u00ec th\u1ecbt n\u01b0\u1edbng, c\u00e0 ph\u00ea s\u1eefa \u0111\u00e1 \u1edf H\u00e0 N\u1ed9i, Hu\u1ebf, \u0110\u00e0 N\u1eb5ng v\u00e0 Th\u00e0nh ph\u1ed1 H\u1ed3 Ch\u00ed Minh; t\u00ean th\u01b0 m\u1ee5c b\u1eb1ng ti\u1ebfng Vi\u1ec7t c\u00f3 d\u1ea5u. '.repeat(4)],
+      ['polytonic Greek', greek.repeat(15)],
+      ['Hangul', '\ud55c\uad6d\uc5b4 \ud504\ub85c\uc81d\ud2b8 \uc800\uc7a5\uc18c\uc758 \uc791\uc5c5 \ubaa9\ub85d\uacfc \ube4c\ub4dc \uc2a4\ud06c\ub9bd\ud2b8, \uadf8\ub9ac\uace0 \ubc30\ud3ec \uc124\uc815 \ud30c\uc77c\uc785\ub2c8\ub2e4. '.repeat(14)],
+      ['Devanagari with nukta', hindi.repeat(14)],
+      ['emoji ZWJ sequences', '\u{1F469}\u200d\u{1F4BB} \u{1F468}\u200d\u{1F469}\u200d\u{1F467}\u200d\u{1F466} \u{1F3F3}\ufe0f\u200d\u{1F308} \u{1F9D1}\u{1F3FD}\u200d\u{1F680} \u{1F44D}\u{1F3FD} \u2764\ufe0f\u200d\u{1F525} '.repeat(14)],
+      ['Zalgo, ten marks a letter', zalgo],
+    ];
+    for (const [script, text] of texts) {
+      // Shifted a unit at a time, so each cut lands at every place in a
+      // letter's sequence of units, and in a surrogate pair.
+      for (let shift = 0; shift <= 11; shift += 1) {
+        const pad = 'x'.repeat(shift);
+        const forms: Array<[string, string]> = [
+          ['as written', pad + text],
+          ['NFD', pad + text.normalize('NFD')],
+          ['NFC', pad + text.normalize('NFC')],
+        ];
+        for (const [form, sent] of forms) {
+          const what = `${script}, ${form}, shifted ${shift}`;
+          expect(sent.length, what).toBeGreaterThan(COMPOSE_MAX);
+          expect(sessionText(sent), what).toBe(composedWhole(sent));
+        }
+        // One folder in two forms is one name.
+        expect(sessionText(forms[1][1]), `${script}, shifted ${shift}`).toBe(sessionText(forms[2][1]));
+      }
+    }
+  });
+
+  it('keeps other than composing all of it would for a run of marks across the cut, as accepted, still in NFC and within 120 units', () => {
+    // A letter, 600 overlay marks, then its acute: one run of 601 marks
+    // across unit 512. Composed whole, the acute reaches the letter past the
+    // overlays, of a lower class; cut first, it is gone before composing.
+    const sent = `e${'\u0334'.repeat(600)}\u0301`;
+    expect(composedWhole(sent)).toBe(`\u00e9${'\u0334'.repeat(SESSION_NAME_MAX - 1)}`);
+    const kept = sessionText(sent);
+    expect(kept).toBe(`e${'\u0334'.repeat(SESSION_NAME_MAX - 1)}`);
+    expect(isNfc(kept)).toBe(true);
+    expect(kept.length).toBeLessThanOrEqual(SESSION_NAME_MAX);
+    // The shortest such run: 119 letters of four units each (476), then a
+    // letter and 35 marks fill the cut, and the acute past it would have
+    // composed into the last unit kept.
+    const shortest = `${'\u1f84'.normalize('NFD').repeat(119)}e${'\u0334'.repeat(35)}\u0301`;
+    expect(composedWhole(shortest)).toBe(`${'\u1f84'.repeat(119)}\u00e9`);
+    expect(sessionText(shortest)).toBe(`${'\u1f84'.repeat(119)}e`);
+  });
+});
+
 // A name of white space alone is no name, as an empty one already was: the
 // session keeps the name it had, or its card is named by its id. Before, one
 // was served as sent, and a board read the card after its agent as "Codex,"
@@ -849,6 +1022,26 @@ describe.skipIf(!TEST_PG_URL)('homeProject on disk (PostgreSQL)', () => {
       { id: 'named', name: 'Fix the login redirect' },
       { id: 'spaces', name: 'spaces' },
     ]);
+  });
+
+  it('stores a 16 KB name and folder of marks in the worst order as it serves them: in NFC, cut to 120', async () => {
+    const t = makeApp({ databaseUrl: dbUrl });
+    await t.ready;
+    let served: Json = {};
+    try {
+      const token = await createWorkspace(t.app);
+      served = await post(t.app, token, 'worst', worstOrderBody('worst'));
+      await t.store.flush();
+    } finally {
+      await t.shutdown();
+    }
+    const stored = await sql<{ name: string; project: string; home_project: string }>(
+      dbUrl, `SELECT name, project, home_project FROM sessions WHERE id = 'worst'`);
+    expect(stored).toEqual([{ name: served.name, project: served.project, home_project: served.homeProject }]);
+    for (const kept of Object.values(stored[0])) {
+      expect(kept).toHaveLength(SESSION_NAME_MAX);
+      expect(isNfc(kept)).toBe(true);
+    }
   });
 });
 

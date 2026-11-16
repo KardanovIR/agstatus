@@ -22,7 +22,6 @@ import {
   toWireSubtasks,
   trimmed,
   TurnHint,
-  wellFormed,
   WireSubtasks,
 } from './subtasks';
 
@@ -133,8 +132,12 @@ export const UUID_FOLDER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
  * server keeps (sessionText): a section is a folder name, nothing more. NFC
  * here as well, so a home read back from a row an older server wrote, or
  * worked out from its project, is held to the same form as one posted now.
- * Every board applies this same rule to a session's homeProject and to its
- * fallback, project (docs/design/project-sections.md, "Wire contract").
+ * All of it is composed, unlike a post, because none of it is a post as
+ * sent: it is a project sessionText has cut to SESSION_NAME_MAX, or a home
+ * or project the store holds or loads, which is at most three times that
+ * (init says why, where it loads the rows). Every board applies this same
+ * rule to a session's homeProject and to its fallback, project
+ * (docs/design/project-sections.md, "Wire contract").
  */
 export function normalizeProject(project: string): string {
   const name = project.trim();
@@ -145,24 +148,46 @@ export function normalizeProject(project: string): string {
 export const SESSION_NAME_MAX = 120;
 
 /**
+ * The most of a posted name or project the server composes: sessionText cuts
+ * the value to this many UTF-16 units before it composes it, and to
+ * SESSION_NAME_MAX after.
+ */
+export const COMPOSE_MAX = 512;
+
+/**
  * A session's name or project as the server keeps it and every board gets
- * it: control characters and unpaired surrogates out, then Unicode NFC, then
- * cut to SESSION_NAME_MAX without splitting a pair (safeClip). One folder can
- * reach the server in two forms: a folder made in the macOS Finder is often
- * named decomposed (NFD, an e and then its accent), a Linux checkout of the
- * same repository composed (NFC, one é), and the boards compare names by
- * UTF-16 code unit, by which the two are two sections. Composed here they are
- * one, on every board. A project is kept as this leaves it; a name goes on
- * through sessionName.
+ * it: control characters and unpaired surrogates out, cut to COMPOSE_MAX,
+ * then Unicode NFC, then cut to SESSION_NAME_MAX. Neither cut splits a pair
+ * (safeClip), and the first takes every unpaired surrogate out of the whole
+ * value before it cuts. One folder can reach the server in two forms: a
+ * folder made in the macOS Finder is often named decomposed (NFD, an e and
+ * then its accent), a Linux checkout of the same repository composed (NFC,
+ * one é), and the boards compare names by UTF-16 code unit, by which the two
+ * are two sections. Composed here they are one, on every board. A project is
+ * kept as this leaves it; a name goes on through sessionName.
  *
  * In this order because each step needs the one before it. A control
  * character or a lone surrogate between a letter and its accent keeps the
  * two from composing. Composing can lengthen a name, since a few characters
- * (U+0958, say) are always decomposed, and the cut is the bound every size
- * that counts a name relies on.
+ * (U+0958, say) are always decomposed, and the last cut is the bound every
+ * size that counts a name relies on.
+ *
+ * The first cut bounds what composing costs. Composing puts each run of
+ * combining marks in canonical order, and ICU's sort takes time that grows
+ * with the square of the run: a 16 KB post of an underscore and then about
+ * 8,000 marks in the worst order held the one thread every board shares for
+ * about 60 ms when all of it was composed, against well under a millisecond
+ * for its first 512 units. And 512 loses nothing a name needs. A composed
+ * character stands for at most four UTF-16 units (polytonic Greek: an alpha
+ * with psili, oxia and ypogegrammeni is four), so the 120 units kept never
+ * come from more than the first 480, and nothing a hook sends reaches 512 at
+ * all: a folder name is at most 255 bytes, and the Node hook cuts a title to
+ * 120 units. Only a raw post whose run of more than about 30 combining marks
+ * straddles unit 480 can come out other than it would if all of it were
+ * composed, and it still comes out in NFC and within 120 units.
  */
 export function sessionText(v: string): string {
-  return safeClip(wellFormed(v.replace(CONTROL_CHARS_RE, '')).normalize('NFC'), SESSION_NAME_MAX);
+  return safeClip(safeClip(v.replace(CONTROL_CHARS_RE, ''), COMPOSE_MAX).normalize('NFC'), SESSION_NAME_MAX);
 }
 
 /**
@@ -1093,11 +1118,16 @@ export class Store {
       // In Unicode NFC, as every name posted now is kept (sessionText): a row
       // an older server wrote holds them as they were sent. Composed, not cut
       // again: the server that wrote the row cut them, and a session that
-      // never posted a name is named by its id, up to 128 characters. An
-      // older server also kept a name of white space alone as it was sent;
-      // that is no name (isBlankName), so the card is named by its id, as a
-      // post of it would leave a new card, until the session posts a name.
-      // In memory only, like the composing: loading writes nothing.
+      // never posted a name is named by its id, up to 128 characters. So all
+      // of each is composed, and that costs little: every server that has
+      // written a row cut a posted name and project to 120 units, composing
+      // makes at most three units of one (U+FB2C, say), so no row holds more
+      // than 360, and a run of marks that short is put in order in no time
+      // worth counting (sessionText says what a long one costs). An older
+      // server also kept a name of white space alone as it was sent; that is
+      // no name (isBlankName), so the card is named by its id, as a post of
+      // it would leave a new card, until the session posts a name. In memory
+      // only, like the composing: loading writes nothing.
       const project = (row.project as string).normalize('NFC');
       const name = (row.name as string).normalize('NFC');
       const session: Session = {
