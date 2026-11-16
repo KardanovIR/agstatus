@@ -94,6 +94,13 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -340,7 +347,9 @@ internal fun BoardScreen(
     // needs-you bar, then the cards. BoardBody places them so while the
     // blocks are pinned. Leading the list, the blocks are in it, before its
     // cards, and with the bar up Tab would reach the bar first, so these say
-    // where Tab goes among the four, each only to what is composed.
+    // where Tab goes among the four, each only to what is composed; Shift+Tab
+    // from the bar brings the blocks back to be composed first (the bar's
+    // key handler).
     val tabsAround = usageLeads && reading != null
     val settingsFocus = remember { FocusRequester() }
     val usageFirst = remember { FocusRequester() }
@@ -560,11 +569,34 @@ internal fun BoardScreen(
                             // Gone at once, animations off: it lost the focus going.
                             if (lost && readingNow == null) handFocusOn()
                         }
-                        .focusProperties {
-                            if (tabsAround) {
-                                if (usageComposed) previous = usageLast
-                                if (firstCardComposed) next = firstCardFocus
+                        // Back from the bar, Shift+Tab goes to the last usage
+                        // block, in view. Leading the list, the blocks are its
+                        // first item, which the list composes only near its
+                        // top, so from a list Tabbed on into its cards the
+                        // search found none of them: the focus went to the top
+                        // bar's Settings, past every block, or, on a device, to
+                        // the last block laid out beyond the list's bounds and
+                        // never brought into view, where Enter opened a usage
+                        // screen the reader could not see. So the list goes
+                        // back to its top, as a fresh board has it, and the
+                        // last block takes the focus there (FocusInBlocks), as
+                        // the blocks hand Tab on to the first card the other
+                        // way. Not from the bar's focusProperties, which focus
+                        // search reads more than once a move.
+                        .onPreviewKeyEvent { event ->
+                            if (tabsAround && event.type == KeyEventType.KeyDown && event.isBackTab()) {
+                                scope.launch {
+                                    listState.scrollToItem(0)
+                                    withFrameNanos { }
+                                    runCatching { usageLast.requestFocus() }
+                                }
+                                true
+                            } else {
+                                false
                             }
+                        }
+                        .focusProperties {
+                            if (tabsAround && firstCardComposed) next = firstCardFocus
                         },
                 )
             },
@@ -1040,6 +1072,9 @@ internal fun focusAfterBar(layout: LazyListLayoutInfo, named: String?, labelPx: 
     }
     return (inView.firstOrNull { it.key == named } ?: inView.firstOrNull())?.key as? String
 }
+
+/** Shift+Tab, or a keyboard's own key for the control before: a step back in Tab's order. */
+private fun KeyEvent.isBackTab(): Boolean = key == Key.NavigatePrevious || (key == Key.Tab && isShiftPressed)
 
 /** TalkBack, or another service that explores by touch, is on. */
 private fun touchExploration(context: Context): Boolean =

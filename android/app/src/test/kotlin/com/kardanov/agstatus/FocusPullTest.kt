@@ -128,6 +128,10 @@ class FocusPullTest {
         it.config.getOrNull(SemanticsProperties.ContentDescription)?.firstOrNull() == text
     }
 
+    private val bar = SemanticsMatcher("the needs-you bar") {
+        it.config.getOrNull(SemanticsActions.OnClick)?.label == "show that session"
+    }
+
     /** How far below the list's top what says [text] stands, in dp. */
     private fun belowListTop(text: String): Float {
         val list = rule.onNode(hasScrollToIndexAction()).fetchSemanticsNode().boundsInRoot.top
@@ -191,6 +195,30 @@ class FocusPullTest {
     }
 
     @Test
+    fun `Shift+Tab from the bar back into the blocks puts the list at its top and pulls nothing`() {
+        // The bar up, the list scrolled until the first label sticks, the
+        // blocks out of view above it, and the keyboard's focus on the bar.
+        launch(listOf(card(1, "aaa", status = AgentStatus.BLOCKED)) + board.drop(1))
+        rule.onRoot().performKeyInput { pressKey(Key.Tab) }
+        rule.waitForIdle()
+        rule.onNode(hasScrollToIndexAction()).performScrollToIndex(1)
+        rule.waitForIdle()
+        rule.onNode(bar).performSemanticsAction(SemanticsActions.RequestFocus)
+        rule.waitForIdle()
+        assertTrue("on the bar: ${focused()}", focused().single().startsWith("1 blocked: Card 1"))
+
+        rule.onRoot().performKeyInput { withKeyDown(Key.ShiftLeft) { pressKey(Key.Tab) } }
+        rule.waitForIdle()
+
+        assertEquals(listOf("Codex, 2 sessions"), focused())
+        assertEquals(emptyList<String>(), pulled())
+        assertEquals(10f, blocksBelowListTop(), 0.5f)
+        rule.mainClock.advanceTimeBy(3_000)
+        rule.waitForIdle()
+        assertEquals(emptyList<String>(), pulled())
+    }
+
+    @Test
     fun `focus moving on from the blocks to the first card pulls nothing`() {
         // Back into the blocks, then on again: Tab from the last block to the
         // first card, which the room under the label takes again.
@@ -225,9 +253,6 @@ class FocusPullTest {
     @Config(qualifiers = "w411dp-h914dp-xxhdpi")
     fun `the bar bringing the first card with the list at its top pulls nothing (fc1a4cd)`() {
         launch(listOf(card(1, "aaa", status = AgentStatus.BLOCKED)) + board.drop(1))
-        val bar = SemanticsMatcher("the needs-you bar") {
-            it.config.getOrNull(SemanticsActions.OnClick)?.label == "show that session"
-        }
 
         rule.onNode(bar).performSemanticsAction(SemanticsActions.OnClick)
         rule.waitForIdle()
