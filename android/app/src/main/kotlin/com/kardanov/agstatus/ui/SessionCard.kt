@@ -280,10 +280,15 @@ private fun breakAfterHyphens(name: String): String = name.replace("-", "-\u200B
  * trades the glyph for a question: "? CODING", what the board last heard,
  * which it can no longer vouch for. Not a clock, which is idle's glyph, nor an
  * exclamation mark, which is blocked's. The "?" is drawn in the glyph's own
- * 14dp box, at its trailing edge beside the word, so the mark is exactly as
- * wide as it was: beside the name on a card, and beside the directory in the
+ * box, at its trailing edge beside the word, so the mark is exactly as wide
+ * as it was: beside the name on a card, and beside the directory in the
  * history header, nothing re-wraps or cuts differently when the clock crosses
  * the line. TalkBack hears "Coding, no update for 14 minutes".
+ *
+ * The glyph grows with the reader's text, 14dp at the default size, as the
+ * bar's mark and the meta line's do. At a fixed 14dp it was half the height
+ * of its word at 200%, and the shape is what carries the state besides its
+ * hue, read from the corner of an eye.
  *
  * The history screen draws this too, so the screen a card opens shows its "?".
  */
@@ -293,6 +298,7 @@ internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
     val status = session.displayStatus
     val color = Theme.colorFor(status)
     val said = spokenStatus(session, stale, nowMillis)
+    val glyph = textDp(14.sp)
     Row(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -306,19 +312,19 @@ internal fun StatusMark(session: Session, stale: Boolean, nowMillis: Long) {
             // (2 to 22: idle, coding, blocked, done) or 1.75dp (2.5 or 3 to
             // 21: planning, testing). Moved 2.6dp it ends 1.21dp short and
             // stands as far from the word as they do; the box, and so the
-            // row, keeps its width.
+            // row, keeps its width. All of it in proportion as the box grows.
             Icon(
                 imageVector = Icons.Outlined.QuestionMark,
                 contentDescription = null,
                 tint = color,
-                modifier = Modifier.size(14.dp).offset(x = 2.6.dp),
+                modifier = Modifier.size(glyph).offset(x = glyph * (2.6f / 14f)),
             )
         } else {
             Icon(
                 imageVector = Theme.iconFor(status),
                 contentDescription = null,
                 tint = color,
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(glyph),
             )
         }
         Text(
