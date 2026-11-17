@@ -10,6 +10,7 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onRoot
@@ -30,6 +31,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import kotlin.math.abs
 
 /**
  * Shift+Tab from the needs-you bar reaches the last usage block, whole in
@@ -224,6 +226,44 @@ class ShiftTabFromBarTest {
         tab(back = true)
 
         assertFocusedWholeInTheList("Gemini, 2 sessions")
+    }
+
+    @Test
+    @Config(qualifiers = "w914dp-h300dp-land-xxhdpi")
+    fun `sideways at twice the text size, Shift+Tab from the bar to a last block already in view moves no list`() {
+        // At 200% the blocks lead the list and stand taller than it: a Tab
+        // onto Gemini's, the last, scrolls the list until it shows, and Tab on
+        // to the bar leaves the list there. A phone held sideways, less the
+        // status and navigation bars a device draws and Robolectric does not:
+        // 411dp tall here, Gemini's block fits at the list's top.
+        RuntimeEnvironment.setFontScale(2f)
+        launch()
+        assertTheBlocksLeadTheList()
+        tab()
+        rule.onNode(hasContentDescription("Settings")).performSemanticsAction(SemanticsActions.RequestFocus)
+        repeat(4) { tab() }
+        assertFocusedWholeInTheList("Gemini, 2 sessions")
+        val standing = blocksBelowListTop()
+        assertTrue("the Tab onto Gemini's block scrolled the list: Claude's $standing dp below its top", standing < 9f)
+        tab()
+        rule.onNode(bar).assertIsFocused()
+        assertEquals(standing, blocksBelowListTop(), 0.5f)
+
+        // Back, frame by frame: the list holds still, and Claude's block never
+        // stands at its top. Sent there first, the list jumped up a frame,
+        // then glided back to where it stood.
+        rule.mainClock.autoAdvance = false
+        rule.onRoot().performKeyInput { withKeyDown(Key.ShiftLeft) { pressKey(Key.Tab) } }
+        val frames = List(30) {
+            rule.mainClock.advanceTimeByFrame()
+            blocksBelowListTop()
+        }
+        rule.mainClock.autoAdvance = true
+        rule.waitForIdle()
+
+        assertTrue("the list held still, Claude's block at $standing dp: $frames", frames.all { abs(it - standing) < 0.5f })
+        assertFocusedWholeInTheList("Gemini, 2 sessions")
+        assertEquals(standing, blocksBelowListTop(), 0.5f)
     }
 
     @Test

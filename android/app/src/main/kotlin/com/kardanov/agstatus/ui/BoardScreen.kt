@@ -577,17 +577,24 @@ internal fun BoardScreen(
                         // bar's Settings, past every block, or, on a device, to
                         // the last block laid out beyond the list's bounds and
                         // never brought into view, where Enter opened a usage
-                        // screen the reader could not see. So the list goes
-                        // back to its top, as a fresh board has it, and the
-                        // last block takes the focus there (FocusInBlocks), as
-                        // the blocks hand Tab on to the first card the other
-                        // way. Not from the bar's focusProperties, which focus
-                        // search reads more than once a move.
+                        // screen the reader could not see. So a list scrolled
+                        // past them goes back to its top, as a fresh board has
+                        // it, and the last block takes the focus there
+                        // (FocusInBlocks), as the blocks hand Tab on to the
+                        // first card the other way. A list still showing them
+                        // stays where it stands, and the focus moves alone:
+                        // sent to its top all the same, a list that a Tab onto
+                        // the last block had scrolled, as one does sideways at
+                        // large text, jumped up and glided back for a move that
+                        // needed no scroll. Not from the bar's focusProperties,
+                        // which focus search reads more than once a move.
                         .onPreviewKeyEvent { event ->
                             if (tabsAround && event.type == KeyEventType.KeyDown && event.isBackTab()) {
                                 scope.launch {
-                                    listState.scrollToItem(0)
-                                    withFrameNanos { }
+                                    if (listState.firstVisibleItemIndex > 0) {
+                                        listState.scrollToItem(0)
+                                        withFrameNanos { }
+                                    }
                                     runCatching { usageLast.requestFocus() }
                                 }
                                 true
