@@ -1,6 +1,7 @@
 package com.kardanov.agstatus
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -95,6 +96,35 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     private val _spoken = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val spoken: SharedFlow<String> = _spoken.asSharedFlow()
     private val blockSpeech = BlockSpeech()
+
+    /**
+     * Each time the needs-you bar beats: when the blocked count has risen
+     * while the bar shows, it comes in from the bottom edge again, once, with
+     * the new count already in it ([BarBeat]), as the bar draws it
+     * (ui/NeedsYouBar). It hears what [spoken] hears, over the same half
+     * second. Not kept: a beat is only ever called for a board in front of
+     * the reader, and one nobody saw is not news later.
+     */
+    private val _beats = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val beats: SharedFlow<Unit> = _beats.asSharedFlow()
+    private val barBeat = BarBeat()
+
+    /**
+     * Whether the board's screen is resumed: the app resumed, and no other
+     * screen over the board. The board keeps it current (ui/BoardScreen).
+     */
+    internal var boardResumed = false
+
+    /** Whether the pairing sheet is over the board (MainActivity). */
+    internal var sheetOverBoard = false
+
+    /**
+     * Whether the board is in front of the reader, where the bar's beat can
+     * be seen: its screen resumed, with no sheet over it, and the board not
+     * gone. Read as it is when a half second starts and again when it ends.
+     */
+    private val boardInFront: Boolean
+        get() = boardResumed && !sheetOverBoard && _connection.value != Connection.BOARD_GONE
 
     /**
      * The card the needs-you bar last brought into view, by session id: a
@@ -737,18 +767,43 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      *
      * With nothing blocked the needs-you bar has left, and lets go of the
      * card it brought ([brought]), so the next block starts its walk over.
+     *
+     * The half second that gathers news for the voice gathers it for the
+     * bar's beat too ([beats]), with the board in front of the reader or not
+     * as it is when the first block lands and as it is when the half second
+     * ends, and animations on or off as they are then. Both keep time by the
+     * clock the half second is waited out on, which a change of the date or
+     * the time zone cannot move ([clock]).
      */
     private fun setSessions(sessions: List<Session>, live: Boolean = false) {
         _sessions.value = sessions
         _subtaskSlots.value = SubtaskSlots.resolve(_subtaskSlots.value, sessions)
         if (_brought.value != null && sessions.none { it.isBlocked }) _brought.value = null
-        if (blockSpeech.observe(sessions, live, System.currentTimeMillis())) {
+        val now = clock()
+        barBeat.note(sessions, now)
+        if (blockSpeech.observe(sessions, live, now)) {
+            barBeat.gather(inFront = boardInFront)
             viewModelScope.launch {
                 delay(BlockSpeech.GATHER_MILLIS)
-                blockSpeech.say(_sessions.value, System.currentTimeMillis())?.let { _spoken.tryEmit(it) }
+                val sentence = blockSpeech.say(_sessions.value, clock())
+                val verdict = barBeat.end(
+                    answered = sentence == null,
+                    inFront = boardInFront,
+                    moves = !animationsOff(getApplication()),
+                )
+                if (verdict == BarBeat.Verdict.BEATS) _beats.tryEmit(Unit)
+                sentence?.let { _spoken.tryEmit(it) }
             }
         }
     }
+
+    /**
+     * The voice's and the beat's clock: time since boot, deep sleep included,
+     * as the half second they wait out is. The wall clock jumps when the date
+     * or the time zone is set, and a minute could then never end, or a count
+     * stand at once.
+     */
+    private fun clock(): Long = SystemClock.elapsedRealtime()
 
     private fun cancelStream() {
         streamJob?.cancel()

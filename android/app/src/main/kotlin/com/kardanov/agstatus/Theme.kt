@@ -1,5 +1,6 @@
 package com.kardanov.agstatus
 
+import android.content.Context
 import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.icons.Icons
@@ -546,14 +547,16 @@ private val AgStatusTypography = Typography(
 @Composable
 fun rememberReduceMotion(): Boolean {
     val context = LocalContext.current
-    return remember(context) {
-        Settings.Global.getFloat(
-            context.contentResolver,
-            Settings.Global.ANIMATOR_DURATION_SCALE,
-            1f,
-        ) == 0f
-    }
+    return remember(context) { animationsOff(context) }
 }
+
+/**
+ * Whether animations are off, as the setting is now ([rememberReduceMotion]
+ * reads it once for a screen): what the store asks when the needs-you bar's
+ * half second ends (SessionStore, [BarBeat]).
+ */
+fun animationsOff(context: Context): Boolean =
+    Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
 
 @Composable
 fun AgStatusTheme(

@@ -546,6 +546,146 @@ class BlockSpeech {
     }
 }
 
+// MARK: - The bar's beat
+
+/**
+ * When the needs-you bar comes in from the bottom edge again: once for each
+ * rise in the blocked count while it already shows (the owner's decision of
+ * 2026-11-16).
+ *
+ * A second block changes one digit on the bar, a glyph far too small for the
+ * corner of the eye, which is where the board is read. The bar's arrival is
+ * the one motion on the board that peripheral vision catches, so a rise
+ * replays it, with the new count already in it, and nothing else changes: no
+ * word, no colour, no focus, no sound.
+ *
+ * It hears what the voice hears ([BlockSpeech]): a session's transition into
+ * blocked while the board watches, never a first draw, a reconnect's
+ * snapshot, a refresh or a card a refused dismissal put back. It gathers
+ * them for the voice's half second, which runs from the first block and is
+ * not drawn out by the ones after, so blocks that land together make one
+ * beat; and it keeps the voice's minute, which runs from the end of every
+ * half second for each of its sessions still blocked then, whatever was said
+ * or drawn, as on iOS and the web.
+ *
+ * When the half second is over the bar beats only if all of these hold:
+ * - one of its blocks is still blocked;
+ * - the bar rested on a count when the first of them landed, and has not
+ *   emptied since. A bar that showed nothing arrives with them, and its
+ *   arrival is their beat; so are blocks within half a second of it
+ *   ([rest]). One that emptied and came back has arrived again.
+ * - the count is higher than the one the bar rested on: never on a fall,
+ *   nor for one block in place of another, whichever lands first;
+ * - the board was in front of the reader when the first landed and is now,
+ *   each read as it is then: the board's screen resumed, so the app
+ *   resumed with no other screen over the board, and no sheet over it. So
+ *   never for blocks that landed while the reader was away, nor on the way
+ *   back, nor when the reader leaves within the half second.
+ * - animations are on. With them off the count changes in place, as
+ *   everything on the board does, and the voice carries the news.
+ *
+ * The rule only, as iOS keeps it (BarBeat) and the web (its beat):
+ * SessionStore keeps the clock and asks, and the bar draws it
+ * (ui/NeedsYouBar). A plain object the store owns, never shown, never saved.
+ */
+class BarBeat {
+    /** Why the bar beat when a half second was over, or why it did not, in the order the rule asks. */
+    enum class Verdict {
+        BEATS,
+
+        /** None of the half second's blocks is blocked any more. */
+        ANSWERED,
+
+        /** The bar rested on no count: this is its arrival, which is the beat itself. */
+        ARRIVAL,
+
+        /** The count is no higher than the one the bar rested on. */
+        NO_RISE,
+
+        /** The board was not in front of the reader, when the first block landed or now. */
+        AWAY,
+
+        /** Animations are off. */
+        STILL,
+    }
+
+    /**
+     * A half second in flight: the count the bar rested on as its first block
+     * landed, whether the board was out of the reader's sight then, and
+     * whether the bar has emptied since.
+     */
+    private class Gathering(val rest: Int, val away: Boolean) {
+        var emptied = false
+    }
+
+    /**
+     * The count the bar rests on: one that stood for half a second, or that a
+     * half second ended on; nothing while the bar is empty. A rise is measured
+     * from it, so a block that lands just after another was answered is no
+     * rise at all, and a block within half a second of the bar's arrival
+     * finds it resting on nothing.
+     */
+    var rest = 0
+        private set
+
+    /** The blocked cards as last seen, and when they last changed. */
+    private var drawn: Set<String> = emptySet()
+    private var changedAt: Long? = null
+    private var gathering: Gathering? = null
+
+    /** Takes in the board after any change, [sessions] as they are now: how the count the bar rests on moves. */
+    fun note(sessions: List<Session>, nowMillis: Long) {
+        val blocked = sessions.filter { it.isBlocked }.mapTo(HashSet()) { it.id }
+        if (blocked == drawn) return
+        if (changedAt.let { it == null || nowMillis - it >= BlockSpeech.GATHER_MILLIS }) rest = drawn.size
+        if (blocked.isEmpty()) {
+            rest = 0
+            gathering?.emptied = true
+        }
+        changedAt = nowMillis
+        drawn = blocked
+    }
+
+    /**
+     * The voice's half second has started with its first block
+     * ([BlockSpeech.observe]), the board [inFront] of the reader or not.
+     * Asked after [note] has taken in the change that brought it.
+     */
+    fun gather(inFront: Boolean) {
+        gathering = Gathering(rest = rest, away = !inFront)
+    }
+
+    /**
+     * The half second is over: what the bar does, or null when none ran.
+     * [answered]: none of its blocks still stands ([BlockSpeech.say] has
+     * nothing to say). [inFront] and [moves] as they are now.
+     */
+    fun end(answered: Boolean, inFront: Boolean, moves: Boolean): Verdict? {
+        val done = gathering ?: return null
+        gathering = null
+        rest = drawn.size
+        return verdict(
+            rest = if (done.emptied) 0 else done.rest,
+            answered = answered,
+            count = drawn.size,
+            inFront = inFront && !done.away,
+            moves = moves,
+        )
+    }
+
+    companion object {
+        /** The rule itself, for a half second whose bar rested on [rest], now that [count] are blocked. */
+        fun verdict(rest: Int, answered: Boolean, count: Int, inFront: Boolean, moves: Boolean): Verdict = when {
+            answered -> Verdict.ANSWERED
+            rest == 0 -> Verdict.ARRIVAL
+            count <= rest -> Verdict.NO_RISE
+            !inFront -> Verdict.AWAY
+            !moves -> Verdict.STILL
+            else -> Verdict.BEATS
+        }
+    }
+}
+
 // MARK: - Host (Focus)
 
 /** The machine a session runs on, as its hook labelled it (docs/api.md `host`). */

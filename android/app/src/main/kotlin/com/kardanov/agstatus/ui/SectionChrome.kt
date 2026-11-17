@@ -1,8 +1,10 @@
 package com.kardanov.agstatus.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -56,6 +58,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
@@ -91,6 +94,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -354,11 +358,22 @@ private val BarRipple = RippleConfiguration(
  * It enters from the bottom edge as the first block lands and leaves when none
  * remain; with animations off it appears and goes in place. Its words change
  * in place, never cross-faded. While it leaves it keeps the last thing it said.
+ *
+ * Its beat: each time the store calls one ([beats], SessionStore.beats), the
+ * count having risen while the bar shows, the bar comes in from the bottom
+ * edge again, once, by its own arrival's 220ms and ease, with the new count
+ * already in it. Its ground, edge and words are drawn their own height below
+ * their place and come back up. Drawn only, as a layer layout never sees: the
+ * bar's place, the board's insets and the list's padding, the scroll, the
+ * focus and what TalkBack is told all stay where they are, and a press lands
+ * on the bar throughout. Never while it is entering or leaving, which is
+ * motion already, nor with animations off, where the count changes in place.
  */
 @Composable
 internal fun NeedsYouBar(
     reading: BarReading?,
     reduceMotion: Boolean,
+    beats: Flow<Unit>,
     onPress: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -382,11 +397,24 @@ internal fun NeedsYouBar(
         val shown = reading ?: last.value ?: return@AnimatedVisibility
         val pressed by interactions.collectIsPressedAsState()
         val hovered by interactions.collectIsHoveredAsState()
+        // How far below its place the bar is drawn, as a share of its own
+        // height: read in the layer alone, so a beat recomposes nothing.
+        val below = remember { Animatable(0f) }
+        LaunchedEffect(beats, reduceMotion) {
+            beats.collectLatest {
+                val stands = transition.currentState == EnterExitState.Visible &&
+                    transition.targetState == EnterExitState.Visible
+                if (reduceMotion || !stands) return@collectLatest
+                below.snapTo(1f)
+                below.animateTo(0f, tween(BAR_MOVE_MILLIS, easing = BarEase))
+            }
+        }
         CompositionLocalProvider(LocalRippleConfiguration provides BarRipple) {
             Column(
+                // The press, the name and the focus first, at the bar's place;
+                // then the layer, which moves only what the bar draws.
                 modifier = modifier
                     .fillMaxWidth()
-                    .background(Theme.cardSurface(DisplayStatus.BLOCKED))
                     .clickable(
                         interactionSource = interactions,
                         indication = LocalIndication.current,
@@ -394,7 +422,9 @@ internal fun NeedsYouBar(
                         onClickLabel = "show that session",
                         onClick = onPress,
                     )
-                    .semantics { contentDescription = shown.said },
+                    .semantics { contentDescription = shown.said }
+                    .graphicsLayer { translationY = below.value * size.height }
+                    .background(Theme.cardSurface(DisplayStatus.BLOCKED)),
             ) {
                 HorizontalDivider(thickness = 1.dp, color = Theme.cardEdge(DisplayStatus.BLOCKED))
                 BarContent(

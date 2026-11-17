@@ -1,6 +1,7 @@
 package com.kardanov.agstatus
 
 import android.content.Intent
+import android.os.Looper
 import androidx.compose.runtime.Composer
 import androidx.compose.runtime.CompositionTracer
 import androidx.compose.runtime.InternalComposeTracingApi
@@ -12,6 +13,9 @@ import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -20,7 +24,9 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import java.time.Duration
 
 /**
  * What a hook event costs the board: which of the app's composables run
@@ -180,6 +186,33 @@ class EventCostTest {
         val second = count { sessions -> sessions.map { if (it.id == "s6") it.copy(status = AgentStatus.BLOCKED) else it } }
         assertTrue("the bar ran again: $second", (second["ui.NeedsYouBar"] ?: 0) >= 1)
         assertEquals("2 blocked: Fix the login redirect, in acme-api, Show", barSays())
+    }
+
+    @Test
+    fun `the bar's beat runs nothing again, the bar included`() {
+        // The board stands, then the count rises, which the bar says at once
+        // (counted here, not asserted); half a second on, it beats, and the
+        // voice says the block.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+        count { sessions -> sessions.map { if (it.id == "s6") it.copy(status = AgentStatus.BLOCKED) else it } }
+        assertEquals("2 blocked: Session s3, in acme-api, Show", barSays())
+        var beats = 0
+        val listening = CoroutineScope(Dispatchers.Main.immediate).launch { store.beats.collect { beats++ } }
+
+        runs.clear()
+        Composer.setTracer(tracer)
+        try {
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+            rule.waitForIdle()
+        } finally {
+            Composer.setTracer(idle)
+            listening.cancel()
+        }
+
+        assertEquals("a beat was called", 1, beats)
+        // Nothing on the board runs, not even a lambda inside the bar: only
+        // the voice's line, above the board, which says the block.
+        assertEquals(mapOf("ui.SpokenLine" to 1), HashMap(runs))
     }
 
     private companion object {

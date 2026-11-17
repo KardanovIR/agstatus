@@ -129,6 +129,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.kardanov.agstatus.AgentStatus
 import com.kardanov.agstatus.Board
 import com.kardanov.agstatus.ProjectSection
@@ -185,6 +188,22 @@ internal fun BoardScreen(
     // how a device that asked for less motion gets the same reorder with no
     // travel. The bar's entrance and the jump follow it too.
     val reduceMotion = rememberReduceMotion()
+
+    // Whether the board is in front of the reader, where the needs-you bar's
+    // beat can be seen (SessionStore.beats): this screen resumed, which it is
+    // only while the app is resumed and no other screen is over the board.
+    // The store reads it as it is when a half second starts and when it ends.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, store) {
+        val resumed = LifecycleEventObserver { _, event ->
+            store.boardResumed = event.targetState == Lifecycle.State.RESUMED
+        }
+        lifecycle.addObserver(resumed)
+        onDispose {
+            lifecycle.removeObserver(resumed)
+            store.boardResumed = false
+        }
+    }
 
     // Built on every frame from the flat list, never stored.
     val sections = remember(sessions) { ProjectSections.of(sessions) }
@@ -560,6 +579,7 @@ internal fun BoardScreen(
                 NeedsYouBar(
                     reading = reading.takeUnless { boardGone },
                     reduceMotion = reduceMotion,
+                    beats = store.beats,
                     onPress = pressBar,
                     modifier = Modifier
                         .focusRequester(barFocus)

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -342,6 +343,12 @@ private fun AgStatusApp(
         }
 
         if (showPairSheet) {
+            // Over the board and its needs-you bar, which is then not in
+            // front of the reader and does not beat (SessionStore.beats).
+            DisposableEffect(store) {
+                store.sheetOverBoard = true
+                onDispose { store.sheetOverBoard = false }
+            }
             PairSheet(store = store, onDismiss = { showPairSheet = false })
         }
 
