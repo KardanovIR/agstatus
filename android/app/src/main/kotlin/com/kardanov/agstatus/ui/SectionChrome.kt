@@ -7,8 +7,12 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -24,11 +28,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.ripple.RippleAlpha
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.RippleConfiguration
+import androidx.compose.material3.RippleDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
@@ -73,6 +82,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.kardanov.agstatus.AgentStatus
+import com.kardanov.agstatus.DisplayStatus
 import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.Theme
@@ -295,12 +305,40 @@ private val BarEase = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 private const val BAR_MOVE_MILLIS = 220
 
 /**
+ * What the bar's ripple draws: a keyboard's focus as on every control, the
+ * owner's open call on a focus ring, and nothing under a finger or a
+ * pointer. Material's press and hover lighten the ground, and the blocked
+ * ink has only 4.82:1 on the ground it rests on: a press took the 12sp red
+ * word to 3.66:1, under AA. So the ground holds, and the verb lights instead
+ * ([NeedsYouBar]), as under the web's pointer.
+ */
+private val BarRipple = RippleConfiguration(
+    rippleAlpha = RippleAlpha(
+        draggedAlpha = RippleDefaults.RippleAlpha.draggedAlpha,
+        focusedAlpha = RippleDefaults.RippleAlpha.focusedAlpha,
+        hoveredAlpha = 0f,
+        pressedAlpha = 0f,
+    ),
+)
+
+/**
  * The needs-you bar: the board's one alarm, along the screen's bottom edge,
  * present only while a session is blocked. "(!) 2 BLOCKED · Fix the login
  * redirect · in acme-api · Show". The mark, the count and the word are in the
  * blocked ink, the session in primary ink, the place and the verb in
  * secondary. It names the card a press brings; after a press the next one,
  * and its verb is "Next" ([BarReading.walks]).
+ *
+ * Its ground and its top edge are a blocked card's own, its surface and its
+ * edge (Theme.cardSurface, Theme.cardEdge), as on iOS and the web. On a
+ * card's neutral ground, 1.07:1 against the page under a neutral hairline,
+ * the resting bar was a line of text whose only colour was a 12sp word,
+ * found by reading it; on the blocked surface, 1.27:1, under the blocked
+ * edge, 2.45:1, it is a band the corner of the eye finds, in a colour the
+ * board already uses for exactly this. Every ink on it clears AA: the mark,
+ * the count and the word 4.82:1, the session 12.75:1, the place and the verb
+ * 6.60:1. Under a finger the ground holds and the verb lights to the
+ * session's ink ([BarRipple]).
  *
  * One line on a wide screen, and on a phone two, the alarm over the session.
  * On one line, when room runs out it gives up, in order: the word BLOCKED
@@ -327,6 +365,7 @@ internal fun NeedsYouBar(
     // A plain holder, not state: what the bar said last, for it to say while it leaves.
     val last = remember { LastReading() }
     if (reading != null) last.value = reading
+    val interactions = remember { MutableInteractionSource() }
     AnimatedVisibility(
         visible = reading != null,
         enter = if (reduceMotion) {
@@ -341,22 +380,33 @@ internal fun NeedsYouBar(
         },
     ) {
         val shown = reading ?: last.value ?: return@AnimatedVisibility
-        Column(
-            modifier = modifier
-                .fillMaxWidth()
-                .background(Theme.card)
-                .clickable(role = Role.Button, onClickLabel = "show that session", onClick = onPress)
-                .semantics { contentDescription = shown.said },
-        ) {
-            HorizontalDivider(thickness = 1.dp, color = Theme.cardBorder)
-            BarContent(
-                reading = shown,
-                modifier = Modifier
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
-                    .defaultMinSize(minHeight = 47.dp)
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .clearAndSetSemantics {},
-            )
+        val pressed by interactions.collectIsPressedAsState()
+        val hovered by interactions.collectIsHoveredAsState()
+        CompositionLocalProvider(LocalRippleConfiguration provides BarRipple) {
+            Column(
+                modifier = modifier
+                    .fillMaxWidth()
+                    .background(Theme.cardSurface(DisplayStatus.BLOCKED))
+                    .clickable(
+                        interactionSource = interactions,
+                        indication = LocalIndication.current,
+                        role = Role.Button,
+                        onClickLabel = "show that session",
+                        onClick = onPress,
+                    )
+                    .semantics { contentDescription = shown.said },
+            ) {
+                HorizontalDivider(thickness = 1.dp, color = Theme.cardEdge(DisplayStatus.BLOCKED))
+                BarContent(
+                    reading = shown,
+                    lit = pressed || hovered,
+                    modifier = Modifier
+                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                        .defaultMinSize(minHeight = 47.dp)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .clearAndSetSemantics {},
+                )
+            }
         }
     }
 }
@@ -366,8 +416,9 @@ private class LastReading {
     var value: BarReading? = null
 }
 
+/** The bar's words; [lit] while a finger or a pointer is on the bar, when its verb takes the session's ink. */
 @Composable
-private fun BarContent(reading: BarReading, modifier: Modifier = Modifier) {
+private fun BarContent(reading: BarReading, lit: Boolean, modifier: Modifier = Modifier) {
     BoxWithConstraints(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
         // A phone's width is two lines, as on iOS; a wide screen's one.
         val oneLine = maxWidth >= 600.dp
@@ -377,7 +428,7 @@ private fun BarContent(reading: BarReading, modifier: Modifier = Modifier) {
                 fontSize = 14.sp,
                 lineHeight = 20.sp,
                 fontWeight = FontWeight.Medium,
-                color = Theme.textSecondary,
+                color = if (lit) Theme.textPrimary else Theme.textSecondary,
                 maxLines = 1,
             )
         }
