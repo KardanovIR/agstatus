@@ -898,10 +898,13 @@ struct StandingBlocks {
 /// - one of its blocks is still blocked;
 /// - the bar rested on a count when the first of them landed, and has not
 ///   emptied since. A bar that showed nothing is arriving with them, and its
-///   arrival is their beat; so are blocks that land within half a second of
-///   it (`rest`). One that emptied and came back has arrived again.
+///   arrival is their beat; so are blocks gathered in the half second that
+///   starts with it (`rest`). One that emptied and came back has arrived
+///   again.
 /// - the count is higher than the one the bar rested on: never on a fall,
-///   nor for one block in place of another, whichever lands first;
+///   nor for one block in place of another within half a second of it,
+///   whichever lands first, where the bar rested on the count before them
+///   both and no half second ends between them;
 /// - the board was in front of the reader when the first landed and is now:
 ///   the app active, and no other screen or sheet over the board. So never
 ///   for blocks that landed while the reader was away, nor on the way back.
@@ -965,8 +968,10 @@ struct BarBeat {
     /// a half second ended on; nothing while the bar is empty. Brought up to
     /// date when the blocked cards change and when a half second ends. A rise
     /// is measured from it, so a block that lands just after another was
-    /// answered is no rise at all, and a block within half a second of the
-    /// bar's arrival finds it resting on nothing.
+    /// answered is no rise where the bar rested on the count before the
+    /// answer and no half second ended between them, and a block gathered in
+    /// the half second that starts with the bar's arrival finds it resting
+    /// on nothing.
     private(set) var rest = 0
     /// When the blocked cards last changed.
     private var changedAt: Date?

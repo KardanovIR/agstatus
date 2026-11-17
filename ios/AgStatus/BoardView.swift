@@ -2376,9 +2376,9 @@ private final class BeatClock {
 /// @State is read live. So a block that landed with the board in front, with
 /// the reader gone within half a second, was said, and made the bar beat,
 /// while the app was inactive. The board keeps `scene` current as its phase
-/// changes. It is this scene's, so a window of the app's in the background
-/// on an iPad is not in front while another is. UIKit's own state is asked as
-/// well, since it can change before the scene's new phase reaches the board.
+/// changes. The app runs as one scene, with no second window of it to be in
+/// front instead. UIKit's own state is asked as well, since it can change
+/// before the scene's new phase reaches the board.
 ///
 /// Held in @State and not observable, as `BlockSpeech` is: nothing is drawn
 /// from it. On the main actor, where UIKit's state is read.
