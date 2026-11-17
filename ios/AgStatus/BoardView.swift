@@ -80,6 +80,10 @@ struct BoardView: View {
     /// bottom edge again (`NeedsYouStyle`). The one part of the beat the board
     /// observes, and it changes on a beat and at no other time.
     @State private var barBeats = 0
+    /// Whether the board's scene is in front of the reader, as it is now:
+    /// what the voice and the bar's beat read when their half second ends
+    /// (`LivePhase`).
+    @State private var livePhase = LivePhase()
 
     /// The narrowest a column may be, growing with the reader's text size.
     ///
@@ -103,7 +107,10 @@ struct BoardView: View {
     /// it is never asked about width (`BoardArrangement`).
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-    /// A block is said aloud only while the app is in front (`announceBlocks`).
+    /// The scene's phase, read here only to keep `livePhase` current. Whether
+    /// a block is said aloud, or makes the bar beat, is asked when its half
+    /// second ends, and the task waiting it out holds this value as it was
+    /// when the task began (`LivePhase`).
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -210,6 +217,8 @@ struct BoardView: View {
                 }
             }
             .onReceive(Self.clock) { now = $0 }
+            // Where the end of a half second reads it (`LivePhase`).
+            .onChange(of: scenePhase, initial: true) { _, phase in livePhase.scene = phase }
             .onChange(of: store.connection) { old, new in announceConnection(from: old, to: new) }
             // The body draws from `sides.resolved(for:)`, and this stores the
             // same answer — so the first frame a card appears in already has
@@ -1201,9 +1210,11 @@ struct BoardView: View {
         AccessibilityNotification.Announcement(line).post()
     }
 
-    /// Why a block would go unsaid now, or nil when it can be said.
+    /// Why a block would go unsaid now, or nil when it can be said. Asked when
+    /// the half second ends, so the app's being in front is read as it is
+    /// then (`LivePhase`).
     private var blockSilence: String? {
-        if scenePhase != .active { return "the app is not active" }
+        if !livePhase.active { return "the app is not active" }
         if !voiceOverIsRunning { return "VoiceOver is off" }
         // Its banner says it already. Not in the demo, whose blocks the
         // server never hears of.
@@ -1286,8 +1297,10 @@ struct BoardView: View {
 
     /// Whether the board is in front of the reader, where the bar's beat can
     /// be seen: the app active, and no other screen or sheet over the board.
+    /// Read as it is now, whichever copy of the board asks: the end of a half
+    /// second asks from the copy its task was started with (`LivePhase`).
     private var boardInFront: Bool {
-        scenePhase == .active && path.isEmpty && !showSettings && !showPairSheet
+        livePhase.active && path.isEmpty && !showSettings && !showPairSheet
     }
 
     // MARK: - Push tip
@@ -2351,6 +2364,32 @@ private final class BlockSpeech {
 private final class BeatClock {
     var rule = BarBeat()
     var wait: Task<Void, Never>?
+}
+
+/// Whether the board's scene is in front of the reader, as it is now: what
+/// the voice (`BoardView.blockSilence`) and the bar's beat
+/// (`BoardView.boardInFront`) read when their half second ends.
+///
+/// Not the board's own `scenePhase`. A half second is waited out by a task,
+/// and the task holds the copy of the board it was started from, whose
+/// @Environment values are the ones from when that copy was made, where its
+/// @State is read live. So a block that landed with the board in front, with
+/// the reader gone within half a second, was said, and made the bar beat,
+/// while the app was inactive. The board keeps `scene` current as its phase
+/// changes. It is this scene's, so a window of the app's in the background
+/// on an iPad is not in front while another is. UIKit's own state is asked as
+/// well, since it can change before the scene's new phase reaches the board.
+///
+/// Held in @State and not observable, as `BlockSpeech` is: nothing is drawn
+/// from it. On the main actor, where UIKit's state is read.
+@MainActor
+private final class LivePhase {
+    var scene: ScenePhase = .active
+
+    /// The scene active, and the app with it.
+    var active: Bool {
+        scene == .active && UIApplication.shared.applicationState == .active
+    }
 }
 
 private extension View {
