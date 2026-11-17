@@ -176,8 +176,12 @@ export const COMPOSE_MAX = 512;
  * combining marks in canonical order, and ICU's sort takes time that grows
  * with the square of the run: a 16 KB post of an underscore and then about
  * 8,000 marks in the worst order held the one thread every board shares for
- * about 60 ms when all of it was composed, against well under a millisecond
- * for its first 512 units. And 512 loses nothing a name needs. A composed
+ * about 60 ms when all of it was composed, and takes about 0.16 ms here for
+ * its first 512 units. The costliest 512 units found are of characters that
+ * composing turns into two marks each (U+0344, U+0F73), which make the run
+ * twice as long: about 0.55 ms a value, so 1.1 ms for a post whose name and
+ * project are both such, where plain letters take about 0.01 ms (Node 20.9,
+ * ICU 73.2). And 512 loses nothing a name needs. A composed
  * character stands for at most four UTF-16 units (polytonic Greek: an alpha
  * with psili, oxia and ypogegrammeni is four), so the 120 units kept never
  * come from more than the first 480, and nothing a hook sends reaches 512 at
@@ -1120,10 +1124,12 @@ export class Store {
       // again: the server that wrote the row cut them, and a session that
       // never posted a name is named by its id, up to 128 characters. So all
       // of each is composed, and that costs little: every server that has
-      // written a row cut a posted name and project to 120 units, composing
-      // makes at most three units of one (U+FB2C, say), so no row holds more
+      // written a row cut a posted name and project to 120 units, and an id
+      // is ASCII, which composing leaves alone. Composing makes at most three
+      // units of one (U+FB2C, say), so nothing composed here comes out longer
       // than 360, and a run of marks that short is put in order in no time
-      // worth counting (sessionText says what a long one costs). An older
+      // worth counting, about 0.03 ms at worst (sessionText says what a long
+      // one costs). An older
       // server also kept a name of white space alone as it was sent; that is
       // no name (isBlankName), so the card is named by its id, as a post of
       // it would leave a new card, until the session posts a name. In memory
