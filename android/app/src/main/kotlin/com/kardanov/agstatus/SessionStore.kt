@@ -771,9 +771,9 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      * The half second that gathers news for the voice gathers it for the
      * bar's beat too ([beats]), with the board in front of the reader or not
      * as it is when the first block lands and as it is when the half second
-     * ends, and animations on or off as they are then. Both keep time by the
-     * clock the half second is waited out on, which a change of the date or
-     * the time zone cannot move ([clock]).
+     * ends, and animations on or off as they are then. Both keep time by a
+     * monotonic clock since boot, which a change of the date or the time zone
+     * cannot move ([clock]).
      */
     private fun setSessions(sessions: List<Session>, live: Boolean = false) {
         _sessions.value = sessions
@@ -799,8 +799,8 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     /**
      * The voice's and the beat's clock: time since boot, deep sleep included,
-     * as the half second they wait out is. The wall clock jumps when the date
-     * or the time zone is set, and a minute could then never end, or a count
+     * which setting the date or the time zone cannot move. The wall clock
+     * jumps when either is set, and a minute could then never end, or a count
      * stand at once.
      */
     private fun clock(): Long = SystemClock.elapsedRealtime()

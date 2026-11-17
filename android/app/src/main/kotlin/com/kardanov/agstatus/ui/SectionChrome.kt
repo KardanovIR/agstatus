@@ -691,8 +691,9 @@ internal fun SpokenLine(speaker: Speaker, modifier: Modifier = Modifier) {
  * Not in front, the app says nothing, as iOS says nothing while it is
  * inactive, and what arrives then is let go rather than kept: by the time
  * the app is in front again it is not news, and a block standing then is
- * the bar's to show. "In front" is resumed, so a board left showing in
- * another window of a split screen still speaks.
+ * the bar's to show. "In front" is resumed, so from Android 10 a board left
+ * showing in another window of a split screen still speaks; on 8 and 9 only
+ * the focused window is resumed.
  */
 @Composable
 internal fun SpokenAlarm(spoken: Flow<String>, speaker: Speaker) {

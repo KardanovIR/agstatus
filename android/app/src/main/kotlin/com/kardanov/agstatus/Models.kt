@@ -572,10 +572,13 @@ class BlockSpeech {
  * - one of its blocks is still blocked;
  * - the bar rested on a count when the first of them landed, and has not
  *   emptied since. A bar that showed nothing arrives with them, and its
- *   arrival is their beat; so are blocks within half a second of it
- *   ([rest]). One that emptied and came back has arrived again.
+ *   arrival is their beat; so are blocks gathered in the half second that
+ *   starts with it ([rest]). One that emptied and came back has arrived
+ *   again.
  * - the count is higher than the one the bar rested on: never on a fall,
- *   nor for one block in place of another, whichever lands first;
+ *   nor for one block in place of another within half a second of it,
+ *   whichever lands first, where the bar rested on the count before them
+ *   both and no half second ends between them;
  * - the board was in front of the reader when the first landed and is now,
  *   each read as it is then: the board's screen resumed, so the app
  *   resumed with no other screen over the board, and no sheet over it. So
@@ -622,8 +625,9 @@ class BarBeat {
      * The count the bar rests on: one that stood for half a second, or that a
      * half second ended on; nothing while the bar is empty. A rise is measured
      * from it, so a block that lands just after another was answered is no
-     * rise at all, and a block within half a second of the bar's arrival
-     * finds it resting on nothing.
+     * rise where the bar rested on the count before the answer and no half
+     * second ended between them, and a block gathered in the half second that
+     * starts with the bar's arrival finds it resting on nothing.
      */
     var rest = 0
         private set
