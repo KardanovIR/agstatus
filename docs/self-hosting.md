@@ -183,9 +183,12 @@ Rolling back to an older server loses nothing: it never touches either column.
 The next 1.7.0 start ignores the stored subagent rows of any session the older
 server updated in between, rather than bring back rows it never kept current.
 A rollback can move a card, though. A row 1.7.0 never wrote, such as one for a
-session that started during the rollback, has no `home_project`, so a `cd`
-that the older server records for it moves that card to another section on
-the roll-forward. And a card the older server brings back, after a dismissal
+session alive at the 1.7.0 deploy that did not post again before the
+rollback, has no `home_project`, so a `cd` that the older server records for
+it moves that card to another section on the roll-forward. A session that
+started during the rollback has such a row too: it is filed under the folder
+it last reported before the roll-forward, which after a `cd` is not the one
+it started in. And a card the older server brings back, after a dismissal
 or its expiry, keeps the home 1.7.0 gave it, where 1.7.0 after a restart
 starts such a card over from the folder its session then reports. Either way
 a card is filed under a folder its own session reported.

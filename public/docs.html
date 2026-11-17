@@ -2170,9 +2170,12 @@ until the session&#39;s next post stores it.</p>
 The next 1.7.0 start ignores the stored subagent rows of any session the older
 server updated in between, rather than bring back rows it never kept current.
 A rollback can move a card, though. A row 1.7.0 never wrote, such as one for a
-session that started during the rollback, has no <code>home_project</code>, so a <code>cd</code>
-that the older server records for it moves that card to another section on
-the roll-forward. And a card the older server brings back, after a dismissal
+session alive at the 1.7.0 deploy that did not post again before the
+rollback, has no <code>home_project</code>, so a <code>cd</code> that the older server records for
+it moves that card to another section on the roll-forward. A session that
+started during the rollback has such a row too: it is filed under the folder
+it last reported before the roll-forward, which after a <code>cd</code> is not the one
+it started in. And a card the older server brings back, after a dismissal
 or its expiry, keeps the home 1.7.0 gave it, where 1.7.0 after a restart
 starts such a card over from the folder its session then reports. Either way
 a card is filed under a folder its own session reported.</p>
@@ -2666,7 +2669,7 @@ the same JSON body and upsert a session by <code>session_id</code>:</p>
 <td><code>source</code></td>
 <td>string</td>
 <td>no</td>
-<td>Agent kind that owns the session, e.g. <code>claude</code> or <code>codex</code> (same regex as the usage <code>source</code>). Defaults to <code>claude</code>; omitted on update = carried forward. Dashboards use it to show only the limit bars of agents present on the board, and, since 1.7.0, to give every agent present a usage block of its own (a head, in the iOS app), whether or not it reports limits.</td>
+<td>Agent kind that owns the session, e.g. <code>claude</code> or <code>codex</code> (same regex as the usage <code>source</code>). Defaults to <code>claude</code>; omitted on update = carried forward. Dashboards use it to give every agent with sessions on the board a usage block of its own (its head), which since 1.7.0 it gets whether or not it reports limits; on a board with no sessions, every agent that reports limits gets one.</td>
 </tr>
 <tr>
 <td><code>host</code></td>
