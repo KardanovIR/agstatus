@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performMouseInput
@@ -56,6 +57,13 @@ import kotlin.math.abs
  * dp), and a keyboard's real Tab. The window is drawn into a bitmap: the test
  * rule's own capture waits for a redraw Robolectric's paused looper never
  * runs.
+ *
+ * That capture draws the whole window again, in software, every time, so
+ * these cases cannot tell whether the ring is drawn again on its own when
+ * the focus comes or goes: a ring that read the focus without its draw
+ * observing it would pass them all, and on a device keep showing what it
+ * last drew until something else redrew the bar. That is the capture's
+ * limit, accepted; only a device shows it.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-xxhdpi")
@@ -139,21 +147,40 @@ class BarFocusRingTest {
     }
 
     /**
-     * A finger on the screen. The system takes the window into touch mode as
-     * the touch arrives (ViewRootImpl.touchModeChanged, which a touch
-     * Robolectric hands straight to the view goes round), then the press.
+     * A finger arriving on the screen: the system takes the window into touch
+     * mode as the touch arrives (ViewRootImpl.touchModeChanged, which a touch
+     * Robolectric hands straight to the view goes round).
      */
-    private fun touchTheBar() {
+    private fun intoTouchMode() {
         scenario.onActivity { activity ->
             val root = View::class.java.getMethod("getViewRootImpl").invoke(activity.window.decorView)
             root.javaClass.getMethod("touchModeChanged", Boolean::class.javaPrimitiveType).invoke(root, true)
         }
         rule.waitForIdle()
-        rule.onNode(bar).performTouchInput {
+    }
+
+    /** A touch on the board's title, which is no control: anywhere but the bar. */
+    private fun touchElsewhere() {
+        intoTouchMode()
+        rule.onNodeWithText("AgStatus").performTouchInput {
             down(center)
             up()
         }
         rule.waitForIdle()
+    }
+
+    /**
+     * A finger on the bar, held there for a shot of what the window draws
+     * under it, then lifted, which presses the bar.
+     */
+    private fun holdTheBar(): Shot {
+        intoTouchMode()
+        rule.onNode(bar).performTouchInput { down(center) }
+        rule.waitForIdle()
+        val held = shot()
+        rule.onNode(bar).performTouchInput { up() }
+        rule.waitForIdle()
+        return held
     }
 
     /** The bar's place in the window, which is where its press and its name are. */
@@ -330,19 +357,23 @@ class BarFocusRingTest {
     }
 
     @Test
-    fun `a touch takes the ring away with the focus, and a touch draws none`() {
+    fun `a touch anywhere takes the ring away with the focus, and a finger on the bar draws none`() {
         launch()
         tabToTheBar()
         assertRing(shot(), ringIn(shot()), "with the focus")
 
-        touchTheBar()
-
-        assertEquals("the touch pressed the bar", "s1", store.brought.value)
+        // Not on the bar, whose press would send the focus to the card it
+        // brings: touch mode itself takes it.
+        touchElsewhere()
         assertFalse("in touch mode the bar has no focus", barFocused())
+        assertNoRing(shot(), "after a touch elsewhere")
+
+        val rest = shot()
+        val held = holdTheBar()
+        assertTrue("the finger is down on the bar: its verb lights, ${verb(rest)} to ${verb(held)}", verb(held) > verb(rest) + 0.1f)
+        assertNoRing(held, "under a finger held on the bar")
+        assertEquals("the touch pressed the bar", "s1", store.brought.value)
         assertNoRing(shot(), "after the touch")
-        // Another touch, on a bar that has no focus.
-        touchTheBar()
-        assertNoRing(shot(), "after another touch")
     }
 
     @Test

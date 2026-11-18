@@ -72,6 +72,11 @@ class BarBeatScreenTest {
     fun close() {
         listening?.cancel()
         scenario.close()
+        // A board a case adopted is saved in BoardStorage, whose preferences
+        // live in a static for as long as the sandbox does, which is every
+        // class after this one too: each case after it would start paired,
+        // with the board's Pair button in the toolbar and a stream started.
+        BoardStorage.clear(ApplicationProvider.getApplicationContext())
         Settings.Global.putFloat(
             ApplicationProvider.getApplicationContext<android.app.Application>().contentResolver,
             Settings.Global.ANIMATOR_DURATION_SCALE,
@@ -354,30 +359,68 @@ class BarBeatScreenTest {
     }
 
     /**
-     * The pairing sheet is a window of its own over the board, so the board's
-     * screen stays resumed under it: only the app's word that the sheet is
-     * open keeps the beat away. The real sheet, opened from the board's own
-     * button, which shows for a board with a token. The board is adopted as
-     * a QR code would adopt it, and its stream let go at once: its sessions
-     * are the test's.
+     * A board with a token, whose own button opens the pairing sheet: adopted
+     * as a QR code would adopt it, and its stream let go at once, so its
+     * sessions are the test's.
      */
-    @Test
-    fun `a block while the pairing sheet is over the board is no beat`() {
-        launch()
+    private fun pairABoard() {
         store.adopt(Board(baseUrl = "http://127.0.0.1:9", token = "ags_" + "a".repeat(32)))
         store.disconnect()
         store.showForTest(board)
         rule.waitForIdle()
         stand(1_000)
-        val rest = frameNow()
+    }
+
+    /** The real pairing sheet, opened from the board's own button. */
+    private fun openThePairingSheet() {
         rule.onNodeWithContentDescription("Pair your computer").performClick()
         rule.waitForIdle()
         rule.onNodeWithText("Pair your computer").assertExists()
+    }
+
+    /**
+     * The pairing sheet is a window of its own over the board, so the board's
+     * screen stays resumed under it: only the app's word that the sheet is
+     * open keeps the beat away. The real sheet, opened from the board's own
+     * button, which shows for a board with a token.
+     */
+    @Test
+    fun `a block while the pairing sheet is over the board is no beat`() {
+        launch()
+        pairABoard()
+        val rest = frameNow()
+        openThePairingSheet()
 
         frame("w1" to AgentStatus.BLOCKED)
         val frames = framesPastTheHalfSecond()
 
         assertEquals("2 blocked: Session s1, in acme-api, Show", barSays())
         assertNoBeat(frames, rest)
+    }
+
+    /**
+     * Closed, the sheet takes its word with it: the board is in front again,
+     * and a rise beats. Closed as a reader closes it, by a tap on the board
+     * above it.
+     */
+    @Test
+    fun `once the pairing sheet is closed, a rise beats again`() {
+        launch()
+        pairABoard()
+        openThePairingSheet()
+        rule.onNodeWithContentDescription("Close sheet").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("Pair your computer").assertDoesNotExist()
+        stand(1_000)
+        val rest = frameNow()
+
+        frame("w1" to AgentStatus.BLOCKED)
+        val frames = framesPastTheHalfSecond()
+
+        assertEquals("2 blocked: Session s1, in acme-api, Show", barSays())
+        assertEquals("one beat called", 1, called.size)
+        val below = frames.below(rest)
+        assertTrue("the words came in from their own height below their place: $below", below.any { it > rest.place.height * 0.8f })
+        assertEquals("to rest: $below", 0f, below.last(), 0.5f)
     }
 }
