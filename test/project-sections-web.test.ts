@@ -954,9 +954,10 @@ describe('project sections', () => {
     });
 
     // By key, by code unit, as iOS's AgentSummary.make sorts them, and not
-    // in the order the usage arrives: the server sorts it with
-    // localeCompare, which puts claude_x before claude-x, and an agent with
-    // no report has no place in it.
+    // in the order the usage arrives: an agent with no report has no place
+    // in that list, and a server before 1.7.0 sorts it with localeCompare,
+    // which puts claude_x before claude-x, as this frame has it. A server
+    // from 1.7.0 sends it by code unit, the order the board draws.
     it('orders the blocks as iOS orders its heads, by agent and by code unit', async () => {
       const W = [{ id: 'daily', label: 'Daily', usedPct: 12 }];
       const b = await boardOf([
@@ -1451,12 +1452,12 @@ describe('the needs-you bar', () => {
     const beats = watchBeats(b);
     b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
     expect(bar().classList.contains('leaving')).toBe(true);
-    // A tenth of a second into its leaving, drawn 24.5px below its place, as
-    // Chrome draws a 44px bar then.
+    // Two frames, about 33 ms, into its leaving, drawn 24.5px below its
+    // place, as Chrome draws a 44px bar then.
     vi.stubGlobal('getComputedStyle', (el: Element) => ({
       transform: el === bar() && bar().classList.contains('leaving') ? 'matrix(1, 0, 0, 1, 0, 24.5)' : 'none',
     }));
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(33);
     b.emit('session', blocked('c', 0, 'docs'));
     expect(bar().classList.contains('leaving')).toBe(false);
     expect(bar().hasAttribute('inert')).toBe(false);
@@ -2460,12 +2461,15 @@ describe('the needs-you bar\'s beat', () => {
 
 // ---- 1.6.5's page, with these scripts ---------------------------------------
 //
-// After a deploy, Back can take 1.6.5's board page from the browser's cache
-// and load these scripts beside it from the cache, as Chrome does with its
-// back-forward cache off. That page has no bar, no face and no polite
-// region. It threw at the bar's wiring, before init, and stayed at
-// "Connecting…" with no cards; now it draws its cards and connects, and
-// nothing the board does for the bar throws, until it is loaded again.
+// After a deploy, Back can take 1.6.5's board page from the browser's cache,
+// as Chrome does with its back-forward cache off. That page asks for its
+// scripts by URLs without a release, and gets 1.6.5's own from the cache,
+// or, once those have left the cache, these from the server, which answers
+// such a URL with the files it has. That page has no bar, no face and no
+// polite region. With these scripts it threw at the bar's wiring, before
+// init, and stayed at "Connecting…" with no cards; now it draws its cards
+// and connects, and nothing the board does for the bar throws, until it is
+// loaded again.
 
 /** public/index.html as v1.6.5 shipped it. */
 const PAGE_165 = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'web', 'index-1.6.5.html'), 'utf8');

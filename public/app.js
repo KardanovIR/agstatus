@@ -583,10 +583,11 @@
 
   // The order iOS gives its heads (AgentSummary.make): by the agent's key,
   // compared by UTF-16 code unit, and never by activity, so a block stays
-  // where it is while the same agents are on the board. Not the order the
-  // usage arrives in: the server sorts it with localeCompare, which puts
-  // claude_x before claude-x, and a block for an agent with no report has
-  // no place in it at all.
+  // where it is while the same agents are on the board. Sorted here, not
+  // taken in the order the usage arrives in: a block for an agent with no
+  // report has no place in that list at all, and only a server from 1.7.0
+  // sends it by code unit. One before 1.7.0 sorts it with localeCompare,
+  // which puts claude_x before claude-x.
   const byKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
   function renderUsage() {
