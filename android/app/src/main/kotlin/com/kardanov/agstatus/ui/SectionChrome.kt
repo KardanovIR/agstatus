@@ -1,5 +1,8 @@
 package com.kardanov.agstatus.ui
 
+import android.os.Build
+import android.view.RoundedCorner
+import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
@@ -13,6 +16,7 @@ import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -63,8 +68,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.requireLayoutCoordinates
+import androidx.compose.ui.node.requireView
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -90,6 +99,9 @@ import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.Theme
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.sqrt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -308,18 +320,24 @@ internal data class BarReading(
 private val BarEase = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
 private const val BAR_MOVE_MILLIS = 220
 
+/** How far in from its sides, inside the insets, the bar's words start. */
+private val BAR_SIDE_PADDING = 16.dp
+
 /**
- * What the bar's ripple draws: a keyboard's focus as on every control, the
- * owner's open call on a focus ring, and nothing under a finger or a
- * pointer. Material's press and hover lighten the ground, and the blocked
- * ink has only 4.82:1 on the ground it rests on: a press took the 12sp red
- * word to 3.66:1, under AA. So the ground holds, and the verb lights instead
- * ([NeedsYouBar]), as under the web's pointer.
+ * What the bar's ripple draws: nothing under a finger, a pointer or a
+ * keyboard's focus. Material shows each by laying a lighter layer over the
+ * ground and the words, and the blocked ink has only 4.82:1 on the ground it
+ * rests on: a press took the 12sp red word to 3.66:1, and a keyboard's focus
+ * to 3.95:1, both under AA. So the ground holds, whatever the bar is doing.
+ * Under a finger or a pointer the verb lights instead ([NeedsYouBar]), as
+ * under the web's pointer, and a keyboard's focus is a ring inside the bar
+ * ([barFocusRing]), as on the web. Every other control on the board keeps
+ * Material's layer, on grounds where it costs no ink its contrast.
  */
 private val BarRipple = RippleConfiguration(
     rippleAlpha = RippleAlpha(
         draggedAlpha = RippleDefaults.RippleAlpha.draggedAlpha,
-        focusedAlpha = RippleDefaults.RippleAlpha.focusedAlpha,
+        focusedAlpha = 0f,
         hoveredAlpha = 0f,
         pressedAlpha = 0f,
     ),
@@ -344,6 +362,12 @@ private val BarRipple = RippleConfiguration(
  * 6.60:1. Under a finger the ground holds and the verb lights to the
  * session's ink ([BarRipple]).
  *
+ * A keyboard's focus on the bar is a square ring of 2dp in the accent, inside
+ * the bar, as the web's focus outline is ([barFocusRing]): not Material's
+ * focus layer, which every other control on the board shows, because that
+ * layer would lighten the blocked ground under the red word and take it
+ * under AA. The ground and every ink keep their values under focus.
+ *
  * One line on a wide screen, and on a phone two, the alarm over the session.
  * On one line, when room runs out it gives up, in order: the word BLOCKED
  * (the mark and the count stay), the place, then the end of the name. On two,
@@ -365,9 +389,10 @@ private val BarRipple = RippleConfiguration(
  * already in it. Its ground, edge and words are drawn their own height below
  * their place and come back up. Drawn only, as a layer layout never sees: the
  * bar's place, the board's insets and the list's padding, the scroll, the
- * focus and what TalkBack is told all stay where they are, and a press lands
- * on the bar throughout. Never while it is entering or leaving, which is
- * motion already, nor with animations off, where the count changes in place.
+ * focus and its ring, and what TalkBack is told all stay where they are, and
+ * a press lands on the bar throughout. Never while it is entering or leaving,
+ * which is motion already, nor with animations off, where the count changes
+ * in place.
  */
 @Composable
 internal fun NeedsYouBar(
@@ -397,6 +422,11 @@ internal fun NeedsYouBar(
         val shown = reading ?: last.value ?: return@AnimatedVisibility
         val pressed by interactions.collectIsPressedAsState()
         val hovered by interactions.collectIsHoveredAsState()
+        // Read by the ring alone, as it draws: focus coming and going runs nothing here.
+        val focused = interactions.collectIsFocusedAsState()
+        // The system bars and any cutout beside or under the bar, which it
+        // runs under: its words keep inside them, and so does the ring.
+        val safe = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
         // How far below its place the bar is drawn, as a share of its own
         // height: read in the layer alone, so a beat recomposes nothing.
         val below = remember { Animatable(0f) }
@@ -411,8 +441,9 @@ internal fun NeedsYouBar(
         }
         CompositionLocalProvider(LocalRippleConfiguration provides BarRipple) {
             Column(
-                // The press, the name and the focus first, at the bar's place;
-                // then the layer, which moves only what the bar draws.
+                // The press, the name and the focus first, at the bar's place,
+                // and the focus's ring over all the bar draws; then the layer,
+                // which moves only what the bar draws, and not the ring.
                 modifier = modifier
                     .fillMaxWidth()
                     .clickable(
@@ -423,6 +454,7 @@ internal fun NeedsYouBar(
                         onClick = onPress,
                     )
                     .semantics { contentDescription = shown.said }
+                    .barFocusRing(focused, safe)
                     .graphicsLayer { translationY = below.value * size.height }
                     .background(Theme.cardSurface(DisplayStatus.BLOCKED)),
             ) {
@@ -431,9 +463,9 @@ internal fun NeedsYouBar(
                     reading = shown,
                     lit = pressed || hovered,
                     modifier = Modifier
-                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                        .windowInsetsPadding(safe)
                         .defaultMinSize(minHeight = 47.dp)
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = BAR_SIDE_PADDING, vertical = 8.dp)
                         .clearAndSetSemantics {},
                 )
             }
@@ -563,6 +595,160 @@ private fun BarName(name: String) {
 
 @Composable
 private fun BarGap() = Spacer(Modifier.size(10.dp))
+
+// MARK: - The bar's focus ring
+
+/** The ring's stroke, and how far in from the bar's edges its outer edge stands: the web's 2px outline at -4px. */
+private val BAR_RING_STROKE = 2.dp
+private val BAR_RING_GAP = 2.dp
+
+/**
+ * The most a side of the ring moves in to keep clear of a rounded corner of
+ * the display: as far as leaves 2dp between the ring and the bar's words.
+ */
+private val BAR_RING_ROOM = BAR_SIDE_PADDING - BAR_RING_GAP - BAR_RING_STROKE - 2.dp
+
+/**
+ * A keyboard's focus on the needs-you bar: a square ring of 2dp in the
+ * accent, which is the web's focus outline (public/board.css `:focus-visible`,
+ * shell.css `.needs:focus-visible`), drawn wholly inside the bar. Its outer
+ * edge stands 2dp in from the bar's edges, so 1dp of ground shows between
+ * the blocked edge along the top and the ring, and 2dp in from the system
+ * bars and any cutout beside or under the bar ([insets], what its words are
+ * padded by), so no part of it is under the navigation bar, the gesture
+ * handle or a camera. From Android 12, which reports the display's rounded
+ * corners, a side whose bottom corner the curve would cut moves in until
+ * the corner is 2dp inside the curve, as far as leaves 2dp between the ring
+ * and the words ([barRingOutline]).
+ *
+ * Drawn while the bar holds a keyboard's focus ([focused], the bar's own
+ * focus interaction). Compose lets the bar take focus only out of touch mode
+ * and takes it away when a finger puts the screen back in touch mode, so a
+ * touch never shows the ring, nor does a pointer resting on the bar, which
+ * gives it no focus.
+ *
+ * Drawn over the beat's layer, outside it: in a beat the ring holds at the
+ * bar's place while the bar's ground, edge and words rise under it, as on
+ * the web. [focused] and the insets are read here, as it draws, so focus
+ * coming and going runs no composable again, and a beat redraws no ring.
+ */
+private fun Modifier.barFocusRing(focused: State<Boolean>, insets: WindowInsets): Modifier =
+    this then BarFocusRingElement(focused, insets)
+
+private data class BarFocusRingElement(
+    val focused: State<Boolean>,
+    val insets: WindowInsets,
+) : ModifierNodeElement<BarFocusRingNode>() {
+    override fun create() = BarFocusRingNode(focused, insets)
+
+    override fun update(node: BarFocusRingNode) {
+        node.focused = focused
+        node.insets = insets
+        node.invalidateDraw()
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "barFocusRing"
+    }
+}
+
+private class BarFocusRingNode(
+    var focused: State<Boolean>,
+    var insets: WindowInsets,
+) : Modifier.Node(), DrawModifierNode {
+    override fun ContentDrawScope.draw() {
+        drawContent()
+        if (!focused.value) return
+        // Whole pixels, so every edge of the ring is sharp.
+        val stroke = BAR_RING_STROKE.roundToPx().toFloat()
+        val (bottomLeft, bottomRight) = displayCorners()
+        val ring = barRingOutline(
+            width = size.width,
+            height = size.height,
+            left = insets.getLeft(this, layoutDirection).toFloat(),
+            right = insets.getRight(this, layoutDirection).toFloat(),
+            bottom = insets.getBottom(this).toFloat(),
+            gap = BAR_RING_GAP.roundToPx().toFloat(),
+            room = BAR_RING_ROOM.roundToPx().toFloat(),
+            bottomLeft = bottomLeft,
+            bottomRight = bottomRight,
+        )
+        if (ring.width <= 2 * stroke || ring.height <= 2 * stroke) return
+        drawRect(
+            color = Theme.accent,
+            topLeft = Offset(ring.left + stroke / 2, ring.top + stroke / 2),
+            size = Size(ring.width - stroke, ring.height - stroke),
+            style = Stroke(width = stroke),
+        )
+    }
+
+    /** The display's rounded bottom corners in the bar's pixels, where the platform reports them. */
+    private fun displayCorners(): Pair<DisplayCorner?, DisplayCorner?> =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) roundedCorners() else null to null
+
+    /**
+     * The display's own corners, not the window's. With three buttons Android
+     * reports the window's bottom corners as rounded at the navigation bar's
+     * edge, where nothing is drawn over a board that runs under a clear
+     * navigation bar, and the ring moved in to 2dp from the words for a
+     * curve that is not there.
+     */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private fun roundedCorners(): Pair<DisplayCorner?, DisplayCorner?> {
+        val display = requireView().display ?: return null to null
+        // The display counts from its own top left, as it is turned now.
+        val origin = requireLayoutCoordinates().positionOnScreen()
+        val bottomLeft = display.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT)
+        val bottomRight = display.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT)
+        return bottomLeft?.let { DisplayCorner(it.center.x - origin.x, it.center.y - origin.y, it.radius.toFloat()) } to
+            bottomRight?.let { DisplayCorner(it.center.x - origin.x, it.center.y - origin.y, it.radius.toFloat()) }
+    }
+}
+
+/** One of the display's rounded corners: the centre of its curve and its radius, in the bar's pixels. */
+internal data class DisplayCorner(val x: Float, val y: Float, val radius: Float)
+
+/**
+ * Where the bar's focus ring stands, its outer edge, in the bar's pixels: a
+ * bar [width] by [height] whose [left], [right] and [bottom] insets keep its
+ * words clear of the system bars and any cutout. The ring stands [gap] in
+ * from the bar's top and from each inset. Where the display rounds a bottom
+ * corner ([bottomLeft], [bottomRight]) that the ring's corner would reach,
+ * nearer the curve than [gap] or past it, that side moves in until the
+ * corner is [gap] inside the curve, by [room] at most; the bottom stays.
+ * Whole pixels.
+ */
+internal fun barRingOutline(
+    width: Float,
+    height: Float,
+    left: Float,
+    right: Float,
+    bottom: Float,
+    gap: Float,
+    room: Float,
+    bottomLeft: DisplayCorner? = null,
+    bottomRight: DisplayCorner? = null,
+): Rect {
+    val foot = height - bottom - gap
+    // How far across from a corner's centre the ring's corner may stand at its
+    // foot to stay [gap] inside the curve; no limit where the foot is above
+    // the centre, where the display's edge is still straight.
+    fun across(corner: DisplayCorner): Float? {
+        val reach = corner.radius - gap
+        val down = foot - corner.y
+        if (reach <= 0f || down <= 0f) return null
+        return sqrt((reach * reach - down * down).coerceAtLeast(0f))
+    }
+    var start = left + gap
+    var end = width - right - gap
+    if (bottomLeft != null) {
+        across(bottomLeft)?.let { start = maxOf(start, minOf(bottomLeft.x - it, left + gap + room)) }
+    }
+    if (bottomRight != null) {
+        across(bottomRight)?.let { end = minOf(end, maxOf(bottomRight.x + it, width - right - gap - room)) }
+    }
+    return Rect(ceil(start), gap, floor(end), foot)
+}
 
 // MARK: - Ring
 
