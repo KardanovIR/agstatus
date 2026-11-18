@@ -30,10 +30,10 @@ import kotlin.math.abs
  * The needs-you bar's ground (the owner's decision of 2026-11-16, O6): a
  * blocked card's own surface under a blocked card's edge, as on iOS and the
  * web, where it was a card's neutral ground under the neutral hairline. A
- * press leaves the ground as it is and lights the verb: Material's press
- * lightens the ground, and took the 12sp red word to 3.66:1. The bar's own
- * pixels, as the real app draws them on a phone, where it has two lines: the
- * alarm and the verb over the session.
+ * press leaves the ground as it is and lights the verb: Material's press, a
+ * 10% layer over the ground and the words, took the 12sp red word to 3.95:1,
+ * under AA. The bar's own pixels, as the real app draws them on a phone,
+ * where it has two lines: the alarm and the verb over the session.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w411dp-h914dp-xxhdpi")

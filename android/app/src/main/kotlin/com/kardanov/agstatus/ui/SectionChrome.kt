@@ -325,14 +325,16 @@ private val BAR_SIDE_PADDING = 16.dp
 
 /**
  * What the bar's ripple draws: nothing under a finger, a pointer or a
- * keyboard's focus. Material shows each by laying a lighter layer over the
- * ground and the words, and the blocked ink has only 4.82:1 on the ground it
- * rests on: a press took the 12sp red word to 3.66:1, and a keyboard's focus
- * to 3.95:1, both under AA. So the ground holds, whatever the bar is doing.
- * Under a finger or a pointer the verb lights instead ([NeedsYouBar]), as
- * under the web's pointer, and a keyboard's focus is a ring inside the bar
- * ([barFocusRing]), as on the web. Every other control on the board keeps
- * Material's layer, on grounds where it costs no ink its contrast.
+ * keyboard's focus. Material shows each by laying a layer of the content
+ * colour over the ground and the words, and the blocked ink has only 4.82:1
+ * on the ground it rests on: a press or a keyboard's focus, each a 10% layer,
+ * took the 12sp red word to 3.95:1, under AA. So the ground holds, whatever
+ * the bar is doing. Under a finger or a pointer the verb lights instead
+ * ([NeedsYouBar]), as under the web's pointer, and a keyboard's focus is a
+ * ring inside the bar ([barFocusRing]), as on the web. Every other control on
+ * the board keeps Material's layer in 1.7.0, by the owner's call of
+ * 2026-11-17, and on a blocked card a keyboard's focus takes the same red
+ * word to 3.95:1.
  */
 private val BarRipple = RippleConfiguration(
     rippleAlpha = RippleAlpha(

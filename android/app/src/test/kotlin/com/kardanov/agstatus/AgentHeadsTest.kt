@@ -66,8 +66,10 @@ class AgentHeadsTest {
     @Test
     fun `sources sort by code unit, as Swift sorts them`() {
         // The server takes a-z, 0-9, '_' and '-': '-' before the digits, the
-        // digits before '_', '_' before the letters. A locale's collation, as
-        // the server's own localeCompare, puts '_' before '-'.
+        // digits before '_', '_' before the letters, as a 1.7.0 server orders
+        // its usage reports too. A locale's collation, as servers before
+        // 1.7.0 sorted them with localeCompare, puts '_' before '-'. The heads
+        // are sorted here, so the server's order changes none of this.
         val sources = listOf("claude_x", "claude2", "claude-x", "claudex", "claude")
         val heads = agentHeads(sources.mapIndexed { i, source -> session("s$i", source) }, emptyList())
 
