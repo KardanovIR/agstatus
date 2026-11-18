@@ -268,7 +268,8 @@ the sources already held keep reporting on every endpoint. The bundled hooks
 use two (`claude`, `codex`). A malformed report never takes a slot.
 
 `GET /api/usage` (legacy) and `GET /w/<token>/api/usage` return the
-current list:
+current list, by `source` compared by UTF-16 code unit, as the `usage` event
+carries it:
 
 ```json
 [ { "source": "claude", "windows": [ ... ], "updatedAt": 1752096030000 } ]
@@ -363,6 +364,11 @@ exceeded"}` beyond), separate from the webhook's:
 Each series keeps the last reading from *before* the requested range as its
 first point, so a step chart has a value to start from. Both are retained for
 90 days.
+
+`history` comes by `source`, then `windowId`, and `projects` by `day`, then
+`source`, then `project`, each compared by UTF-16 code unit (`Zeta` before
+`alpha`, `claude-x` before `claude_x`), never by a locale's collation, so every
+server lists them in the same order. Since 1.7.0.
 
 ## Per-session token totals
 

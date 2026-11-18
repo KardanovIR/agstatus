@@ -2790,7 +2790,8 @@ gets <code>429 {&quot;error&quot;: &quot;too many usage sources for this workspa
 the sources already held keep reporting on every endpoint. The bundled hooks
 use two (<code>claude</code>, <code>codex</code>). A malformed report never takes a slot.</p>
 <p><code>GET /api/usage</code> (legacy) and <code>GET /w/&lt;token&gt;/api/usage</code> return the
-current list:</p>
+current list, by <code>source</code> compared by UTF-16 code unit, as the <code>usage</code> event
+carries it:</p>
 <pre><code class="language-json">[ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
 </code></pre>
 <h3 id="api-usage-history-and-per-project-spend"><a class="anchor" href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></h3>
@@ -2901,6 +2902,10 @@ budget of their own, 30 a minute per workspace (<code>429 {&quot;error&quot;: &q
 <p>Each series keeps the last reading from <em>before</em> the requested range as its
 first point, so a step chart has a value to start from. Both are retained for
 90 days.</p>
+<p><code>history</code> comes by <code>source</code>, then <code>windowId</code>, and <code>projects</code> by <code>day</code>, then
+<code>source</code>, then <code>project</code>, each compared by UTF-16 code unit (<code>Zeta</code> before
+<code>alpha</code>, <code>claude-x</code> before <code>claude_x</code>), never by a locale&#39;s collation, so every
+server lists them in the same order. Since 1.7.0.</p>
 <h3 id="api-per-session-token-totals"><a class="anchor" href="#api-per-session-token-totals">Per-session token totals</a></h3>
 <p>The same pass over the same local logs that produces the project-day rows also
 keys them by session id — Claude stamps every assistant record with the session

@@ -681,6 +681,28 @@ export function projectDayWindow(now: number): { oldest: string; newest: string 
   return { oldest: dayKey(now - MAX_HISTORY_DAYS * DAY_MS), newest: dayKey(now + DAY_MS) };
 }
 
+/**
+ * The one order the server sorts what it serves in: by UTF-16 code unit,
+ * which is JavaScript's own < and > on strings, as the clients compare
+ * folder names (docs/design/project-sections.md). Never localeCompare or an
+ * Intl.Collator, for three reasons:
+ * - Cost. A collation composes and reorders a string's combining marks on
+ *   every comparison, and that grows with the square of a run of them. One
+ *   board's 5,000 project days, each named with 120 units of marks in the
+ *   worst order, took localeCompare 1.6 s of the thread every board shares
+ *   to sort (Node 20.9), so 30 history reads at once held it for 45 s and
+ *   other boards' hook posts timed out. By code unit a comparison reads each
+ *   name at most once, and that sort takes 4.7 ms.
+ * - It depends on where the server runs. A collation follows the process's
+ *   locale: under LANG=da_DK.UTF-8, "aardvark" sorts after "zeta".
+ * - It calls different names equal, such as a name and its decomposed form,
+ *   or one with a soft hyphen in it, and leaves those in the order they were
+ *   stored in.
+ */
+export function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** One entry in a session's timeline: what the agent switched to, and when. */
 export interface SessionEvent {
   /** Monotonically increasing per session; stable identity for clients. */
@@ -2005,10 +2027,10 @@ export class Store {
   }
 
   /**
-   * Recorded utilization per (source, window) since `since`. Each series keeps
-   * the last reading from *before* the cutoff as its first point: without that
-   * anchor a step chart has nothing to draw from until the first change lands
-   * inside the window.
+   * Recorded utilization per (source, window) since `since`, by source, then
+   * window id (byCodeUnit). Each series keeps the last reading from *before*
+   * the cutoff as its first point: without that anchor a step chart has
+   * nothing to draw from until the first change lands inside the window.
    */
   getUsageHistory(
     wsId: string,
@@ -2026,7 +2048,7 @@ export class Store {
       if (points.length > 0) out.push({ source, windowId, points });
     }
     return out.sort(
-      (a, b) => a.source.localeCompare(b.source) || a.windowId.localeCompare(b.windowId)
+      (a, b) => byCodeUnit(a.source, b.source) || byCodeUnit(a.windowId, b.windowId)
     );
   }
 
@@ -2125,7 +2147,12 @@ export class Store {
     }
   }
 
-  /** Token spend per (source, project, day) on or after `sinceDay` (YYYY-MM-DD). */
+  /**
+   * Token spend per (source, project, day) on or after `sinceDay` (YYYY-MM-DD),
+   * by day, then source, then project (byCodeUnit). The clients list each
+   * agent's folders biggest spender first, and folders that spent the same in
+   * the order their first rows come in here.
+   */
   getProjectDays(wsId: string, sinceDay: string): ProjectDay[] {
     const ws = this.projectDays.get(wsId);
     if (!ws) return [];
@@ -2133,9 +2160,9 @@ export class Store {
       .filter((d) => d.day >= sinceDay)
       .sort(
         (a, b) =>
-          a.day.localeCompare(b.day) ||
-          a.source.localeCompare(b.source) ||
-          a.project.localeCompare(b.project)
+          byCodeUnit(a.day, b.day) ||
+          byCodeUnit(a.source, b.source) ||
+          byCodeUnit(a.project, b.project)
       );
   }
 
@@ -2290,14 +2317,17 @@ export class Store {
     return wire;
   }
 
-  /** Current plan usage for a workspace, freshest first. Stale entries are dropped. */
+  /**
+   * Current plan usage for a workspace, by source (byCodeUnit). Stale entries
+   * are dropped. Sorted on every usage post and every stream's connect.
+   */
   getUsage(wsId: string): Usage[] {
     const map = this.usageBySource.get(wsId);
     if (!map) return [];
     const cutoff = Date.now() - USAGE_TTL_MS;
     return Array.from(map.values())
       .filter((u) => u.updatedAt >= cutoff)
-      .sort((a, b) => a.source.localeCompare(b.source));
+      .sort((a, b) => byCodeUnit(a.source, b.source));
   }
 
   /** Appends a timeline entry, trimming (soft-deleting) beyond the cap. */
