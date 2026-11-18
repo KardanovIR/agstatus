@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import request from 'supertest';
-import { makeApp, createWorkspace } from './helpers';
+import { makeApp, createWorkspace, TEST_DEFAULTS } from './helpers';
 import { byCodeUnit, dayKey, LEGACY_WS, MAX_PROJECT_DAYS_PER_WORKSPACE } from '../src/store';
 
 const w = (id: string, usedPct: number) => ({ id, label: id, usedPct });
@@ -189,9 +189,8 @@ describe('the order a usage read lists things in', () => {
         .send({ source, days: days.map((d) => ({ ...d, tokens: 1 })) })
         .expect(200);
     await post('codex', [{ project: 'Zeta', day: D1 }]);
-    // Sent in an order other than the read's, so no row is in place by
-    // arrival alone. Each pair of names a collation calls equal comes first
-    // in its other form.
+    // Sent in an order other than the read's. Each pair of names a collation
+    // calls equal comes first in its other form.
     await post('claude', [
       { project: 'aardvark', day: D2 },
       { project: 'caf\u00e9', day: D1 },
@@ -213,7 +212,7 @@ describe('the order a usage read lists things in', () => {
     expect(res.body.projects.map((p: { day: string; source: string; project: string }) =>
       [p.day === D1 ? 'D1' : 'D2', p.source, p.project])).toEqual([
       // A capital's unit is lower than every small letter's: a collation
-      // puts alpha first.
+      // puts Zeta after ab and alpha.
       ['D1', 'claude', 'Zeta'],
       ['D1', 'claude', 'ab'],
       ['D1', 'claude', 'alpha'],
@@ -274,8 +273,14 @@ describe('the order a usage read lists things in', () => {
 // comparison, so 5,000 names of marks in the worst order took 1.6 s of the
 // thread every board shares, a read, and 30 reads at once held it for 45 s
 // while other boards' hook posts timed out. Nothing here times anything,
-// which would flake on a loaded machine: the test watches that no collation
-// and no composing runs while the read is served.
+// which would flake on a loaded machine. The test counts calls instead, while
+// the read is served: of localeCompare, normalize and new Intl.Collator, and
+// of a collator's compare, each read of it and each run. The spies go in
+// first and the server's own modules (src/) load again under them, so a
+// localeCompare or a compare the server took when a module loaded, when the
+// app was made or during the read is counted each time it runs. What a module
+// from node_modules took when it loaded, before the spies, is not seen. The
+// order of the rows is checked as well, one pair at a time.
 
 /**
  * One combining mark for each of 37 canonical combining classes, from 240
@@ -304,10 +309,6 @@ describe('a history read of a board full of project days named in the worst orde
     ['/w/:token/api/usage/history', true],
     ['/api/usage/history', false],
   ])('sorts all of them on %s by code unit, with no collation and no composing', async (_route, multiTenant) => {
-    const t = makeApp({ multiTenant });
-    await t.ready;
-    const token = multiTenant ? await createWorkspace(t.app) : '';
-    const wsId = multiTenant ? t.store.resolveToken(token)! : LEGACY_WS;
     // Held as the store holds what 88 reports of 16 KB would bring, in an
     // order other than the read's.
     const today = dayKey(Date.now());
@@ -316,39 +317,71 @@ describe('a history read of a board full of project days named in the worst orde
     }));
     expect(new Set(rows.map((r) => r.project)).size).toBe(MAX_PROJECT_DAYS_PER_WORKSPACE);
     for (const r of rows) expect(r.project).toHaveLength(120);
-    expect(t.store.admitUsageSource(wsId, 'claude')).toBe(true);
-    expect(t.store.setProjectDays(wsId, 'claude', rows))
-      .toEqual({ stored: MAX_PROJECT_DAYS_PER_WORKSPACE, dropped: 0, refused: 0 });
 
-    const root = multiTenant ? `/w/${token}` : '';
-    // The getter on the collators' own prototype, taken before Intl.Collator
-    // is replaced: the spy that replaces it has a prototype of its own, which
-    // no collator inherits from.
+    // The collators' own prototype and its compare getter, taken before
+    // Intl.Collator is replaced: the spy that replaces it has a prototype of
+    // its own, which no collator inherits from.
     const collators = Intl.Collator.prototype;
+    const compareOf = Object.getOwnPropertyDescriptor(collators, 'compare')!.get!;
+    // A collator's compare, read while the spies are in, is its own behind a
+    // counter, so one read once and kept is counted each time it runs.
+    const runs = vi.fn();
     const spies = [
       vi.spyOn(String.prototype, 'localeCompare'),
       vi.spyOn(String.prototype, 'normalize'),
-      vi.spyOn(collators, 'compare', 'get'),
+      vi.spyOn(collators, 'compare', 'get').mockImplementation(function (this: Intl.Collator) {
+        const compare = compareOf.call(this) as (a: string, b: string) => number;
+        return (a: string, b: string) => {
+          runs();
+          return compare(a, b);
+        };
+      }),
       vi.spyOn(Intl, 'Collator'),
+      runs,
     ];
     let seen: number[] = [];
+    let loadedAgain = false;
     let projects: Array<{ project: string }> = [];
     let calls: number[] = [];
+    let shutdown = (): Promise<void> => Promise.resolve();
     try {
-      // Each spy sees its own kind of call, so a zero below means none ran.
+      // Each spy sees its own kind of call, and a compare read before the
+      // count starts is counted when it runs, so a zero below means none ran.
+      const kept = new Intl.Collator().compare;
+      for (const spy of spies) spy.mockClear();
       'a'.localeCompare('b');
       'a'.normalize('NFC');
-      new Intl.Collator().compare('a', 'b');
+      void new Intl.Collator().compare;
+      kept('a', 'b');
       seen = spies.map((spy) => spy.mock.calls.length);
+
+      // The server's own modules load again, under the spies, and the app is
+      // made from them.
+      vi.resetModules();
+      const { createApp } = await import('../src/app');
+      loadedAgain = (await import('../src/store')).byCodeUnit !== byCodeUnit;
+      const t = createApp({ ...TEST_DEFAULTS, multiTenant });
+      shutdown = t.shutdown;
+      await t.ready;
+      const token = multiTenant ? await createWorkspace(t.app) : '';
+      const wsId = multiTenant ? t.store.resolveToken(token)! : LEGACY_WS;
+      expect(t.store.admitUsageSource(wsId, 'claude')).toBe(true);
+      expect(t.store.setProjectDays(wsId, 'claude', rows))
+        .toEqual({ stored: MAX_PROJECT_DAYS_PER_WORKSPACE, dropped: 0, refused: 0 });
+
+      const root = multiTenant ? `/w/${token}` : '';
       for (const spy of spies) spy.mockClear();
       projects = (await request(t.app).get(`${root}/api/usage/history?days=1`).expect(200)).body.projects;
     } finally {
       calls = spies.map((spy) => spy.mock.calls.length);
       for (const spy of spies) spy.mockRestore();
+      await shutdown();
     }
-    // localeCompare, normalize, a collator's compare, new Intl.Collator.
-    expect(seen).toEqual([1, 1, 1, 1]);
-    expect(calls).toEqual([0, 0, 0, 0]);
+    expect(loadedAgain, 'src/store.ts loaded again under the spies').toBe(true);
+    // localeCompare, normalize, a read of a collator's compare, new
+    // Intl.Collator, a run of a collator's compare.
+    expect(seen).toEqual([1, 1, 1, 1, 1]);
+    expect(calls).toEqual([0, 0, 0, 0, 0]);
     expect(projects).toHaveLength(MAX_PROJECT_DAYS_PER_WORKSPACE);
     for (let i = 1; i < projects.length; i += 1) {
       expect(byCodeUnit(projects[i - 1].project, projects[i].project), `row ${i}`).toBe(-1);
