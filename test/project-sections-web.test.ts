@@ -1073,6 +1073,10 @@ const ended = (b: Board, el: Element, name: string, type: 'animationend' | 'anim
   el.dispatchEvent(e);
 };
 
+/** The tab showing, which jsdom's never is: its document is hidden unless it pretends to be drawn. */
+const tabShows = (b: Board, showing = true) =>
+  Object.defineProperty(b.win.document, 'hidden', { configurable: true, get: () => !showing });
+
 describe('the needs-you bar', () => {
   it('is absent while nothing is blocked, and done never counts', async () => {
     const b = await boardOf([at('a', 1, { homeProject: 'acme-api', status: 'done' }), at('c', 2, { homeProject: 'docs' })]);
@@ -1084,9 +1088,11 @@ describe('the needs-you bar', () => {
 
   it('appears with the first block, naming it and its project, as one button', async () => {
     const b = await boardOf([at('a', 1, { homeProject: 'acme-api', name: 'Fix the login redirect' }), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
     b.emit('session', blocked('a', 0, 'acme-api', { name: 'Fix the login redirect' }));
     expect(bar().hidden).toBe(false);
     expect(bar().classList.contains('entering')).toBe(true);   // from the bottom edge (shell.css)
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('');   // the edge itself
     expect(document.body.classList.contains('needs-up')).toBe(true);   // the page padded
     expect(barShows()).toEqual({ count: '1', name: 'Fix the login redirect', where: '·in acme-api', verb: 'Show' });
     expect(bar().querySelector('.needs-word')!.textContent).toBe('blocked');
@@ -1431,15 +1437,107 @@ describe('the needs-you bar', () => {
     expect(heading.hasAttribute('tabindex')).toBe(false);
   });
 
-  it('comes back at once for a block that lands while it leaves', async () => {
+  // A block that lands while the bar leaves turns it around where it is: its
+  // arrival, needs-in on --d-slow and --ease, started from the offset its
+  // leaving had reached (shell.css, app.js showNeeds), so it never jumps. It
+  // used to stand back in its place in one frame. The leave's end never
+  // comes, and to the beat that block is a first block, whose arrival is its
+  // motion.
+  it('turns around where it is for a block that lands while it leaves, and rises from there', async () => {
     const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    ended(b, bar(), 'needs-in');
+    await vi.advanceTimersByTimeAsync(10_000);
+    const beats = watchBeats(b);
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    expect(bar().classList.contains('leaving')).toBe(true);
+    // A tenth of a second into its leaving, drawn 24.5px below its place, as
+    // Chrome draws a 44px bar then.
+    vi.stubGlobal('getComputedStyle', (el: Element) => ({
+      transform: el === bar() && bar().classList.contains('leaving') ? 'matrix(1, 0, 0, 1, 0, 24.5)' : 'none',
+    }));
+    await vi.advanceTimersByTimeAsync(100);
+    b.emit('session', blocked('c', 0, 'docs'));
+    expect(bar().classList.contains('leaving')).toBe(false);
+    expect(bar().hasAttribute('inert')).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('24.5px');
+    expect(barShows()).toEqual({ count: '1', name: 'c', where: '·in docs', verb: 'Show' });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(false);
+    ended(b, bar(), 'needs-out', 'animationcancel');   // the leave, cut short: not the arrival's end
+    expect(bar().classList.contains('entering')).toBe(true);
+    ended(b, bar(), 'needs-in');                       // arrived
+    expect(bar().classList.contains('entering')).toBe(false);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual([]);
+    // The next time it comes, from nothing, it comes from the edge.
+    b.emit('session', unblocked('c', 'docs'));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(bar().hidden).toBe(true);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    expect(bar().classList.contains('entering')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('');
+  });
+
+  it('stands back in its place, with no motion, for a block that lands while it leaves out of sight', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    ended(b, bar(), 'needs-in');
+    vi.stubGlobal('getComputedStyle', () => ({ transform: 'matrix(1, 0, 0, 1, 0, 24.5)' }));
+    location.hash = 'session/c';                       // a session's history over the board
+    await b.settle();
     b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
     expect(bar().classList.contains('leaving')).toBe(true);
     b.emit('session', blocked('c', 0, 'docs'));
     expect(bar().classList.contains('leaving')).toBe(false);
-    expect(bar().hasAttribute('inert')).toBe(false);
-    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().classList.contains('entering')).toBe(false);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('');
+    location.hash = '';
+    await b.settle();
     expect(bar().hidden).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(false);
+  });
+
+  // It arrives where the reader sees it. A bar whose first block lands under
+  // a detail screen, which hides it, or in a hidden tab runs no arrival and
+  // is simply in its place when the reader comes back, as on iOS and
+  // Android. Given its arrival under the screen, it ran it on the way back,
+  // for a block seconds old (headless Chrome: its top went 900 to 856 px).
+  it.each([
+    ['a session\'s history over the board', () => { location.hash = 'session/c'; }, () => { location.hash = ''; }],
+    ['the usage screen over the board', () => { location.hash = 'usage/claude'; }, () => { location.hash = ''; }],
+    ['the tab hidden', (b: Board) => { tabShows(b, false); }, (b: Board) => { tabShows(b, true); }],
+  ])('is simply in its place on the way back when its first block lands with %s', async (_what, away, back) => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' }), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    away(b);
+    await b.settle();
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    expect(bar().hidden).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(false);
+    await vi.advanceTimersByTimeAsync(1500);
+    back(b);
+    await b.settle();
+    expect(bar().classList.contains('entering')).toBe(false);
+    expect(barShows().count).toBe('1');
+  });
+
+  // An arrival a detail screen cuts short, by hiding the bar, is over: the
+  // bar is in its place on the way back, and nothing runs again.
+  it('forgets an arrival cut short by a detail screen', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' }), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    expect(bar().classList.contains('entering')).toBe(true);
+    location.hash = 'session/c';
+    await b.settle();
+    ended(b, bar(), 'needs-in', 'animationcancel');   // as a browser reports display: none
+    location.hash = '';
+    await b.settle();
+    expect(bar().hidden).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(false);
   });
 
   it('goes with the board, when a snapshot empties it', async () => {
@@ -1847,10 +1945,6 @@ describe('a new block, aloud', () => {
 // the voice hears, after the voice's half second, and beats by the rule iOS
 // keeps (BarBeat).
 
-/** The tab showing, which jsdom's never is: its document is hidden unless it pretends to be drawn. */
-const tabShows = (b: Board, showing = true) =>
-  Object.defineProperty(b.win.document, 'hidden', { configurable: true, get: () => !showing });
-
 /** Reduced motion asked for, or not, through the matchMedia the board reads. */
 const reduceMotion = (on: boolean) => Object.assign(window, {
   matchMedia: (q: string) => ({ media: q, matches: on && q === '(prefers-reduced-motion: reduce)', addEventListener() {}, removeEventListener() {} }),
@@ -2119,10 +2213,32 @@ describe('the needs-you bar\'s beat', () => {
     expect(beats).toEqual(['6']);
   });
 
-  // A bar that appeared under a detail screen has run no arrival yet: it
-  // runs when the board shows again, and nothing beats until it is over.
+  // jsdom runs no animation, so here an arrival lasts until its end is
+  // heard: a bar that arrived with the page, its end not yet heard ten
+  // seconds on, is still arriving, and a rise meanwhile is no beat.
   it('keeps still while the bar is still arriving', async () => {
-    const b = await boardOf([at('w1', 1, { homeProject: 'web' }), at('w2', 2, { homeProject: 'web' }), at('w3', 3, { homeProject: 'web' })]);
+    vi.useFakeTimers();
+    const b = await loadBoard();
+    tabShows(b);
+    b.emit('snapshot', [blocked('w1', 1, 'web'), at('w2', 2, { homeProject: 'web' }), at('w3', 3, { homeProject: 'web' })]);
+    const beats = watchBeats(b);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(bar().classList.contains('entering')).toBe(true);
+    b.emit('session', blocked('w2', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual([]);
+    ended(b, bar(), 'needs-in');
+    b.emit('session', blocked('w3', 0, 'web'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(beats).toEqual(['3']);
+  });
+
+  // A bar that appeared under a detail screen ran no arrival, and is simply
+  // in its place on the way back (the needs-you bar, above): it rests on its
+  // count, so the next rise beats. It used to run its arrival on the way
+  // back, and keep still for a rise until that was over.
+  it('beats for the next rise on a bar that appeared under a detail screen', async () => {
+    const b = await boardOf([at('w1', 1, { homeProject: 'web' }), at('w2', 2, { homeProject: 'web' })]);
     tabShows(b);
     const beats = watchBeats(b);
     location.hash = 'usage/claude';
@@ -2132,14 +2248,11 @@ describe('the needs-you bar\'s beat', () => {
     location.hash = '';
     await b.settle();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(bar().classList.contains('entering')).toBe(true);
+    expect(bar().classList.contains('entering')).toBe(false);
+    expect(beats).toEqual([]);
     b.emit('session', blocked('w2', 0, 'web'));
     await vi.advanceTimersByTimeAsync(1000);
-    expect(beats).toEqual([]);
-    ended(b, bar(), 'needs-in');
-    b.emit('session', blocked('w3', 0, 'web'));
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(beats).toEqual(['3']);
+    expect(beats).toEqual(['2']);
   });
 
   // A detail screen opened mid-beat hides the bar, which cancels the face's
@@ -2519,6 +2632,16 @@ describe('the stylesheets behind the sections and the bar', () => {
     expect(rule(shell, '.needs-face.beat')).toMatch(arrival);
     const beating = [...shell.matchAll(/([^{}]*\.beat\b[^{}]*)\{/g)].map((m) => m[1].trim());
     expect(beating).toEqual(['.needs-face.beat']);
+  });
+
+  // A bar still leaving when a block lands turns around where it is: the
+  // arrival starts from the offset app.js sets on the button, or else from
+  // the edge. The face does not take that offset, so its beat always comes
+  // in from the edge.
+  it('starts the bar\'s arrival where a turnaround has it, and the face\'s beat at the edge', () => {
+    const frames = /@keyframes needs-in \{([\s\S]*?)\n\}/.exec(shell)![1];
+    expect(frames.trim()).toBe('from { transform: translateY(var(--needs-from, 100%)); }');
+    expect(rule(shell, '.needs-face')).toMatch(/--needs-from:\s*initial;/);
   });
 
   // The bar's focus ring is the button's outline, and a face in motion is a

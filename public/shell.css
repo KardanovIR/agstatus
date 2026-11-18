@@ -884,6 +884,9 @@ body.detail-open > .footer { display: none; }
     calc(var(--space-sm) + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
   background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
   border-top: 1px solid var(--state-line);
+  /* Its beat comes in from the bottom edge, always: a turnaround's offset
+   * is the button's own, and is not handed down. */
+  --needs-from: initial;
 }
 
 /* The blocked edge goes from 42% of the state colour to 70%, as a card's
@@ -980,9 +983,11 @@ body.detail-open > .footer { display: none; }
 .needs.drop-where .needs-where { display: none; }
 
 /* It enters from the bottom edge and leaves by it, and appears and goes in
- * place under reduced motion (board.css). */
+ * place under reduced motion (board.css). A bar still leaving when a block
+ * lands turns around where it is: app.js sets --needs-from on it to the
+ * offset its leaving had reached, and the same arrival starts from there. */
 @keyframes needs-in {
-  from { transform: translateY(100%); }
+  from { transform: translateY(var(--needs-from, 100%)); }
 }
 
 @keyframes needs-out {

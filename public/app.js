@@ -1288,6 +1288,9 @@
   const reducedMotion = () => typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /** Whether the board is in front of the reader: the tab showing, and no detail screen over it. */
+  const boardInFront = () => !document.hidden && !document.body.classList.contains('detail-open');
+
   /** The cards in reading order as drawn now, and the blocked ones among them: ids. */
   function drawnOrder() {
     const order = [];
@@ -1389,17 +1392,50 @@
   // none remain: motion for news, and in place under reduced motion, where
   // board.css takes every animation to nothing. Leaving, it is inert, so it
   // can be neither pressed nor reached while it goes.
+  //
+  // It arrives where the reader sees it arrive: on the board in front, the
+  // tab showing and no detail screen over it. A bar whose first block lands
+  // under a history or usage screen, or in a hidden tab, is simply in its
+  // place when the reader comes back, as on iOS and Android. Given its
+  // arrival under a screen that hides it, it ran none there and ran it on
+  // the way back, for a block that had landed seconds before.
+  //
+  // A block that lands while it leaves turns it around where it is: it rises
+  // from there to its place by its own arrival, needs-in on --d-slow and
+  // --ease, started from the offset its leaving had reached (shell.css), so
+  // it never jumps. It used to stand back in its place in one frame. To the
+  // beat that block is a first block, since the bar emptied before it, and
+  // its arrival is its motion (The bar's beat).
   let leaveTimer = 0;
   function showNeeds() {
     clearTimeout(leaveTimer);
     if (!needsEl.hidden && !needsEl.classList.contains('leaving')) return;
     const fresh = needsEl.hidden;
+    // Read while it still leaves: stopping that puts it back in its place.
+    const drop = fresh ? 0 : dropOf(needsEl);
     needsEl.classList.remove('leaving');
     needsEl.removeAttribute('inert');
     needsEl.hidden = false;
-    if (fresh) needsEl.classList.add('entering');
+    if (boardInFront() && (fresh || drop > 0)) {
+      if (drop > 0) needsEl.style.setProperty('--needs-from', `${drop}px`);
+      needsEl.classList.add('entering');
+    }
     document.body.classList.add('needs-up');
     padForNeeds();
+  }
+
+  /**
+   * How far below its place the bar is drawn now, in pixels: as far as its
+   * leaving has taken it, or 0. Read from the transform the browser draws it
+   * with, so where nothing is laid out there is nothing to read.
+   */
+  function dropOf(el) {
+    if (typeof getComputedStyle !== 'function') return 0;
+    const m = /^matrix(3d)?\(([^)]*)\)$/.exec(getComputedStyle(el).transform || '');
+    if (!m) return 0;
+    const v = m[2].split(',').map(Number);
+    const y = m[1] ? v[13] : v[5];
+    return y > 0 ? Math.round(y * 100) / 100 : 0;
   }
 
   function hideNeeds() {
@@ -1417,6 +1453,7 @@
       if (!needsEl.classList.contains('leaving')) return;
       needsEl.classList.remove('leaving');
       needsEl.hidden = true;
+      needsEl.style.removeProperty('--needs-from');
       paint(faceEl, '');
       needsEl.removeAttribute('aria-label');
       document.body.classList.remove('needs-up');
@@ -1490,9 +1527,13 @@
   }
 
   // The bar's own arrival, not its face's beat, which runs the same
-  // animation and whose end reaches the bar too.
+  // animation and whose end reaches the bar too. Ended, or cut short by a
+  // detail screen that hides the bar or by its leaving, and the offset a
+  // turnaround started it from goes with it.
   const arrived = (e) => {
-    if (e.target === needsEl && e.animationName === 'needs-in') needsEl.classList.remove('entering');
+    if (e.target !== needsEl || e.animationName !== 'needs-in') return;
+    needsEl.classList.remove('entering');
+    needsEl.style.removeProperty('--needs-from');
   };
   if (needsEl) {
     needsEl.addEventListener('animationend', arrived);
@@ -1711,9 +1752,6 @@
     // was out of the reader's sight then.
     gathering: null,
   };
-
-  /** Whether the board is in front of the reader: the tab showing, and no detail screen over it. */
-  const boardInFront = () => !document.hidden && !document.body.classList.contains('detail-open');
 
   /** Every render of the bar hands over the blocked cards as drawn (renderNeeds). */
   function noteBlocked(blocked) {
