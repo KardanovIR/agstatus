@@ -15,6 +15,7 @@ import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onChildAt
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
@@ -331,14 +332,52 @@ class BarBeatScreenTest {
     }
 
     @Test
-    fun `a block while the pairing sheet is over the board is no beat`() {
+    fun `a block while another screen is over the board, the reader back on the board within the half second, is no beat`() {
         launch()
         val rest = frameNow()
-        store.sheetOverBoard = true
+        rule.onNodeWithContentDescription("Settings").performClick()
+        rule.waitForIdle()
+
+        frame("w1" to AgentStatus.BLOCKED)
+        val blocked = SystemClock.elapsedRealtime()
+        // Back at once: the board is in front again well before the half
+        // second ends, so only where the board was as the block landed keeps
+        // the beat away.
+        scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        rule.waitForIdle()
+        val back = SystemClock.elapsedRealtime() - blocked
+        assertTrue("the board in front again ${back}ms after the block", store.boardResumed && back < 500)
+        val frames = framesPastTheHalfSecond()
+
+        assertEquals("2 blocked: Session s1, in acme-api, Show", barSays())
+        assertNoBeat(frames, rest)
+    }
+
+    /**
+     * The pairing sheet is a window of its own over the board, so the board's
+     * screen stays resumed under it: only the app's word that the sheet is
+     * open keeps the beat away. The real sheet, opened from the board's own
+     * button, which shows for a board with a token. The board is adopted as
+     * a QR code would adopt it, and its stream let go at once: its sessions
+     * are the test's.
+     */
+    @Test
+    fun `a block while the pairing sheet is over the board is no beat`() {
+        launch()
+        store.adopt(Board(baseUrl = "http://127.0.0.1:9", token = "ags_" + "a".repeat(32)))
+        store.disconnect()
+        store.showForTest(board)
+        rule.waitForIdle()
+        stand(1_000)
+        val rest = frameNow()
+        rule.onNodeWithContentDescription("Pair your computer").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("Pair your computer").assertExists()
 
         frame("w1" to AgentStatus.BLOCKED)
         val frames = framesPastTheHalfSecond()
 
+        assertEquals("2 blocked: Session s1, in acme-api, Show", barSays())
         assertNoBeat(frames, rest)
     }
 }
