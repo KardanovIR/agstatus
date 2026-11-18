@@ -634,10 +634,21 @@ and which fires between every tool call. Codex reads a local file, and
 sub-agent's included (otherwise the bars would freeze while a root waits on its
 sub-agents) — the throttle bounds the work either way.
 
-Set `AGSTATUS_USAGE=off` in the settings `env` block (Claude Code) or add it
-to the command prefix in `hooks.json` (Codex) to turn this off entirely. The
-bash hook reports no usage at all; a board simply shows no bars until
-something reports it.
+`AGSTATUS_USAGE=off` turns this off entirely, and with it the token totals
+in [Where the tokens went](#where-the-tokens-went). The hook reads it from its
+environment and nowhere else. For Claude Code, set it in the settings `env`
+block, where `agstatus init` leaves it alone. Codex has no settings `env`
+block and `agstatus-hook.json` has no key for it, but the Codex CLI runs its
+hooks in the environment it was started in: export it in the shell you start
+`codex` from. For Codex Desktop, which is not started from your shell, no way
+is known; nothing that would reach its hooks' environment has been checked.
+Don't add it to the command in `~/.codex/hooks.json`. Codex trusts a hook by a
+hash of its command, so it stops running the edited one, cards and all, until
+you trust it again (Settings → Hooks in Codex Desktop, `/hooks` in the Codex
+CLI). And the next `agstatus init`, which the installer runs on every upgrade,
+writes the bare command back, so usage is reported again. The bash hook
+reports no usage at all; a board simply shows no bars until something reports
+it.
 
 ### Where the tokens went
 
@@ -1051,7 +1062,7 @@ the helpers.
 | `CLAUDE_STATUS_URL`    | Required. Base URL the hook posts to — a board URL (`https://<host>/w/<token>`) or a legacy server origin. The hook appends `/webhook` and `/sessions/<id>` itself, and tolerates a trailing `/` or `/webhook`. |
 | `CLAUDE_STATUS_SECRET` | Optional. Sent as `X-Webhook-Secret` (legacy servers with `WEBHOOK_SECRET` set). Workspace boards don't need it — the token in the URL is the auth. |
 | `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text and prompts, folder names instead of session titles, and "Subagent N" instead of what each subagent was asked to do (what `--minimal` sets). |
-| `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage (see [Plan-usage bars](#plan-usage-bars)). |
+| `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage, or the token totals (see [Plan-usage bars](#plan-usage-bars)). |
 | `AGSTATUS_FOCUS=off`   | Node hook only. Never add the `host` object to the payload or write the local session record, even when `~/.agstatus.json` has `"focus": true` (see [Focus](#focus-optional-opt-in)). |
 | `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
 | `AGSTATUS_DEBUG=1`     | Node hook only. Prints diagnostics to **stderr** (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing. |

@@ -907,10 +907,21 @@ and which fires between every tool call. Codex reads a local file, and
 <code>PreToolUse</code> is most of what it fires at all, so it reports there too, a
 sub-agent&#39;s included (otherwise the bars would freeze while a root waits on its
 sub-agents) — the throttle bounds the work either way.</p>
-<p>Set <code>AGSTATUS_USAGE=off</code> in the settings <code>env</code> block (Claude Code) or add it
-to the command prefix in <code>hooks.json</code> (Codex) to turn this off entirely. The
-bash hook reports no usage at all; a board simply shows no bars until
-something reports it.</p>
+<p><code>AGSTATUS_USAGE=off</code> turns this off entirely, and with it the token totals
+in <a href="#hooks-where-the-tokens-went">Where the tokens went</a>. The hook reads it from its
+environment and nowhere else. For Claude Code, set it in the settings <code>env</code>
+block, where <code>agstatus init</code> leaves it alone. Codex has no settings <code>env</code>
+block and <code>agstatus-hook.json</code> has no key for it, but the Codex CLI runs its
+hooks in the environment it was started in: export it in the shell you start
+<code>codex</code> from. For Codex Desktop, which is not started from your shell, no way
+is known; nothing that would reach its hooks&#39; environment has been checked.
+Don&#39;t add it to the command in <code>~/.codex/hooks.json</code>. Codex trusts a hook by a
+hash of its command, so it stops running the edited one, cards and all, until
+you trust it again (Settings → Hooks in Codex Desktop, <code>/hooks</code> in the Codex
+CLI). And the next <code>agstatus init</code>, which the installer runs on every upgrade,
+writes the bare command back, so usage is reported again. The bash hook
+reports no usage at all; a board simply shows no bars until something reports
+it.</p>
 <h4 id="hooks-where-the-tokens-went"><a class="anchor" href="#hooks-where-the-tokens-went">Where the tokens went</a></h4>
 <p>The bars answer &quot;how much of the plan is left&quot;, not &quot;which project spent it&quot; —
 no usage API breaks the limit down by project. So the hook also reads the logs
@@ -1305,7 +1316,7 @@ the helpers.</p>
 </tr>
 <tr>
 <td><code>AGSTATUS_USAGE=off</code></td>
-<td>Node hook only. Never read or report plan usage (see <a href="#hooks-plan-usage-bars">Plan-usage bars</a>).</td>
+<td>Node hook only. Never read or report plan usage, or the token totals (see <a href="#hooks-plan-usage-bars">Plan-usage bars</a>).</td>
 </tr>
 <tr>
 <td><code>AGSTATUS_FOCUS=off</code></td>
