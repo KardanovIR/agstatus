@@ -1481,6 +1481,57 @@ describe('the needs-you bar', () => {
     expect(bar().style.getPropertyValue('--needs-from')).toBe('');
   });
 
+  // A block within a frame of the answer lands before the leave has moved:
+  // Chrome draws a leave's first frame at its start, the bar's place, which
+  // reads as 'none' or as a matrix with no offset. The bar is in its place,
+  // and stays there with no motion. Re-entered there, from the bottom edge,
+  // it would drop 44px in one frame and rise again over 0.4 s, as a build
+  // that took an offset of 0 for a turn did in headless Chrome at 1440x900.
+  it.each([['none'], ['matrix(1, 0, 0, 1, 0, 0)']])(
+    'keeps still in its place for a block that lands before its leave has moved, drawn %s',
+    async (transform) => {
+      const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+      tabShows(b);
+      ended(b, bar(), 'needs-in');
+      await vi.advanceTimersByTimeAsync(10_000);
+      b.emit('session', unblocked('a', 'acme-api'));
+      expect(bar().classList.contains('leaving')).toBe(true);
+      vi.stubGlobal('getComputedStyle', () => ({ transform }));
+      b.emit('session', blocked('c', 0, 'docs'));
+      expect(bar().classList.contains('entering')).toBe(false);
+      expect(bar().style.getPropertyValue('--needs-from')).toBe('');
+      expect(bar().classList.contains('leaving')).toBe(false);
+      expect(bar().hidden).toBe(false);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(bar().hidden).toBe(false);
+      expect(bar().classList.contains('entering')).toBe(false);
+    },
+  );
+
+  // The offset a turnaround's arrival starts from goes with that arrival's
+  // end or its cut, as the browser tells of it, and in any case with the
+  // bar: a bar answered before either is heard has gone 0.4 s later, and the
+  // next first block brings it from the bottom edge, not from that offset.
+  it('forgets a turnaround\'s offset once the bar has gone, though its arrival\'s end was never heard', async () => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    ended(b, bar(), 'needs-in');
+    await vi.advanceTimersByTimeAsync(10_000);
+    b.emit('session', unblocked('a', 'acme-api'));
+    vi.stubGlobal('getComputedStyle', (el: Element) => ({
+      transform: el === bar() && bar().classList.contains('leaving') ? 'matrix(1, 0, 0, 1, 0, 24.5)' : 'none',
+    }));
+    await vi.advanceTimersByTimeAsync(33);
+    b.emit('session', blocked('c', 0, 'docs'));       // turned around, from 24.5px
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('24.5px');
+    b.emit('session', unblocked('c', 'docs'));        // answered before needs-in's end is heard
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(true);
+    b.emit('session', blocked('a', 0, 'acme-api'));   // a first block again
+    expect(bar().classList.contains('entering')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('');
+  });
+
   it('stands back in its place, with no motion, for a block that lands while it leaves out of sight', async () => {
     const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
     tabShows(b);
@@ -2357,9 +2408,12 @@ describe('1.6.5\'s page, taken from the cache with these scripts', () => {
   // server's static handler ignores, so a page a browser keeps finds its own
   // release's files in the cache, not the next release's. A release the URLs
   // are behind is one that forgot to raise them, and they would mix again.
+  // Every URL the page names, whatever loads it: a preload of /app.js
+  // without the release would put this release's file in the cache under
+  // the URL a kept 1.6.5 page asks for.
   it('names every file it loads with one release, never behind the server\'s', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
-    const urls = [...html.matchAll(/<(?:link rel="stylesheet" href|script src)="([^"]+)"/g)].map((m) => m[1]);
+    const urls = [...html.matchAll(/\s(?:href|src)="([^"]+)"/g)].map((m) => m[1]);
     expect(urls.map((u) => u.replace(/\?.*$/, ''))).toEqual(['/tokens.css', '/card.css', '/board.css', '/shell.css', '/marks.js', '/app.js']);
     const releases = new Set(urls.map((u) => /\?v=(\d+\.\d+\.\d+)$/.exec(u)?.[1]));
     expect(releases.size, `one release for all six: ${[...releases].join(', ')}`).toBe(1);
