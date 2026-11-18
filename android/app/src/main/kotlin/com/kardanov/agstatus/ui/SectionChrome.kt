@@ -2,6 +2,7 @@ package com.kardanov.agstatus.ui
 
 import android.os.Build
 import android.view.RoundedCorner
+import android.view.View
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterExitState
@@ -68,8 +69,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.layout.positionOnScreen
 import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.LayoutAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.requireLayoutCoordinates
@@ -99,6 +103,7 @@ import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.Theme
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.sqrt
@@ -605,8 +610,8 @@ private val BAR_RING_STROKE = 2.dp
 private val BAR_RING_GAP = 2.dp
 
 /**
- * The most a side of the ring moves in to keep clear of a rounded corner of
- * the display: as far as leaves 2dp between the ring and the bar's words.
+ * The most a side of the ring moves in to keep clear of a rounded corner: as
+ * far as leaves 2dp between the ring and the bar's words.
  */
 private val BAR_RING_ROOM = BAR_SIDE_PADDING - BAR_RING_GAP - BAR_RING_STROKE - 2.dp
 
@@ -618,10 +623,29 @@ private val BAR_RING_ROOM = BAR_SIDE_PADDING - BAR_RING_GAP - BAR_RING_STROKE - 
  * the blocked edge along the top and the ring, and 2dp in from the system
  * bars and any cutout beside or under the bar ([insets], what its words are
  * padded by), so no part of it is under the navigation bar, the gesture
- * handle or a camera. From Android 12, which reports the display's rounded
- * corners, a side whose bottom corner the curve would cut moves in until
- * the corner is 2dp inside the curve, as far as leaves 2dp between the ring
- * and the words ([barRingOutline]).
+ * handle or a camera.
+ *
+ * From Android 12, which reports rounded corners, a side whose bottom corner
+ * a curve would cut moves in until the corner is 2dp inside the curve, as far
+ * as leaves 2dp between the ring and the words ([barRingOutline]). The curves
+ * are the display's own corners, and the window's where the window itself is
+ * rounded: a corner whose curve meets the window's own bottom edge and its
+ * own side, as a split screen's window has them above the divider and beside
+ * it ([ringCorners]). Not a corner the window reports at an inset's edge:
+ * with three buttons, Android reports the window's corners at the navigation
+ * bar's edge, beside the bar or under it, where nothing is drawn over a board
+ * that runs under a clear navigation bar, and following them would move the
+ * ring in by 10dp for a curve that is not there. A large screen's taskbar
+ * with three buttons is reported the same way, though it draws its corners
+ * over the window: nothing Android hands an app tells the two apart, so
+ * there the taskbar's corners still cut the ring's two bottom corners, by 6
+ * to 6.5dp (12 to 13 px on a 1600 by 2560 screen at 320 dpi).
+ *
+ * Where a curve would need a side to move further than 10dp, as a split
+ * screen's window above the divider needs, the side stops there and the
+ * ring's corner stands nearer the curve than 2dp: on the Pixel 7 emulator's
+ * 48 px corners, 1.8 px inside it, so the ring is drawn whole. A curve wider
+ * than that would cut what is left of the corner.
  *
  * Drawn while the bar holds a keyboard's focus ([focused], the bar's own
  * focus interaction). Compose lets the bar take focus only out of touch mode
@@ -633,6 +657,11 @@ private val BAR_RING_ROOM = BAR_SIDE_PADDING - BAR_RING_GAP - BAR_RING_STROKE - 
  * bar's place while the bar's ground, edge and words rise under it, as on
  * the web. [focused] and the insets are read here, as it draws, so focus
  * coming and going runs no composable again, and a beat redraws no ring.
+ * The corners are asked of the platform once the bar is placed, on the first
+ * draw with the focus, and kept until it is placed again; the ring's edges
+ * are kept until the bar's size or insets change, and its stroke until the
+ * density does. So a draw with the focus asks nothing of the platform and
+ * makes nothing new.
  */
 private fun Modifier.barFocusRing(focused: State<Boolean>, insets: WindowInsets): Modifier =
     this then BarFocusRingElement(focused, insets)
@@ -657,68 +686,172 @@ private data class BarFocusRingElement(
 private class BarFocusRingNode(
     var focused: State<Boolean>,
     var insets: WindowInsets,
-) : Modifier.Node(), DrawModifierNode {
+) : Modifier.Node(), DrawModifierNode, LayoutAwareModifierNode {
+    /** The curves that can cut the ring, in the bar's pixels, for where the bar was last placed; null until asked. */
+    private var corners: RingCorners? = null
+
+    /** The ring's outer edge, and the bar's size, insets and density it stands for. */
+    private var ring = Rect.Zero
+    private var ringSize = Size.Unspecified
+    private var ringLeft = Float.NaN
+    private var ringRight = Float.NaN
+    private var ringBottom = Float.NaN
+    private var ringDensity = Float.NaN
+
+    /** The ring's line, in whole pixels so every edge of it is sharp, for [ringDensity]. */
+    private var stroke = Stroke()
+
+    override fun onPlaced(coordinates: LayoutCoordinates) {
+        corners = null
+    }
+
+    override fun onDetach() {
+        corners = null
+    }
+
     override fun ContentDrawScope.draw() {
         drawContent()
         if (!focused.value) return
-        // Whole pixels, so every edge of the ring is sharp.
-        val stroke = BAR_RING_STROKE.roundToPx().toFloat()
-        val (bottomLeft, bottomRight) = displayCorners()
-        val ring = barRingOutline(
-            width = size.width,
-            height = size.height,
-            left = insets.getLeft(this, layoutDirection).toFloat(),
-            right = insets.getRight(this, layoutDirection).toFloat(),
-            bottom = insets.getBottom(this).toFloat(),
-            gap = BAR_RING_GAP.roundToPx().toFloat(),
-            room = BAR_RING_ROOM.roundToPx().toFloat(),
-            bottomLeft = bottomLeft,
-            bottomRight = bottomRight,
-        )
-        if (ring.width <= 2 * stroke || ring.height <= 2 * stroke) return
+        val left = insets.getLeft(this, layoutDirection).toFloat()
+        val right = insets.getRight(this, layoutDirection).toFloat()
+        val bottom = insets.getBottom(this).toFloat()
+        // New insets can come with new corners, where the window's are reported.
+        if (left != ringLeft || right != ringRight || bottom != ringBottom) corners = null
+        if (corners == null || size != ringSize || density != ringDensity) {
+            val around = corners ?: workOutCorners().also { corners = it }
+            ring = barRingOutline(
+                width = size.width,
+                height = size.height,
+                left = left,
+                right = right,
+                bottom = bottom,
+                gap = BAR_RING_GAP.roundToPx().toFloat(),
+                room = BAR_RING_ROOM.roundToPx().toFloat(),
+                corners = around,
+            )
+            if (density != ringDensity) stroke = Stroke(width = BAR_RING_STROKE.roundToPx().toFloat())
+            ringSize = size
+            ringLeft = left
+            ringRight = right
+            ringBottom = bottom
+            ringDensity = density
+        }
+        val line = stroke.width
+        if (ring.width <= 2 * line || ring.height <= 2 * line) return
         drawRect(
             color = Theme.accent,
-            topLeft = Offset(ring.left + stroke / 2, ring.top + stroke / 2),
-            size = Size(ring.width - stroke, ring.height - stroke),
-            style = Stroke(width = stroke),
+            topLeft = Offset(ring.left + line / 2, ring.top + line / 2),
+            size = Size(ring.width - line, ring.height - line),
+            style = stroke,
         )
     }
 
-    /** The display's rounded bottom corners in the bar's pixels, where the platform reports them. */
-    private fun displayCorners(): Pair<DisplayCorner?, DisplayCorner?> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) roundedCorners() else null to null
-
-    /**
-     * The display's own corners, not the window's. With three buttons Android
-     * reports the window's bottom corners as rounded at the navigation bar's
-     * edge, where nothing is drawn over a board that runs under a clear
-     * navigation bar, and the ring moved in to 2dp from the words for a
-     * curve that is not there.
-     */
-    @RequiresApi(Build.VERSION_CODES.S)
-    private fun roundedCorners(): Pair<DisplayCorner?, DisplayCorner?> {
-        val display = requireView().display ?: return null to null
-        // The display counts from its own top left, as it is turned now.
-        val origin = requireLayoutCoordinates().positionOnScreen()
-        val bottomLeft = display.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT)
-        val bottomRight = display.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT)
-        return bottomLeft?.let { DisplayCorner(it.center.x - origin.x, it.center.y - origin.y, it.radius.toFloat()) } to
-            bottomRight?.let { DisplayCorner(it.center.x - origin.x, it.center.y - origin.y, it.radius.toFloat()) }
+    /** The rounded corners the platform reports ([RingCornerSource]), in the bar's pixels where it is placed now. */
+    private fun workOutCorners(): RingCorners {
+        val reported = RingCornerSource.read(requireView()) ?: return RingCorners.None
+        val placed = requireLayoutCoordinates()
+        return ringCorners(reported, inWindow = placed.positionInWindow(), onScreen = placed.positionOnScreen())
     }
 }
 
-/** One of the display's rounded corners: the centre of its curve and its radius, in the bar's pixels. */
-internal data class DisplayCorner(val x: Float, val y: Float, val radius: Float)
+/** A rounded corner: the centre of its curve and its radius, in pixels. */
+internal data class CornerCurve(val x: Float, val y: Float, val radius: Float)
+
+/**
+ * The rounded bottom corners Android reports, from Android 12: the display's
+ * own, in the display's pixels as it is turned now, and the window's, in the
+ * window's pixels, with the window's size.
+ */
+internal class ReportedCorners(
+    val displayLeft: CornerCurve?,
+    val displayRight: CornerCurve?,
+    val windowLeft: CornerCurve?,
+    val windowRight: CornerCurve?,
+    val windowWidth: Float,
+    val windowHeight: Float,
+)
+
+/**
+ * Where the bar's ring reads the rounded corners: the platform's own
+ * reports, which only a device makes (Robolectric reports none). A test
+ * stands in for them here, to check what the ring does with a report: which
+ * corners it keeps clear of and where they fall in the bar's pixels. What
+ * the platform reports in each window is the device's to show.
+ */
+internal object RingCornerSource {
+    var read: (View) -> ReportedCorners? = { view ->
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) platformCorners(view) else null
+    }
+}
+
+@RequiresApi(Build.VERSION_CODES.S)
+private fun platformCorners(view: View): ReportedCorners {
+    val display = view.display
+    val window = view.rootWindowInsets
+    return ReportedCorners(
+        displayLeft = display?.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT).curve(),
+        displayRight = display?.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT).curve(),
+        windowLeft = window?.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT).curve(),
+        windowRight = window?.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT).curve(),
+        windowWidth = view.rootView.width.toFloat(),
+        windowHeight = view.rootView.height.toFloat(),
+    )
+}
+
+@RequiresApi(Build.VERSION_CODES.S)
+private fun RoundedCorner?.curve(): CornerCurve? =
+    this?.let { CornerCurve(it.center.x.toFloat(), it.center.y.toFloat(), it.radius.toFloat()) }
+
+/** The curves that can cut the bar's ring, in the bar's pixels: the display's bottom corners, and the window's own. */
+internal data class RingCorners(
+    val displayLeft: CornerCurve? = null,
+    val displayRight: CornerCurve? = null,
+    val windowLeft: CornerCurve? = null,
+    val windowRight: CornerCurve? = null,
+) {
+    companion object {
+        val None = RingCorners()
+    }
+}
+
+/**
+ * [reported] in the pixels of a bar that stands at [inWindow] in its window
+ * and at [onScreen] on the display. The window's corners count only where
+ * the window itself is rounded: where a corner's curve meets the window's own
+ * bottom edge and its own side, to within a pixel. Android reports a corner
+ * at an inset's edge instead where an inset with rounded corners stands
+ * beside or under the window, a navigation bar with three buttons or a large
+ * screen's taskbar, and those are left out. The bottom edge alone does not
+ * tell: a phone held sideways with three buttons has nothing under the bar,
+ * and reports the corner beside the navigation bar, at the window's bottom
+ * edge, 126 px in from its side.
+ */
+internal fun ringCorners(reported: ReportedCorners, inWindow: Offset, onScreen: Offset): RingCorners {
+    val windowLeft = reported.windowLeft?.takeIf {
+        abs(it.y + it.radius - reported.windowHeight) <= 1f && abs(it.x - it.radius) <= 1f
+    }
+    val windowRight = reported.windowRight?.takeIf {
+        abs(it.y + it.radius - reported.windowHeight) <= 1f && abs(it.x + it.radius - reported.windowWidth) <= 1f
+    }
+    return RingCorners(
+        displayLeft = reported.displayLeft?.from(onScreen),
+        displayRight = reported.displayRight?.from(onScreen),
+        windowLeft = windowLeft?.from(inWindow),
+        windowRight = windowRight?.from(inWindow),
+    )
+}
+
+/** This corner counted from [origin]. */
+private fun CornerCurve.from(origin: Offset) = CornerCurve(x - origin.x, y - origin.y, radius)
 
 /**
  * Where the bar's focus ring stands, its outer edge, in the bar's pixels: a
  * bar [width] by [height] whose [left], [right] and [bottom] insets keep its
  * words clear of the system bars and any cutout. The ring stands [gap] in
- * from the bar's top and from each inset. Where the display rounds a bottom
- * corner ([bottomLeft], [bottomRight]) that the ring's corner would reach,
- * nearer the curve than [gap] or past it, that side moves in until the
- * corner is [gap] inside the curve, by [room] at most; the bottom stays.
- * Whole pixels.
+ * from the bar's top and from each inset. Where a rounded bottom corner
+ * ([corners]) would reach the ring's corner, nearer the curve than [gap] or
+ * past it, that side moves in until the corner is [gap] inside the curve, by
+ * [room] at most; the bottom stays. Whole pixels.
  */
 internal fun barRingOutline(
     width: Float,
@@ -728,28 +861,43 @@ internal fun barRingOutline(
     bottom: Float,
     gap: Float,
     room: Float,
-    bottomLeft: DisplayCorner? = null,
-    bottomRight: DisplayCorner? = null,
+    corners: RingCorners = RingCorners.None,
 ): Rect {
     val foot = height - bottom - gap
-    // How far across from a corner's centre the ring's corner may stand at its
-    // foot to stay [gap] inside the curve; no limit where the foot is above
-    // the centre, where the display's edge is still straight.
-    fun across(corner: DisplayCorner): Float? {
-        val reach = corner.radius - gap
-        val down = foot - corner.y
-        if (reach <= 0f || down <= 0f) return null
-        return sqrt((reach * reach - down * down).coerceAtLeast(0f))
-    }
-    var start = left + gap
-    var end = width - right - gap
-    if (bottomLeft != null) {
-        across(bottomLeft)?.let { start = maxOf(start, minOf(bottomLeft.x - it, left + gap + room)) }
-    }
-    if (bottomRight != null) {
-        across(bottomRight)?.let { end = minOf(end, maxOf(bottomRight.x + it, width - right - gap - room)) }
-    }
+    val leftmost = left + gap
+    val rightmost = width - right - gap
+    var start = clearLeft(leftmost, corners.displayLeft, foot, gap, leftmost + room)
+    start = clearLeft(start, corners.windowLeft, foot, gap, leftmost + room)
+    var end = clearRight(rightmost, corners.displayRight, foot, gap, rightmost - room)
+    end = clearRight(end, corners.windowRight, foot, gap, rightmost - room)
     return Rect(ceil(start), gap, floor(end), foot)
+}
+
+/**
+ * How far across from a corner's centre the ring's corner may stand at its
+ * [foot] to stay [gap] inside the curve; NaN where the foot is above the
+ * centre, where the window's edge is still straight, or the curve is no
+ * wider than the gap.
+ */
+private fun across(corner: CornerCurve, foot: Float, gap: Float): Float {
+    val reach = corner.radius - gap
+    val down = foot - corner.y
+    if (reach <= 0f || down <= 0f) return Float.NaN
+    return sqrt((reach * reach - down * down).coerceAtLeast(0f))
+}
+
+/** Where the ring's left side starts, at [start] or further in to clear a bottom-left [corner], never past [limit]. */
+private fun clearLeft(start: Float, corner: CornerCurve?, foot: Float, gap: Float, limit: Float): Float {
+    if (corner == null) return start
+    val across = across(corner, foot, gap)
+    return if (across.isNaN()) start else maxOf(start, minOf(corner.x - across, limit))
+}
+
+/** Where the ring's right side ends, at [end] or further in to clear a bottom-right [corner], never past [limit]. */
+private fun clearRight(end: Float, corner: CornerCurve?, foot: Float, gap: Float, limit: Float): Float {
+    if (corner == null) return end
+    val across = across(corner, foot, gap)
+    return if (across.isNaN()) end else minOf(end, maxOf(corner.x + across, limit))
 }
 
 // MARK: - Ring

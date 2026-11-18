@@ -1,5 +1,6 @@
 package com.kardanov.agstatus.ui
 
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -9,10 +10,14 @@ import kotlin.math.hypot
 /**
  * Where the needs-you bar's focus ring stands ([barRingOutline]): 2dp in
  * from the bar's edges and from the insets beside and under it, and, where
- * the display rounds a bottom corner the ring would reach, moved in from it.
- * In a Pixel 7's pixels, 2.625 to the dp: 2dp is 5 px and the most a side
- * may move, 10dp, is 26. The display's own corners there are 48 px; the
- * platform reports them from Android 12.
+ * a rounded bottom corner would reach the ring, moved in from it. In a Pixel
+ * 7's pixels, 2.625 to the dp: 2dp is 5 px and the most a side may move,
+ * 10dp, is 26. The display's own corners there are 48 px; the platform
+ * reports them from Android 12.
+ *
+ * Which corners count ([ringCorners]): the display's, and the window's only
+ * where the window itself is rounded. The reports here are the Pixel 7
+ * emulator's own (Android 16), read from the app on it in each window.
  */
 class BarRingOutlineTest {
 
@@ -25,13 +30,13 @@ class BarRingOutlineTest {
         left: Float = 0f,
         right: Float = 0f,
         bottom: Float = 0f,
-        bottomLeft: DisplayCorner? = null,
-        bottomRight: DisplayCorner? = null,
-    ) = barRingOutline(width, height, left, right, bottom, gap, room, bottomLeft, bottomRight)
+        bottomLeft: CornerCurve? = null,
+        bottomRight: CornerCurve? = null,
+    ) = barRingOutline(width, height, left, right, bottom, gap, room, RingCorners(displayLeft = bottomLeft, displayRight = bottomRight))
 
     /** A display corner of [radius] px at the bar's bottom corners, the bar running the display's width. */
     private fun corners(radius: Float) =
-        DisplayCorner(radius, height - radius, radius) to DisplayCorner(width - radius, height - radius, radius)
+        CornerCurve(radius, height - radius, radius) to CornerCurve(width - radius, height - radius, radius)
 
     @Test
     fun `with nothing beside or under the bar, the ring stands 2dp in from every edge`() {
@@ -73,5 +78,108 @@ class BarRingOutlineTest {
         val (bottomLeft, bottomRight) = corners(48f)
 
         assertEquals(Rect(31f, 5f, 1049f, 179f), outline(bottomLeft = bottomLeft, bottomRight = bottomRight))
+    }
+
+    @Test
+    fun `the display's corner and the window's at one place move a side no further than either alone`() {
+        // A window whose own corners are the display's, nothing beside or
+        // under the bar: both are reported, and the 10dp counts from where
+        // the side starts, not from where the first curve left it.
+        val (bottomLeft, bottomRight) = corners(48f)
+        val both = RingCorners(displayLeft = bottomLeft, displayRight = bottomRight, windowLeft = bottomLeft, windowRight = bottomRight)
+
+        assertEquals(Rect(31f, 5f, 1049f, 179f), barRingOutline(width, height, 0f, 0f, 0f, gap, room, both))
+    }
+
+    /** What the platform reports, as the emulator reported it: each corner's centre and radius. */
+    private fun reported(
+        window: Pair<Float, Float>,
+        windowLeft: Triple<Float, Float, Float>?,
+        windowRight: Triple<Float, Float, Float>?,
+        displayLeft: Triple<Float, Float, Float>? = null,
+        displayRight: Triple<Float, Float, Float>? = null,
+    ) = ReportedCorners(
+        displayLeft = displayLeft?.let { CornerCurve(it.first, it.second, it.third) },
+        displayRight = displayRight?.let { CornerCurve(it.first, it.second, it.third) },
+        windowLeft = windowLeft?.let { CornerCurve(it.first, it.second, it.third) },
+        windowRight = windowRight?.let { CornerCurve(it.first, it.second, it.third) },
+        windowWidth = window.first,
+        windowHeight = window.second,
+    )
+
+    @Test
+    fun `a split screen's window above the divider is rounded itself, and the ring keeps clear of its corners`() {
+        // AgStatus in the top half, 1080 by 1187, its bar 156 px tall at 1031
+        // with nothing under it; the display's own corners are far below.
+        val report = reported(
+            window = 1080f to 1187f,
+            windowLeft = Triple(48f, 1139f, 48f),
+            windowRight = Triple(1032f, 1139f, 48f),
+            displayLeft = Triple(48f, 2352f, 48f),
+            displayRight = Triple(1032f, 2352f, 48f),
+        )
+        val corners = ringCorners(report, inWindow = Offset(0f, 1031f), onScreen = Offset(0f, 1031f))
+
+        assertEquals(CornerCurve(48f, 108f, 48f), corners.windowLeft)
+        assertEquals(CornerCurve(1032f, 108f, 48f), corners.windowRight)
+        assertEquals(CornerCurve(48f, 1321f, 48f), corners.displayLeft)
+        // Each side as far in as 10dp allows: the curve would ask for 43 px.
+        val ring = barRingOutline(1080f, 156f, 0f, 0f, 0f, gap, room, corners)
+        assertEquals(Rect(31f, 5f, 1049f, 151f), ring)
+        // There the ring's corner is inside the curve, nearer it than 2dp.
+        val fromCentre = hypot(48f - ring.left, ring.bottom - 108f)
+        assertTrue("$fromCentre", fromCentre < 48f && fromCentre > 48f - gap)
+    }
+
+    @Test
+    fun `beside the divider, the window's corner by it counts, and one reported at the navigation bar's edge does not`() {
+        // Sideways, three buttons, AgStatus on the left, 1192 by 1080, the
+        // camera's cutout on its left: its bottom right corner meets the
+        // divider.
+        val left = reported(
+            window = 1192f to 1080f,
+            windowLeft = Triple(47f, 1033f, 47f),
+            windowRight = Triple(1144f, 1032f, 48f),
+            displayLeft = Triple(47f, 1033f, 47f),
+            displayRight = Triple(2352f, 1032f, 48f),
+        )
+        val onLeft = ringCorners(left, inWindow = Offset(0f, 924f), onScreen = Offset(0f, 924f))
+        assertEquals(Rect(141f, 5f, 1161f, 151f), barRingOutline(1192f, 156f, 136f, 0f, 0f, gap, room, onLeft))
+
+        // AgStatus on the right, 1182 by 1080 at 1218 on the display, the
+        // navigation bar on its right: its bottom left corner meets the
+        // divider; its bottom right is reported at the navigation bar's edge,
+        // 126 px in, where nothing is drawn.
+        val right = reported(
+            window = 1182f to 1080f,
+            windowLeft = Triple(47f, 1033f, 47f),
+            windowRight = Triple(1008f, 1032f, 48f),
+            displayLeft = Triple(47f, 1033f, 47f),
+            displayRight = Triple(2352f, 1032f, 48f),
+        )
+        val onRight = ringCorners(right, inWindow = Offset(0f, 924f), onScreen = Offset(1218f, 924f))
+        assertEquals(null, onRight.windowRight)
+        assertEquals(CornerCurve(1134f, 108f, 48f), onRight.displayRight)
+        assertEquals(Rect(31f, 5f, 1051f, 151f), barRingOutline(1182f, 156f, 0f, 126f, 0f, gap, room, onRight))
+    }
+
+    @Test
+    fun `corners reported at a navigation bar's edge or a taskbar's are left out, wherever it stands`() {
+        // Upright, three buttons, 126 px under the bar.
+        val upright = reported(window = 1080f to 2400f, windowLeft = Triple(48f, 2226f, 48f), windowRight = Triple(1032f, 2226f, 48f))
+        assertEquals(RingCorners.None, ringCorners(upright, Offset(0f, 2118f), Offset(0f, 2118f)))
+        // Sideways, three buttons on the right: nothing under the bar, and
+        // the corner on the window's bottom edge, but 126 px in from its
+        // side. Followed, the ring's right side moved 10dp in.
+        val sideways = reported(window = 2400f to 1080f, windowLeft = Triple(47f, 1033f, 47f), windowRight = Triple(2226f, 1032f, 48f))
+        val corners = ringCorners(sideways, Offset(0f, 954f), Offset(0f, 954f))
+        assertEquals(null, corners.windowRight)
+        assertEquals(Rect(141f, 5f, 2269f, 121f), barRingOutline(2400f, 126f, 136f, 126f, 0f, gap, room, corners))
+        // The other way round, the buttons on the left.
+        val seascape = reported(window = 2400f to 1080f, windowLeft = Triple(174f, 1032f, 48f), windowRight = Triple(2353f, 1033f, 47f))
+        assertEquals(null, ringCorners(seascape, Offset(0f, 954f), Offset(0f, 954f)).windowLeft)
+        // A large screen's taskbar, 112 px, reported the same way.
+        val taskbar = reported(window = 1600f to 2560f, windowLeft = Triple(51f, 2397f, 51f), windowRight = Triple(1549f, 2397f, 51f))
+        assertEquals(RingCorners.None, ringCorners(taskbar, Offset(0f, 2352f), Offset(0f, 2352f)))
     }
 }

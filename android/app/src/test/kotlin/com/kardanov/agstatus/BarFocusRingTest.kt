@@ -29,6 +29,9 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
+import com.kardanov.agstatus.ui.CornerCurve
+import com.kardanov.agstatus.ui.ReportedCorners
+import com.kardanov.agstatus.ui.RingCornerSource
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -76,9 +79,13 @@ class BarFocusRingTest {
     private lateinit var scenario: ActivityScenario<MainActivity>
     private lateinit var store: SessionStore
 
+    /** The platform's own corners, which a case may stand in for. */
+    private val platformCorners = RingCornerSource.read
+
     @After
     fun close() {
         scenario.close()
+        RingCornerSource.read = platformCorners
     }
 
     private fun card(id: String, status: AgentStatus = AgentStatus.CODING) = Session(
@@ -374,6 +381,71 @@ class BarFocusRingTest {
         assertNoRing(held, "under a finger held on the bar")
         assertEquals("the touch pressed the bar", "s1", store.brought.value)
         assertNoRing(shot(), "after the touch")
+    }
+
+    /**
+     * Rounded corners reported in the platform's place, since Robolectric
+     * reports none: the window's own bottom corners, curves of [window] px
+     * where its own edges meet, as a split screen's window has them above
+     * the divider; or, with an [inset], the window's corners at the edge of
+     * an inset that many px tall under it, where Android reports them for a
+     * navigation bar with three buttons; and the display's own corners,
+     * curves of [display] px. Each for the window's size. The window stands
+     * at the display's top left here, so its pixels and the display's are
+     * the same, and a corner counted from the other's origin would pass: a
+     * split screen on a device, its window lower on the display or right of
+     * the divider, shows which is which.
+     */
+    private fun reporting(window: Float? = null, inset: Float = 0f, display: Float? = null, asked: () -> Unit = {}) {
+        RingCornerSource.read = { view ->
+            asked()
+            val w = view.rootView.width.toFloat()
+            val h = view.rootView.height.toFloat()
+            ReportedCorners(
+                displayLeft = display?.let { CornerCurve(it, h - it, it) },
+                displayRight = display?.let { CornerCurve(w - it, h - it, it) },
+                windowLeft = window?.let { CornerCurve(it, h - inset - it, it) },
+                windowRight = window?.let { CornerCurve(w - it, h - inset - it, it) },
+                windowWidth = w,
+                windowHeight = h,
+            )
+        }
+    }
+
+    @Test
+    fun `clear of the window's own rounded corners, asked of the platform once the bar is placed, not on every draw`() {
+        var asked = 0
+        reporting(window = 24f) { asked++ }
+        launch()
+        tabToTheBar()
+
+        // Each side moves in until the ring's corner, at its foot 2dp above
+        // the bar's bottom, is 2dp inside a 24 px curve: across from the
+        // curve's centre, 24 px in from the bar's sides.
+        val own = shot()
+        assertRing(own, Ring(24, twoDp, own.width - 24, own.height - twoDp), "clear of the window's own corners")
+        val once = asked
+        assertTrue("the platform was asked", once > 0)
+        repeat(3) { shot() }
+        assertEquals("the platform asked again for draws with the bar where it was", once, asked)
+
+        // Three buttons under the bar: the window's corners reported at their
+        // edge, where nothing cuts the ring, which keeps 2dp inside them.
+        reporting(window = 24f, inset = 144f) { asked++ }
+        insets(bottom = 144)
+        val buttons = shot()
+        assertTrue("the platform asked again once the bar was placed anew", asked > once)
+        assertRing(buttons, ringIn(buttons, bottom = 144), "over three buttons, the window's corners at their edge")
+    }
+
+    @Test
+    fun `clear of the display's own rounded corners, as the bar stands on the display`() {
+        reporting(display = 30f)
+        launch()
+        tabToTheBar()
+
+        val shot = shot()
+        assertRing(shot, Ring(30, twoDp, shot.width - 30, shot.height - twoDp), "clear of the display's corners")
     }
 
     @Test
