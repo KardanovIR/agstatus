@@ -34,6 +34,8 @@ const INDEX_HTML = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
 /** The stream the board subscribed to, with a way to push one frame into it. */
 export class FakeStream {
   private listeners = new Map<string, (e: { data: string }) => void>();
+  /** Set by the board, as on a browser's EventSource. */
+  onopen: (() => void) | null = null;
   addEventListener(type: string, fn: (e: { data: string }) => void): void { this.listeners.set(type, fn); }
   close(): void {}
   emit(type: string, data: unknown): void {
@@ -80,13 +82,18 @@ export interface BoardOptions {
   history?: unknown[] | 'fail';
   /** What GET /api/usage/history answers, built when it is asked for. */
   usageHistory?: () => unknown;
+  /**
+   * The page the board runs in, as HTML: public/index.html unless given, as
+   * when a browser takes an older release's page from its cache.
+   */
+  page?: string;
 }
 
 export type Board = Awaited<ReturnType<typeof loadBoard>>;
 
 /** Evaluates public/app.js against a real DOM and returns the handles a test drives it by. */
 export async function loadBoard(opts: BoardOptions = {}) {
-  const dom = new JSDOM(INDEX_HTML, { url: 'http://board.test/' });
+  const dom = new JSDOM(opts.page ?? INDEX_HTML, { url: 'http://board.test/' });
   const doc = dom.window.document;
   const calls: Array<{ url: string; method: string; body: string }> = [];
   let stream: FakeStream | null = null;
@@ -164,6 +171,8 @@ export async function loadBoard(opts: BoardOptions = {}) {
     $: (sel: string) => gridEl.querySelector(sel),
     $$: (sel: string) => [...gridEl.querySelectorAll(sel)],
     emit: (type: string, data: unknown) => stream!.emit(type, data),
+    /** The stream's open, as a browser reports it. */
+    open: () => stream!.onopen?.(),
     /** Any session event re-renders the grid, which is where focus state is readable. */
     repaint(over: Record<string, unknown> = {}) { stream!.emit('session', session(over)); return gridEl; },
     /** A real click on the real control, so aria-disabled is honoured as it is in a browser. */

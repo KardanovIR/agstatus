@@ -12,14 +12,28 @@ import { loadBoard, session, type Board } from './board-harness';
 
 // A browser's FontFaceSet, which jsdom lacks: the board fits its labels and
 // its bar again when the webfonts arrive ('loadingdone'). Every board in this
-// file gets one, already loaded; only the font tests fire it.
+// file gets one, already loaded; only the font tests fire it. Its listeners
+// are called as they are, so one that throws fails the test: jsdom swallows
+// what a listener on a bare EventTarget throws.
 vi.mock('jsdom', async (importOriginal) => {
   const real = await importOriginal<typeof import('jsdom')>();
+  class FontFaceSet {
+    readonly status = 'loaded';
+    readonly ready = Promise.resolve();
+    private readonly listeners: Record<string, Array<(e: Event) => void>> = {};
+    addEventListener(type: string, fn: (e: Event) => void) { (this.listeners[type] ||= []).push(fn); }
+    removeEventListener(type: string, fn: (e: Event) => void) {
+      this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn);
+    }
+    dispatchEvent(e: Event) {
+      for (const fn of this.listeners[e.type] || []) fn(e);
+      return true;
+    }
+  }
   class JSDOM extends real.JSDOM {
     constructor(...args: ConstructorParameters<typeof real.JSDOM>) {
       super(...args);
-      const fonts = Object.assign(new this.window.EventTarget(), { status: 'loaded', ready: Promise.resolve() });
-      Object.defineProperty(this.window.document, 'fonts', { configurable: true, value: fonts });
+      Object.defineProperty(this.window.document, 'fonts', { configurable: true, value: new FontFaceSet() });
     }
   }
   return { ...real, JSDOM };
@@ -37,7 +51,11 @@ class FakeResizeObserver {
   static made: FakeResizeObserver[] = [];
   readonly seen = new Set<Element>();
   constructor(private readonly cb: (entries: Array<{ target: Element }>) => void) { FakeResizeObserver.made.push(this); }
-  observe(el: Element) { this.seen.add(el); }
+  observe(el: Element) {
+    // As a browser's does, for an element a page does not have.
+    if (!el || el.nodeType !== 1) throw new TypeError('ResizeObserver.observe: parameter 1 is not of type Element');
+    this.seen.add(el);
+  }
   unobserve(el: Element) { this.seen.delete(el); }
   disconnect() { this.seen.clear(); }
   static fire() {
@@ -2178,6 +2196,48 @@ describe('the needs-you bar\'s beat', () => {
     // The press renamed the bar; nothing else about its place changed.
     const { label: _renamed, ...kept } = before;
     expect(place()).toEqual(kept);
+  });
+});
+
+// ---- 1.6.5's page, with these scripts ---------------------------------------
+//
+// After a deploy, Back can take 1.6.5's board page from the browser's cache
+// and load these scripts beside it from the cache, as Chrome does with its
+// back-forward cache off. That page has no bar, no face and no polite
+// region. It threw at the bar's wiring, before init, and stayed at
+// "Connecting…" with no cards; now it draws its cards and connects, and
+// nothing the board does for the bar throws, until it is loaded again.
+
+/** public/index.html as v1.6.5 shipped it. */
+const PAGE_165 = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'web', 'index-1.6.5.html'), 'utf8');
+
+describe('1.6.5\'s page, taken from the cache with these scripts', () => {
+  it('draws its cards and connects, and passes over the bar it does not have', async () => {
+    vi.useFakeTimers();
+    observeSizes();
+    const b = await loadBoard({ page: PAGE_165 });          // the stream opened: init ran
+    for (const id of ['needs', 'needs-face', 'needs-said']) expect(document.getElementById(id), id).toBe(null);
+    const errors: string[] = [];
+    b.win.addEventListener('error', (e) => errors.push(String((e as ErrorEvent).error || (e as ErrorEvent).message)));
+    b.open();
+    expect(document.getElementById('conn-text')!.textContent).toBe('Live');
+    b.emit('snapshot', [blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    expect(ids(b)).toEqual(['a', 'c']);
+    expect(b.$$('h2.section-label').length).toBe(2);
+    expect(card(b, 'a').dataset.status).toBe('blocked');
+    // What would move, fit, beat or speak for the bar: a block that lands,
+    // its half second, the answers that empty the board of blocks, a size
+    // change and the webfonts.
+    tabShows(b);
+    b.emit('session', blocked('c', 0, 'docs'));
+    await vi.advanceTimersByTimeAsync(1000);
+    b.emit('session', at('a', 0, { homeProject: 'acme-api', status: 'coding' }));
+    b.emit('session', at('c', 0, { homeProject: 'docs', status: 'coding' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeResizeObserver.fire();
+    fontsArrive(b);
+    expect(card(b, 'c').dataset.status).toBe('coding');
+    expect(errors).toEqual([]);
   });
 });
 

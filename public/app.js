@@ -40,6 +40,11 @@
   const copyBtn = document.getElementById('copy-btn');
   const authEl = document.getElementById('auth-note');
   const detailEl = document.getElementById('detail');
+  // The needs-you bar's three came with 1.7.0's page. A 1.6.5 page that a
+  // browser takes from its cache, as Back does after a deploy, can come with
+  // these scripts and has none of them: the bar's wiring, its render, its
+  // fit and the voice skip them there, so that page still draws its cards
+  // and connects, with no bar, until it is loaded again.
   const needsEl = document.getElementById('needs');
   // What the bar draws, its ground, edge and words: the part that beats.
   const faceEl = document.getElementById('needs-face');
@@ -1339,8 +1344,9 @@
       + `<span class="needs-verb">${verb}</span>`;
   }
 
-  /** The bar as the board stands: shown, named and worded, or leaving. */
+  /** The bar as the board stands: shown, named and worded, or leaving. Nothing, on a page without one. */
   function renderNeeds() {
+    if (!needsEl || !faceEl) return;
     const drawn = drawnOrder();
     const { blocked } = drawn;
     noteBlocked(blocked);
@@ -1488,8 +1494,10 @@
   const arrived = (e) => {
     if (e.target === needsEl && e.animationName === 'needs-in') needsEl.classList.remove('entering');
   };
-  needsEl.addEventListener('animationend', arrived);
-  needsEl.addEventListener('animationcancel', arrived);
+  if (needsEl) {
+    needsEl.addEventListener('animationend', arrived);
+    needsEl.addEventListener('animationcancel', arrived);
+  }
 
   /**
    * The page is padded by the bar's height while it shows, so nothing ends
@@ -1512,6 +1520,7 @@
    * gives the session nothing.
    */
   function fitNeeds() {
+    if (!needsEl) return;   // the webfonts arrive on a page without a bar too
     needsEl.classList.remove('drop-word', 'drop-where');
     const name = needsEl.querySelector('.needs-name');
     const alarm = needsEl.querySelector('.needs-alarm');
@@ -1532,7 +1541,7 @@
     if (cut()) needsEl.classList.add('drop-where');
   }
 
-  if (typeof ResizeObserver === 'function') {
+  if (needsEl && typeof ResizeObserver === 'function') {
     new ResizeObserver(() => { fitNeeds(); padForNeeds(); }).observe(needsEl);
   }
 
@@ -1575,12 +1584,14 @@
 
   // A press brings the card the bar names, read from the board as drawn now,
   // and the render after it names the next.
-  needsEl.addEventListener('click', () => {
-    const id = barTarget(drawnOrder());
-    if (id === null) return;
-    bring(id);
-    renderNeeds();
-  });
+  if (needsEl) {
+    needsEl.addEventListener('click', () => {
+      const id = barTarget(drawnOrder());
+      if (id === null) return;
+      bring(id);
+      renderNeeds();
+    });
+  }
 
   // ---- A new block, aloud
   //
@@ -1623,7 +1634,7 @@
     const still = gathered.map((id) => state.get(id)).filter((s) => s && s.status === 'blocked');
     gathered = [];
     endBeat(still.length === 0);
-    if (still.length === 0) return;
+    if (still.length === 0 || !saidEl) return;
     const now = Date.now();
     for (const s of still) saidAt.set(s.id, now);
     let sentence = `${still.length} sessions need you`;
@@ -1757,8 +1768,10 @@
   const beaten = (e) => {
     if (e.target === faceEl && e.animationName === 'needs-in') faceEl.classList.remove('beat');
   };
-  faceEl.addEventListener('animationend', beaten);
-  faceEl.addEventListener('animationcancel', beaten);
+  if (faceEl) {
+    faceEl.addEventListener('animationend', beaten);
+    faceEl.addEventListener('animationcancel', beaten);
+  }
 
   async function refreshSessions() {
     try {
