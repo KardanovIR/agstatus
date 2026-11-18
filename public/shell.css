@@ -983,14 +983,20 @@ body.detail-open > .footer { display: none; }
 .needs.drop-where .needs-where { display: none; }
 
 /* It enters from the bottom edge and leaves by it, and appears and goes in
- * place under reduced motion (board.css). A bar still leaving when a block
- * lands turns around where it is: app.js sets --needs-from on it to the
- * offset its leaving had reached, and the same arrival starts from there. */
+ * place under reduced motion (board.css). Caught mid-move it turns around
+ * where it is. A bar still leaving when a block lands: app.js sets
+ * --needs-from on it to the offset its leaving had reached, and the same
+ * arrival starts from there. A bar still arriving when its last block is
+ * answered: app.js sets --needs-leave-from to the offset its arrival had
+ * reached, and its leave starts from there. A property of its own, since
+ * the arrival's cut, which app.js hears a frame after the leave has begun,
+ * takes --needs-from away. */
 @keyframes needs-in {
   from { transform: translateY(var(--needs-from, 100%)); }
 }
 
 @keyframes needs-out {
+  from { transform: translateY(var(--needs-leave-from, 0)); }
   to { transform: translateY(100%); }
 }
 

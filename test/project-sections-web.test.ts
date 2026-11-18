@@ -1551,11 +1551,80 @@ describe('the needs-you bar', () => {
     expect(bar().classList.contains('entering')).toBe(false);
   });
 
+  // An answer that empties the bar while it still arrives turns it back down
+  // where it is: its leave, needs-out, starts from the offset its arrival had
+  // reached, which the button carries as --needs-leave-from (shell.css). It
+  // used to jump to its place in one frame and leave from there (headless
+  // Chrome, 60 ms in: 23.6px at 1440x900, 47.3px at 320x568 with 200%
+  // text). A property of its own: the arrival's cut, which the browser tells
+  // of a frame after the leave has begun, takes --needs-from away.
+  it('turns back down where it is when its last block is answered while it still arrives', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' }), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    expect(bar().classList.contains('entering')).toBe(true);
+    // 60 ms into its arrival, drawn 23.6px below its place.
+    vi.stubGlobal('getComputedStyle', (el: Element) => ({
+      transform: el === bar() && bar().classList.contains('entering') ? 'matrix(1, 0, 0, 1, 0, 23.6)' : 'none',
+    }));
+    await vi.advanceTimersByTimeAsync(60);
+    b.emit('session', unblocked('a', 'acme-api'));
+    expect(bar().classList.contains('entering')).toBe(false);
+    expect(bar().classList.contains('leaving')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-leave-from')).toBe('23.6px');
+    // The arrival's cut, told a frame on, while the leave runs.
+    Object.assign(bar(), { getAnimations: () => [{ animationName: 'needs-out', playState: 'running' }] });
+    ended(b, bar(), 'needs-in', 'animationcancel');
+    expect(bar().classList.contains('leaving')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-leave-from')).toBe('23.6px');
+    await vi.advanceTimersByTimeAsync(400);
+    expect(bar().hidden).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-leave-from')).toBe('');
+    // A bar that has arrived leaves from its place.
+    b.emit('session', blocked('c', 0, 'docs'));
+    ended(b, bar(), 'needs-in');
+    b.emit('session', unblocked('c', 'docs'));
+    expect(bar().classList.contains('leaving')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-leave-from')).toBe('');
+  });
+
+  // A block within a frame of that answer turns the bar around from the
+  // offset its leave is drawn at, the arrival's own, and the leave's offset
+  // goes. The browser tells of the first arrival's cut once the second is
+  // running, and that cut is the first's: taken as the second's, it stood the
+  // bar in its place in one frame (headless Chrome, 1440x900: 14.5px for a
+  // block in the answer's task, 11.2px for one a frame later).
+  it('turns around again from there for a block within a frame of that answer, and keeps rising through the first arrival\'s cut', async () => {
+    const b = await boardOf([at('a', 1, { homeProject: 'acme-api' }), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    b.emit('session', blocked('a', 0, 'acme-api'));
+    vi.stubGlobal('getComputedStyle', (el: Element) => ({
+      transform: el === bar() && /\b(entering|leaving)\b/.test(bar().className) ? 'matrix(1, 0, 0, 1, 0, 14.5)' : 'none',
+    }));
+    await vi.advanceTimersByTimeAsync(100);
+    b.emit('session', unblocked('a', 'acme-api'));
+    expect(bar().style.getPropertyValue('--needs-leave-from')).toBe('14.5px');
+    b.emit('session', blocked('c', 0, 'docs'));
+    expect(bar().classList.contains('leaving')).toBe(false);
+    expect(bar().classList.contains('entering')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('14.5px');
+    expect(bar().style.getPropertyValue('--needs-leave-from')).toBe('');
+    Object.assign(bar(), { getAnimations: () => [{ animationName: 'needs-in', playState: 'running' }] });
+    ended(b, bar(), 'needs-in', 'animationcancel');   // the first arrival's
+    expect(bar().classList.contains('entering')).toBe(true);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('14.5px');
+    Object.assign(bar(), { getAnimations: () => [{ animationName: 'needs-in', playState: 'finished' }] });
+    ended(b, bar(), 'needs-in');                       // the second's own end
+    expect(bar().classList.contains('entering')).toBe(false);
+    expect(bar().style.getPropertyValue('--needs-from')).toBe('');
+  });
+
   // It arrives where the reader sees it. A bar whose first block lands under
   // a detail screen, which hides it, or in a hidden tab runs no arrival and
-  // is simply in its place when the reader comes back, as on iOS and
-  // Android. Given its arrival under the screen, it ran it on the way back,
-  // for a block seconds old (headless Chrome: its top went 900 to 856 px).
+  // is simply in its place when the reader comes back, by the rule the spec
+  // gives every client. Given its arrival under the screen, it ran it on the
+  // way back, for a block seconds old (headless Chrome: its top went 900 to
+  // 856 px).
   it.each([
     ['a session\'s history over the board', () => { location.hash = 'session/c'; }, () => { location.hash = ''; }],
     ['the usage screen over the board', () => { location.hash = 'usage/claude'; }, () => { location.hash = ''; }],
@@ -1573,6 +1642,32 @@ describe('the needs-you bar', () => {
     await b.settle();
     expect(bar().classList.contains('entering')).toBe(false);
     expect(barShows().count).toBe('1');
+  });
+
+  // And one whose last block is answered there is simply gone when the
+  // reader comes back: it goes at once, as under reduced motion, since its
+  // leave would run where nobody sees it. It used to take its 0.4 s, and a
+  // reader back within them saw it leave on the board (headless Chrome,
+  // back 150 ms on: 0 to 44px over 14 frames at 1440x900).
+  it.each([
+    ['a session\'s history over the board', () => { location.hash = 'session/c'; }, () => { location.hash = ''; }],
+    ['the usage screen over the board', () => { location.hash = 'usage/claude'; }, () => { location.hash = ''; }],
+    ['the tab hidden', (b: Board) => { tabShows(b, false); }, (b: Board) => { tabShows(b, true); }],
+  ])('is simply gone on the way back when its last block is answered with %s', async (_what, away, back) => {
+    const b = await boardOf([blocked('a', 1, 'acme-api'), at('c', 2, { homeProject: 'docs' })]);
+    tabShows(b);
+    ended(b, bar(), 'needs-in');
+    away(b);
+    await b.settle();
+    b.emit('session', unblocked('a', 'acme-api'));
+    await vi.advanceTimersByTimeAsync(150);
+    expect(bar().hidden).toBe(true);
+    expect(bar().classList.contains('leaving')).toBe(false);
+    back(b);
+    await b.settle();
+    expect(bar().hidden).toBe(true);
+    expect(bar().classList.contains('leaving')).toBe(false);
+    expect(document.body.classList.contains('needs-up')).toBe(false);
   });
 
   // An arrival a detail screen cuts short, by hiding the bar, is over: the
@@ -2696,6 +2791,17 @@ describe('the stylesheets behind the sections and the bar', () => {
     const frames = /@keyframes needs-in \{([\s\S]*?)\n\}/.exec(shell)![1];
     expect(frames.trim()).toBe('from { transform: translateY(var(--needs-from, 100%)); }');
     expect(rule(shell, '.needs-face')).toMatch(/--needs-from:\s*initial;/);
+  });
+
+  // And a bar still arriving when its last block is answered turns back
+  // down where it is: the leave starts from the offset app.js sets on the
+  // button in a property of its own, or else from the bar's place.
+  it('starts the bar\'s leave where its arrival had it, or else from its place', () => {
+    const frames = /@keyframes needs-out \{([\s\S]*?)\n\}/.exec(shell)![1];
+    expect(frames.trim().split(/\s*\n\s*/)).toEqual([
+      'from { transform: translateY(var(--needs-leave-from, 0)); }',
+      'to { transform: translateY(100%); }',
+    ]);
   });
 
   // The bar's focus ring is the button's outline, and a face in motion is a

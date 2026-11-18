@@ -1393,19 +1393,26 @@
   // board.css takes every animation to nothing. Leaving, it is inert, so it
   // can be neither pressed nor reached while it goes.
   //
-  // It arrives where the reader sees it arrive: on the board in front, the
+  // It moves only where the reader sees it move: on the board in front, the
   // tab showing and no detail screen over it. A bar whose first block lands
   // under a history or usage screen, or in a hidden tab, is simply in its
-  // place when the reader comes back, as on iOS and Android. Given its
-  // arrival under a screen that hides it, it ran none there and ran it on
-  // the way back, for a block that had landed seconds before.
+  // place when the reader comes back, and one whose last block is answered
+  // there is simply gone, by the rule the spec gives every client (THE BAR'S
+  // LEAVING AND RETURN). Given its arrival under a screen that hides it, it
+  // ran none there and ran it on the way back, for a block that had landed
+  // seconds before; and a reader back within 0.4 s of that last answer saw
+  // its leave run on the board.
   //
-  // A block that lands while it leaves turns it around where it is: it rises
-  // from there to its place by its own arrival, needs-in on --d-slow and
-  // --ease, started from the offset its leaving had reached (shell.css), so
-  // it never jumps. It used to stand back in its place in one frame. To the
-  // beat that block is a first block, since the bar emptied before it, and
-  // its arrival is its motion (The bar's beat).
+  // Caught mid-move, it turns around where it is, so it never jumps.
+  // A block that lands while it leaves brings it back up from there by its
+  // own arrival, needs-in on --d-slow and --ease, started from the offset its
+  // leaving had reached (--needs-from, shell.css); it used to stand back in
+  // its place in one frame. To the beat that block is a first block, since
+  // the bar emptied before it, and its arrival is its motion (The bar's
+  // beat). An answer that empties it while it still arrives takes it back
+  // down from there by its leave, started from the offset its arrival had
+  // reached (--needs-leave-from); it used to jump to its place in one frame
+  // and leave from there.
   let leaveTimer = 0;
   function showNeeds() {
     clearTimeout(leaveTimer);
@@ -1414,6 +1421,7 @@
     // Read while it still leaves: stopping that puts it back in its place.
     const drop = fresh ? 0 : dropOf(needsEl);
     needsEl.classList.remove('leaving');
+    needsEl.style.removeProperty('--needs-leave-from');
     needsEl.removeAttribute('inert');
     needsEl.hidden = false;
     if (boardInFront() && (fresh || drop > 0)) {
@@ -1426,8 +1434,9 @@
 
   /**
    * How far below its place the bar is drawn now, in pixels: as far as its
-   * leaving has taken it, or 0. Read from the transform the browser draws it
-   * with, so where nothing is laid out there is nothing to read.
+   * arrival or its leaving has taken it, or 0. Read from the transform the
+   * browser draws it with, so where nothing is laid out there is nothing to
+   * read.
    */
   function dropOf(el) {
     if (typeof getComputedStyle !== 'function') return 0;
@@ -1444,8 +1453,11 @@
     // a reader on the bar would start again from the top of the page. So it
     // is handed on first, before the bar forgets what it brought.
     if (needsEl.contains(document.activeElement)) handFocusOn();
+    // Read while it still arrives: stopping that puts it in its place.
+    const drop = needsEl.classList.contains('entering') ? dropOf(needsEl) : 0;
     needsEl.classList.remove('entering');
     faceEl.classList.remove('beat');
+    if (drop > 0) needsEl.style.setProperty('--needs-leave-from', `${drop}px`);
     needsEl.classList.add('leaving');
     needsEl.setAttribute('inert', '');
     const gone = () => {
@@ -1454,12 +1466,15 @@
       needsEl.classList.remove('leaving');
       needsEl.hidden = true;
       needsEl.style.removeProperty('--needs-from');
+      needsEl.style.removeProperty('--needs-leave-from');
       paint(faceEl, '');
       needsEl.removeAttribute('aria-label');
       document.body.classList.remove('needs-up');
     };
-    // Its animation's end, or a moment past it where none runs.
-    leaveTimer = setTimeout(gone, reducedMotion() ? 0 : 400);
+    // Its animation's end, or a moment past it where none runs: under
+    // reduced motion, and where the board is not in front, so that a reader
+    // who comes back finds it gone rather than going.
+    leaveTimer = setTimeout(gone, reducedMotion() || !boardInFront() ? 0 : 400);
   }
 
   /**
@@ -1529,9 +1544,16 @@
   // The bar's own arrival, not its face's beat, which runs the same
   // animation and whose end reaches the bar too. Ended, or cut short by a
   // detail screen that hides the bar or by its leaving, and the offset a
-  // turnaround started it from goes with it.
+  // turnaround started it from goes with it. Not while another arrival runs
+  // on the bar: what it hears then is an earlier arrival's. The browser
+  // tells of a cut a frame late, and a block that lands within a frame of
+  // the answer that cut an arrival short has turned the bar around by then.
+  // Taken as the new arrival's, that cut stood the bar in its place in one
+  // frame (headless Chrome at 1440x900: 11.2 and 14.5px).
   const arrived = (e) => {
     if (e.target !== needsEl || e.animationName !== 'needs-in') return;
+    if (typeof needsEl.getAnimations === 'function'
+      && needsEl.getAnimations().some((a) => a.animationName === 'needs-in' && a.playState === 'running')) return;
     needsEl.classList.remove('entering');
     needsEl.style.removeProperty('--needs-from');
   };
