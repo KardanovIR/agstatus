@@ -646,9 +646,11 @@ Don't add it to the command in `~/.codex/hooks.json`. Codex trusts a hook by a
 hash of its command, so it stops running the edited one, cards and all, until
 you trust it again (Settings → Hooks in Codex Desktop, `/hooks` in the Codex
 CLI). And the next `agstatus init`, which the installer runs on every upgrade,
-writes the bare command back, so usage is reported again. The bash hook
-reports no usage at all; a board simply shows no bars until something reports
-it.
+writes the bare command back. To Codex that is a changed command once more:
+the hook goes silent until you trust it again, and only then reports usage
+again. `agstatus init` says so when every AgStatus entry carried the edit. The
+bash hook reports no usage at all; a board simply shows no bars until
+something reports it.
 
 ### Where the tokens went
 
@@ -700,10 +702,12 @@ CLAUDE_STATUS_URL="https://<server>/w/<token>" AGSTATUS_SOURCE=codex \
 It reads every log from the start and reports the lot; re-running it is safe,
 because the server replaces whole days rather than adding to them.
 
-Dashboards only show the bars of agents that currently have sessions on the
-board (each session carries a `source` tag: `claude`, or `codex` via the
-`AGSTATUS_SOURCE=codex` prefix the Codex integration embeds) — a Claude-only
-evening doesn't display Codex limits, and vice versa.
+Dashboards show the bars of the agents that have sessions on the board, or,
+on a board with no sessions, of every agent that reports limits. Each session
+carries a `source` tag, `claude` unless the hook is told otherwise; the Codex
+copy of the hook reads `"source": "codex"` from the `agstatus-hook.json` that
+`agstatus init` writes beside it. So a Claude-only evening doesn't display
+Codex limits, and vice versa.
 
 Caveat: neither source is a documented, stable interface — the Anthropic
 usage endpoint has changed before, and the Codex rollout format is internal.

@@ -919,9 +919,11 @@ Don&#39;t add it to the command in <code>~/.codex/hooks.json</code>. Codex trust
 hash of its command, so it stops running the edited one, cards and all, until
 you trust it again (Settings → Hooks in Codex Desktop, <code>/hooks</code> in the Codex
 CLI). And the next <code>agstatus init</code>, which the installer runs on every upgrade,
-writes the bare command back, so usage is reported again. The bash hook
-reports no usage at all; a board simply shows no bars until something reports
-it.</p>
+writes the bare command back. To Codex that is a changed command once more:
+the hook goes silent until you trust it again, and only then reports usage
+again. <code>agstatus init</code> says so when every AgStatus entry carried the edit. The
+bash hook reports no usage at all; a board simply shows no bars until
+something reports it.</p>
 <h4 id="hooks-where-the-tokens-went"><a class="anchor" href="#hooks-where-the-tokens-went">Where the tokens went</a></h4>
 <p>The bars answer &quot;how much of the plan is left&quot;, not &quot;which project spent it&quot; —
 no usage API breaks the limit down by project. So the hook also reads the logs
@@ -963,10 +965,12 @@ CLAUDE_STATUS_URL=&quot;https://&lt;server&gt;/w/&lt;token&gt;&quot; AGSTATUS_SO
 </code></pre>
 <p>It reads every log from the start and reports the lot; re-running it is safe,
 because the server replaces whole days rather than adding to them.</p>
-<p>Dashboards only show the bars of agents that currently have sessions on the
-board (each session carries a <code>source</code> tag: <code>claude</code>, or <code>codex</code> via the
-<code>AGSTATUS_SOURCE=codex</code> prefix the Codex integration embeds) — a Claude-only
-evening doesn&#39;t display Codex limits, and vice versa.</p>
+<p>Dashboards show the bars of the agents that have sessions on the board, or,
+on a board with no sessions, of every agent that reports limits. Each session
+carries a <code>source</code> tag, <code>claude</code> unless the hook is told otherwise; the Codex
+copy of the hook reads <code>&quot;source&quot;: &quot;codex&quot;</code> from the <code>agstatus-hook.json</code> that
+<code>agstatus init</code> writes beside it. So a Claude-only evening doesn&#39;t display
+Codex limits, and vice versa.</p>
 <p>Caveat: neither source is a documented, stable interface — the Anthropic
 usage endpoint has changed before, and the Codex rollout format is internal.
 The hook degrades silently on both: unknown shapes mean missing bars, never a
