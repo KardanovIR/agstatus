@@ -2414,11 +2414,13 @@ private extension View {
 /// blocked, the bar while one is.
 ///
 /// It enters from the bottom edge when the first block lands and leaves when
-/// none remain. Those are its only transitions: under Reduce Motion it
-/// appears and goes in place (`motion`), and its words change in place. The
-/// animation is the slot's own, never the board's: a card turning blocked in
-/// the same update must not cross-fade its word into the new one. Its one
-/// other motion is its beat (`beats`), which is drawn, never a transition.
+/// none remain, with .snappy, drawn its own height below its place at the far
+/// end and never above it (`Lowered`). Those are its only transitions: under
+/// Reduce Motion it appears and goes in place (`motion`), and its words
+/// change in place. The animation is the slot's own, never the board's: a
+/// card turning blocked in the same update must not cross-fade its word into
+/// the new one. Its one other motion is its beat (`beats`), which is drawn,
+/// never a transition.
 ///
 /// A view of its own, made with `.equatable()`, and handed only what the bar
 /// draws: a hook event that changes none of it — a message, a token figure,
@@ -2448,10 +2450,44 @@ private struct NeedsYouSlot: View, Equatable {
                 NeedsYouBar(face: face, lines: lines, beats: beats, onPress: onPress)
                     .fixedSize(horizontal: false, vertical: true)
                     // From behind the streak, which is drawn after it.
-                    .transition(.move(edge: .bottom))
+                    .transition(.modifier(active: Lowered(share: 1), identity: Lowered(share: 0)))
             }
         }
         .motion(.snappy, value: face != nil)
+    }
+}
+
+/// The bar drawn `share` of its own height below its place, and never above
+/// it: how it arrives, beats and leaves (`NeedsYouSlot`, `NeedsYouStyle`).
+/// Drawn only, as an offset that layout never sees.
+///
+/// Never above, because there SwiftUI stops drawing the ground under the
+/// home indicator. A background reaches into the safe area only while the
+/// view, as drawn, still meets the safe area's edge to within half a device
+/// pixel: moved up by more than that, by an offset, a visual effect or a
+/// transform alike, the 34pt under a phone's home indicator (20pt on an
+/// iPad) is not drawn at all and shows the page, though layout still puts
+/// the bar where it was and reports the same inset (0.18pt up on a 6.9"
+/// simulator, 0.26pt on a 13" iPad; 0.15 and 0.24 drew it). The bar is the
+/// last thing on a board with no streak, so the ground it draws there is
+/// the strip's. .snappy overshoots by 0.63% of a move: 0.35pt above its
+/// place for the phone's 56pt bar, more than half a pixel for about 190 ms
+/// from 410 ms into a beat, and 0.28pt for the iPad's 44pt bar, for about
+/// 70 ms. So every beat blinked the strip, 10 to 12 frames on the phone and
+/// 1 to 4 on the iPad, and every arrival for a frame on the phone. Held at
+/// its place instead, the bar runs .snappy's own curve until it gets there,
+/// and leaves out only the overshoot, about a device pixel.
+private struct Lowered: ViewModifier, Animatable {
+    var share: CGFloat
+
+    var animatableData: CGFloat {
+        get { share }
+        set { share = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let below = max(0, share)
+        return content.visualEffect { bar, place in bar.offset(y: below * place.size.height) }
     }
 }
 
@@ -2663,12 +2699,13 @@ private struct NeedsYouBar: View {
 ///
 /// And its beat (`BarBeat`): each time `beats` goes up, the ground, the edge
 /// and the words are drawn their own height below where they stand and come
-/// back with the bar's .snappy, as `.move(edge: .bottom)` first brought them
-/// in. Drawn only, as an offset that layout never sees: the bar's place, the
-/// board's frame, the scroll position and VoiceOver's cursor stay where they
-/// are, and a press lands on the bar's place throughout. Once for each beat,
-/// never on appearing, and nothing moves under Reduce Motion, where no beat
-/// is called for in the first place.
+/// back with the bar's .snappy, as its arrival first brought them in, and
+/// never above their place (`Lowered`). Drawn only, as an offset that layout
+/// never sees: the bar's place, the board's frame, the scroll position and
+/// VoiceOver's cursor stay where they are, and a press lands on the bar's
+/// place throughout. Once for each beat, never on appearing, and nothing
+/// moves under Reduce Motion, where no beat is called for in the first
+/// place.
 private struct NeedsYouStyle: ButtonStyle {
     let beats: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2686,7 +2723,7 @@ private struct NeedsYouStyle: ButtonStyle {
             .keyframeAnimator(initialValue: 0.0, trigger: beats) { bar, below in
                 // `below` is the share of its own height it is drawn below
                 // its place.
-                bar.visualEffect { bar, place in bar.offset(y: below * place.size.height) }
+                bar.modifier(Lowered(share: below))
             } keyframes: { _ in
                 MoveKeyframe(travel)
                 SpringKeyframe(0.0, spring: .snappy)
