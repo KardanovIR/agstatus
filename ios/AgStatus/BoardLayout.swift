@@ -1057,6 +1057,32 @@ struct BarBeat {
     }
 }
 
+// MARK: - BarTravel
+
+/// How far below its place the needs-you bar is drawn as it arrives, beats
+/// and leaves (`Lowered`, in BoardView.swift): a share of its travel, which
+/// takes it off the screen, and never above its place.
+///
+/// Values, so that the rule is checked on its own (`verifyBarTravel`).
+enum BarTravel {
+    /// The share of its travel the bar is drawn below its place, for the
+    /// share its spring has reached: the same, but held at its place where
+    /// .snappy overshoots it, since there SwiftUI stops drawing the bar's
+    /// ground under the home indicator (`Lowered`).
+    static func below(_ share: CGFloat) -> CGFloat {
+        max(0, share)
+    }
+
+    /// The whole way down: the bar's own height, and the strip under it that
+    /// its ground reaches into, the bottom safe area where the bar is the
+    /// last thing on the board (34pt under a phone's home indicator, 20pt on
+    /// a phone held sideways and on an iPad) and none over the streak. So at
+    /// the far end of its travel the bar, ground and all, is off the screen.
+    static func length(height: CGFloat, strip: CGFloat) -> CGFloat {
+        height + strip
+    }
+}
+
 // MARK: - SubtaskSlots
 
 /// Which of a card's subagents stand in its row slots, and in which slot.
@@ -1252,6 +1278,7 @@ extension BoardArrangement {
         verifyNews()
         verifyStandingBlocks()
         verifyBarBeat()
+        verifyBarTravel()
         verifyMatrix()
         verifySubtaskSlots()
     }
@@ -2399,6 +2426,16 @@ extension BoardArrangement {
                && BarBeat.verdict(rest: 2, answered: false, count: 3, inFront: false, moves: false) == .away
                && BarBeat.verdict(rest: 2, answered: true, count: 3, inFront: true, moves: true) == .answered,
                "the verdict's order")
+    }
+
+    /// How far below its place the bar is drawn (`BarTravel`).
+    private static func verifyBarTravel() {
+        // .snappy overshoots its place by 0.63% of a move on the way back.
+        assert(BarTravel.below(-0.0063) == 0, "the overshoot is held at the bar's place")
+        assert(BarTravel.below(0.4) == 0.4, "below its place, the spring's own share")
+        assert(BarTravel.below(1) == 1, "all the way down")
+        assert(BarTravel.length(height: 56, strip: 34) == 90, "a phone's bar goes past the home indicator's strip")
+        assert(BarTravel.length(height: 44, strip: 0) == 44, "over the streak, its own height")
     }
 
     /// Every board the rules have to hold on: the six widths and the

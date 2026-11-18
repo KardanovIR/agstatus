@@ -2415,12 +2415,13 @@ private extension View {
 /// blocked, the bar while one is.
 ///
 /// It enters from the bottom edge when the first block lands and leaves when
-/// none remain, each with .snappy, and drawn its own height below its place
-/// at the far end (`Lowered`). Those are its only transitions: under Reduce
-/// Motion it appears and goes in place, and its words change in place. The
-/// animation is the slot's own, never the board's: a card turning blocked in
-/// the same update must not cross-fade its word into the new one. Its one
-/// other motion is its beat (`beats`), which is drawn, never a transition.
+/// none remain, each with .snappy, from and to the far end of its travel,
+/// wholly off the screen (`Lowered`). Those are its only transitions: under
+/// Reduce Motion it appears and goes in place, and its words change in
+/// place. The animation is the slot's own, never the board's: a card turning
+/// blocked in the same update must not cross-fade its word into the new one.
+/// Its one other motion is its beat (`beats`), which is drawn, never a
+/// transition.
 ///
 /// It leaves as a view that stays, not as a removal. A block that lands
 /// while it is on its way down turns it round from where it is and brings
@@ -2435,7 +2436,8 @@ private extension View {
 /// so the cards have the space it is leaving from the first frame, and a
 /// block that brings it back takes the room back at once, as an arrival
 /// does. Leaving, it does not answer a touch and VoiceOver no longer finds
-/// it. Once it is all the way down it goes.
+/// it. Once its spring has come to rest, all the way down and off the
+/// screen, it goes, which shows nothing.
 ///
 /// A view of its own, made with `.equatable()`, and handed only what the bar
 /// draws: a hook event that changes none of it — a message, a token figure,
@@ -2463,7 +2465,7 @@ private struct NeedsYouSlot: View, Equatable {
     /// it has gone.
     @State private var last: NeedsYou.Face?
     /// How far below its place the bar is drawn on its way out, as a share of
-    /// its own height: 0 in place, 1 all the way down.
+    /// its travel: 0 in place, 1 all the way down, off the screen.
     @State private var lowered: CGFloat = 0
     /// One more for every leave and every return, so that a leave that has
     /// been turned round does not take the bar away when it would have ended.
@@ -2525,9 +2527,24 @@ private struct NeedsYouSlot: View, Equatable {
     }
 }
 
-/// The bar drawn `share` of its own height below its place, and never above
-/// it: how it arrives, beats and leaves (`NeedsYouSlot`, `NeedsYouStyle`).
-/// Drawn only, as an offset that layout never sees.
+/// The bar drawn `share` of its travel below its place, and never above it:
+/// how it arrives, beats and leaves (`NeedsYouSlot`, `NeedsYouStyle`). Drawn
+/// only, as an offset that layout never sees.
+///
+/// Its travel is its own height and the strip under it that its ground
+/// reaches into, the bottom safe area where the bar is the last thing on the
+/// board (34pt under a phone's home indicator, 20pt on a phone held sideways
+/// and on an iPad, none over the streak), so all the way down it is off the
+/// screen, ground and all (`BarTravel.length`). Its own height alone left its
+/// top in that strip: on a board with no streak each leave ended with the
+/// bar's red edge and its alarm line, '1 BLOCKED … Show', standing under the
+/// home indicator until the spring came to rest, 220 to 260 ms on a 6.9" and
+/// a 13" simulator, and then gone in one frame, where nothing was blocked any
+/// more; and each arrival and beat started with that line already there.
+/// Taken the rest of the way, the bar is gone from the screen before it is
+/// taken away, and the turn-round of a leave is the same one move. Ended
+/// sooner instead, at the spring's logical end, it would still have stood
+/// there, if not as long, and still gone in one frame.
 ///
 /// Never above, because there SwiftUI stops drawing the ground under the
 /// home indicator. A background reaches into the safe area only while the
@@ -2541,10 +2558,11 @@ private struct NeedsYouSlot: View, Equatable {
 /// the strip's. .snappy overshoots by 0.63% of a move: 0.35pt above its
 /// place for the phone's 56pt bar, more than half a pixel for about 190 ms
 /// from 410 ms into a beat, and 0.28pt for the iPad's 44pt bar, for about
-/// 70 ms. So every beat blinked the strip, 10 to 12 frames on the phone and
-/// 1 to 4 on the iPad, and every arrival for a frame on the phone. Held at
-/// its place instead, the bar runs .snappy's own curve until it gets there,
-/// and leaves out only the overshoot, about a device pixel.
+/// 70 ms. So at 0a6fd33 every beat blinked the strip, 10, 5 and 12 frames
+/// in the audit's three recordings on the phone and 4, 1 and 4 on the iPad,
+/// and arrivals did for a frame on the phone. Held at its place instead
+/// (`BarTravel.below`), the bar runs .snappy's own curve until it gets
+/// there, and leaves out only the overshoot, about a device pixel.
 private struct Lowered: ViewModifier, Animatable {
     var share: CGFloat
 
@@ -2554,8 +2572,10 @@ private struct Lowered: ViewModifier, Animatable {
     }
 
     func body(content: Content) -> some View {
-        let below = max(0, share)
-        return content.visualEffect { bar, place in bar.offset(y: below * place.size.height) }
+        let below = BarTravel.below(share)
+        return content.visualEffect { bar, place in
+            bar.offset(y: below * BarTravel.length(height: place.size.height, strip: place.safeAreaInsets.bottom))
+        }
     }
 }
 
@@ -2766,14 +2786,14 @@ private struct NeedsYouBar: View {
 /// heard.
 ///
 /// And its beat (`BarBeat`): each time `beats` goes up, the ground, the edge
-/// and the words are drawn their own height below where they stand and come
-/// back with the bar's .snappy, as its arrival first brought them in, and
-/// never above their place (`Lowered`). Drawn only, as an offset that layout
-/// never sees: the bar's place, the board's frame, the scroll position and
-/// VoiceOver's cursor stay where they are, and a press lands on the bar's
-/// place throughout. Once for each beat, never on appearing, and nothing
-/// moves under Reduce Motion, where no beat is called for in the first
-/// place.
+/// and the words are drawn at the far end of the bar's travel, off the
+/// screen, and come back with the bar's .snappy, as its arrival first
+/// brought them in, and never above their place (`Lowered`). Drawn only, as
+/// an offset that layout never sees: the bar's place, the board's frame, the
+/// scroll position and VoiceOver's cursor stay where they are, and a press
+/// lands on the bar's place throughout. Once for each beat, never on
+/// appearing, and nothing moves under Reduce Motion, where no beat is called
+/// for in the first place.
 private struct NeedsYouStyle: ButtonStyle {
     let beats: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -2789,8 +2809,8 @@ private struct NeedsYouStyle: ButtonStyle {
                     .frame(height: 1)
             }
             .keyframeAnimator(initialValue: 0.0, trigger: beats) { bar, below in
-                // `below` is the share of its own height it is drawn below
-                // its place.
+                // `below` is the share of its travel it is drawn below its
+                // place.
                 bar.modifier(Lowered(share: below))
             } keyframes: { _ in
                 MoveKeyframe(travel)
