@@ -499,8 +499,10 @@ enum BoardArrangement: Equatable {
 /// and not by size class, for the reason `BoardArrangement` gives.
 enum HeadForm: Equatable {
     /// Half a phone, or at larger text a phone's whole width: the value drops
-    /// under its label. What the line and the place of the meters hold is
-    /// not the form's to say (`offersCount`, `saysNoLimits`).
+    /// under its label. Its line holds the session count unless the head
+    /// shares its row (`offersCount`), and where the board asks for it the
+    /// sentence for an agent with no limits stands in place of meters, as in
+    /// every form (`saysNoLimits`).
     case narrow
     /// A phone's full width, or a third of a tablet: one row per window, label
     /// left and value right, as the limit blocks shipped.
@@ -559,17 +561,22 @@ enum HeadForm: Equatable {
 
     /// Whether a head offers its line the session count, which the line
     /// draws beside the name where it fits and drops whole where it does not
-    /// (`AgentHead`): every head with sessions but one that shares its row.
-    /// Pinned two across a phone-wide board, as Frame A draws them, a head is
-    /// too narrow for it and never draws it.
+    /// (`AgentHead`): every head with sessions but a narrow one that shares
+    /// its row. Pinned two across a phone-wide board, as Frame A draws them,
+    /// a head is narrow at every text size (169 inside on a 6.9", under the
+    /// narrow form's 300), too narrow for the count, and never draws it.
     ///
-    /// Not by the head's form. At larger text a head with a phone's whole
+    /// Not by the form alone. At larger text a head with a phone's whole
     /// width takes the narrow form by its scaled threshold — on an SE from
     /// extra large text, on a 6.9" from extra extra extra large, at every
-    /// accessibility size — and the heads that lead the list there have room
-    /// for the count.
-    static func offersCount(sessions: Int, sharesRow: Bool) -> Bool {
-        sessions > 0 && !sharesRow
+    /// accessibility size — and the heads that lead the list there, each
+    /// alone on its row, have room for the count. Nor by the row alone: the
+    /// two heads pinned across an iPad's one-list board are regular where
+    /// they are wide enough, 396 each on an 11" iPad upright at extra extra
+    /// large text and 340 on a board 690 wide at the default size, and draw
+    /// it there, as they did at 0a6fd33.
+    static func offersCount(sessions: Int, sharesRow: Bool, form: HeadForm) -> Bool {
+        sessions > 0 && !(sharesRow && form == .narrow)
     }
 
     /// Whether a head says "No plan limits reported" in place of meters: for
@@ -1635,34 +1642,55 @@ extension BoardArrangement {
         assert(HeadForm.stripTracks(available: 100, windows: 3) == 1, "always one track")
         assert(HeadForm.stripTracks(available: 1008, windows: 0) == 1, "no windows is still one track")
 
-        // What a head draws beside its name and in place of meters is not its
-        // form's to say. At extra extra extra large and AX3, on an SE and a
-        // 6.9" (343 and 408 inside the gutters), the heads that lead the list
-        // are narrow, and still offer their count and say an agent has no
-        // limits. A pair pinned two across, at the size that still pins one,
-        // does neither.
+        // What a head draws beside its name and in place of meters. At extra
+        // extra extra large and AX3, on an SE and a 6.9" (343 and 408 inside
+        // the gutters), the heads that lead the list are narrow, each alone
+        // on its row, and still offer their count and say an agent has no
+        // limits. A pair pinned two across, at the default size and at the
+        // size that still pins one, is narrow and does neither.
         let phones: [(device: String, width: CGFloat)] = [("an SE", 343), ("a 6.9\"", 408)]
-        let sizes: [(name: String, scale: CGFloat, large: Bool)] = [("xxxL", 26.0 / 20, false), ("AX3", 43.0 / 20, true)]
+        let sizes: [(name: String, scale: CGFloat, large: Bool)] = [("the default size", 1, false),
+                                                                    ("xxxL", 26.0 / 20, false),
+                                                                    ("AX3", 43.0 / 20, true)]
         for phone in phones {
             for size in sizes {
                 let at = "on \(phone.device) at \(size.name)"
-                assert(BoardArrangement.headsScroll(.list, agents: 4, largeText: size.large), "four heads lead \(at)")
-                assert(HeadForm.resolve(outer: phone.width, canStrip: true, scale: size.scale) == .narrow,
-                       "a leading head is narrow \(at)")
-                assert(HeadForm.offersCount(sessions: 1, sharesRow: false)
-                       && HeadForm.saysNoLimits(windows: 0, showsNoLimits: true),
-                       "and offers its count, and says there are no limits, \(at)")
+                if size.scale > 1 {
+                    assert(BoardArrangement.headsScroll(.list, agents: 4, largeText: size.large), "four heads lead \(at)")
+                    let leading = HeadForm.resolve(outer: phone.width, canStrip: true, scale: size.scale)
+                    assert(leading == .narrow, "a leading head is narrow \(at)")
+                    assert(HeadForm.offersCount(sessions: 1, sharesRow: false, form: leading)
+                           && HeadForm.saysNoLimits(windows: 0, showsNoLimits: true),
+                           "and offers its count, and says there are no limits, \(at)")
+                }
                 guard !size.large else { continue }
                 assert(!BoardArrangement.headsScroll(.list, agents: 2, largeText: size.large), "two are pinned \(at)")
-                let pair = BoardArrangement.track(width: phone.width, count: 2, gap: BoardArrangement.headGap)
-                assert(HeadForm.resolve(outer: pair, canStrip: false, scale: size.scale) == .narrow,
-                       "a pinned pair is narrow \(at)")
-                assert(!HeadForm.offersCount(sessions: 1, sharesRow: true)
+                let track = BoardArrangement.track(width: phone.width, count: 2, gap: BoardArrangement.headGap)
+                let pair = HeadForm.resolve(outer: track, canStrip: false, scale: size.scale)
+                assert(pair == .narrow, "a pinned pair is narrow \(at)")
+                assert(!HeadForm.offersCount(sessions: 1, sharesRow: true, form: pair)
                        && !HeadForm.saysNoLimits(windows: 0, showsNoLimits: false),
                        "and offers no count, and no sentence, \(at)")
             }
         }
-        assert(!HeadForm.offersCount(sessions: 0, sharesRow: false), "no sessions, no count")
+        // Two heads pinned across an iPad's one-list board, where two columns
+        // do not fit: an 11" iPad upright (802 inside the gutters) at extra
+        // extra large text, and a board 690 wide at the default size, as an
+        // iPad window about 722 wide gives. Each head is regular, and offers
+        // its count, as at 0a6fd33.
+        let ipads: [(board: String, width: CGFloat, scale: CGFloat)] = [("an 11\" iPad upright at xxL", 802, 24.0 / 20),
+                                                                        ("a board 690 wide", 690, 1)]
+        for ipad in ipads {
+            let at = "on \(ipad.board)"
+            assert(BoardArrangement.resolve(width: ipad.width, minColumn: BoardArrangement.minColumn * ipad.scale) == .list,
+                   "one list \(at)")
+            assert(!BoardArrangement.headsScroll(.list, agents: 2), "two are pinned \(at)")
+            let track = BoardArrangement.track(width: ipad.width, count: 2, gap: BoardArrangement.headGap)
+            let pair = HeadForm.resolve(outer: track, canStrip: false, scale: ipad.scale)
+            assert(pair == .regular, "a pinned pair is regular \(at)")
+            assert(HeadForm.offersCount(sessions: 3, sharesRow: true, form: pair), "and offers its count \(at)")
+        }
+        assert(!HeadForm.offersCount(sessions: 0, sharesRow: false, form: .regular), "no sessions, no count")
         assert(!HeadForm.saysNoLimits(windows: 2, showsNoLimits: true), "limits are meters")
     }
 

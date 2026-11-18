@@ -102,9 +102,11 @@ struct AgentHead: View {
     /// third one under a pair on an idle board. It has the whole width, so it
     /// takes the fuller line whenever that line actually fits — see `content`.
     var alone = false
-    /// Beside another head on its row: pinned two across a phone-wide board,
-    /// as Frame A draws them, or on an idle board's row. Too narrow for its
-    /// session count, which it never draws (`HeadForm.offersCount`).
+    /// Beside another head on its row: pinned two across the one-list board,
+    /// as Frame A draws them on a phone, or on an idle board's row. Where
+    /// that makes it narrow, as it always does on a phone, it is too narrow
+    /// for its session count and never draws it; a regular one, as an iPad's
+    /// pair can be, draws it where it fits (`HeadForm.offersCount`).
     var sharesRow = false
     /// The board's one clock, so every countdown on screen turns over together
     /// whether its head is pinned or scrolling.
@@ -217,11 +219,13 @@ struct AgentHead: View {
     /// is the block at the left, at a fixed width so the limits beside it
     /// start at the same place on every agent's strip.
     ///
-    /// The same in every form. The count was kept off the narrow form's line,
-    /// and at larger text a head the whole width of a phone takes that form
-    /// too, by its scaled threshold, so heads that lead the list lost it
-    /// although their line had room: on an SE from extra large text, on a
-    /// 6.9" from extra extra extra large, at every accessibility size.
+    /// The same in every form, but for a narrow head that shares its row,
+    /// whose line holds no count (`HeadForm.offersCount`). The count was kept
+    /// off every narrow line, and at larger text a head the whole width of a
+    /// phone takes that form too, by its scaled threshold, so heads that lead
+    /// the list lost it although their line had room: on an SE from extra
+    /// large text, on a 6.9" from extra extra extra large, at every
+    /// accessibility size.
     private var line: some View {
         HStack(spacing: 0) {
             // The name is offered the width first. When the line is tight the
@@ -230,7 +234,7 @@ struct AgentHead: View {
             // thing saying whose limits these are.
             AgentIdentity(source: group.source)
                 .layoutPriority(1)
-            if HeadForm.offersCount(sessions: group.sessions, sharesRow: sharesRow) {
+            if HeadForm.offersCount(sessions: group.sessions, sharesRow: sharesRow, form: form) {
                 // Whole or not at all, and the gap travels with it, so a count
                 // that has dropped out leaves no space behind.
                 ViewThatFits(in: .horizontal) {
