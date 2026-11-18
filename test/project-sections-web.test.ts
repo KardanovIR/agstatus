@@ -2239,6 +2239,24 @@ describe('1.6.5\'s page, taken from the cache with these scripts', () => {
     expect(card(b, 'c').dataset.status).toBe('coding');
     expect(errors).toEqual([]);
   });
+
+  // From 1.7.0 every file the page loads names its release, which the
+  // server's static handler ignores, so a page a browser keeps finds its own
+  // release's files in the cache, not the next release's. A release the URLs
+  // are behind is one that forgot to raise them, and they would mix again.
+  it('names every file it loads with one release, never behind the server\'s', () => {
+    const html = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
+    const urls = [...html.matchAll(/<(?:link rel="stylesheet" href|script src)="([^"]+)"/g)].map((m) => m[1]);
+    expect(urls.map((u) => u.replace(/\?.*$/, ''))).toEqual(['/tokens.css', '/card.css', '/board.css', '/shell.css', '/marks.js', '/app.js']);
+    const releases = new Set(urls.map((u) => /\?v=(\d+\.\d+\.\d+)$/.exec(u)?.[1]));
+    expect(releases.size, `one release for all six: ${[...releases].join(', ')}`).toBe(1);
+    const [named] = [...releases];
+    expect(named, 'each names a release, as ?v=1.7.0').toMatch(/^\d+\.\d+\.\d+$/);
+    const server = JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'package.json'), 'utf8')).version as string;
+    const parts = (v: string) => v.split('.').map(Number);
+    const behind = parts(named!).reduce((cmp, n, i) => cmp || Math.sign(n - parts(server)[i]), 0) < 0;
+    expect(behind, `index.html names ${named}, behind package.json's ${server}: raise its ?v= with the release`).toBe(false);
+  });
 });
 
 // ---- An agent, named and marked as every board does -------------------------

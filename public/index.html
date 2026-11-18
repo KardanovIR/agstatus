@@ -8,11 +8,17 @@
   <title>AgStatus</title>
   <!-- Order is load-bearing: tokens, then the card (shared with the landing
        page, so the two can never drift), then the board around it, then the
-       shell around the grid. -->
-  <link rel="stylesheet" href="/tokens.css" />
-  <link rel="stylesheet" href="/card.css" />
-  <link rel="stylesheet" href="/board.css" />
-  <link rel="stylesheet" href="/shell.css" />
+       shell around the grid.
+       Every file here names its release, "?v=", which the server ignores. A
+       page a browser keeps, as Back takes it from the cache after a deploy,
+       then finds its own release's files in the cache, not the next
+       release's, which it may not fit. Raise it with every release, to the
+       version the manifests carry: a test fails while it is behind
+       package.json's. -->
+  <link rel="stylesheet" href="/tokens.css?v=1.7.0" />
+  <link rel="stylesheet" href="/card.css?v=1.7.0" />
+  <link rel="stylesheet" href="/board.css?v=1.7.0" />
+  <link rel="stylesheet" href="/shell.css?v=1.7.0" />
 </head>
 <body>
   <header class="topbar">
@@ -61,7 +67,7 @@
 
   <!-- The marks first: app.js reads them at definition time, and the landing
        page loads the same file so the two can never draw different icons. -->
-  <script src="/marks.js"></script>
-  <script src="/app.js"></script>
+  <script src="/marks.js?v=1.7.0"></script>
+  <script src="/app.js?v=1.7.0"></script>
 </body>
 </html>
