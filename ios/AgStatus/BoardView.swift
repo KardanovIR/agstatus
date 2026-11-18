@@ -2414,13 +2414,27 @@ private extension View {
 /// blocked, the bar while one is.
 ///
 /// It enters from the bottom edge when the first block lands and leaves when
-/// none remain, with .snappy, drawn its own height below its place at the far
-/// end and never above it (`Lowered`). Those are its only transitions: under
-/// Reduce Motion it appears and goes in place (`motion`), and its words
-/// change in place. The animation is the slot's own, never the board's: a
-/// card turning blocked in the same update must not cross-fade its word into
-/// the new one. Its one other motion is its beat (`beats`), which is drawn,
-/// never a transition.
+/// none remain, each with .snappy, and drawn its own height below its place
+/// at the far end (`Lowered`). Those are its only transitions: under Reduce
+/// Motion it appears and goes in place, and its words change in place. The
+/// animation is the slot's own, never the board's: a card turning blocked in
+/// the same update must not cross-fade its word into the new one. Its one
+/// other motion is its beat (`beats`), which is drawn, never a transition.
+///
+/// It leaves as a view that stays, not as a removal. A block that lands
+/// while it is on its way down turns it round from where it is and brings
+/// it back up, with the new words already in it, as one continuous move; so
+/// does a block answered while the bar is still arriving, the other way.
+/// Left to SwiftUI's removal, `.move(edge: .bottom)`, a block 150 ms into the
+/// leave brought the bar back in one frame from 92 px below its place to 76
+/// px above it, a bar's height higher, and it sank into place over the 200
+/// ms the leave had left: the way back was drawn in one step, and the rest
+/// of the leave ran on toward the new place (a 6.9" simulator; 300 ms in,
+/// 10 px above). While it leaves it takes no room, as a removal took none,
+/// so the cards have the space it is leaving from the first frame, and a
+/// block that brings it back takes the room back at once, as an arrival
+/// does. Leaving, it does not answer a touch and VoiceOver no longer finds
+/// it. Once it is all the way down it goes.
 ///
 /// A view of its own, made with `.equatable()`, and handed only what the bar
 /// draws: a hook event that changes none of it — a message, a token figure,
@@ -2444,16 +2458,69 @@ private struct NeedsYouSlot: View, Equatable {
     let beats: Int
     let onPress: BoardAction<Void>
 
+    /// The face the bar showed last: what it draws while it leaves. Nil once
+    /// it has gone.
+    @State private var last: NeedsYou.Face?
+    /// How far below its place the bar is drawn on its way out, as a share of
+    /// its own height: 0 in place, 1 all the way down.
+    @State private var lowered: CGFloat = 0
+    /// One more for every leave and every return, so that a leave that has
+    /// been turned round does not take the bar away when it would have ended.
+    @State private var moves = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Equal on what it is handed, as the synthesized one would be: what it
+    /// keeps for itself is its own business.
+    static func == (lhs: NeedsYouSlot, rhs: NeedsYouSlot) -> Bool {
+        lhs.face == rhs.face && lhs.lines == rhs.lines && lhs.beats == rhs.beats && lhs.onPress == rhs.onPress
+    }
+
     var body: some View {
+        let leaving = face == nil
         VStack(spacing: 0) {
-            if let face {
-                NeedsYouBar(face: face, lines: lines, beats: beats, onPress: onPress)
+            if let shown = face ?? (reduceMotion ? nil : last) {
+                NeedsYouBar(face: shown, lines: lines, beats: beats, onPress: onPress)
                     .fixedSize(horizontal: false, vertical: true)
-                    // From behind the streak, which is drawn after it.
-                    .transition(.modifier(active: Lowered(share: 1), identity: Lowered(share: 0)))
+                    .modifier(Lowered(share: lowered))
+                    // From behind the streak, which is drawn after it. It
+                    // goes by `lowered`, and so is simply taken away once it
+                    // is all the way down.
+                    .transition(.asymmetric(insertion: .modifier(active: Lowered(share: 1), identity: Lowered(share: 0)),
+                                            removal: .identity))
             }
         }
         .motion(.snappy, value: face != nil)
+        // Leaving, it takes no room and is drawn where it was, its foot on
+        // the slot's foot, which does not move. Outside the slot's animation,
+        // so that the room goes at once, as a removal's did, and never draws
+        // the bar a step out of its place on the way.
+        .frame(height: leaving ? 0 : nil, alignment: .bottom)
+        .allowsHitTesting(!leaving)
+        .accessibilityHidden(leaving)
+        .onChange(of: face, initial: true) { old, new in
+            if new != nil {
+                if old == nil && last != nil {
+                    // A block landed while it left: back up from where it is.
+                    moves += 1
+                    withMotion(.snappy) { lowered = 0 }
+                }
+                last = new
+            } else if old != nil {
+                guard !reduceMotion else {
+                    last = nil
+                    return
+                }
+                moves += 1
+                let move = moves
+                withAnimation(.snappy, completionCriteria: .removed) {
+                    lowered = 1
+                } completion: {
+                    guard moves == move else { return }
+                    last = nil
+                    lowered = 0
+                }
+            }
+        }
     }
 }
 
