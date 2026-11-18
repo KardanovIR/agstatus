@@ -15,8 +15,12 @@
 # Not every scan reads f215453. CI's, gitleaks-action, reads only a pull
 # request's first 30 commits, which hold it, and the last 20 of each push, so
 # the release push to master never reaches it. What reads it, and every other
-# commit the release brings, is a scan of the whole range before that push:
+# commit the release brings, is a scan of the whole range before that push,
+# run from the repository's root:
 #   gitleaks detect --log-opts="--no-merges --first-parent origin/master..HEAD"
+# Run from a subdirectory, the same command finds neither this file nor
+# .gitleaks.toml there, so it reports the three f215453 values and exits 1.
+# With --source naming the root, it finds both from any directory.
 # Master takes these commits as they are (it fast-forwards to the release), so
 # these fingerprints still match for any scan that reads f215453. A rebase or
 # cherry-pick gives the commit a new hash, and a scan that reads it reports
