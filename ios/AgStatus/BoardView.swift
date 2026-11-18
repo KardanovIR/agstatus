@@ -2051,6 +2051,7 @@ private struct HeadRows: View, Equatable {
                                   fillsHeight: level,
                                   scale: scale,
                                   alone: alone && !level && row.count == 1,
+                                  sharesRow: row.count > 1,
                                   now: now)
                             .equatable()
                     }

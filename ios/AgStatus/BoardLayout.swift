@@ -498,8 +498,9 @@ enum BoardArrangement: Equatable {
 /// knows — not by a reader inside the head, which would decide a frame late,
 /// and not by size class, for the reason `BoardArrangement` gives.
 enum HeadForm: Equatable {
-    /// Half a phone. The value drops under its label, the session count
-    /// goes, and an agent with no limits to show is one line.
+    /// Half a phone, or at larger text a phone's whole width: the value drops
+    /// under its label. What the line and the place of the meters hold is
+    /// not the form's to say (`offersCount`, `saysNoLimits`).
     case narrow
     /// A phone's full width, or a third of a tablet: one row per window, label
     /// left and value right, as the limit blocks shipped.
@@ -554,6 +555,30 @@ enum HeadForm: Equatable {
     static func stripTracks(available: CGFloat, windows: Int, scale: CGFloat = 1) -> Int {
         let fit = Int(((max(0, available) + stripGap) / (stripTrackMin * scale + stripGap)).rounded(.down))
         return max(1, min(windows, fit))
+    }
+
+    /// Whether a head offers its line the session count, which the line
+    /// draws beside the name where it fits and drops whole where it does not
+    /// (`AgentHead`): every head with sessions but one that shares its row.
+    /// Pinned two across a phone-wide board, as Frame A draws them, a head is
+    /// too narrow for it and never draws it.
+    ///
+    /// Not by the head's form. At larger text a head with a phone's whole
+    /// width takes the narrow form by its scaled threshold — on an SE from
+    /// extra large text, on a 6.9" from extra extra extra large, at every
+    /// accessibility size — and the heads that lead the list there have room
+    /// for the count.
+    static func offersCount(sessions: Int, sharesRow: Bool) -> Bool {
+        sessions > 0 && !sharesRow
+    }
+
+    /// Whether a head says "No plan limits reported" in place of meters: for
+    /// an agent that reports none, wherever the board asks for the sentence
+    /// (`AgentHead.showsNoLimits`) — every head but those pinned above the
+    /// one-list board — and in whatever form the head takes, for the reason
+    /// `offersCount` gives.
+    static func saysNoLimits(windows: Int, showsNoLimits: Bool) -> Bool {
+        windows == 0 && showsNoLimits
     }
 }
 
@@ -1609,6 +1634,36 @@ extension BoardArrangement {
         assert(HeadForm.stripTracks(available: 664, windows: 6) == 3, "six windows make two rows")
         assert(HeadForm.stripTracks(available: 100, windows: 3) == 1, "always one track")
         assert(HeadForm.stripTracks(available: 1008, windows: 0) == 1, "no windows is still one track")
+
+        // What a head draws beside its name and in place of meters is not its
+        // form's to say. At extra extra extra large and AX3, on an SE and a
+        // 6.9" (343 and 408 inside the gutters), the heads that lead the list
+        // are narrow, and still offer their count and say an agent has no
+        // limits. A pair pinned two across, at the size that still pins one,
+        // does neither.
+        let phones: [(device: String, width: CGFloat)] = [("an SE", 343), ("a 6.9\"", 408)]
+        let sizes: [(name: String, scale: CGFloat, large: Bool)] = [("xxxL", 26.0 / 20, false), ("AX3", 43.0 / 20, true)]
+        for phone in phones {
+            for size in sizes {
+                let at = "on \(phone.device) at \(size.name)"
+                assert(BoardArrangement.headsScroll(.list, agents: 4, largeText: size.large), "four heads lead \(at)")
+                assert(HeadForm.resolve(outer: phone.width, canStrip: true, scale: size.scale) == .narrow,
+                       "a leading head is narrow \(at)")
+                assert(HeadForm.offersCount(sessions: 1, sharesRow: false)
+                       && HeadForm.saysNoLimits(windows: 0, showsNoLimits: true),
+                       "and offers its count, and says there are no limits, \(at)")
+                guard !size.large else { continue }
+                assert(!BoardArrangement.headsScroll(.list, agents: 2, largeText: size.large), "two are pinned \(at)")
+                let pair = BoardArrangement.track(width: phone.width, count: 2, gap: BoardArrangement.headGap)
+                assert(HeadForm.resolve(outer: pair, canStrip: false, scale: size.scale) == .narrow,
+                       "a pinned pair is narrow \(at)")
+                assert(!HeadForm.offersCount(sessions: 1, sharesRow: true)
+                       && !HeadForm.saysNoLimits(windows: 0, showsNoLimits: false),
+                       "and offers no count, and no sentence, \(at)")
+            }
+        }
+        assert(!HeadForm.offersCount(sessions: 0, sharesRow: false), "no sessions, no count")
+        assert(!HeadForm.saysNoLimits(windows: 2, showsNoLimits: true), "limits are meters")
     }
 
     /// Sides, counted per section, and the order the bar walks.

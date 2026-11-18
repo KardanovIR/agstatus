@@ -102,6 +102,10 @@ struct AgentHead: View {
     /// third one under a pair on an idle board. It has the whole width, so it
     /// takes the fuller line whenever that line actually fits — see `content`.
     var alone = false
+    /// Beside another head on its row: pinned two across a phone-wide board,
+    /// as Frame A draws them, or on an idle board's row. Too narrow for its
+    /// session count, which it never draws (`HeadForm.offersCount`).
+    var sharesRow = false
     /// The board's one clock, so every countdown on screen turns over together
     /// whether its head is pinned or scrolling.
     let now: Date
@@ -176,10 +180,10 @@ struct AgentHead: View {
         if alone && form == .narrow {
             // By fit, not by the scaled threshold. At larger text the
             // threshold alone put a head with the phone's whole width into
-            // the half-phone form — no count, every value under its label —
-            // which the lone limit block it replaces never did. So the full
-            // line is used while it holds, and the half-phone form only when
-            // it does not.
+            // the half-phone form, every value under its label, which the
+            // lone limit block it replaces never did. So the full line is
+            // used while it holds, and the half-phone form only when it does
+            // not.
             ViewThatFits(in: .horizontal) {
                 content(.regular)
                 content(.narrow)
@@ -197,13 +201,13 @@ struct AgentHead: View {
             // and the limits are three, and a name level with the first label
             // reads as the title of that column alone.
             HStack(alignment: .center, spacing: HeadForm.stripGap) {
-                line(form)
+                line
                     .frame(width: identityWidth, alignment: .leading)
                 limits(form)
             }
         case .narrow, .regular, .across:
             VStack(alignment: .leading, spacing: 10) {
-                line(form)
+                line
                 limits(form)
             }
         }
@@ -212,7 +216,13 @@ struct AgentHead: View {
     /// The head's one line: mark, name, and how many sessions. On a strip it
     /// is the block at the left, at a fixed width so the limits beside it
     /// start at the same place on every agent's strip.
-    private func line(_ form: HeadForm) -> some View {
+    ///
+    /// The same in every form. The count was kept off the narrow form's line,
+    /// and at larger text a head the whole width of a phone takes that form
+    /// too, by its scaled threshold, so heads that lead the list lost it
+    /// although their line had room: on an SE from extra large text, on a
+    /// 6.9" from extra extra extra large, at every accessibility size.
+    private var line: some View {
         HStack(spacing: 0) {
             // The name is offered the width first. When the line is tight the
             // count goes before a letter of the name does: the count is a
@@ -220,7 +230,7 @@ struct AgentHead: View {
             // thing saying whose limits these are.
             AgentIdentity(source: group.source)
                 .layoutPriority(1)
-            if form != .narrow && group.sessions > 0 {
+            if HeadForm.offersCount(sessions: group.sessions, sharesRow: sharesRow) {
                 // Whole or not at all, and the gap travels with it, so a count
                 // that has dropped out leaves no space behind.
                 ViewThatFits(in: .horizontal) {
@@ -247,18 +257,20 @@ struct AgentHead: View {
 
     // MARK: Limits
 
+    /// The meters, or for an agent that reports no limits the sentence that
+    /// says so, in whatever form the head takes (`HeadForm.saysNoLimits`).
     @ViewBuilder
     private func limits(_ form: HeadForm) -> some View {
-        if group.windows.isEmpty {
-            if showsNoLimits && form != .narrow {
-                Text("No plan limits reported")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .allowsHitTesting(false)
-            }
-        } else {
+        if HeadForm.saysNoLimits(windows: group.windows.count, showsNoLimits: showsNoLimits) {
+            // Every word of it, on a second line where one is too short, as
+            // on the web and Android.
+            Text("No plan limits reported")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .allowsHitTesting(false)
+        } else if !group.windows.isEmpty {
             meters(form)
                 .allowsHitTesting(false)
         }
@@ -332,13 +344,16 @@ extension AgentHead: Equatable {
     /// Where heads stand in rows, the rows must be left alone too, or they lay
     /// their heads out again regardless (`HeadRows`).
     static func == (lhs: AgentHead, rhs: AgentHead) -> Bool {
-        lhs.group == rhs.group
+        // In two parts: as one chain of nine comparisons it took the type
+        // checker of Swift 6.2, which CI builds with, over 1 MB of solver
+        // memory, where the chain of eight before it took less.
+        guard lhs.alone == rhs.alone, lhs.sharesRow == rhs.sharesRow else { return false }
+        return lhs.group == rhs.group
             && lhs.width == rhs.width
             && lhs.canStrip == rhs.canStrip
             && lhs.showsNoLimits == rhs.showsNoLimits
             && lhs.fillsHeight == rhs.fillsHeight
             && lhs.scale == rhs.scale
-            && lhs.alone == rhs.alone
             && lhs.now == rhs.now
     }
 }
