@@ -107,10 +107,11 @@ struct BoardView: View {
     /// it is never asked about width (`BoardArrangement`).
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-    /// The scene's phase, read here only to keep `livePhase` current. Whether
-    /// a block is said aloud, or makes the bar beat, is asked when its half
-    /// second ends, and the task waiting it out holds this value as it was
-    /// when the task began (`LivePhase`).
+    /// The scene's phase, read here to keep `livePhase` current, and by the
+    /// needs-you bar as each pass draws it (`shownInFront`). Whether a block
+    /// is said aloud, or makes the bar beat, is asked when its half second
+    /// ends, and the task waiting it out holds this value as it was when the
+    /// task began (`LivePhase`).
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -317,6 +318,7 @@ struct BoardView: View {
             NeedsYouSlot(face: bar,
                          lines: plan.compactHeight ? .one : plan.wide ? .oneOrTwo : .two,
                          beats: barBeats,
+                         inFront: shownInFront,
                          onPress: barAction)
                 .equatable()
                 // Before the cards, though it is drawn below them.
@@ -1301,6 +1303,20 @@ struct BoardView: View {
     /// second asks from the copy its task was started with (`LivePhase`).
     private var boardInFront: Bool {
         livePhase.active && path.isEmpty && !showSettings && !showPairSheet
+    }
+
+    /// The same, as the pass being drawn sees it, on a board watching the
+    /// stream: what the needs-you bar reads to come and go with motion or in
+    /// place (`NeedsYouSlot.inFront`). From the scene's phase as this pass
+    /// has it, not `livePhase`, which the phase's change handler brings up to
+    /// date only after the pass that brought the new phase. And only while
+    /// the stream is live, or the demo runs: in the background the app drops
+    /// its stream (`RootView`), so what changed while the reader was away
+    /// reaches the board in the snapshot of the reconnect, once they are
+    /// back, and that is no more news than a launch's first snapshot.
+    private var shownInFront: Bool {
+        scenePhase == .active && path.isEmpty && !showSettings && !showPairSheet
+            && (store.connection == .live || store.connection == .demo)
     }
 
     // MARK: - Push tip
@@ -2423,6 +2439,19 @@ private extension View {
 /// Its one other motion is its beat (`beats`), which is drawn, never a
 /// transition.
 ///
+/// Both run only in front of the reader (`inFront`). A first block that
+/// lands while another screen or a sheet is over the board, or the app is
+/// not active, puts the bar in its place at once, and the last block
+/// answered then takes it away at once, so when the reader comes back the
+/// bar is simply there, or simply gone, with nothing played on the way
+/// back, as on the web and Android. So does what a connection's first
+/// snapshot brings: at a launch, after a dropped stream, and after the app
+/// was in the background, which drops the stream, so that the board learns
+/// what changed meanwhile only once the reader is back. Left to the
+/// transition, a first block under a pushed screen played the arrival during
+/// the pop: on a 6.9" simulator the bar was first seen 30pt below its place,
+/// and rose for about 260 ms.
+///
 /// It leaves as a view that stays, not as a removal. A block that lands
 /// while it is on its way down turns it round from where it is and brings
 /// it back up, with the new words already in it, as one continuous move; so
@@ -2459,8 +2488,17 @@ private struct NeedsYouSlot: View, Equatable {
     /// How many times the bar has beaten (`BarBeat`). It changes on a beat
     /// and at no other time, so it costs a hook event nothing.
     let beats: Int
+    /// Whether the board is in front of the reader: no other screen or sheet
+    /// over it, the app active, and the stream live or the demo running
+    /// (`BoardView.shownInFront`). Out of sight the bar comes and goes in
+    /// place.
+    let inFront: Bool
     let onPress: BoardAction<Void>
 
+    /// `inFront` as the last update left it. A face that changes in the very
+    /// update that brings the board back in front, as the snapshot of a
+    /// reconnect does, changed while the reader was not watching.
+    @State private var stood = false
     /// The face the bar showed last: what it draws while it leaves. Nil once
     /// it has gone.
     @State private var last: NeedsYou.Face?
@@ -2475,11 +2513,17 @@ private struct NeedsYouSlot: View, Equatable {
     /// Equal on what it is handed, as the synthesized one would be: what it
     /// keeps for itself is its own business.
     static func == (lhs: NeedsYouSlot, rhs: NeedsYouSlot) -> Bool {
-        lhs.face == rhs.face && lhs.lines == rhs.lines && lhs.beats == rhs.beats && lhs.onPress == rhs.onPress
+        lhs.face == rhs.face && lhs.lines == rhs.lines && lhs.beats == rhs.beats && lhs.inFront == rhs.inFront
+            && lhs.onPress == rhs.onPress
     }
 
     var body: some View {
         let leaving = face == nil
+        // Whether its coming and going is drawn: in front of the reader since
+        // before this update, and not under Reduce Motion. Read as the face
+        // changes, so a block or an answer is drawn as the board stood when
+        // it landed.
+        let drawn = inFront && stood && !reduceMotion
         VStack(spacing: 0) {
             if let shown = face ?? (reduceMotion ? nil : last) {
                 NeedsYouBar(face: shown, lines: lines, beats: beats, onPress: onPress)
@@ -2492,7 +2536,9 @@ private struct NeedsYouSlot: View, Equatable {
                                             removal: .identity))
             }
         }
-        .motion(.snappy, value: face != nil)
+        // None out of sight: inserted with no animation, the bar is at its
+        // identity, its place.
+        .animation(drawn ? .snappy : nil, value: face != nil)
         // Leaving, it takes no room and is drawn where it was, its foot on
         // the slot's foot, which does not move. Outside the slot's animation,
         // so that the room goes at once, as a removal's did, and never draws
@@ -2500,16 +2546,18 @@ private struct NeedsYouSlot: View, Equatable {
         .frame(height: leaving ? 0 : nil, alignment: .bottom)
         .allowsHitTesting(!leaving)
         .accessibilityHidden(leaving)
+        .onChange(of: inFront, initial: true) { _, now in stood = now }
         .onChange(of: face, initial: true) { old, new in
             if new != nil {
                 if old == nil && last != nil {
-                    // A block landed while it left: back up from where it is.
+                    // A block landed while it left: back up from where it
+                    // is, or, out of sight, straight to its place.
                     moves += 1
-                    withMotion(.snappy) { lowered = 0 }
+                    withAnimation(drawn ? .snappy : nil) { lowered = 0 }
                 }
                 last = new
             } else if old != nil {
-                guard !reduceMotion else {
+                guard drawn else {
                     last = nil
                     return
                 }
