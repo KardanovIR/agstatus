@@ -2801,10 +2801,13 @@ gets <code>429 {&quot;error&quot;: &quot;too many usage sources for this workspa
 the sources already held keep reporting on every endpoint. The bundled hooks
 use two (<code>claude</code>, <code>codex</code>). A malformed report never takes a slot.</p>
 <p><code>GET /api/usage</code> (legacy) and <code>GET /w/&lt;token&gt;/api/usage</code> return the
-current list, by <code>source</code> compared by UTF-16 code unit, as the <code>usage</code> event
-carries it:</p>
+current list, as the <code>usage</code> event carries it:</p>
 <pre><code class="language-json">[ { &quot;source&quot;: &quot;claude&quot;, &quot;windows&quot;: [ ... ], &quot;updatedAt&quot;: 1752096030000 } ]
 </code></pre>
+<p>The list comes by <code>source</code>, compared by UTF-16 code unit (<code>claude-x</code> before
+<code>claude_x</code>), never by a locale&#39;s collation, so every server lists it in the
+same order. Since 1.7.0. An older server sorts it by the collation of its own
+locale.</p>
 <h3 id="api-usage-history-and-per-project-spend"><a class="anchor" href="#api-usage-history-and-per-project-spend">Usage history and per-project spend</a></h3>
 <p>Two series back the usage detail screen, and they are <strong>different measures</strong>.</p>
 <p><strong>The limit over time.</strong> Every report is kept, not just the newest, but only

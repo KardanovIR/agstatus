@@ -268,12 +268,16 @@ the sources already held keep reporting on every endpoint. The bundled hooks
 use two (`claude`, `codex`). A malformed report never takes a slot.
 
 `GET /api/usage` (legacy) and `GET /w/<token>/api/usage` return the
-current list, by `source` compared by UTF-16 code unit, as the `usage` event
-carries it:
+current list, as the `usage` event carries it:
 
 ```json
 [ { "source": "claude", "windows": [ ... ], "updatedAt": 1752096030000 } ]
 ```
+
+The list comes by `source`, compared by UTF-16 code unit (`claude-x` before
+`claude_x`), never by a locale's collation, so every server lists it in the
+same order. Since 1.7.0. An older server sorts it by the collation of its own
+locale.
 
 ## Usage history and per-project spend
 
