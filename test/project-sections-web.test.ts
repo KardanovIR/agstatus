@@ -1899,6 +1899,26 @@ describe('the needs-you bar\'s beat', () => {
     expect(beats).toEqual(['3', '4']);
   });
 
+  // The count a half second ends on is a count the bar rests on, though it
+  // has not stood for half a second: so one block in place of another just
+  // after a beat is no second beat. iOS (verifyBarBeat) and Android
+  // (BarBeatTest) check the same case.
+  it('never beats again for one block in place of another just after a beat', async () => {
+    const b = await barUp([blocked('a', 1, 'acme-api'), ...['w1', 'w2', 'w3'].map((id, i) => at(id, i + 2, { homeProject: 'web' }))]);
+    const beats = watchBeats(b);
+    b.emit('session', blocked('w1', 0, 'web'));            // 0 s
+    await vi.advanceTimersByTimeAsync(300);
+    b.emit('session', blocked('w2', 0, 'web'));            // 0.3 s, in the same half second
+    await vi.advanceTimersByTimeAsync(300);
+    expect(beats).toEqual(['3']);                          // one beat, at 0.5 s, with 3
+    b.emit('session', unblocked('a', 'acme-api'));          // 0.6 s
+    await vi.advanceTimersByTimeAsync(300);
+    b.emit('session', blocked('w3', 0, 'web'));            // 0.9 s: one in place of another
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(barShows().count).toBe('3');
+    expect(beats).toEqual(['3']);
+  });
+
   it('never beats for the first block, whose arrival is the beat, nor for one that lands as it arrives', async () => {
     const b = await boardOf([at('w1', 1, { homeProject: 'web' }), at('w2', 2, { homeProject: 'web' })]);
     tabShows(b);
