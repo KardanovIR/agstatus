@@ -18,7 +18,7 @@ The complete set of outbound traffic, from `Api.kt` and `SseClient.kt` — there
 | `POST <board>/commands` | `{"id","type","session_id"}`: a UUID the app makes for the tap, `"focus"` or `"resume"`, and the card's session id | Focus: a tap on a card's Focus or Resume button. Ids only, no user content |
 | `GET <board>/commands/<id>` | — | Focus: where that tap's command is, after the stream dropped. Read-only |
 
-`<board>` is `<server>/w/<token>`. So the only user-associated value the app puts on the wire is **the board token** (plus session ids the same server issued moments earlier). No request carries a device identifier, a body of user content, or any custom header. `Api.kt:claimPairCode` exists but is unreferenced by any Android UI — the Android app never uploads a typed pairing code.
+`<board>` is `<server>/w/<token>`. So the only user-associated value the app puts on the wire is **the board token** (plus session ids the same server sent it moments earlier). No request carries a device identifier, a body of user content, or any custom header. `Api.kt:claimPairCode` exists but is unreferenced by any Android UI — the Android app never uploads a typed pairing code.
 
 The app is a **reader**. Session names, project folder names, status words and activity lines are written to the board by the separate `agstatus` CLI/hooks running on the user's own computer. The Android app only fetches and displays them.
 
@@ -52,7 +52,7 @@ Every type in Google's taxonomy, including the "No" answers.
 | **App info and performance** — Crash logs | No | No | No Crashlytics, Sentry, ACRA or equivalent in `libs.versions.toml`; there is not a single `Log.*` or `println` call in `app/src/main`. Play's Android vitals crash reporting is performed by Google Play services under the user's device-level opt-in, not by app code. |
 | **App info and performance** — Diagnostics | No | No | No performance, ANR, battery or network telemetry is emitted. |
 | **App info and performance** — Other app performance data | No | No | Nothing else is reported. |
-| **Device or other IDs** | **Yes** | No | **The board token.** `Board.token` (`ags_…`) is stored on-device in EncryptedSharedPreferences and sent in the URL path of every board request. It persists across launches and lets the server correlate this installation's requests, which is exactly what this category is meant to capture (Google's own example set includes server-issued install tokens such as a Firebase installation ID). The same declaration covers session ids the app echoes back to the server that issued them. |
+| **Device or other IDs** | **Yes** | No | **The board token.** `Board.token` (`ags_…`) is stored on-device in EncryptedSharedPreferences and sent in the URL path of every board request. It persists across launches and lets the server correlate this installation's requests, which is exactly what this category is meant to capture (Google's own example set includes server-issued install tokens such as a Firebase installation ID). The same declaration covers session ids the app echoes back to the server it got them from. |
 
 ### Why "collected" but not "shared"
 
