@@ -173,7 +173,10 @@ pre code {
 
 /* The same wordmark the board puts in its top bar, to the letter: Barlow 700,
  * uppercase, 0.02em. It used to be mono and lowercase here and Barlow and
- * uppercase there. */
+ * uppercase there. Like the board's, it has no brand mark beside it: at the
+ * capitals' height the mark's strips were 2px tall and ran together on a 1x
+ * screen, and at the left of a bar that hides its section links on a phone it
+ * read as a menu button. The favicon carries the mark. */
 .brand {
   display: inline-flex;
   align-items: center;
@@ -185,17 +188,6 @@ pre code {
   text-transform: uppercase;
   text-decoration: none;
   color: var(--text-1);
-}
-
-/* The brand mark, the app icons' own, written into each page's nav from the
- * icon artwork. It stands where a 7px dot stood, and the board's dot means
- * "live connection", so the two no longer share a shape. As tall as the
- * wordmark's capitals (Barlow's are 0.700em), and in em, so it grows with the
- * text. */
-.mark {
-  width: 0.7em;
-  height: 0.7em;
-  flex: none;
 }
 
 .nav-links {

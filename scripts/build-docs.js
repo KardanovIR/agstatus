@@ -111,7 +111,7 @@ const page = `<!doctype html>
 <title>AgStatus docs — integration, self-hosting, API</title>
 <meta name="description" content="AgStatus documentation: Claude Code and Codex hook integration, self-hosting with Docker, and the HTTP API reference." />
 <!-- --ink-950, converted once: a meta cannot read a custom property. The favicon
-     and the nav's mark are written from the icon artwork. -->
+     is written from the icon artwork. -->
 <meta name="theme-color" content="#0c0f0d" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230C0F0D'/%3E%3Cpath fill='%2388908A' d='M5 4H21A1 1 0 0 1 22 5V9A1 1 0 0 1 21 10H5A1 1 0 0 1 4 9V5A1 1 0 0 1 5 4Z'/%3E%3Cpath fill='%2369C88E' d='M11 12H27A1 1 0 0 1 28 13V19A1 1 0 0 1 27 20H11A1 1 0 0 1 10 19V13A1 1 0 0 1 11 12Z'/%3E%3Cpath fill='%2388908A' d='M5 22H21A1 1 0 0 1 22 23V27A1 1 0 0 1 21 28H5A1 1 0 0 1 4 27V23A1 1 0 0 1 5 22Z'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/tokens.css" />
@@ -231,7 +231,7 @@ const page = `<!doctype html>
 
 <nav class="nav">
   <div class="nav-inner">
-    <a class="brand" href="/"><svg class="mark" aria-hidden="true" viewBox="0 0 36 36"><path fill="#446851" d="M.794 5.647L28.147 5.647C28.391 5.647 28.588 5.845 28.588 6.088L28.588 12.265C28.588 12.508 28.391 12.706 28.147 12.706L.794 12.706C.55 12.706.353 12.508.353 12.265L.353 6.088C.353 5.845.55 5.647.794 5.647Z"/><path fill="#69c88e" d="M7.853 14.471L35.206 14.471C35.45 14.471 35.647 14.668 35.647 14.912L35.647 21.088C35.647 21.332 35.45 21.529 35.206 21.529L7.853 21.529C7.609 21.529 7.412 21.332 7.412 21.088L7.412 14.912C7.412 14.668 7.609 14.471 7.853 14.471Z"/><path fill="#446851" d="M.794 23.294L28.147 23.294C28.391 23.294 28.588 23.492 28.588 23.735L28.588 29.912C28.588 30.155 28.391 30.353 28.147 30.353L.794 30.353C.55 30.353.353 30.155.353 29.912L.353 23.735C.353 23.492.55 23.294.794 23.294Z"/></svg>AgStatus</a>
+    <a class="brand" href="/">AgStatus</a>
     <div class="nav-links">
       <a href="#hooks" class="hide-sm">Integration</a>
       <a href="#self-hosting" class="hide-sm">Self-hosting</a>
