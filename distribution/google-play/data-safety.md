@@ -1,6 +1,6 @@
 # Data safety
 
-Google Play Data safety declaration for **AgStatus Android** (`com.kardanov.agstatus`, versionName 1.4.2). Every answer below is derived from the Android source in this repo, not from the iOS app.
+Google Play Data safety declaration for **AgStatus Android** (`com.kardanov.agstatus`, versionName 1.7.0, versionCode 7). Every answer below is derived from the Android source in this repo, not from the iOS app.
 
 ## What the Android app actually transmits
 
@@ -14,6 +14,9 @@ The complete set of outbound traffic, from `Api.kt` and `SseClient.kt` — there
 | `GET <board>/events` | — | SSE stream, read-only |
 | `POST <board>/pair` | empty | Server answers with a short-lived pairing code |
 | `DELETE <board>/sessions/<id>`, `DELETE <board>` | — | User-initiated deletion |
+| `GET <board>/api/machines` | — | Focus: which machines' listeners are online. Read-only |
+| `POST <board>/commands` | `{"id","type","session_id"}`: a UUID the app makes for the tap, `"focus"` or `"resume"`, and the card's session id | Focus: a tap on a card's Focus or Resume button. Ids only, no user content |
+| `GET <board>/commands/<id>` | — | Focus: where that tap's command is, after the stream dropped. Read-only |
 
 `<board>` is `<server>/w/<token>`. So the only user-associated value the app puts on the wire is **the board token** (plus session ids the same server issued moments earlier). No request carries a device identifier, a body of user content, or any custom header. `Api.kt:claimPairCode` exists but is unreferenced by any Android UI — the Android app never uploads a typed pairing code.
 
