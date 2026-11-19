@@ -136,12 +136,19 @@
    * against --ink-950. Float them on a lighter surface and every ratio the
    * palette was built around shifts. */
   .board-frame {
+    /* Named, because the needs-you bar along its bottom edge reaches out
+       through it to the frame's own edges. */
+    --frame-pad: clamp(14px, 2.2vw, 20px);
     width: var(--page);
     margin: 0 auto clamp(56px, 8vw, 96px);
-    padding: clamp(14px, 2.2vw, 20px);
+    padding: var(--frame-pad);
     background: var(--ink-950);
     border: 1px solid var(--ink-800);
     border-radius: var(--r-lg);
+    /* The board's own body text, so whatever inherits it, and every rule
+       below measured in em, reads as it does on the board rather than at
+       this page's 16px. */
+    font-size: var(--t-sm);
   }
 
   .board-bar {
@@ -204,6 +211,277 @@
     flex-wrap: wrap;
     gap: var(--space-sm);
     margin-bottom: var(--space-md);
+  }
+
+  /* ---- 1.7.0's board, around the cards ----------------------------------
+   * The board grouped by project draws more than card.css holds: each usage
+   * block heads its agent with the agent's mark and session count, the grid
+   * carries a label per project, every card's meta line leads with its
+   * agent's mark, and a bar along the bottom edge names a blocked session.
+   * Those rules live in the board's two other stylesheets, which this page
+   * cannot load: they style body, main and .copy, all three of which this
+   * page has, and test/project-sections-web.test.ts keeps them off it. So
+   * they are copied here with the board's class names, scoped to the frame,
+   * and changed only where the frame is not a window or the demo is not a
+   * control: a label sticks under the nav rather than at the top edge; the
+   * bar sits at the frame's bottom edge, keeps its place while it is away and
+   * moves by a transition; and nothing answers a pointer. Change them with
+   * the board's. */
+
+  /* A usage block's head: the agent's mark, its name, and how many sessions
+     it has on the board, the count going first where both do not fit. */
+  .board-frame .usage-name svg {
+    width: 0.75rem;
+    height: 0.75rem;
+    margin-right: 0.375rem;
+    vertical-align: -0.125rem;
+  }
+
+  .board-frame .usage-line {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-xs);
+    height: calc(var(--t-xs) * var(--lh-body));
+    height: 1lh;
+    overflow: hidden;
+  }
+
+  .board-frame .usage-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .board-frame .usage-count {
+    flex: none;
+    font-family: var(--font-ui);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: nowrap;
+    color: var(--text-3);
+  }
+
+  /* A block lays its limits out by its own width: a reading goes under its
+     limit's name once the two do not share a line, and a name wraps rather
+     than being cut. */
+  .board-frame .usage-block {
+    container: usage-block / inline-size;
+    min-width: min(100%, max(240px, 11em));
+  }
+
+  @container usage-block (width < 24em) {
+    .board-frame .meter-head {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+    }
+  }
+
+  .board-frame .meter-label {
+    white-space: normal;
+    overflow-wrap: break-word;
+    text-wrap: balance;
+  }
+
+  /* A section per project: a full-row label, 24px after the cards above and
+     8px before its own, sticking while its cards pass under it. */
+  .board-frame .section-label {
+    grid-column: 1 / -1;
+    position: sticky;
+    top: calc(var(--nav-h) + 1px);
+    z-index: 1;
+    margin: var(--space-sm) 0 calc(var(--space-xs) - var(--space-sm));
+    padding: var(--space-xs) 0;
+    background: var(--ink-950);
+    font-family: var(--font-read);
+    font-size: var(--t-md);
+    font-weight: 600;
+    line-height: var(--lh-tight);
+    color: var(--text-1);
+  }
+
+  .board-frame .section-label:first-child { margin-top: 0; }
+
+  .board-frame .section-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--space-xs);
+    height: calc(var(--t-md) * var(--lh-tight));
+    height: 1lh;
+    overflow: hidden;
+  }
+
+  .board-frame .section-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .board-frame .section-count {
+    flex: none;
+    font-family: var(--font-ui);
+    font-size: var(--t-xs);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    color: var(--text-3);
+  }
+
+  /* The agent's mark, leading every card's meta line. */
+  .board-frame .meta-agent { flex: none; }
+
+  .board-frame .meta-agent svg {
+    width: 0.75rem;
+    height: 0.75rem;
+    vertical-align: -0.125rem;
+  }
+
+  /* While a card carries subagent rows, each card keeps its own height. */
+  .board-frame .grid.has-subs { align-items: start; }
+
+  /* The rows are an illustration here, as the cards' titles are: no pointer,
+     and no label that lights for one. */
+  .board-frame .sub { cursor: default; }
+  .board-frame .sub:hover .sub-label { color: var(--text-2); }
+
+  /* The needs-you bar, at the frame's bottom edge. Its place is kept while
+     nothing is blocked, so it comes and goes without moving the page below
+     the frame: it rises out of that edge when a block lands, and goes back
+     into it when none is left, in place under reduced motion (site.css). */
+  .board-frame .needs-slot {
+    margin: var(--space-md) calc(-1 * var(--frame-pad)) calc(-1 * var(--frame-pad));
+    overflow: hidden;
+    border-radius: 0 0 calc(var(--r-lg) - 1px) calc(var(--r-lg) - 1px);
+  }
+
+  .board-frame .needs {
+    --state: var(--st-blocked);
+    --state-line: oklch(from var(--state) l c h / 0.42);
+    --gutter: var(--frame-pad);
+    display: grid;
+    min-height: 44px;
+    font-size: var(--t-sm);
+    line-height: var(--lh-tight);
+    color: var(--text-1);
+    text-align: left;
+    transition: transform var(--d-slow) var(--ease), visibility 0s;
+  }
+
+  .board-frame .needs.is-away {
+    transform: translateY(100%);
+    visibility: hidden;
+    transition: transform var(--d-mid) var(--ease), visibility 0s var(--d-mid);
+  }
+
+  @media (prefers-contrast: more) {
+    .board-frame .needs { --state-line: oklch(from var(--state) l c h / 0.70); }
+  }
+
+  .board-frame .needs-face {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: 'alarm what verb';
+    align-items: center;
+    column-gap: var(--space-md);
+    padding: var(--space-sm) var(--gutter);
+    background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+    border-top: 1px solid var(--state-line);
+  }
+
+  .board-frame .needs-alarm {
+    grid-area: alarm;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2xs);
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--font-label);
+    font-size: var(--t-xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    color: var(--state);
+  }
+
+  .board-frame .needs-n { font-variant-numeric: tabular-nums; }
+
+  .board-frame .needs-what {
+    grid-area: what;
+    display: flex;
+    align-items: baseline;
+    min-width: 0;
+    font-size: var(--t-md);
+    height: calc(var(--t-md) * var(--lh-tight));
+    height: 1lh;
+    white-space: nowrap;
+  }
+
+  .board-frame .needs-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-read);
+    font-size: var(--t-md);
+    font-weight: 600;
+  }
+
+  .board-frame .needs-where {
+    flex: none;
+    font-size: var(--t-sm);
+    color: var(--text-2);
+  }
+
+  .board-frame .needs-sep {
+    margin: 0 var(--space-xs);
+    color: var(--text-3);
+  }
+
+  .board-frame .needs-verb {
+    grid-area: verb;
+    color: var(--text-2);
+  }
+
+  .board-frame .needs.drop-word .needs-word,
+  .board-frame .needs.drop-where .needs-where { display: none; }
+
+  /* Phone: the usage blocks two across while each holds a reading on one
+     line, every limit's name over its reading, and the bar on two lines,
+     the alarm and its verb over the session. */
+  @media (max-width: 560px) {
+    .board-frame .usage { gap: var(--space-xs); }
+
+    .board-frame .usage-block {
+      flex: 1 1 calc(50% - var(--space-2xs));
+      min-width: min(100%, 11em);
+      gap: var(--space-xs);
+      padding: var(--space-xs) var(--space-sm);
+      border-radius: var(--r-md);
+    }
+
+    .board-frame .meter-head {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+    }
+
+    .board-frame .needs-face {
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas: 'alarm verb' 'what what';
+      row-gap: var(--space-2xs);
+      padding-block: var(--space-xs);
+    }
   }
 
   /* ---- Sections --------------------------------------------------------- */
@@ -531,9 +809,14 @@
     <button class="board-pause" id="board-pause" type="button" aria-pressed="false">Pause</button>
   </div>
   <!-- Illustration, not document structure: these carry no heading tags, or
-       "Claude" and "Codex" would outrank every real section on the page. -->
+       "Claude" and "Codex" would outrank every real section on the page. The
+       project labels are not headings here either, for the same reason, and
+       the bar is not a button: like the cards' titles, it leads nowhere. -->
   <div class="usage" id="usage"></div>
   <div class="grid" id="cards"></div>
+  <div class="needs-slot">
+    <div class="needs is-away" id="needs"><span class="needs-face" id="needs-face"></span></div>
+  </div>
 </div>
 
 <hr class="spectrum" />
@@ -872,6 +1155,13 @@
   // from the product the way the old hand-drawn simulation did — that one was
   // still painting a 3px coloured edge stripe the board had removed, and had
   // never heard of the state icons, the agent chip, the machine or the tokens.
+  //
+  // And what 1.7.0's board draws around its cards (app.js): each usage block
+  // headed by its agent's mark and session count, a section per project under
+  // its label, the agent's mark leading every card's meta line, a session's
+  // subagents as rows inside its card, and the needs-you bar naming the first
+  // blocked session in reading order. The same markup and class names, less
+  // the controls: nothing in this frame opens anything.
 
   const MESSAGES = {
     idle: ['Session started'],
@@ -891,19 +1181,29 @@
     done: ['done', 'planning'],
   };
 
+  // Two projects, two sessions in each: the four cards the demo has always
+  // drawn. A Claude session is named by its own title and a Codex session by
+  // its folder, as the hooks name them, so the Codex cards share their
+  // sections' names.
   const sessions = [
-    { name: 'api-server', host: 'Studio', source: 'claude', status: 'coding', msg: 'Editing src/auth/token.ts', age: 0, tokens: 486200 },
-    { name: 'webapp', host: 'MacBook', source: 'claude', status: 'testing', msg: 'npm test — 42 passing', age: 1, tokens: 1437000 },
-    { name: 'data-pipeline', host: 'Studio', source: 'codex', status: 'blocked', msg: 'Needs permission approval', age: 3, tokens: 2910000 },
-    { name: 'docs-site', host: 'mini', source: 'codex', status: 'done', msg: 'All tasks complete', age: 8, tokens: 412000 },
+    { project: 'api-server', name: 'Add rate limiting', host: 'Studio', source: 'claude', status: 'coding', msg: 'Refactoring api/routes.ts', age: 0, tokens: 486200,
+      subs: [
+        { label: 'Find limiter callers', state: 'coding', acts: ['Reading users.ts', 'Reading orders.ts', 'Grep rateLimit('] },
+        { label: 'Test the token bucket', state: 'testing', acts: ['vitest — 3 suites', 'vitest — 14 passing', 'vitest bucket.test.ts'] },
+      ],
+      done: 1 },
+    { project: 'api-server', name: 'api-server', host: 'MacBook', source: 'codex', status: 'testing', msg: 'pytest -q — 87 passed', age: 1, tokens: 1437000 },
+    { project: 'webapp', name: 'Fix the login redirect', host: 'Studio', source: 'claude', status: 'blocked', msg: 'Needs permission approval', age: 3, tokens: 2910000 },
+    { project: 'webapp', name: 'webapp', host: 'mini', source: 'codex', status: 'done', msg: 'All tasks complete', age: 8, tokens: 412000 },
   ];
+  for (const s of sessions) for (const x of s.subs || []) x.activity = x.acts[0];
 
   const usage = [
-    { source: 'Claude', windows: [
+    { source: 'claude', windows: [
       { label: '5-hour limit', pct: 34, resets: 'resets in 2h 17m' },
       { label: 'Weekly limit', pct: 62, resets: 'resets in 2d 5h' },
     ] },
-    { source: 'Codex', windows: [
+    { source: 'codex', windows: [
       { label: '5-hour limit', pct: 18, resets: 'resets in 1h 36m' },
       { label: 'Weekly (GPT-6-Astra)', pct: 73, resets: 'resets in 4d 2h' },
     ] },
@@ -911,20 +1211,37 @@
 
   const cardsEl = document.getElementById('cards');
   const usageEl = document.getElementById('usage');
+  const needsEl = document.getElementById('needs');
+  const faceEl = document.getElementById('needs-face');
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
   const level = (p) => (p >= 85 ? 'high' : p >= 60 ? 'mid' : 'low');
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}K`);
+  const plural = (n) => `${n} session${n === 1 ? '' : 's'}`;
+  const WORKING = new Set(['planning', 'coding', 'testing']);
+
+  // The agent's name and its neutral mark: the asterisk for Claude, the
+  // hexagon for Codex (marks.js). Never a colour; colour means state.
+  const AGENTS = { claude: 'Claude', codex: 'Codex' };
+  const agentMark = (source) => (source === 'codex' ? MARKS.ICON.codex : MARKS.ICON.claude) || '';
+
+  // A limit's name and its countdown each hold together where the line
+  // breaks, as the board holds them: a non-breaking hyphen inside a model
+  // name, a no-break space inside "2d 5h".
+  const meterName = (text) => esc(text).replace(/(\S)-(?=\S)/g, '$1\u2011');
+  const meterReset = (text) => esc(text).replace(/(\d+[dhm]) (\d+[dhm])$/, '$1\u00a0$2');
 
   function renderUsage() {
+    const count = new Map();
+    for (const s of sessions) count.set(s.source, (count.get(s.source) || 0) + 1);
     usageEl.innerHTML = usage.map((u) => `
       <section class="usage-block">
-        <div class="usage-src">${esc(u.source)}</div>
+        <div class="usage-src"><span class="usage-line"><span class="usage-name">${agentMark(u.source)}${esc(AGENTS[u.source])}</span><span class="usage-count">${plural(count.get(u.source) || 0)}</span></span></div>
         ${u.windows.map((w) => `
           <div class="meter">
             <div class="meter-head">
-              <span class="meter-label">${esc(w.label)}</span>
-              <span class="meter-value">${w.pct}%<span class="usage-reset"> · ${esc(w.resets)}</span></span>
+              <span class="meter-label">${meterName(w.label)}</span>
+              <span class="meter-value">${w.pct}% <span class="usage-reset">· ${meterReset(w.resets)}</span></span>
             </div>
             <div class="meter-track">
               <div class="meter-fill ${level(w.pct)}" style="transform:scaleX(${(w.pct / 100).toFixed(3)})"></div>
@@ -933,12 +1250,38 @@
       </section>`).join('');
   }
 
-  function renderCards() {
-    cardsEl.innerHTML = sessions.map((s) => {
-      const mark = MARKS.STATE_MARK[s.status] || '';
-      const chip = s.source === 'codex' ? MARKS.ICON.codex : MARKS.ICON.claude;
-      const sep = '<span class="meta-sep">·</span>';
-      return `
+  // The board's section order: by name ignoring case, exact case breaking a
+  // tie. Inside a section, the board's own order, which never re-sorts.
+  function sectionsOf(list) {
+    const by = new Map();
+    for (const s of list) {
+      if (!by.has(s.project)) by.set(s.project, []);
+      by.get(s.project).push(s);
+    }
+    return [...by.keys()].sort((a, b) => {
+      const la = a.toLowerCase();
+      const lb = b.toLowerCase();
+      if (la !== lb) return la < lb ? -1 : 1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    }).map((key) => ({ key, list: by.get(key) }));
+  }
+
+  // A running subagent's row: its state's mark and word, its task, and what
+  // it is doing now; under them, how many have finished.
+  function subsHTML(s) {
+    if (!s.subs || !WORKING.has(s.status)) return '';
+    const rows = s.subs.map((x) => `<div class="sub st-${x.state}"><span class="sub-text">`
+      + `<span class="sub-label">${esc(x.label)}</span><span class="sub-act">${esc(x.activity)}</span></span>`
+      + `<span class="sub-st">${MARKS.STATE_MARK[x.state] || ''}<span>${x.state}</span></span></div>`).join('');
+    const done = s.done ? `<div class="sub-foot"><span class="foot-words"><span class="n">${s.done}</span> done</span></div>` : '';
+    return `<div class="subs" role="group" aria-label="Subagents">${rows}${done}</div>`;
+  }
+
+  function cardHTML(s) {
+    const mark = MARKS.STATE_MARK[s.status] || '';
+    const agent = AGENTS[s.source];
+    const sep = '<span class="meta-sep">·</span>';
+    return `
       <article class="card status-${esc(s.status)}">
         <div class="card-head">
           <div class="card-title-row">
@@ -946,15 +1289,84 @@
           </div>
           <div class="card-state-row">${mark}<span class="badge">${esc(s.status)}</span></div>
         </div>
-        <p class="message">${esc(s.msg)}</p>
-        <div class="meta">
-          <span class="source">${chip || ''}${esc(s.source.toUpperCase())}</span>
-          ${sep}<span class="host">${esc(s.host)}</span>
-          ${sep}<span class="ts">${s.age === 0 ? 'just now' : `${s.age}m ago`}</span>
-          ${sep}<span class="tok">${fmtTokens(s.tokens)} tokens</span>
-        </div>
+        <p class="message">${esc(s.msg)}</p>${subsHTML(s)}
+        <div class="meta"><span class="meta-agent" title="${agent}">${agentMark(s.source)}<span class="sr-only">${agent},</span></span>`
+          + `<span class="host">${esc(s.host)}</span>`
+          + `${sep}<span class="ts">${s.age === 0 ? 'just now' : `${s.age}m ago`}</span>`
+          + `${sep}<span class="tok">${fmtTokens(s.tokens)} tokens</span></div>
       </article>`;
-    }).join('');
+  }
+
+  function renderCards() {
+    cardsEl.innerHTML = sectionsOf(sessions).map(({ key, list }) => `
+      <div class="section-label"><span class="section-line" aria-hidden="true"><span class="section-name">${esc(key)}</span>`
+        + `<span class="section-count">${plural(list.length)}</span></span><span class="sr-only">${esc(key)}, ${plural(list.length)}</span></div>
+      ${list.map(cardHTML).join('')}`).join('');
+    cardsEl.classList.toggle('has-subs', sessions.some((s) => s.subs && WORKING.has(s.status)));
+    renderNeeds();
+  }
+
+  // The needs-you bar names the first blocked session in reading order,
+  // sections in order and cards in order, as the board's does before any
+  // press, and where it is, "in <project>", unless that would only say its
+  // name again. Its words stay when it goes, so it keeps its height.
+  let needsWords = '';
+  let needsDrawn = false;
+  function renderNeeds() {
+    const blocked = sectionsOf(sessions).flatMap((x) => x.list).filter((s) => s.status === 'blocked');
+    if (blocked.length > 0) {
+      const s = blocked[0];
+      const place = s.name === s.project ? '' : `in ${s.project}`;
+      const words = `<span class="needs-alarm">${MARKS.STATE_MARK.blocked || ''}<span class="needs-n">${blocked.length}</span>`
+        + '<span class="needs-word">blocked</span></span>'
+        + `<span class="needs-what"><span class="needs-name">${esc(s.name)}</span>${
+          place ? `<span class="needs-where"><span class="needs-sep">·</span>${esc(place)}</span>` : ''}</span>`
+        + '<span class="needs-verb" aria-hidden="true">Show</span>';
+      if (words !== needsWords) {
+        needsWords = words;
+        faceEl.innerHTML = words;
+        fitNeeds();
+      }
+    }
+    const away = blocked.length === 0;
+    if (needsDrawn) {
+      needsEl.classList.toggle('is-away', away);
+      return;
+    }
+    // In place on the first paint, which is no news.
+    needsDrawn = true;
+    needsEl.style.transition = 'none';
+    needsEl.classList.toggle('is-away', away);
+    needsEl.getBoundingClientRect();
+    needsEl.style.transition = '';
+  }
+
+  // Where its line runs short, the bar gives way as the board's does: the
+  // word BLOCKED first (the mark and the count stay), then the project, and
+  // only then is the name cut at its end. Measured in fractions of a pixel.
+  const drawnWidth = (el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return range.getBoundingClientRect().width;
+  };
+  const roomOf = (el) => el.getBoundingClientRect().width;
+  function fitNeeds() {
+    needsEl.classList.remove('drop-word', 'drop-where');
+    const name = needsEl.querySelector('.needs-name');
+    const alarm = needsEl.querySelector('.needs-alarm');
+    const what = needsEl.querySelector('.needs-what');
+    if (!name || !alarm || !what || !needsEl.clientWidth) return;
+    const cut = () => drawnWidth(name) > roomOf(name);
+    const crowded = drawnWidth(alarm) > roomOf(alarm);
+    // Two lines on a phone, the session below the alarm: there, dropping
+    // the word gives the name no room, so it goes only if the alarm is crowded.
+    const ownLine = what.getBoundingClientRect().top >= alarm.getBoundingClientRect().bottom;
+    if (crowded || (!ownLine && cut())) needsEl.classList.add('drop-word');
+    if (cut()) needsEl.classList.add('drop-where');
+  }
+  if (typeof ResizeObserver === 'function') new ResizeObserver(fitNeeds).observe(needsEl);
+  if (document.fonts && typeof document.fonts.addEventListener === 'function') {
+    document.fonts.addEventListener('loadingdone', fitNeeds);
   }
 
   renderUsage();
@@ -981,11 +1393,18 @@
     setInterval(() => {
       if (paused || document.hidden) return;
       tick += 1;
-      const s = pick(sessions);
       // "Blocked" is the whole point of the product, so make sure a visitor
       // sees one regularly instead of waiting on the random walk.
       const forceBlocked = tick % 7 === 0 && !sessions.some((x) => x.status === 'blocked');
-      const next = forceBlocked ? 'blocked' : pick(NEXT[s.status] || ['idle']);
+      // The card with subagents keeps working, so its rows stay. On the board
+      // they leave with the subagents, and a card that lost and regained
+      // three rows every few seconds would move the page below the frame.
+      const s = pick(forceBlocked ? sessions.filter((x) => !x.subs) : sessions);
+      let next = forceBlocked ? 'blocked' : pick(NEXT[s.status] || ['idle']);
+      if (s.subs) {
+        if (!WORKING.has(next)) next = 'coding';
+        for (const x of s.subs) x.activity = pick(x.acts);
+      }
       s.status = next;
       s.msg = pick(MESSAGES[next]);
       s.age = 0;
