@@ -25,10 +25,9 @@ so you step away from the keyboard without losing the thread.
 
 ## Get started in 60 seconds
 
-1. **Get the board on your phone** — the AgStatus iOS app (App Store
-   submission in progress; until it's live, open `ios/AgStatus.xcodeproj` in
-   Xcode and run it — a simulator build needs no signing). No iPhone? Your
-   board URL works in any browser.
+1. **Get the board on your phone** — the AgStatus iOS app, from the App
+   Store (or open `ios/AgStatus.xcodeproj` in Xcode and run it — a simulator
+   build needs no signing). No iPhone? Your board URL works in any browser.
 2. **Wire up your machine** — macOS and Linux:
 
    ```bash
@@ -84,8 +83,8 @@ Details in [docs/hooks.md](docs/hooks.md).
   tool, background, workflow, Codex sub-agent) is a row on its parent's card:
   what it was asked to do, what it is doing, its state. One waiting on approval
   turns the card blocked and names itself; background ones keep the card from
-  reading done until they have finished. On the web board, and since 1.7.0 in
-  the phone apps too. See [docs/hooks.md](docs/hooks.md#subagents).
+  reading done until they have finished. On the web board and in the phone
+  apps, since 1.7.0. See [docs/hooks.md](docs/hooks.md#subagents).
 - **No accounts** — a board is a capability URL with an unguessable token,
   like a Slack webhook. The server stores only a hash of it.
 - **Push when blocked** — APNs notification the moment an agent needs you;
@@ -126,8 +125,8 @@ Details in [docs/hooks.md](docs/hooks.md).
 docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus
 ```
 
-(The image is published from tagged releases; until the first one lands, clone
-the repo and `docker compose up -d --build`.) Persistence, TLS via the bundled
+(The image is published from tagged releases; to build it yourself, clone the
+repo and `docker compose up -d --build`.) Persistence, TLS via the bundled
 Caddy profile, multi-tenant mode, push-notification setup, and the full
 environment-variable reference are in **[docs/self-hosting.md](docs/self-hosting.md)**.
 
