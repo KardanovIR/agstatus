@@ -17,7 +17,8 @@ enum DemoData {
     static let onlineMachine = Host.Machine(id: "9f2c1b7e4d3a8f0c5e6b2a1d9c8f7e6b", name: "Mac")
     static let offlineMachine = Host.Machine(id: "0c4e7a19b3d25f68e1a7c9d04b6f2e83", name: "MacBook")
 
-    /// Four sessions that look like a real evening of agent work.
+    /// Five sessions that look like a real evening of agent work, one of them
+    /// a workflow running subagents (`reviewSession`).
     ///
     /// Their token totals are sized to their ages — roughly what a session of
     /// that length actually spends — and span the formats the card has to
@@ -51,6 +52,7 @@ enum DemoData {
                     host: Host(machine: onlineMachine,
                                app: Host.App(slug: "agterm", name: "agterm", kind: "terminal")),
                     tokens: 486_200),
+            reviewSession(now: now),
             // Finished eight minutes ago and nobody has looked: the card that
             // shows the closing beat when it finally moves.
             //
@@ -472,6 +474,230 @@ enum DemoData {
                                    message: session.message,
                                    at: session.updatedAt))
         return events.reversed() // newest first, like the server
+    }
+
+    // MARK: The workflow session
+
+    /// The one demo session that runs subagents.
+    private static let reviewID = "demo-review"
+
+    /// The workflow session's own line, which a waiting subagent's takes over.
+    private static let reviewMessage = "Running the review-and-verify workflow"
+
+    /// A workflow at full stretch — the prototype's ten subagents (`review`)
+    /// with fifteen already done — so the board shows its rows and footer,
+    /// and the session screen its list. Subagent rows are what 1.7.0 adds to
+    /// the board, and this demo is what App Review sees, so they are on it
+    /// from the first frame; the tick takes them through the rest of the turn
+    /// (`advanceReview`). The Android demo seeds the same session, row for
+    /// row.
+    ///
+    /// Numbered from 3, as two finished before these started, so a debug
+    /// launch's AGSTATUS_OPEN_SUBTASK=9 is verify:hook, as Android's
+    /// agstatus_open_subtask 9 is. Its last report is older than
+    /// api-server's, so the board's newest card is the one it was before this
+    /// session joined it, and AGSTATUS_OPEN_HISTORY=1 still opens api-server.
+    /// Its total takes in its subagents' spend, which the hook counts under
+    /// the parent's id.
+    private static func reviewSession(now: Int64) -> Session {
+        Session(id: reviewID,
+                name: "Review and verify the subtasks branch",
+                status: .planning,
+                message: reviewMessage,
+                project: "claude-status",
+                homeProject: "claude-status",
+                createdAt: now - 38 * 60_000,
+                updatedAt: now - 20_000,
+                tokens: 2_364_000,
+                subtasks: Subtasks(items: review.enumerated().map { reviewRow(n: $0.offset + 3, $0.element) },
+                                   done: 15))
+    }
+
+    /// The prototype's `REVIEW`: a review-and-verify workflow, ten at once.
+    private static let review: [(label: String, state: SubtaskState, activity: String)] = [
+        ("review:hook", .testing, "Run hook tests with --no-file-parallelism"),
+        ("review:listener", .coding, "Editing listener.ts"),
+        ("review:product", .planning, "Searching: SubagentStop payload fields"),
+        ("review:server", .coding, "Editing store.ts"),
+        ("review:ios", .coding, "Editing SessionCardView.swift"),
+        ("review:android", .planning, "Reading developer.android.com"),
+        ("verify:hook", .testing, "Run the hook suite — 214 tests"),
+        ("verify:server", .testing, "npm test -- store"),
+        ("verify:web", .coding, "Editing card.css"),
+        ("verify:privacy", .planning, "Search payloads for prompt text"),
+    ]
+
+    /// What the workflow starts next, by the new subagent's ordinal.
+    private static let reviewStarts: [(label: String, state: SubtaskState, activity: String)] = [
+        ("verify:android", .testing, "Run ./gradlew lint"),
+        ("verify:docs", .coding, "Editing docs.html"),
+        ("map:limits", .planning, "Search for the webhook budget"),
+        ("test:ios", .testing, "xcodebuild test -scheme AgStatus"),
+        ("Draft the 1.7 release notes", .coding, "Writing v1.7.0.md"),
+    ]
+
+    /// How a waiting subagent's activity reads, before what it was doing.
+    private static let approve = "Approve: "
+    /// How a subagent fails, as the hook words it: "Failed: " and the first
+    /// line of the error.
+    private static let failures = ["Failed: API error (overloaded)", "Failed: Prompt is too long"]
+    /// The most rows the workflow runs at once; from there it only finishes.
+    private static let maxReviewRows = 12
+    /// Failed rows stay listed until the turn is over; two at most keeps the
+    /// demo plausible.
+    private static let maxReviewFailed = 2
+    /// The hook's Stop line, and so the parent's own once its turn is over.
+    private static let turnFinished = "Turn finished"
+    /// The server's line between the last subagent finishing and the parent
+    /// reading the results: its report hold.
+    private static let readingResults = "Reading subagent results"
+
+    /// One step of the workflow session, as its hook and the server would
+    /// report it. While the parent's turn runs, one subagent starts,
+    /// finishes, fails, or blocks or is approved: the changes that move a
+    /// row. A subagent also says what it is doing within its state, at most
+    /// once a minute, but that is written in place and moves nothing, and the
+    /// demo leaves it out.
+    ///
+    /// Now and then the parent's own turn ends with its subagents still at
+    /// work, and the card reads WORKING until the last of them finishes. Then
+    /// "Reading subagent results" while the parent reads them, then done, the
+    /// tally gone with the turn, and in time a new prompt starts the workflow
+    /// over. So the demo shows every state a card with subagents can be in —
+    /// Android's demo, step for step and at the same odds.
+    ///
+    /// Where nothing would move on a real board — the turn over and no new
+    /// prompt yet, or only rows waiting on you — no frame comes, and the card
+    /// holds still, its time included, as `advance` holds a stopped agent.
+    private static func advanceReview(_ session: Session, at now: Int64) -> Session {
+        // The parent has read the results; its report turn ends with nothing left running.
+        if session.message == readingResults { return turnOver(session, at: now) }
+        // Done, the tally gone with the turn: in time, a new prompt.
+        guard let subtasks = session.subtasks else {
+            return Double.random(in: 0..<1) < 0.35 ? newPrompt(session, at: now) : session
+        }
+        var items = subtasks.items
+        // Every subagent finished while the turn ran: the turn ends quietly.
+        guard items.contains(where: { $0.state != .failed }) else { return turnOver(session, at: now) }
+
+        var done = subtasks.done
+        // With something live, turnEnded is exactly "the parent's turn is over".
+        var ownEnded = subtasks.turnEnded
+        let waiting = items.firstIndex { $0.state == .blocked }
+        let working = items.indices.filter { items[$0].state.isWorking }
+        let failed = items.filter { $0.state == .failed }.count
+        let roll = Double.random(in: 0..<1)
+        if let waiting, roll < 0.5 {
+            // Approval comes before anything else blocks.
+            let activity = items[waiting].activity
+            items[waiting].state = .coding
+            items[waiting].activity = activity.hasPrefix(approve) ? String(activity.dropFirst(approve.count)) : activity
+        } else if working.isEmpty {
+            // Only rows waiting on you, or failed ones: nothing moves until you answer.
+            return session
+        } else if waiting == nil && roll < 0.15 {
+            let index = working[Int.random(in: working.indices)]
+            items[index].state = .blocked
+            items[index].activity = approve + items[index].activity
+        } else if roll < 0.25 && failed < maxReviewFailed {
+            // One of the two that have run longest, which the card usually
+            // shows: the crossed circle is then seen on the board, not only
+            // on the session screen.
+            let index = working[Int.random(in: 0..<min(2, working.count))]
+            items[index].state = .failed
+            items[index].activity = failures[Int.random(in: failures.indices)]
+        } else if !ownEnded && roll < 0.37 {
+            // The parent's own turn ends, its subagents still at work.
+            ownEnded = true
+        } else if ownEnded || roll < 0.75 || items.count >= maxReviewRows {
+            // Once the turn is over nothing new starts, so the work runs down.
+            items.remove(at: working[Int.random(in: working.indices)])
+            done += 1
+        } else {
+            let n = nextOrdinal(items: items, done: done)
+            items.append(reviewRow(n: n, reviewStarts[n % reviewStarts.count]))
+        }
+        return reported(session, ownEnded: ownEnded, items: items, done: done, at: now)
+    }
+
+    /// The workflow session as the server reports it, from the parent's own
+    /// reading and its rows: a waiting subagent's approval first; then, once
+    /// the parent's turn is over, the busiest subagent's state and "N
+    /// subagents still running" (`derived`, the server's rule); then, every
+    /// one finished, "Reading subagent results" until the parent is back;
+    /// otherwise the parent's own line. Its total climbs while anything in it
+    /// works, as `advance` has a working card's do.
+    private static func reported(_ session: Session, ownEnded: Bool, items: [Subtask], done: Int,
+                                 at now: Int64) -> Session {
+        let live = items.contains { $0.state != .failed }
+        let reading: (status: AgentStatus, message: String)
+        if ownEnded && !live {
+            reading = (.planning, readingResults)
+        } else {
+            reading = derived(own: ownEnded ? (.done, turnFinished) : (.planning, reviewMessage), items: items)
+        }
+        var next = session
+        next.status = reading.status
+        next.message = reading.message
+        next.subtasks = items.isEmpty && done == 0
+            ? nil
+            : Subtasks(items: items, done: done, turnEnded: ownEnded && live)
+        next.updatedAt = now
+        next.tokens = spend(session.tokens, working: reading.status.isActive || (next.subtasks?.running ?? 0) > 0)
+        return next
+    }
+
+    /// The turn fully over: the parent's own line, and the tally and failed
+    /// rows gone with the turn.
+    private static func turnOver(_ session: Session, at now: Int64) -> Session {
+        var next = session
+        next.status = .done
+        next.message = turnFinished
+        next.subtasks = nil
+        next.updatedAt = now
+        return next
+    }
+
+    /// A new prompt: the workflow starts over, numbered from 1, nothing done yet.
+    private static func newPrompt(_ session: Session, at now: Int64) -> Session {
+        let items = review.enumerated().map { reviewRow(n: $0.offset + 1, $0.element) }
+        return reported(session, ownEnded: false, items: items, done: 0, at: now)
+    }
+
+    private static func reviewRow(n: Int, _ row: (label: String, state: SubtaskState, activity: String)) -> Subtask {
+        Subtask(id: "demo-agent-\(n)", n: n, label: row.label, state: row.state, activity: row.activity)
+    }
+
+    /// The server's reading of a card with subagents (spec §4.5): a blocked
+    /// one turns the card blocked unless the parent is itself; after the
+    /// turn, the busiest state and "N subagents still running"; otherwise the
+    /// parent's own. The demo has no server, so it has to say this itself.
+    static func derived(own: (status: AgentStatus, message: String),
+                        items: [Subtask]) -> (status: AgentStatus, message: String) {
+        let live = items.filter { $0.state != .failed }
+        let blocked = live.filter { $0.state == .blocked }
+        let working = live.filter(\.state.isWorking)
+        if own.status != .blocked, let first = blocked.first {
+            return (.blocked, "Needs approval: \(first.label)" + (blocked.count > 1 ? " +\(blocked.count - 1)" : ""))
+        }
+        if own.status == .done || own.status == .idle, !working.isEmpty {
+            let busiest: AgentStatus = working.contains { $0.state == .testing } ? .testing
+                : working.contains { $0.state == .coding } ? .coding : .planning
+            let count = working.count
+            return (busiest, "\(count) subagent\(count == 1 ? "" : "s") still running")
+        }
+        return own
+    }
+
+    /// The ordinal a tick gives the subagent it starts: one past every
+    /// subagent this turn has started, the finished ones included, as the
+    /// server's `nextN` is — so never the number of one that has just
+    /// finished. Taken from the rows on show alone, Subagent 6 finishing
+    /// handed its "Subagent 6", and its id, to the next one to start. A start
+    /// adds one to `done + items.count` and a finish moves one across it, so
+    /// the sum only climbs.
+    private static func nextOrdinal(items: [Subtask], done: Int) -> Int {
+        max(items.map(\.n).max() ?? 0, done + items.count) + 1
     }
 
     // MARK: Scenarios
@@ -1147,20 +1373,6 @@ enum DemoData {
         }
     }
 
-    /// The prototype's `REVIEW`: a review-and-verify workflow, ten at once.
-    private static let review: [(label: String, state: SubtaskState, activity: String)] = [
-        ("review:hook", .testing, "Run hook tests with --no-file-parallelism"),
-        ("review:listener", .coding, "Editing listener.ts"),
-        ("review:product", .planning, "Searching: SubagentStop payload fields"),
-        ("review:server", .coding, "Editing store.ts"),
-        ("review:ios", .coding, "Editing SessionCardView.swift"),
-        ("review:android", .planning, "Reading developer.android.com"),
-        ("verify:hook", .testing, "Run the hook suite — 214 tests"),
-        ("verify:server", .testing, "npm test -- store"),
-        ("verify:web", .coding, "Editing card.css"),
-        ("verify:privacy", .planning, "Search payloads for prompt text"),
-    ]
-
     /// The prototype's `THIRTY`: a session at its peak on the owner's Mac,
     /// across four workflows and the Agent tool.
     private static let thirty: [(label: String, state: SubtaskState, activity: String)] = [
@@ -1269,27 +1481,6 @@ enum DemoData {
         return next
     }
 
-    /// The server's reading of a card with subagents (spec §4.5): a blocked
-    /// one turns the card blocked unless the parent is itself; after the
-    /// turn, the busiest state and "N subagents still running"; otherwise the
-    /// parent's own. The demo has no server, so it has to say this itself.
-    static func derived(own: (status: AgentStatus, message: String),
-                        items: [Subtask]) -> (status: AgentStatus, message: String) {
-        let live = items.filter { $0.state != .failed }
-        let blocked = live.filter { $0.state == .blocked }
-        let working = live.filter(\.state.isWorking)
-        if own.status != .blocked, let first = blocked.first {
-            return (.blocked, "Needs approval: \(first.label)" + (blocked.count > 1 ? " +\(blocked.count - 1)" : ""))
-        }
-        if own.status == .done || own.status == .idle, !working.isEmpty {
-            let busiest: AgentStatus = working.contains { $0.state == .testing } ? .testing
-                : working.contains { $0.state == .coding } ? .coding : .planning
-            let count = working.count
-            return (busiest, "\(count) subagent\(count == 1 ? "" : "s") still running")
-        }
-        return own
-    }
-
     /// What a tick starts, by whose subagents they are — the prototype's
     /// `STARTS`.
     private static func starts(_ kind: SubtaskBoard.Kind) -> [(label: String, state: SubtaskState, activity: String)] {
@@ -1345,17 +1536,6 @@ enum DemoData {
         var next = withSubtasks(session, items: items, done: done, on: board)
         next.updatedAt = now
         return next
-    }
-
-    /// The ordinal a tick gives the subagent it starts: one past every
-    /// subagent this turn has started, the finished ones included, as the
-    /// server's `nextN` is — so never the number of one that has just
-    /// finished. Taken from the rows on show alone, Subagent 6 finishing
-    /// handed its "Subagent 6", and its id, to the next one to start. A start
-    /// adds one to `done + items.count` and a finish moves one across it, so
-    /// the sum only climbs.
-    private static func nextOrdinal(items: [Subtask], done: Int) -> Int {
-        max(items.map(\.n).max() ?? 0, done + items.count) + 1
     }
 
     /// The prototype's `TIMELINE` for the card being judged: its own history,
@@ -2053,6 +2233,8 @@ enum DemoData {
             return advanceSubtasks(session, on: board, at: now)
         }
         #endif
+        // The workflow session moves as its subagents and its turn do.
+        if session.id == reviewID { return advanceReview(session, at: now) }
         var next = session
         let status = transitions[session.status]?.randomElement() ?? session.status
 
