@@ -13,7 +13,7 @@ version takes 8.
 
 ---
 
-## What's New in This Version (4000 max — this is 2,240)
+## What's New in This Version (4000 max — this is 2,286)
 
 ```
 Your board grouped by project, subagents on their session's card, and one bar for whatever needs you.
@@ -22,7 +22,7 @@ A SECTION PER PROJECT
 Sessions are grouped by the folder each one started in: a section per project, in name order, each under a label with its session count. On iPhone the label stays in view while its cards scroll by. A session that changes directory keeps its card where it is, and the card says where it went ("in ios"). Claude and Codex sessions share the sections, so every card now starts its details with its agent's mark. On iPad the agent columns give way to full-width sections with cards two across, under a full-width strip for each agent.
 
 ONE BAR FOR WHAT NEEDS YOU
-While any session is blocked, a bar along the bottom says how many are blocked and names one of them with its project. Tap it and that card comes into view with a ring around it; tap again for the next one. When another session blocks while the bar is up, the bar comes in from the bottom edge once more, with the new count. The agents' heads keep their plan limits and their session counts, and no longer carry an alarm.
+While any session is blocked, a bar along the bottom says how many are blocked and names one of them with its project. Tap it and that card comes into view with a ring around it; tap again for the next one. When another session blocks while the bar is up, the bar comes in from the bottom edge once more, with the new count. The agents' heads keep their plan limits, show how many sessions each agent has where there is room, as on iPad, and no longer carry an alarm.
 
 With VoiceOver, Magic Tap presses the bar from anywhere on the board, and the new block VoiceOver announces now names its project. Voice Control answers to the bar's own word, Show or Next. With Reduce Motion on, the bar appears and goes in place.
 
