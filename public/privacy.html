@@ -62,13 +62,13 @@
 
 <main class="prose">
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: November 7, 2026</p>
+  <p class="updated">Last updated: November 19, 2026</p>
 
   <p class="lede">
     AgStatus is an open-source status board for coding agents such as Claude Code and OpenAI Codex.
-    This policy covers the AgStatus iOS app and the hosted server at agstatus.online, operated by
-    the project maintainer. The repository also contains an Android client, which is not published
-    to any store; where its behaviour differs from the iOS app, this policy says so.
+    This policy covers the AgStatus apps for iOS and Android and the hosted server at
+    agstatus.online, operated by the project maintainer. Where the Android app behaves differently
+    from the iOS app, this policy says so.
   </p>
 
   <div class="callout">
@@ -99,8 +99,9 @@
       </tbody>
     </table>
   </div>
-  <p>By default the message can include a <strong>truncated command line</strong> (up to 120
-    characters) so the board is useful at a glance.</p>
+  <p>By default the message can include a <strong>truncated command line</strong>, or the start
+    of a <strong>prompt</strong> you give Claude Code, up to 120 characters, so the board is useful
+    at a glance.</p>
   <p>The board groups sessions by <strong>project</strong>. So that a card stays in one place
     when its agent changes directory, the server remembers the first project folder name it
     receives for each session and files the session under it for as long as the session lasts.
@@ -126,12 +127,12 @@
     and in a push notification. To tell a subagent's later events from its first, the hook keeps
     a few small files about each one on your machine, readable only by you, in the system's
     temporary folder; they go when the session ends, or after a day.</p>
-  <p>If you would rather not send command text, titles or subagent tasks, run the installer with
-    <code>--minimal</code> — messages then contain only tool names, such as "Bash", every card is
-    named after its folder instead of its title, and subagents are numbered ("Subagent 1",
-    "Subagent 2") instead of described. It is the same switch as <code>AGSTATUS_DETAIL=off</code>.
-    It stays on when the installer is re-run to upgrade, until you run it with
-    <code>--no-minimal</code>.</p>
+  <p>If you would rather not send command text, prompts, titles or subagent tasks, run the
+    installer with <code>--minimal</code> — messages then contain only tool names, such as "Bash",
+    every card is named after its folder instead of its title, and subagents are numbered
+    ("Subagent 1", "Subagent 2") instead of described. It is the same switch as
+    <code>AGSTATUS_DETAIL=off</code>. It stays on when the installer is re-run to upgrade, until
+    you run it with <code>--no-minimal</code>.</p>
   <p>A board is identified only by an unguessable random token in its URL. Anyone who has that URL
     can view the board, so treat it like a password.</p>
 
@@ -185,8 +186,8 @@
   <ul>
     <li>No accounts, email addresses, or passwords.</li>
     <li>No analytics, advertising identifiers, or third-party SDKs.</li>
-    <li>No source code, file contents, agent conversations, or the results subagents hand
-      back.</li>
+    <li>No source code or file contents, no agent conversation beyond the short lines described
+      above, such as the start of a prompt, and none of the results subagents hand back.</li>
     <li>No credentials or API keys of any kind.</li>
     <li>No web fonts, scripts or images loaded from anyone else's server — every page here serves
       its own, so viewing a board tells no third party that you did.</li>
@@ -207,11 +208,11 @@
     sends nothing anywhere. The app requests camera access only when you choose to scan a setup QR
     code. The frames are decoded on the device to read the URL out of the code; no image is
     stored, and none is transmitted anywhere. The camera is used for nothing else.</p>
-  <p>The Android client in the repository behaves the same way, with one difference worth stating:
-    it keeps the URL and token in an encrypted preferences file, and if that file cannot be opened
-    — a corrupted keyset, which can only be discarded — it retries once and then falls back to
-    ordinary app-private preferences rather than refusing to launch. The data stays inside the
-    app's private storage either way.</p>
+  <p>The Android app behaves the same way, with one difference worth stating: it keeps the URL
+    and token in an encrypted preferences file, and if that file cannot be opened — a corrupted
+    keyset, which can only be discarded — it retries once and then falls back to ordinary
+    app-private preferences rather than refusing to launch. The data stays inside the app's
+    private storage either way.</p>
 
   <h2>Retention and deletion</h2>
   <ul>

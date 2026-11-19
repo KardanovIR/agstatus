@@ -7,13 +7,13 @@
 > "Children" and "Changes" sections and the `Timestamps` row — so if you change
 > one, change both, and keep the dates equal.
 
-_Last updated: November 7, 2026_
+_Last updated: November 19, 2026_
 
 AgStatus is an open-source status board for coding agents such as Claude Code
-and OpenAI Codex. This policy covers the AgStatus iOS app and the hosted server
-at agstatus.online, operated by the project maintainer. The repository also
-contains an Android client, which is not published to any store; where its
-behaviour differs from the iOS app, this policy says so.
+and OpenAI Codex. This policy covers the AgStatus apps for iOS and Android and
+the hosted server at agstatus.online, operated by the project maintainer.
+Where the Android app behaves differently from the iOS app, this policy says
+so.
 
 ## The short version
 
@@ -49,8 +49,9 @@ sends the server a small update each time an agent changes what it is doing:
 | Subagents | `Run the hook tests` · `coding` · `Editing store.ts` | For each subagent the session runs: what it was asked to do, its status word and a short activity line (see below) |
 | Timestamps | — | When each change happened, for the session timeline |
 
-By default the message can include a **truncated command line** (up to 120
-characters) so the board is useful at a glance.
+By default the message can include a **truncated command line**, or the
+start of a **prompt** you give Claude Code, up to 120 characters, so the board
+is useful at a glance.
 
 The board groups sessions by **project**. So that a card stays in one place
 when its agent changes directory, the server remembers the first project
@@ -83,9 +84,9 @@ tell a subagent's later events from its first, the hook keeps a few small files
 about each one on your machine, readable only by you, in the system's temporary
 folder; they go when the session ends, or after a day.
 
-If you would rather not send command text, titles or subagent tasks, run the
-installer with `--minimal` — messages then contain only tool names, such as
-"Bash", every card is named after its folder instead of its title, and
+If you would rather not send command text, prompts, titles or subagent tasks,
+run the installer with `--minimal` — messages then contain only tool names,
+such as "Bash", every card is named after its folder instead of its title, and
 subagents are numbered ("Subagent 1", "Subagent 2") instead of described. It
 is the same switch as `AGSTATUS_DETAIL=off`. It stays on when the installer is
 re-run to upgrade, until you run it with `--no-minimal`.
@@ -157,8 +158,9 @@ hash is ever sent anywhere.
 
 - No accounts, email addresses, or passwords.
 - No analytics, advertising identifiers, or third-party SDKs.
-- No source code, file contents, agent conversations, or the results
-  subagents hand back.
+- No source code or file contents, no agent conversation beyond the short
+  lines described above, such as the start of a prompt, and none of the
+  results subagents hand back.
 - No credentials or API keys of any kind.
 - No web fonts, scripts or images loaded from anyone else's server — every page
   serves its own, so viewing a board tells no third party that you did.
@@ -183,11 +185,12 @@ when you choose to scan a setup QR code. The frames are decoded on the device to
 URL out of the code; no image is stored, and none is transmitted anywhere. The camera is
 used for nothing else.
 
-The Android client in the repository behaves the same way, with one difference
-worth stating: it keeps the URL and token in an encrypted preferences file, and if
-that file cannot be opened — a corrupted keyset, which can only be discarded — it
-retries once and then falls back to ordinary app-private preferences rather than
-refusing to launch. The data stays inside the app's private storage either way.
+The Android app behaves the same way, with one difference worth stating: it
+keeps the URL and token in an encrypted preferences file, and if that file
+cannot be opened — a corrupted keyset, which can only be discarded — it
+retries once and then falls back to ordinary app-private preferences rather
+than refusing to launch. The data stays inside the app's private storage
+either way.
 
 ## Retention and deletion
 
