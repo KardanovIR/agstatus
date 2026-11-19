@@ -1,0 +1,44 @@
+[
+  {
+    "id": "seed-long",
+    "name": "Fix listener reinstall leaving Focus stopped",
+    "status": "coding",
+    "message": "Editing install.ts",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331895,
+    "updatedAt": 1793209331900,
+    "homeProject": "claude-status",
+    "subtasks": {
+      "turnEnded": false,
+      "running": 3,
+      "blocked": 0,
+      "failed": 0,
+      "done": 2,
+      "items": [
+        {
+          "id": "691024b85fbf8ed1fdc3dab8",
+          "n": 3,
+          "label": "Find why the listener reinstall leaves Focus stopped",
+          "state": "planning",
+          "activity": "Searching: launchctl bootstrap leaves the LaunchAgent unloaded after a reinstall"
+        },
+        {
+          "id": "fe5c9a2f13b1ec7e17cf7483",
+          "n": 4,
+          "label": "Run the store migration tests against Postgres 16.15",
+          "state": "testing",
+          "activity": "Run the store migration tests with --no-file-parallelism against a disposable cl"
+        },
+        {
+          "id": "eac87fba0a27afc05409e6d2",
+          "n": 5,
+          "label": "Check the Codex rollout schema for spawn_agent calls",
+          "state": "planning",
+          "activity": "Reading developers.openai.com"
+        }
+      ]
+    }
+  }
+]

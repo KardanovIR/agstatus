@@ -2,10 +2,14 @@
 //  AgentSections.swift
 //  AgStatus
 //
-//  The chrome of an agent's section: its head (who it is, whether anything of
-//  its is waiting on you, how much of the plan is gone), the alarm inside the
-//  head, the one line that stands in for the heads when they have to scroll,
-//  and the label that names a group in the phone's list.
+//  The board's chrome above and between the cards: the agents' heads (who
+//  each agent is, how many sessions it has, how much of its plan is gone) and
+//  the label that names a project's section.
+//
+//  Since 1.7.0 the sections are projects, not agents. An agent keeps its head,
+//  because plan limits belong to an agent's account and to no project, and a
+//  mark on every card's meta line; the alarm its head carried is the
+//  needs-you bar now (BoardView.swift).
 //
 //  Which of these is on screen, and how wide, is BoardLayout.swift's decision;
 //  these views are handed a width and draw at it.
@@ -37,10 +41,10 @@ private struct AgentMark: View {
     }
 }
 
-/// The agent's mark and name, as a head and the agent line set them.
+/// The agent's mark and name, as a head sets them.
 ///
 /// Two steps up from the caption2 the limit blocks used to be titled in: it
-/// was the label on a box of bars, and it is now the title of a section.
+/// was the label on a box of bars, and it is the title of a head.
 private struct AgentIdentity: View {
     let source: String
 
@@ -59,14 +63,16 @@ private struct AgentIdentity: View {
 
 // MARK: - AgentHead
 
-/// The head of one agent's section.
+/// One agent's head: who it is, how many sessions it has on the board, and
+/// how much of each of its plan limits is gone. The whole head opens that
+/// agent's thirty days of usage.
 ///
-/// This used to be the plan-limit block and nothing else: the agent's name
-/// over its bars, with the sessions in a separate list below. It was already
-/// one block per agent. Here it becomes the head of that agent's section — who
-/// it is, whether anything of its is waiting on you, how much of the plan is
-/// gone — and the sessions hang beneath it. As before, the whole head opens
-/// that agent's thirty days of usage.
+/// In 1.6.5 it also headed the agent's section, with an alarm and the
+/// blocked card's edge whenever a session of its was waiting on you. The
+/// sections are projects now, and with too many of them to keep every label
+/// in view an alarm per section could not work the way the heads' did, so
+/// the board has one alarm, the needs-you bar along its bottom edge. A head
+/// keeps only its limits, and red in a head can only mean a limit past 85%.
 ///
 /// One view in four forms (HeadForm), chosen from the width it is handed. No
 /// reader inside it: every arrangement already knows how wide its heads are,
@@ -76,8 +82,8 @@ private struct AgentIdentity: View {
 /// something it draws has changed — see `==`.
 struct AgentHead: View {
     @Environment(\.openUsage) private var openUsage
-    /// What it draws of its agent: not the agent's group, which changes with
-    /// every event on any of its cards.
+    /// What it draws of its agent: not the agent's sessions, which change
+    /// with every event on any of its cards.
     let group: AgentSummary
     /// The head's full width, edge to edge.
     let width: CGFloat
@@ -87,29 +93,24 @@ struct AgentHead: View {
     /// The phone turns it off: there the heads are pinned above a short list,
     /// and a sentence about what is absent costs a line of every screen.
     var showsNoLimits = true
-    /// Stretch to the row's height. Heads standing over columns are drawn as
-    /// one band, so the first card of every column starts on the same line.
+    /// Stretch to the row's height, so heads side by side on an idle board
+    /// are drawn as one band.
     var fillsHeight = false
     /// The Dynamic Type factor the board was laid out with, 1 at the default.
     var scale: CGFloat = 1
     /// Alone on its row where the heads go two across: the only agent, or a
-    /// third one under a pair. It has the whole width, so it takes the fuller
-    /// line whenever that line actually fits — see `content`.
+    /// third one under a pair on an idle board. It has the whole width, so it
+    /// takes the fuller line whenever that line actually fits — see `content`.
     var alone = false
-    /// The other heads of its row that carry an alarm. Two heads side by side
-    /// must agree on where the alarm goes — see `line`.
-    var peers: [AgentAlarm] = []
+    /// Beside another head on its row: pinned two across the one-list board,
+    /// as Frame A draws them on a phone, or on an idle board's row. Where
+    /// that makes it narrow, as it always does on a phone, it is too narrow
+    /// for its session count and never draws it; a regular one, as an iPad's
+    /// pair can be, draws it where it fits (`HeadForm.offersCount`).
+    var sharesRow = false
     /// The board's one clock, so every countdown on screen turns over together
     /// whether its head is pinned or scrolling.
     let now: Date
-    /// The board's VoiceOver target after a jump, bound to this head's
-    /// surface: a name on the agent line scrolls the head to the top and sends
-    /// the cursor here, to the element that names the section (`summary`, a
-    /// header). Every head is handed it; only a scrolling head is sent to.
-    let jumpFocus: AccessibilityFocusState<JumpTarget?>.Binding
-    /// Brings an agent's first blocked card into view, given its source. An
-    /// action and not a closure, so that it compares (`==`).
-    let onJump: BoardAction
 
     private var form: HeadForm {
         HeadForm.resolve(outer: width, canStrip: canStrip, scale: scale)
@@ -117,15 +118,6 @@ struct AgentHead: View {
 
     /// What the head has to lay out in, inside its padding.
     private var inner: CGFloat { max(0, width - 2 * HeadForm.padding) }
-
-    private var edge: Color {
-        // Something of this agent's is blocked. The head takes the blocked
-        // card's own edge, because a red word is not enough on its own here: a
-        // plan limit past 85% is also drawn in that red, and a quiet head with
-        // a full bar must not read like a head that needs you. The box
-        // changing is a second channel the bar does not have.
-        group.blocked > 0 ? Theme.cardEdge(for: .blocked) : Theme.cardBorder
-    }
 
     var body: some View {
         content
@@ -138,56 +130,45 @@ struct AgentHead: View {
             .frame(minHeight: 44, alignment: .top)
             .frame(width: width, alignment: .leading)
             .frame(maxHeight: fillsHeight ? .infinity : nil, alignment: .top)
-            // The head's tap and its alarm are two controls, and they are
-            // SIBLINGS: the link is the surface underneath, the alarm sits in
-            // the content drawn over it, and neither contains the other.
+            // The surface is the head's one control, drawn underneath, and
+            // everything over it is closed to touches, so a tap on the name, a
+            // bar or bare padding falls through to it and opens usage. It
+            // stays underneath rather than becoming a button around the
+            // content: each meter is an element VoiceOver reads on its own,
+            // and inside a button they would be folded into its label.
             //
-            // This codebase has been here before. A full-card NavigationLink
-            // once lay across the session card and swallowed the taps meant
-            // for the Focus control on top of it. A button nested inside a
-            // link fails the other way round as well — it is one element to
-            // VoiceOver, and which of the two a tap reaches is not something
-            // SwiftUI promises.
-            //
-            // So everything drawn over the link is closed to touches except
-            // the alarm. A tap on the name, a bar or bare padding falls
-            // through to the surface and opens usage; a tap on the alarm stops
-            // at the alarm.
-            //
-            // The surface is a button that asks the board to push usage, not
-            // a NavigationLink — the same reason the cards open history
-            // through a closure. On a phone with three agents the heads are
-            // rows of the List, and a link in a List row draws its own
-            // disclosure chevron and claims the whole row. A button with a
-            // style of its own is left to be the size it is drawn.
+            // A button that asks the board to push usage, not a
+            // NavigationLink — the same reason the cards open history through
+            // a closure. Where the heads scroll they are a row of the List,
+            // and a link in a List row draws its own disclosure chevron and
+            // claims the whole row. A button with a style of its own is left
+            // to be the size it is drawn.
             .background {
                 Button {
                     openUsage(group.source)
                 } label: {
                     Color.clear
                 }
-                .buttonStyle(HeadSurfaceStyle(edge: edge))
+                .buttonStyle(HeadSurfaceStyle())
+                // Not a heading any more: the headings are the projects, which
+                // is what the rotor walks. The heads stand together in the
+                // "Plan limits" container instead (`HeadRows`).
                 .accessibilityLabel(summary)
-                .accessibilityAddTraits(.isHeader)
                 .accessibilityHint("Shows 30 days of usage")
+                // Drawn underneath its meters, and read before them: who,
+                // then how much of each limit is gone.
+                .accessibilitySortPriority(1)
                 // Voice Control: "Tap Claude usage", or "Tap Claude". The label
-                // is a sentence whose counts move while it is being said. Where
-                // the agent line is pinned over the heads it answers to the
-                // name too, and Voice Control numbers the two.
+                // is a sentence whose count moves while it is being said.
                 .accessibilityInputLabels(["\(group.name) usage", group.name])
-                .accessibilityFocused(jumpFocus, equals: group.section)
             }
-            // Read as one agent: the head, its alarm, then its limits.
+            // Read as one agent: the head, then its limits.
             .accessibilityElement(children: .contain)
     }
 
-    /// "Claude, 5 sessions, 1 blocked" — what the head says, for a reader who
-    /// cannot see the edge change colour.
+    /// "Claude, 5 sessions": what the head says.
     private var summary: String {
-        var parts = [group.name]
-        if group.sessions > 0 { parts.append(sessionCount) }
-        if group.blocked > 0 { parts.append("\(group.blocked) blocked") }
-        return parts.joined(separator: ", ")
+        group.sessions > 0 ? "\(group.name), \(sessionCount)" : group.name
     }
 
     private var sessionCount: String {
@@ -201,10 +182,10 @@ struct AgentHead: View {
         if alone && form == .narrow {
             // By fit, not by the scaled threshold. At larger text the
             // threshold alone put a head with the phone's whole width into
-            // the half-phone form — no count, no word, every value under its
-            // label — which the lone limit block it replaces never did. So
-            // the full line is used while it holds, and the half-phone form
-            // only when it does not.
+            // the half-phone form, every value under its label, which the
+            // lone limit block it replaces never did. So the full line is
+            // used while it holds, and the half-phone form only when it does
+            // not.
             ViewThatFits(in: .horizontal) {
                 content(.regular)
                 content(.narrow)
@@ -222,111 +203,46 @@ struct AgentHead: View {
             // and the limits are three, and a name level with the first label
             // reads as the title of that column alone.
             HStack(alignment: .center, spacing: HeadForm.stripGap) {
-                stripIdentity
+                line
                     .frame(width: identityWidth, alignment: .leading)
                 limits(form)
             }
         case .narrow, .regular, .across:
             VStack(alignment: .leading, spacing: 10) {
-                line(form)
+                line
                 limits(form)
             }
         }
     }
 
-    /// The head's one line: mark, name, how many sessions, and — only while
-    /// something is blocked — the alarm at the far end.
+    /// The head's one line: mark, name, and how many sessions. On a strip it
+    /// is the block at the left, at a fixed width so the limits beside it
+    /// start at the same place on every agent's strip.
     ///
-    /// Half a phone is the one place the name and the alarm can be too much
-    /// for a line: at the largest text sizes "CLAUDE" beside "! 1 ⌄" came out
-    /// as "C", and it was the head that needed you which lost its name. There
-    /// the alarm goes under the name instead. Only when the pair does not fit,
-    /// so at an ordinary size the head is the one line it was drawn as.
-    @ViewBuilder
-    private func line(_ form: HeadForm) -> some View {
-        if form == .narrow && group.blocked > 0 {
-            ViewThatFits(in: .horizontal) {
-                // Every head of a row tests the row's WIDEST line, not just
-                // its own, so they fall the same way. Each deciding for itself
-                // left "CLAUDE" with its alarm underneath beside "CODEX" with
-                // its alarm alongside: two heads of two heights, and the eye
-                // sent to two different places for the same reading. The
-                // peers' lines are laid out hidden for their width alone.
-                ZStack(alignment: .leading) {
-                    ForEach(peers) { peer in
-                        HStack(spacing: 0) {
-                            AgentIdentity(source: peer.source)
-                            Spacer(minLength: Theme.Space.xs)
-                            AlarmButton(agent: peer.name, count: peer.blocked, showsWord: false, action: {})
-                        }
-                        .hidden()
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                    }
-                    oneLine(form)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    AgentIdentity(source: group.source)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                    alarm(form)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        } else {
-            oneLine(form)
-        }
-    }
-
-    private func oneLine(_ form: HeadForm) -> some View {
+    /// The same in every form, but for a narrow head that shares its row,
+    /// whose line holds no count (`HeadForm.offersCount`). The count was kept
+    /// off every narrow line, and at larger text a head the whole width of a
+    /// phone takes that form too, by its scaled threshold, so heads that lead
+    /// the list lost it although their line had room: on an SE from extra
+    /// large text, on a 6.9" from extra extra extra large, at every
+    /// accessibility size.
+    private var line: some View {
         HStack(spacing: 0) {
             // The name is offered the width first. When the line is tight the
             // count goes before a letter of the name does: the count is a
             // number you can get by looking down, and the name is the only
-            // thing saying whose section this is.
+            // thing saying whose limits these are.
             AgentIdentity(source: group.source)
                 .layoutPriority(1)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-            if form != .narrow && group.sessions > 0 {
+            if HeadForm.offersCount(sessions: group.sessions, sharesRow: sharesRow, form: form) {
                 // Whole or not at all, and the gap travels with it, so a count
                 // that has dropped out leaves no space behind.
                 ViewThatFits(in: .horizontal) {
                     count.padding(.leading, Theme.Space.xs)
                     FitsAsNothing()
                 }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
             }
-            Spacer(minLength: Theme.Space.xs)
-            if group.blocked > 0 {
-                alarm(form)
-                    .layoutPriority(2)
-            }
-        }
-    }
-
-    /// The strip's left-hand block: the same three things, at a fixed width so
-    /// the limits beside them start at the same place on every agent's strip.
-    /// The alarm follows the count here instead of standing at the far end,
-    /// and goes under it when the three do not fit on a line.
-    private var stripIdentity: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: Theme.Space.xs) {
-                identityAndCount
-                if group.blocked > 0 { alarm(.strip) }
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                identityAndCount
-                if group.blocked > 0 { alarm(.strip) }
-            }
-        }
-    }
-
-    private var identityAndCount: some View {
-        HStack(spacing: Theme.Space.xs) {
-            AgentIdentity(source: group.source)
-            if group.sessions > 0 { count }
+            Spacer(minLength: 0)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -343,27 +259,22 @@ struct AgentHead: View {
             .fixedSize()
     }
 
-    private func alarm(_ form: HeadForm) -> some View {
-        AlarmButton(agent: group.name,
-                    count: group.blocked,
-                    showsWord: form != .narrow,
-                    action: { onJump(group.source) })
-    }
-
     // MARK: Limits
 
+    /// The meters, or for an agent that reports no limits the sentence that
+    /// says so, in whatever form the head takes (`HeadForm.saysNoLimits`).
     @ViewBuilder
     private func limits(_ form: HeadForm) -> some View {
-        if group.windows.isEmpty {
-            if showsNoLimits && form != .narrow {
-                Text("No plan limits reported")
-                    .font(.caption)
-                    .foregroundStyle(Theme.textTertiary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .allowsHitTesting(false)
-            }
-        } else {
+        if HeadForm.saysNoLimits(windows: group.windows.count, showsNoLimits: showsNoLimits) {
+            // Every word of it, on a second line where one is too short, as
+            // on the web and Android.
+            Text("No plan limits reported")
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .allowsHitTesting(false)
+        } else if !group.windows.isEmpty {
             meters(form)
                 .allowsHitTesting(false)
         }
@@ -375,8 +286,7 @@ struct AgentHead: View {
         case .narrow:
             // Half a phone fits the label OR the value, not both. Pinned, it
             // is never asked for more than four: from a fifth window the
-            // phone pins the agent line, and this head opens its group in
-            // the list at the whole width instead
+            // phone's heads open the list at the whole width instead
             // (`BoardArrangement.narrowPinnedWindows`). An idle board is the
             // exception, with nothing else to show.
             meterRows(stacked: true)
@@ -426,34 +336,29 @@ struct AgentHead: View {
 }
 
 extension AgentHead: Equatable {
-    /// Equal when it would be drawn the same: every input but the focus
-    /// binding, which is the same binding, to the board's one focus state, on
-    /// every pass.
+    /// Equal when it would be drawn the same: every input.
     ///
     /// The board makes every head afresh on every pass, and a hook event is
     /// one card's news: most passes change nothing a head draws. Handed the
-    /// agent's group and a fresh closure, a head was never equal to the last
-    /// one by SwiftUI's own comparison, so every head on the board ran again
-    /// for every event, and was laid out again. Made with `.equatable()`, a
-    /// head is compared by this instead, and runs when what it draws has
-    /// changed. Where heads stand in rows, the rows must be left alone too,
-    /// or they lay their heads out again regardless (`HeadRows`).
-    ///
-    /// The action is compared by name (`BoardAction`), and a head that does
-    /// not run keeps the one it was handed when it last did. So the board's
-    /// jump carries no plan of its own: it reads the board as last drawn
-    /// (`BoardView`'s `DrawnBoard`).
+    /// agent's sessions, a head was never equal to the last one by SwiftUI's
+    /// own comparison, so every head on the board ran again for every event,
+    /// and was laid out again. Made with `.equatable()`, a head is compared by
+    /// this instead, and runs when what it draws has changed: a session
+    /// arriving or leaving under its agent, a limit report, the minute clock.
+    /// Where heads stand in rows, the rows must be left alone too, or they lay
+    /// their heads out again regardless (`HeadRows`).
     static func == (lhs: AgentHead, rhs: AgentHead) -> Bool {
-        lhs.group == rhs.group
+        // In two parts: as one chain of nine comparisons it took the type
+        // checker of Swift 6.2, which CI builds with, over 1 MB of solver
+        // memory, where the chain of eight before it took less.
+        guard lhs.alone == rhs.alone, lhs.sharesRow == rhs.sharesRow else { return false }
+        return lhs.group == rhs.group
             && lhs.width == rhs.width
             && lhs.canStrip == rhs.canStrip
             && lhs.showsNoLimits == rhs.showsNoLimits
             && lhs.fillsHeight == rhs.fillsHeight
             && lhs.scale == rhs.scale
-            && lhs.alone == rhs.alone
-            && lhs.peers == rhs.peers
             && lhs.now == rhs.now
-            && lhs.onJump == rhs.onJump
     }
 }
 
@@ -462,11 +367,11 @@ extension AgentHead: Equatable {
 /// The board pushes a `UsageDetailRoute` onto its own path; the destination is
 /// declared at its root, beside the session one.
 private struct OpenUsageKey: EnvironmentKey {
-    static let defaultValue = BoardAction(name: "none") { _ in }
+    static let defaultValue = BoardAction<String>(name: "none") { _ in }
 }
 
 extension EnvironmentValues {
-    var openUsage: BoardAction {
+    var openUsage: BoardAction<String> {
         get { self[OpenUsageKey.self] }
         set { self[OpenUsageKey.self] = newValue }
     }
@@ -478,241 +383,88 @@ extension EnvironmentValues {
 /// show: the head is a control the size of a banner, and one that does nothing
 /// under a thumb until the next screen arrives feels broken. It lifts to the
 /// raised surface and changes nothing else — no accent, since opening usage is
-/// not a state.
+/// not a state. Its edge is the hairline every head has: the blocked edge it
+/// took while a session of its agent's waited went with the alarm.
 private struct HeadSurfaceStyle: ButtonStyle {
-    let edge: Color
-
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: Theme.Radius.head, style: .continuous)
         configuration.label
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(shape.fill(configuration.isPressed ? Theme.raised : Theme.card))
-            // Not animated, as a card's own edge is not: a state arriving is
-            // drawn, it is not faded in.
-            .overlay(shape.strokeBorder(edge))
+            .overlay(shape.strokeBorder(Theme.cardBorder))
             .contentShape(shape)
     }
 }
 
-// MARK: - AlarmButton
+// MARK: - ProjectLabel
 
-/// The alarm: how many of this agent's sessions are blocked, and the way to
-/// the first of them.
+/// The name over a project's cards: the folder, and how many sessions it has.
 ///
-/// Absent unless something is blocked — a quiet head means nothing of this
-/// agent's is waiting on you. It is the same solid mark and the same word the
-/// blocked card carries, so it is never hue alone. It is also the way to that
-/// card, which matters because a card that becomes blocked stays where it is
-/// and may be a screen down: hence the arrow, which says it goes somewhere.
-private struct AlarmButton: View {
-    let agent: String
-    let count: Int
-    /// Half a phone has room for the mark, the number and the arrow, and not
-    /// for the word.
-    var showsWord = true
-    let action: () -> Void
-
-    /// How far the target reaches past the glyphs, each way.
-    ///
-    /// The alarm is 18pt tall to look at and has to be 44 to hit. The reach is
-    /// padding INSIDE the label, where the button's hit shape includes it,
-    /// cancelled by the same padding negative outside — so the head's line is
-    /// laid out around the glyphs alone and stays one line tall.
-    private static let reach = (x: Theme.Space.xs, y: CGFloat(14))
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Theme.Space.xxs) {
-                Image(systemName: Theme.symbol(for: .blocked))
-                Text("\(count)")
-                    .monospacedDigit()
-                if showsWord {
-                    Text(AgentStatus.blocked.label.uppercased())
-                }
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
-            }
-            .font(.footnote.weight(.semibold))
-            .kerning(0.5)
-            .foregroundStyle(Theme.color(for: .blocked))
-            .lineLimit(1)
-            // A fixed token: "1 BLOC…" beside an arrow reads as a bug, and the
-            // name beside it is the part that can afford to give way.
-            .fixedSize()
-            .padding(.horizontal, Self.reach.x)
-            .padding(.vertical, Self.reach.y)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(AlarmButtonStyle())
-        .padding(.horizontal, -Self.reach.x)
-        .padding(.vertical, -Self.reach.y)
-        .accessibilityLabel("\(agent): \(count) blocked, show the first")
-        // Voice Control: "Tap Claude blocked", or just "Tap blocked". Where two
-        // are on screen — two agents', or one agent's in its head and on the
-        // agent line — Voice Control numbers them.
-        .accessibilityInputLabels(["\(agent) blocked", "\(count) blocked", "Blocked"])
-    }
-}
-
-/// Dims under the finger and does nothing else. The alarm is already the
-/// loudest thing in its head; a pressed state that added a surface behind it
-/// would make it louder at the one moment it has been acknowledged.
-private struct AlarmButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? 0.55 : 1)
-    }
-}
-
-// MARK: - AgentLine
-
-/// One pinned line for a board whose sections scroll.
+/// Not a box, and not a control: no mark, no colour, no tap, no limit, no
+/// token total, no alarm. A name on the ground is enough to start a group, and
+/// a container here would be a card holding cards. Every section has one, the
+/// only project on the board and a one-card project included, because the
+/// cards no longer say where they are working unless they have moved.
 ///
-/// With more agents than fit — or on a phone held sideways, at an
-/// accessibility text size, or with a fifth limit window in a head — the
-/// limits scroll away with their sections: decided, because pinning the heads
-/// there would leave no board. This line is what stays: each agent's mark and
-/// name, which take you to its section, and its alarm, which takes you to its
-/// first blocked card. Two controls side by side, because one cannot sit
-/// inside the other.
-///
-/// Equal when it would be drawn the same, as a head is (`AgentHead`'s `==`),
-/// and made with `.equatable()`: every input is a value, the actions compared
-/// by name. A card's message, a session arriving, a limit filling: none of it
-/// is anything this line draws.
-struct AgentLine: View, Equatable {
-    let groups: [AgentAlarm]
-    let width: CGFloat
-    var scale: CGFloat = 1
-    /// Scrolls to an agent's section, given its source.
-    let onSection: BoardAction
-    /// Brings an agent's first blocked card into view, given its source.
-    let onJump: BoardAction
-
-    /// Wide enough for a mark, a name and an alarm. A further agent starts a
-    /// second row sooner than any name is cut to a letter.
-    private static let cellMin: CGFloat = 150
-
-    private var perRow: Int {
-        let gutter = BoardArrangement.agentGutter
-        let fit = Int(((width + gutter) / (Self.cellMin * scale + gutter)).rounded(.down))
-        return max(1, min(groups.count, fit))
-    }
-
-    private var cellWidth: CGFloat {
-        BoardArrangement.track(width: width, count: perRow)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(groups.rows(of: perRow), id: \.first?.source) { row in
-                // Top, so that a cell whose alarm went under its name keeps
-                // that name level with its neighbours'.
-                HStack(alignment: .top, spacing: BoardArrangement.agentGutter) {
-                    ForEach(row) { group in
-                        cell(group)
-                    }
-                }
-            }
-            Rectangle()
-                .fill(Theme.cardBorder)
-                .frame(height: 1)
-        }
-        .frame(width: width, alignment: .leading)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Agents")
-    }
-
-    /// An agent's name and, while something of its is blocked, its alarm.
-    ///
-    /// On one line where they fit. Where they do not — at the largest text
-    /// sizes, where this line is a phone's only pinned row — the alarm goes
-    /// under the name, as it does in the head (`AgentHead.line`), instead of
-    /// the name being cut to "C" beside it: the agent that needs you is the
-    /// one whose name must survive.
-    private func cell(_ group: AgentAlarm) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: Theme.Space.xs) {
-                nameButton(group)
-                alarm(group)
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                nameButton(group)
-                alarm(group)
-            }
-        }
-        .frame(width: cellWidth, alignment: .leading)
-        .frame(minHeight: 44)
-    }
-
-    private func nameButton(_ group: AgentAlarm) -> some View {
-        Button {
-            onSection(group.source)
-        } label: {
-            AgentIdentity(source: group.source)
-                .padding(.horizontal, 2)
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(group.name), show its sessions")
-        // Voice Control: "Tap Codex", not the whole sentence.
-        .accessibilityInputLabels([group.name, "Show \(group.name)"])
-    }
-
-    @ViewBuilder
-    private func alarm(_ group: AgentAlarm) -> some View {
-        if group.blocked > 0 {
-            AlarmButton(agent: group.name,
-                        count: group.blocked,
-                        // The same cut-off the head uses, measured on the
-                        // cell: narrower than this and the word goes.
-                        showsWord: cellWidth > HeadForm.narrowMax * scale,
-                        action: { onJump(group.source) })
-        }
-    }
-}
-
-// MARK: - GroupLabel
-
-/// The name over a group of cards in the phone's list.
-///
-/// Not a box. A mark and a name on the ground are enough to start a group; a
-/// container here would be a card holding cards. The name sticks while its
-/// group scrolls, because with the agent's chip gone from the card it is the
-/// only thing saying whose cards these are — which is why it carries its own
+/// In the list it sticks while its cards scroll by, and so it carries its own
 /// opaque ground: the cards pass underneath it, and a see-through label over a
-/// card's name is two names on one line.
-struct GroupLabel: View {
-    let group: AgentGroup
-    /// The first group's name stands directly under the pinned heads, with no
-    /// card above it to bring its own 6pt, so it carries that space itself.
-    var leads = false
+/// card's name is two names on one line. On a wide board it scrolls with its
+/// section (`BoardView.stackedBoard`).
+///
+/// One line. The name is offered the width first and the count is the first
+/// to go, whole, so it never squeezes a letter out of the name; past that the
+/// name is cut in the middle, where a folder's two ends — `claude-status-…
+/// release-1.6` — are the parts that tell siblings apart. "No project" is
+/// the board's own words rather than a folder's name, so it takes the
+/// secondary ink at a regular weight.
+///
+/// Handed only what it draws (`SectionLabel`) and compared as a value, with
+/// `.equatable()` wherever it is made: a message on one of its cards is none
+/// of its business.
+struct ProjectLabel: View, Equatable {
+    let label: SectionLabel
+    /// Its distance from the edge the cards line up on: two points in from
+    /// the cards' own edge, where they have rounded away.
+    var inset: CGFloat = 2
+    /// Above the name. In the list, 18 with the 6pt the card above keeps
+    /// below itself makes the 24 between two projects; a label that sticks
+    /// keeps the same 18, so the name stands at the same height whichever
+    /// label is stuck.
+    var top: CGFloat = 18
+    /// Under the name: with the 6pt a card keeps above itself in the list,
+    /// the first card is 8pt down. A card on a stack carries 8 of its own.
+    var bottom: CGFloat = 2
 
     var body: some View {
-        HStack(spacing: 7) {
-            AgentMark(source: group.source)
-            Text(group.name)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Theme.textPrimary)
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(label.title)
+                .font(label.isNoProject ? .subheadline : .subheadline.weight(.semibold))
+                .foregroundStyle(label.isNoProject ? Theme.textSecondary : Theme.textPrimary)
                 .lineLimit(1)
-            Text("\(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s")")
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(Theme.textTertiary)
-                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+            // Whole or not at all, and the gap travels with it.
+            ViewThatFits(in: .horizontal) {
+                Text(label.countText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .padding(.leading, Theme.Space.xs)
+                FitsAsNothing()
+            }
+            Spacer(minLength: 0)
         }
-        // Two points in from the cards' edge, so the mark sits over the
-        // card's rounded corner and not hard against its side.
-        .padding(.horizontal, Theme.Space.md + 2)
-        // With the 6pt each row keeps above and below itself, this puts the
-        // name 16pt clear of the card before it and the card after it.
-        .padding(.top, leads ? 14 : 10)
-        .padding(.bottom, 10)
+        .padding(.horizontal, inset)
+        .padding(.top, top)
+        .padding(.bottom, bottom)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.background)
+        // One heading, "acme-api, 3 sessions", so the Headings rotor walks
+        // the projects.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(group.name), \(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s")")
+        .accessibilityLabel(label.spoken)
         .accessibilityAddTraits(.isHeader)
     }
 }
@@ -795,8 +547,8 @@ private struct LimitMeter: View {
             .foregroundStyle(Theme.textSecondary)
             // Two lines at an accessibility text size. On one, at AX4, both of
             // Claude's weekly windows read "WEEKLY…" and which limit was which
-            // could not be told. A phone's heads scroll with their sections at
-            // those sizes, so the line costs no pinned height there. At the
+            // could not be told. A phone's heads lead the list and scroll away
+            // at those sizes, so the line costs no pinned height there. At the
             // standard sizes a pinned head keeps one line a label: its height
             // comes out of the room left for the cards.
             .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)

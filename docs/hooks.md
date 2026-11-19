@@ -15,8 +15,9 @@ status webhook to your board. Ways to set it up:
    only (Codex needs [the installer](#install)).
 3. **Manual bash hook** — *deprecated.* The original
    `hooks/claude-status-hook.sh`, still shipped and still working, for people
-   who want to see and customize every moving part. It reports status only:
-   no plan-usage bars, no card removal at session end, and no Codex support.
+   who want to see and customize every moving part. It reports status and
+   removes the card at session end, and nothing more: no plan-usage bars, no
+   subagent rows, and no Codex support.
    Prefer 1 or 2; see [Manual setup: the bash hook](#manual-setup-the-bash-hook-deprecated).
 
 Both hooks are deliberately non-blocking: any failure (server down, bad
@@ -82,7 +83,10 @@ installs from your own instance — see
 4. Merges the hook registrations and env vars into `~/.claude/settings.json`,
    writing a backup to `settings.json.agstatus-backup` first. Your existing
    settings and hooks are preserved; re-running `init` replaces only the
-   AgStatus entries.
+   AgStatus entries. There are eleven, one for each event in
+   [the table below](#how-events-map-to-statuses), each with a 10-second
+   timeout except `SessionEnd`'s: Claude Code's own default is 600 seconds,
+   and `SessionEnd` hooks share a budget a timeout would raise.
 5. Prints your dashboard URL and a QR code to open it on your phone.
 
 On macOS the installer also sets up the [Focus listener](#focus-optional-opt-in)
@@ -123,8 +127,8 @@ wins) and are consumed before the rest is handed on. They are macOS-only, so
 | `--code XXXX-XXXX` | Pair with a board created elsewhere (e.g. the iOS app) instead of creating a new one. Case and dashes don't matter. The code is claimed on `https://agstatus.online` unless `--url` (or `AGSTATUS_URL`) names the server that issued it, whatever server the machine reports to now. |
 | `--secret <s>`     | Webhook secret for self-hosted single-tenant servers that set `WEBHOOK_SECRET` (stored as `CLAUDE_STATUS_SECRET`; later runs against the same server keep it, and it is never carried to another one). |
 | `--no-secret`      | Drop the webhook secret this machine has. |
-| `--minimal`        | Privacy mode: send tool names only, never command text or prompts, and name each card after its folder, never its session title (sets `AGSTATUS_DETAIL=off`; later runs keep it until `--no-minimal`). |
-| `--no-minimal`     | Send command text, prompts and session titles again (removes `AGSTATUS_DETAIL=off`). |
+| `--minimal`        | Privacy mode: send tool names only, never command text or prompts, name each card after its folder, never its session title, and number subagents ("Subagent 1") instead of describing them (sets `AGSTATUS_DETAIL=off`; later runs keep it until `--no-minimal`). |
+| `--no-minimal`     | Send command text, prompts, session titles and subagent tasks again (removes `AGSTATUS_DETAIL=off`). |
 | `--codex`          | Also set up OpenAI Codex even when `~/.codex` isn't detected (creates it). |
 | `--no-codex`       | Skip Codex setup. Default: auto-configure when `~/.codex` exists. |
 | `--no-qr`          | Skip the QR code (narrow terminals, scripts). |
@@ -203,34 +207,46 @@ machine: both hooks would fire and every status would post twice. Pick one
 alone). The plugin covers Claude Code only; for Codex, use
 [the installer](#install).
 
+The plugin's `hooks.json` registers the same events, matchers and timeouts as
+`agstatus init`, and ships with the hook script, so updating the plugin from
+`/plugin` brings both together. That is how a plugin install gets the events
+a release adds — 1.7.0's [subagent events](#subagents) among them.
+
 ## How events map to statuses
 
-The Node hook applies this mapping; the `PermissionRequest` and `PreToolUse` —
-`apply_patch` rows are Codex-only. The bash hook covers the same Claude Code
-events but predates Codex support, so it handles neither of those, and being
-frozen it still reports `Stop` as `idle` rather than `done`, renames a card
-from the working directory of every event instead of pinning the name at
-`SessionStart`, and never names a card after its session title:
+The Node hook applies this mapping to the session's own events — those without
+an `agent_id`. A subagent's events reach the board as rows on its card instead;
+see [Subagents](#subagents). A note starting "Claude Code:" or "Codex:" is
+about that agent alone. The bash hook covers only the Claude Code events it
+always did, none of the subagent ones among them, and predates Codex support.
+Being frozen, it also still reports `Stop` as `idle` rather than `done`,
+renames a card from the working directory of every event instead of pinning
+the name at `SessionStart`, never names a card after its session title, and
+puts every subagent tool call on its parent's line:
 
 | Hook event                                                     | Board status   | Notes |
 | -------------------------------------------------------------- | -------------- | ----- |
-| `SessionStart`                                                  | `idle`         | New session appears as soon as Claude starts. The only event that sends `idle`, so a card wears it just for the seconds between starting an agent and submitting the first prompt. |
-| `UserPromptSubmit`                                              | `planning`     | Fires the moment you submit a prompt, so the card leaves `blocked`/`idle` immediately instead of waiting for the first tool call. Shows the prompt text (truncated), minus the `<system-reminder>` notices Claude Code and the desktop app wrap into it — those are the host talking to the agent, not you; a prompt that is nothing but a notice, and every prompt in minimal mode, shows "Processing prompt". |
+| `SessionStart`                                                  | `idle`, **or nothing** | New session appears as soon as Claude starts. The only event that sends `idle`, so a card wears it just for the seconds between starting an agent and submitting the first prompt. It also tells the server to drop the session's subagent rows: a process that has just started runs none. Claude Code fires it again for a compaction (`source: "compact"`), and that one posts nothing — an automatic compaction halfway through a turn used to flip a working card to "Session started". |
+| `UserPromptSubmit`                                              | `planning`     | Fires the moment you submit a prompt, so the card leaves `blocked`/`idle` immediately instead of waiting for the first tool call. Claude Code: shows the prompt text (truncated), minus the `<system-reminder>` notices Claude Code and the desktop app wrap into it — those are the host talking to the agent, not you; a prompt that is nothing but a notice, and every prompt in minimal mode, shows "Processing prompt". A prompt made only of `<task-notification>` blocks is Claude Code telling the session its background subagents have finished, not you speaking: it reads "Reading subagent results" and starts no turn (see [Subagents](#subagents)). Codex: always "Processing prompt" — the prompt text is never sent. |
 | `PreToolUse` — `Edit` / `Write` / `MultiEdit` / `NotebookEdit`  | `coding`       | Card shows the file being touched — "Editing store.ts", "Writing landing.html". |
 | `PreToolUse` — `Bash` (test runner)                             | `testing`      | Detected via `pytest`/`jest`/`vitest`/`go test`/`cargo test`/etc. Classification always reads the command, never the description. |
 | `PreToolUse` — `Bash` (other)                                   | `coding`       | Card shows the agent's own one-line description of the command ("Show working tree status"), falling back to the command text when none was supplied. |
-| `PreToolUse` — `Task` / `WebSearch` / `WebFetch`                | `planning`     | Card shows what is being looked for — the subagent's task description, "Searching: &lt;query&gt;", or "Reading &lt;host&gt;". |
-| `Notification`                                                  | `blocked`      | Claude Code: permission prompts and other attention-needed events — this is what triggers a push. |
-| `PermissionRequest`                                             | `blocked`, **or nothing** | Codex: fires whenever the model asks to escalate — which is usually answered by Codex itself, not by you. The card turns `blocked` and pushes only when a human is the reviewer; an escalation Codex approves itself changes nothing and is reported as nothing, so the card keeps the status it had. See [Who answers an approval](#who-answers-an-approval). |
+| `PreToolUse` — `Agent` / `Task` / `WebSearch` / `WebFetch`      | `planning`     | Card shows what is being looked for — the subagent's task description, "Searching: &lt;query&gt;", or "Reading &lt;host&gt;". `Agent` is the tool Claude Code launches subagents with; `Task` is its old name, kept for older versions. Until 1.7.0 the hook matched only `Task`, so no launch reached the board. |
+| `PreToolUse` — `Workflow`                                       | `planning`     | Claude Code's dynamic workflows: "Running workflow: &lt;description&gt;" when the workflow's script names one, else "Running a workflow". |
 | `PreToolUse` — `apply_patch`                                    | `coding`       | Codex's file-edit tool; the card shows "Editing files". |
-| `Stop`                                                          | `done`         | The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads "Turn finished", and this is the transition an opt-in push fires on. A turn you interrupt fires no `Stop` at all, so that card keeps its last tool status until the session's next event. |
-| `SessionEnd`                                                    | _card removed_ | Claude Code only — the hook calls `DELETE /sessions/:id` so the card disappears. Codex has no session-end hook; its cards expire via the server's session TTL instead. |
+| `Notification`                                                  | `blocked`, **or nothing** | Claude Code: a human is being asked — this is what triggers a push. That covers permission prompts (`permission_prompt`), questions and requests for input (`elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`), `idle_prompt`, `quota_auto_resume_stale` and any type the hook does not know. A permission prompt a subagent is waiting on blocks that subagent's row, and the card reads "Needs approval: &lt;label&gt;" (see [Subagents](#subagents)). Types that ask nobody anything — `auth_success`, `elicitation_complete`, `elicitation_response`, `agent_completed`, `quota_auto_resume_fired`, `quota_auto_resume_disabled`, `plugin_notification` — post nothing; each used to turn a working card blocked, and push. |
+| `PermissionRequest`                                             | `blocked`, **or nothing** | Codex: fires whenever the model asks to escalate — which is usually answered by Codex itself, not by you. The card turns `blocked` and pushes only when a human is the reviewer; an escalation Codex approves itself changes nothing and is reported as nothing, so the card keeps the status it had. See [Who answers an approval](#who-answers-an-approval). Claude Code: posts nothing. It fires the moment a prompt appears — for prompts answered within a second, and for prompts of background subagents that nobody sees — so the hook only notes which thread asked, for the `Notification` that follows a prompt still waiting after about six seconds. |
+| `Stop`                                                          | `done`         | The agent finished its turn: the answer is on screen and it is waiting for your next prompt. The card reads "Turn finished", and this is the transition an opt-in push fires on. A turn you interrupt fires no `Stop` at all, so that card keeps its last tool status until the session's next event. Background subagents and workflows can outlive the turn: `Stop` tells the server which are still running, and until they finish the card reads their busiest state with "N subagents still running" rather than `done` (see [Subagents](#subagents)). |
+| `SessionEnd`                                                    | _card removed_ | Claude Code only — the hook calls `DELETE /sessions/:id` so the card disappears, and removes what it kept locally about the session's subagents. Codex has no session-end hook; its cards expire via the server's session TTL instead. |
+| `SubagentStart` / `SubagentStop`                                | _a row on the card_ | A subagent starting and finishing (Codex: a sub-agent's turn finishing). Never the session's own status. See [Subagents](#subagents). |
+| `PostToolUse` / `PostToolUseFailure` — `Agent` / `Task` / `Workflow` | _nothing, or a failed row_ | Claude Code: a launch's result. It ties the subagent to its tool call, gives a background launch its label, and notes where a workflow's run keeps its agents' labels; a failed `Agent` or `Task` call marks its subagent's row failed (`PostToolUseFailure` matches only those two). Never the session's own status. |
 
 Other tools and events are ignored. Messages are capped at 120 characters.
 With `--minimal` (`AGSTATUS_DETAIL=off`) every card shows only the tool name —
 no descriptions, file names, queries, or command text — and is named after its
 folder, never its session title (a title is generated from your prompts; see
-[Card names and projects](#card-names-and-projects)).
+[Card names and projects](#card-names-and-projects)). Its subagents are
+numbered, never described — see [Subagents](#subagents).
 
 > **Why descriptions instead of commands?** Agents write a short description of
 > each command they run, which reads better on a phone than a shell one-liner —
@@ -299,11 +315,20 @@ The reasoning, and the capture that found it, are in
 | Status     | What the card is telling you |
 | ---------- | ---------------------------- |
 | `idle`     | The session exists and has not been asked to do anything yet. Only `SessionStart` sends it, so on a working board it is rare: a card shows `idle` until you submit the first prompt and normally never again. |
-| `planning` | Thinking, reading or searching — your submitted prompt, a subagent, a web search or a fetch. |
+| `planning` | Thinking, reading or searching — your submitted prompt, launching a subagent, a web search or a fetch, or reading what its background subagents reported. |
 | `coding`   | Editing a file, or running a command that isn't a test. |
 | `testing`  | Running a test command (`pytest`, `jest`, `vitest`, `go test`, `cargo test`, …). |
-| `blocked`  | The agent has stopped and needs a human: a permission prompt, or another attention-needed notification. Every registered device is pushed on this one. |
+| `blocked`  | The agent — or one of its subagents — has stopped and needs a human: a permission prompt, or another attention-needed notification. Every registered device is pushed on this one. |
 | `done`     | The turn is finished and the agent is waiting for your next prompt. `Stop` fires at the end of every turn, so this is the state a card rests in most of the time. |
+
+A board shows two more words, and neither is a status anything sends.
+**working** is a card whose own turn is over while its subagents carry on in
+the background: the boards work it out from the session's `subtasks`
+([docs/api.md](api.md#the-session-object)), and the status underneath is the
+busiest subagent's — `testing`, `coding` or `planning`, with "N subagents
+still running" — which is what an app without subagent rows shows. **failed**
+is only ever a subagent's row. Statuses on the wire, in push notifications and in
+the session timeline stay the six above.
 
 `Stop` used to report `idle`, which folded two different situations into one
 word: "nothing has happened here yet" and "your answer is ready". A program
@@ -313,6 +338,123 @@ read. So `done` is now the ordinary end-of-turn state (boards colour it
 green, and a device that opted in with `notify_done` is pushed each time a turn
 finishes — see [docs/api.md](api.md#device-push-endpoints)), and `idle` is left
 to mean only what it says: a session that has not been given any work.
+
+### Subagents
+
+A session's subagents are rows on its card. A subagent is anything that runs
+under the session with an `agent_id` of its own: an Agent-tool subagent
+(foreground, background or nested), a dynamic-workflow agent, a Codex
+sub-agent thread, an in-process teammate, a `/fork`. Nested ones are listed
+flat, beside the rest. Until 1.7.0 their tool calls landed on the session's
+one line, a post apiece, so ten subagents running in parallel took turns
+overwriting it and the session's own reading was lost. Now the line stays the
+session's, and each row says what its subagent was asked to do, its state, and
+what it is doing. A board lists up to three rows on a card, two on a phone —
+the oldest, each keeping its place until it finishes, with any subagent
+waiting on approval always among them — and a footer counts the rest:
+"+7 more · 15 done". The session screen lists them all.
+
+**When a subagent is posted.** Its events arrive with the session's
+`session_id` and its own `agent_id`, and the hook posts them on the session's
+webhook as an `agent` object ([docs/api.md](api.md#subagents)), under a hash of
+that id:
+
+- when it starts (`SubagentStart`), with its label;
+- when its status class changes — `planning`, `coding`, `testing`,
+  `blocked` — carrying the tool call that changed it, described as the
+  session's own would be ("Delegating: &lt;task&gt;" for a launch of its own);
+- when it finishes: `SubagentStop`, its background task's notification, or a
+  failed launch;
+- and, while its class stays the same, what it is now doing when that changed,
+  **at most once a minute**.
+
+That is about four posts a subagent where there used to be one per tool call,
+some 22 each, and nothing at all while a subagent keeps doing the same thing.
+A post the board refused — a `429`, a `5xx`, a timeout — goes again with the
+next event that calls for it: the hook writes down a class, a label or a
+finish only once the board has confirmed it, so the next tool call of the same
+class repeats a lost class change, and a background task's notification
+repeats a lost stop. The once-a-minute refresh is the exception, on purpose:
+it notes its attempt before sending, so a refresh the board refused waits a
+full minute before the next, and a board that is shedding load is not asked
+again on every tool call.
+
+**Labels.** In detail mode a row's label is what its subagent was asked to do,
+cut to 64 characters:
+
+- an Agent-tool subagent: the task description its launch carried. Launches
+  made in parallel can start in either order, so the hook takes the oldest
+  pending launch as a guess and puts it right from Claude Code's own record of
+  the launch (`agent-<id>.meta.json`, beside the subagent's transcript) at the
+  subagent's first tool call, or from a background launch's result;
+- a workflow agent: its label in the workflow run's journal;
+- a Codex sub-agent: its nickname from its rollout (`agent_nickname`), else
+  the last part of its agent path.
+
+With none, the board shows "Subagent N", N being where it started in the
+turn's order.
+
+**Approvals.** Claude Code's `Notification` does not say which thread is
+asking. Its `PermissionRequest` does, and fires the moment the prompt appears,
+so the hook writes itself a note there and posts nothing. The `Notification`
+that follows a prompt still unanswered after about six seconds claims the
+oldest note at least two seconds old — among those for the tool it names, when
+its message names one. A subagent's note blocks that subagent's row, and the
+card reads "Needs approval: &lt;label&gt;", with "+1" for each other subagent
+waiting; the session's own note blocks the session, as before. A thread's
+notes go when it makes its next tool call, because its prompts were answered.
+A prompt the hook cannot pin on anyone — a sandbox network prompt, a question
+— blocks the card from the session's side, flagged `unattributed`, and while
+subagents are running the next of them to make progress clears it, as the
+next subagent tool call did before 1.7.0. Nothing reports an approval as such,
+so an approved row stays blocked until its subagent next posts. A Codex
+sub-agent asks through `PermissionRequest`, checked for auto-review exactly as
+the root's is (see [Who answers an approval](#who-answers-an-approval)).
+
+**Background subagents.** A turn can end while background subagents or a
+workflow still run. `Stop` then lists them, from Claude Code's
+`background_tasks`, and the card keeps their rows and reads their busiest
+state with "N subagents still running": a 1.7.0 board draws it as *working*,
+not *done*, and nothing pushes done. As each finishes, Claude Code hands the
+session a prompt made of `<task-notification>` blocks. The hook reads each
+block's id, status and summary — never its result — finishes the matching row
+(`failed` when the block's status is failed, killed or blocked), and posts the
+prompt as "Reading subagent results". The card carries that line into the
+session's report turn, and the done push goes out when that turn ends, once.
+
+**Failures.** A row turns failed when its launch fails (`PostToolUseFailure` on
+the `Agent` call: "Failed: &lt;first line of the error&gt;", or "Stopped" when
+you interrupted it), or when its background task's notification says it
+failed or was killed. `SubagentStop` says nothing about how a subagent ended,
+so without one of those it counts as done. Workflow agents and Codex
+sub-agents have no failure signal at all and always count as done. A failed
+row stays listed, with its reason, until the session's turn is over.
+
+**What the hook keeps.** Every event runs in a process of its own, so knowing
+which subagents started, and what the board was last told about each, takes
+state between runs. It lives in a directory of yours under the system temp
+directory (`agstatus-subtasks-<uid>-<hash>`, mode `0700`, a `0600` file per
+subagent). The hook checks that it is a real directory, owned by you and closed
+to everyone else, before reading or writing anything there, and otherwise
+keeps no state at all. Files go after ten minutes to a day, depending on what
+they hold, and a session's whole directory at `SessionEnd`, or once it is a
+day old. Losing any of it costs a label or a post, never an event.
+
+**Subagents the hook never saw start** are reported as before 1.7.0: their
+tool calls on the session's line, and no row. That is what an install
+gets with the new hook but the old registrations, with an unusable temp
+directory, or with Codex entries not trusted yet — and none of those can leave
+a row behind on the board.
+
+**In minimal mode** a subagent is "Subagent N". No label is read or sent; its
+activity is the tool's name when that is one of `Edit`, `Write`, `MultiEdit`,
+`NotebookEdit`, `apply_patch`, `Bash`, `Agent`, `Task`, `WebSearch`,
+`WebFetch`, `Workflow`, `Read`, `Glob`, `Grep` or `Skill`, and otherwise a fixed
+word — `Needs approval`, `Failed`, `Stopped`, `Blocked` (an MCP tool's name
+names its server, so it never goes out); and the hook reads no `meta.json`,
+journal or rollout for it. In either mode the raw `agent_id` stays on the
+machine — it can carry words of a `/fork` directive or a teammate's name — and
+so does `agent_type`.
 
 ### Card names and projects
 
@@ -396,23 +538,50 @@ stay apart before they have titles. The per-project token totals still file a
 worktree's spend under the worktree folder; see
 [Where the tokens went](#where-the-tokens-went).
 
-The split is visible on the cards. Every board — web, iOS and Android —
-prints the project beside the name only when the two differ. A titled card
-nearly always differs, so it reads as where that work is happening ("Fix the
-login bug · in backend"); an untitled card grows the directory once the
-session has moved — exactly when that is worth saying. It also shows it from
-the first event at a Claude worktree root, where the name is the worktree's own
-folder and the project its repository, so `claude --worktree feature-x` with no
-`/rename` reads "feature-x · in my-repo" without having moved. Any other
-session that never left home shows nothing extra.
+**What the boards group by.** From 1.7.0 the boards — web, iOS and Android —
+show a section per project, and a session's project is the folder it
+*started* in: the server remembers the first usable `project` it hears for
+each session, as its `homeProject`, and keeps it for the session's life (see
+[the session object](api.md#the-session-object)). So the live `project`
+never moves a card: a session that starts in `acme-api` and runs `cd web`
+stays in the acme-api section. The hook sends nothing new for this — the
+server works it out from what it already gets — so the grouping is right on
+every machine as soon as the server is, with no reinstall. With the Node
+hook a Claude worktree root counts as its repository, as its `project` does;
+the deprecated bash hook posts the worktree's own folder, so there each
+worktree is a section of its own. A session with no
+usable folder sits in **No project**, the last section, and leaves it once,
+when its first real folder arrives: an agent macOS started at `/`, which
+the Node hook reports as an empty `project` and the bash hook as `/`; a
+folder named by a bare UUID; a folder whose name is white space alone, which
+both hooks post as named; a raw webhook post with a blank `project` or
+none. The server and every board apply one rule for that (see
+[the session object](api.md#the-session-object)). A session
+started inside a subfolder, say `ios/`, lives under that subfolder's name.
+Sections run in name order and never reorder because one got busy. A
+section is a folder name and nothing more: two checkouts called `api` share
+one, and one repository checked out under two names makes two.
+
+The split is visible on the cards. From 1.7.0 every board prints the live
+folder, "in web", only when it is a real folder that differs from both the
+card's section and its name: when the session has moved away from where it
+started. A session that never left home shows nothing extra, titled or not,
+since its section already says where it is; one titled "Fix the login bug"
+that ran `cd web` says "in web" under its acme-api label. With the Node hook
+a session at a Claude worktree root sits in its repository's section, so
+`claude --worktree feature-x` with no `/rename` is a card called "feature-x"
+under my-repo. (Up to 1.6.5 the boards printed the project whenever it
+differed from the name, so a titled card nearly always carried it.)
 
 ## Plan-usage bars
 
 The Node hook also feeds the dashboard's plan-limit bars. It runs on quiet
-events (`SessionStart`, `UserPromptSubmit`, `Stop`, `Notification`,
-`PermissionRequest`), at most once every 5 minutes per board and source, and
-reports only percentages and reset times
-(`POST <board>/usage` — see [docs/api.md](api.md#plan-usage)).
+events (`SessionStart`, Claude Code's `UserPromptSubmit`, `Stop`,
+`Notification`, Codex's `PermissionRequest`), at most once every 5 minutes per
+board and source, and reports only percentages and reset times
+(`POST <board>/usage` — see [docs/api.md](api.md#plan-usage)). The events
+1.7.0 registered do not report: the subagent events, Claude Code's
+`PermissionRequest`, which posts nothing, and Codex's `UserPromptSubmit`.
 
 A bar belongs to the board and the agent, never to a card. The server keeps
 one set of windows per board per agent, and every session of that agent
@@ -461,11 +630,25 @@ inside Claude Code):
 
 `PreToolUse` is excluded for Claude, whose report costs a network round trip
 and which fires between every tool call. Codex reads a local file, and
-`PreToolUse` is most of what it fires at all, so it reports there too — the
-throttle bounds the work either way.
+`PreToolUse` is most of what it fires at all, so it reports there too, a
+sub-agent's included (otherwise the bars would freeze while a root waits on its
+sub-agents) — the throttle bounds the work either way.
 
-Set `AGSTATUS_USAGE=off` in the settings `env` block (Claude Code) or add it
-to the command prefix in `hooks.json` (Codex) to turn this off entirely. The
+`AGSTATUS_USAGE=off` turns this off entirely, and with it the token totals
+in [Where the tokens went](#where-the-tokens-went). The hook reads it from its
+environment and nowhere else. For Claude Code, set it in the settings `env`
+block, where `agstatus init` leaves it alone. Codex has no settings `env`
+block and `agstatus-hook.json` has no key for it, but the Codex CLI runs its
+hooks in the environment it was started in: export it in the shell you start
+`codex` from. For Codex Desktop, which is not started from your shell, no way
+is known; nothing that would reach its hooks' environment has been checked.
+Don't add it to the command in `~/.codex/hooks.json`. Codex trusts a hook by a
+hash of its command, so it stops running the edited one, cards and all, until
+you trust it again (Settings → Hooks in Codex Desktop, `/hooks` in the Codex
+CLI). And the next `agstatus init`, which the installer runs on every upgrade,
+writes the bare command back. To Codex that is a changed command once more:
+the hook goes silent until you trust it again, and only then reports usage
+again. `agstatus init` says so when every AgStatus entry carried the edit. The
 bash hook reports no usage at all; a board simply shows no bars until
 something reports it.
 
@@ -519,10 +702,12 @@ CLAUDE_STATUS_URL="https://<server>/w/<token>" AGSTATUS_SOURCE=codex \
 It reads every log from the start and reports the lot; re-running it is safe,
 because the server replaces whole days rather than adding to them.
 
-Dashboards only show the bars of agents that currently have sessions on the
-board (each session carries a `source` tag: `claude`, or `codex` via the
-`AGSTATUS_SOURCE=codex` prefix the Codex integration embeds) — a Claude-only
-evening doesn't display Codex limits, and vice versa.
+Dashboards show the bars of the agents that have sessions on the board, or,
+on a board with no sessions, of every agent that reports limits. Each session
+carries a `source` tag, `claude` unless the hook is told otherwise; the Codex
+copy of the hook reads `"source": "codex"` from the `agstatus-hook.json` that
+`agstatus init` writes beside it. So a Claude-only evening doesn't display
+Codex limits, and vice versa.
 
 Caveat: neither source is a documented, stable interface — the Anthropic
 usage endpoint has changed before, and the Codex rollout format is internal.
@@ -577,8 +762,9 @@ validates a command, which terminals get pane-level focus — is in
 
 Codex users: what Codex trusts is a hash of the registered command string, so
 an upgrade that changes that command leaves the stored hash stale and the hook
-unrun — silently. If Codex sessions stop reporting after an upgrade, run
-`/hooks` inside Codex and re-approve the AgStatus entries; see
+unrun — silently. If Codex sessions stop reporting after an upgrade, trust
+the AgStatus entries again: in Codex Desktop under Settings → Hooks, in the
+Codex CLI with `/hooks`; see
 [OpenAI Codex specifics](#openai-codex-specifics).
 
 ### Installing the listener (macOS)
@@ -827,19 +1013,35 @@ commands print which switch is in force, where the launcher is, and
 1. The same hook script is copied to `~/.codex/hooks/agstatus-hook.js`.
 2. Hook registrations are merged into `~/.codex/hooks.json` (backup written
    alongside; existing hooks are preserved; re-running replaces only the
-   AgStatus entries). Codex has no settings `env` block, so the board URL is
-   embedded in the registered command string — you can read or change it
-   right in `hooks.json`.
-3. **One-time step:** Codex requires you to trust new hooks. Run `/hooks`
-   inside Codex and approve the AgStatus entries — until then they won't fire.
-   Codex trusts a hook by hashing its command, so a release that changes that
-   command invalidates the stored hash: an existing install stays silent —
-   no error anywhere — until you re-run `/hooks`. Both `agstatus init` and
-   the installer say so when they finish setting Codex up.
+   AgStatus entries). Codex has no settings `env` block, so the board URL,
+   and the secret if there is one, go in `~/.codex/hooks/agstatus-hook.json`
+   beside the script, where you can read or change them; the registered
+   command is a bare `node "<script>"` on every platform.
+3. **One-time step:** Codex requires you to trust new hooks. In Codex
+   Desktop, open Settings → Hooks; in the Codex CLI, run `/hooks`. Approve
+   the AgStatus entries there — until then they won't fire. Codex trusts a
+   hook by hashing its command, so a release that changes that command
+   invalidates the stored hash: an existing install stays silent — no error
+   anywhere — until you trust it again. Both `agstatus init` and the
+   installer say so when they finish setting Codex up.
 
 Events wired: `SessionStart`, `PreToolUse` (matcher
-`^(Bash|apply_patch|Edit|Write)$`), `PermissionRequest`, and `Stop`, each with
-a 10 s timeout (the script itself exits within ~4 s).
+`^(Bash|apply_patch|Edit|Write)$`), `PermissionRequest`, `Stop`,
+`UserPromptSubmit`, `SubagentStart` and `SubagentStop`, each with a 10 s
+timeout (the script itself exits within ~4 s). The last three are new in 1.7.0:
+`UserPromptSubmit` marks a root turn starting — the card reads "Processing
+prompt", and the prompt itself is never sent — and the other two follow
+sub-agent threads, which the board lists on their root's card (see
+[Subagents](#subagents)). Codex fires `SubagentStop` at the end of every
+sub-agent turn, so a sub-agent you re-task comes back as a row with its next
+change of state.
+
+An upgrade from 1.6 adds those three entries under the command Codex already
+trusts. Whether Codex wants entries added that way trusted again is not known,
+so `agstatus init` says so when it adds them: if Codex lists an AgStatus
+entry as untrusted (Settings → Hooks in Codex Desktop, `/hooks` in the Codex
+CLI), trust it once. Until then each sub-agent is reported as before 1.7.0,
+on its root's line.
 
 Codex Desktop also starts short threads of its own and keeps no rollout for
 them. Examples are its suggestions (a run in the project folder, then a check
@@ -863,8 +1065,8 @@ the helpers.
 | ---------------------- | ------- |
 | `CLAUDE_STATUS_URL`    | Required. Base URL the hook posts to — a board URL (`https://<host>/w/<token>`) or a legacy server origin. The hook appends `/webhook` and `/sessions/<id>` itself, and tolerates a trailing `/` or `/webhook`. |
 | `CLAUDE_STATUS_SECRET` | Optional. Sent as `X-Webhook-Secret` (legacy servers with `WEBHOOK_SECRET` set). Workspace boards don't need it — the token in the URL is the auth. |
-| `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text and prompts, and folder names instead of session titles (what `--minimal` sets). |
-| `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage (see [Plan-usage bars](#plan-usage-bars)). |
+| `AGSTATUS_DETAIL=off`  | Node hook only. Send tool names instead of command text and prompts, folder names instead of session titles, and "Subagent N" instead of what each subagent was asked to do (what `--minimal` sets). |
+| `AGSTATUS_USAGE=off`   | Node hook only. Never read or report plan usage, or the token totals (see [Plan-usage bars](#plan-usage-bars)). |
 | `AGSTATUS_FOCUS=off`   | Node hook only. Never add the `host` object to the payload or write the local session record, even when `~/.agstatus.json` has `"focus": true` (see [Focus](#focus-optional-opt-in)). |
 | `AGSTATUS_SOURCE`      | Node hook only. Agent kind tag on sessions (default `claude`; the Codex integration sets `codex`). Scopes which limit bars a dashboard shows. |
 | `AGSTATUS_DEBUG=1`     | Node hook only. Prints diagnostics to **stderr** (never stdout). The hook fails silently by design, so this is how you find out why plan-usage bars stopped appearing. |
@@ -874,8 +1076,9 @@ the helpers.
 > **Deprecated.** This hook still ships and still works, and nothing here has
 > stopped being true — but it is no longer where new features land, and it is
 > missing three that the Node hook has: **plan-usage bars** (it reports no
-> usage at all), **card removal on `SessionEnd`**, and **Codex support** (no
-> `PermissionRequest` or `apply_patch` handling). Prefer
+> usage at all), **subagent rows** (a subagent's tool calls still land on
+> its parent's line), and **Codex
+> support** (no `PermissionRequest` or `apply_patch` handling). Prefer
 > [the installer](#install) or the
 > [Claude Code plugin](#claude-code-plugin); keep reading only if you want a
 > hook you can read end to end in one sitting, or you would rather not have

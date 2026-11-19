@@ -4,9 +4,16 @@
  *
  * Posts session status to an AgStatus dashboard. Both tools deliver the hook
  * payload as JSON on stdin with the same core fields (hook_event_name,
- * session_id, cwd). Wired to SessionStart, PreToolUse, Stop, and
- * UserPromptSubmit + Notification + SessionEnd (Claude Code) /
- * PermissionRequest (Codex).
+ * session_id, cwd). Wired to SessionStart, UserPromptSubmit, PreToolUse,
+ * PermissionRequest, SubagentStart, SubagentStop and Stop on both, plus
+ * Notification, SessionEnd, PostToolUse and PostToolUseFailure (Claude Code).
+ *
+ * Subagents — anything that runs under the session with an `agent_id` of its
+ * own — are posted as an `agent` object on the parent session's webhook,
+ * keyed by a hash of that id, and only when one starts, stops or changes
+ * status class, or, at most once a minute, when what it is doing changes
+ * (see "Subagents" below). The board lists them on the parent's card; their
+ * tool calls no longer overwrite the parent's own line.
  *
  * IMPORTANT: this script must never write to stdout — Codex interprets hook
  * stdout as behavior-control JSON, and a stray print could block a tool call.
@@ -319,8 +326,29 @@ function describeResearch(tool, input) {
       return 'Fetching a page';
     }
   }
-  // Task: the subagent's own description of the job it was handed.
+  // Agent (Task before Claude Code renamed it): the subagent's own
+  // description of the job it was handed.
   return str(input.description) || 'Delegating a subtask';
+}
+
+// How much of a Workflow script is searched for its description: the meta
+// block it opens with, never the whole program.
+const WORKFLOW_SCRIPT_HEAD_CHARS = 4 * 1024;
+// `description: '…'` in that meta block, in any of the three quotes JS allows.
+const WORKFLOW_DESCRIPTION_RE =
+  /\bdescription\s*:\s*(?:'([^'\n]{1,200})'|"([^"\n]{1,200})"|`([^`]{1,200})`)/;
+
+/**
+ * A Workflow call, by what the script says it does. Its tool_input carries
+ * only the program, and the program names itself in `meta.description` —
+ * which the workflow's author wrote for people to read.
+ */
+function describeWorkflow(input) {
+  const script =
+    typeof input.script === 'string' ? input.script.slice(0, WORKFLOW_SCRIPT_HEAD_CHARS) : '';
+  const m = WORKFLOW_DESCRIPTION_RE.exec(script);
+  const description = m ? str(m[1] || m[2] || m[3]).replace(/\s+/g, ' ') : '';
+  return description ? `Running workflow: ${description}` : 'Running a workflow';
 }
 
 const REMINDER_OPEN = '<system-reminder>';
@@ -390,6 +418,15 @@ function readStdin() {
   });
 }
 
+/**
+ * One request: true when the board answered 2xx, false for anything else — an
+ * error status, a 429, a timeout, a board that is down. Never rejects, so a
+ * run that sends several requests at once cannot lose the rest to one failure.
+ *
+ * Only subagent posts read the answer (see confirmAgent): a subagent is posted
+ * once per status class, so a post that did not land must leave the next
+ * event free to send it again. Everything else is fire-and-forget, as before.
+ */
 async function send(method, url, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
@@ -399,13 +436,17 @@ async function send(method, url, body) {
     if (body !== undefined) headers['content-type'] = 'application/json';
     const secret = configValue('CLAUDE_STATUS_SECRET', 'secret');
     if (secret) headers['x-webhook-secret'] = secret;
-    // Await the response, but its status/body are irrelevant: fire-and-forget.
-    await fetch(url, {
+    const res = await fetch(url, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
     });
+    return res.status >= 200 && res.status < 300;
+  } catch (err) {
+    // The last path segment only: the board URL itself is a capability token.
+    dbg(`${method} …${url.slice(url.lastIndexOf('/'))} failed: ${err && err.message ? err.message : String(err)}`);
+    return false;
   } finally {
     clearTimeout(timer);
   }
@@ -1358,7 +1399,10 @@ function loadProjectState(file) {
  */
 async function postRows(url, rows, perPost, wrap) {
   for (let i = 0; i < rows.length; i += perPost) {
-    await send('POST', url, wrap(rows.slice(i, i + perPost)));
+    // A chunk that did not land ends the report, as an unreachable board
+    // always did: the rest would meet the same board. The rows are absolute
+    // totals, so a later run that moves them sends them whole again.
+    if (!(await send('POST', url, wrap(rows.slice(i, i + perPost))))) return;
   }
 }
 
@@ -1436,8 +1480,8 @@ async function reportProjectUsage(base, full) {
   // has one kind of change and not the other, which in a shared body would
   // mean posting an empty array that the receiving end has to accept as "no
   // change" instead of rejecting as a malformed report. Additive either way: a
-  // board that has never heard of /usage/sessions answers 404, and the hook —
-  // which ignores response status by design — carries on reporting projects.
+  // board that has never heard of /usage/sessions answers 404, and the hook
+  // carries on reporting projects — each endpoint stops only its own report.
   //
   // The server replaces whole days and whole session totals, so chunks are
   // independent; a partial failure just leaves those rows to a later run.
@@ -2686,12 +2730,1605 @@ function forgetSessionName(base, session) {
   writeSessionNames(file, names);
 }
 
+/**
+ * The name for a post that must not pin one: a subagent's post, or a 1.6.3
+ * path event. It reads the map and never writes it, and never reads a
+ * transcript — the parent's own events keep the pin current. The choice is
+ * pinnedName()'s (a title only while titles are on, else the folder), and
+ * with nothing pinned the event's own folder, unless that is a bare UUID: a
+ * card a subagent's post creates is never named by its session id.
+ */
+function lookupPinnedName(base, session, folder) {
+  const entry = loadSessionNames(sessionNameFile(base))[session];
+  const pinned = entry ? (TITLES && entry.title) || entry.name : '';
+  if (pinned) return pinned;
+  return folder !== '' && !UUID_NAME_RE.test(folder) ? folder : agentLabel();
+}
+
+// ---- Subagents ----------------------------------------------------------------
+//
+// A subagent is anything that runs under the session with an `agent_id` of its
+// own: an Agent-tool subagent (foreground, background or nested), a workflow
+// agent, a Codex sub-agent thread, an in-process teammate, a /fork. Each one
+// reaches the board as an `agent` object on the PARENT's webhook post, and the
+// board lists it as a row on the parent's card. Its tool calls used to land on
+// the parent's own line instead, one post apiece, so ten parallel subagents
+// took turns overwriting it and the parent's own reading was lost.
+//
+// A subagent is posted when it starts, when it stops and when its status class
+// changes (planning, coding, testing, blocked) — about four posts each, against
+// the twenty-odd tool calls it used to post. Within a class it posts only what
+// it is now doing, when that changed, and at most once a minute
+// (AGENT_REFRESH_MS). Holding the rest back takes memory between hook runs,
+// since every event is its own process: which subagents this hook saw start,
+// the class, activity and label the board last confirmed for each, and when
+// each last posted. That lives in a private directory under the system temp
+// dir (subtaskRoot), one small file per subagent, so the ten or thirty that
+// run at once never race on a shared file. It is scratch of the same kind as
+// the names map: losing it costs a post or a label, never an event.
+//
+// A subagent this hook holds no state for is UNKNOWN, and is posted exactly as
+// 1.6.3 posted it: on the parent's line, with no `agent`. A machine with the
+// new script but the old registrations (no SubagentStart, so nothing is ever
+// recorded), or with an unusable temp dir, therefore gets the old card and can
+// never leave a row behind on the board.
+//
+// The raw agent_id never leaves the machine (agentKey). In minimal mode nothing
+// that describes a subagent does either: no label, and only tool names.
+
+// An agent_id is at most 81 characters on Claude and 36 on Codex. Anything
+// empty, longer than this or not a string is not an id, and the event is
+// dropped rather than taken for the main thread's.
+const AGENT_ID_MAX_CHARS = 256;
+// The server's own bounds for a label and an activity line.
+const LABEL_MAX = 64;
+const ACTIVITY_MAX = 80;
+// A permission marker's description, which "Approve: " is later put before.
+const MARKER_ACT_MAX = 72;
+// A <task-notification> summary, read only for a failure's reason.
+const SUMMARY_MAX = 200;
+// turn.running holds at most this many keys. A longer list is left out whole
+// rather than cut: the server closes every agent row missing from it, so a
+// partial list would close subagents that are still running.
+const TURN_RUNNING_MAX = 64;
+// <task-notification> blocks taken from one prompt, and how far into it.
+const NOTIFICATIONS_PER_PROMPT_MAX = 8;
+const NOTIFICATION_SCAN_MAX_CHARS = 64 * 1024;
+// How old a launch record may be and still name the next subagent to start.
+// A start follows its PreToolUse(Agent) within milliseconds; the window only
+// has to outlast this hook's own POST on that PreToolUse.
+const LAUNCH_CLAIM_WINDOW_MS = 10 * 1000;
+// Which permission markers a Notification(permission_prompt) may claim. Claude
+// Code notifies a prompt about six seconds after it appears, so a marker under
+// 2 s old cannot be the prompt being notified; one over 30 min old is a prompt
+// answered without a hooked call to show for it.
+const PERM_MARKER_MIN_AGE_MS = 2 * 1000;
+const PERM_MARKER_MAX_AGE_MS = 30 * 60 * 1000;
+// Posts a subagent may spend on its label alone, when a firm label (meta.json,
+// the launch result) arrives after its start went out with a guess or none.
+const LABEL_POSTS_MAX = 2;
+// Agent-tagged events at which meta.json is looked for after a start. Claude
+// Code writes it by the subagent's first tool call, so the first try finds it.
+const META_TRIES = 3;
+// Every read of a file is bounded, ours and Claude Code's alike.
+const STATE_FILE_MAX_BYTES = 8 * 1024;
+const META_FILE_MAX_BYTES = 8 * 1024;
+const JOURNAL_TAIL_BYTES = 64 * 1024;
+const JOURNALS_MAX = 4;
+const JOURNAL_MAX_AGE_MS = 15 * 60 * 1000;
+const WORKFLOW_RUNS_SCAN_MAX = 64;
+// Per session directory: entries each kind may hold (a full one refuses new
+// files), and how long each kind is kept.
+const SUBTASK_CAPS = { launch: 64, perm: 64, runs: 64, agents: 2048, labels: 2048, bind: 2048 };
+const SUBTASK_AGES_MS = {
+  launch: 10 * 60 * 1000,
+  perm: 30 * 60 * 1000,
+  runs: 24 * 60 * 60 * 1000,
+  agents: 24 * 60 * 60 * 1000,
+  labels: 24 * 60 * 60 * 1000,
+  bind: 24 * 60 * 60 * 1000,
+};
+// A whole session directory goes after a day without a write. Codex never
+// sends SessionEnd, so its directories only ever leave this way.
+const SUBTASK_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Pruning is bounded per run, like every other read on an event: entries and
+// sibling directories examined, sibling directories removed (each can hold a
+// few thousand files), and time. It runs after the event's posts have gone
+// out, but Stop is a synchronous hook, so Claude Code still waits for it;
+// whatever a run leaves is the next run's.
+const SUBTASK_PRUNE_MAX_ENTRIES = 512;
+const SUBTASK_PRUNE_MAX_SESSIONS = 64;
+const SUBTASK_PRUNE_MAX_REMOVALS = 4;
+const SUBTASK_PRUNE_BUDGET_MS = 200;
+// What minimal mode may say a subagent is doing: tool names that describe
+// nothing of the work. An MCP tool's name names a server, so it never goes out
+// in minimal mode, here as on the parent's own line.
+const MINIMAL_TOOL_NAMES = new Set([
+  'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'apply_patch', 'Bash', 'Agent', 'Task',
+  'WebSearch', 'WebFetch', 'Workflow', 'Read', 'Glob', 'Grep', 'Skill',
+]);
+// How often a running subagent may post a new activity within its status class
+// (the owner's rule: at most once a minute). A known subagent whose class has
+// not changed posts what it is now doing when that differs from what the board
+// last confirmed, and this long has passed since both its last confirmed post
+// and its last refresh attempt. The attempt counts even when the board refused
+// it — a 429, a 5xx, a timeout — so a board shedding load is not asked again
+// on every tool call; a class change or a stop is never held back by it, and
+// keeps posting until the board confirms it. AGSTATUS_AGENT_REFRESH_MS sets it
+// for the tests only; it is internal, not a setting.
+const AGENT_REFRESH_MS = (() => {
+  const v = Number(process.env.AGSTATUS_AGENT_REFRESH_MS);
+  return Number.isInteger(v) && v > 0 ? v : 60 * 1000;
+})();
+
+const AGENT_KEY_RE = /^[0-9a-f]{24}$/;
+// A raw id put into a file name (meta.json) or a search (a journal): Claude's
+// own grammar, which nothing can use to step out of a directory.
+const PATH_AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const RUN_ID_RE = /^wf_[A-Za-z0-9_-]{1,64}$/;
+const SESSION_DIR_RE = /^[0-9a-f]{16}$/;
+const MARKER_NAME_RE = /^(main|[0-9a-f]{24})-(\d{1,16})\.json$/;
+const RUNNING_STATES = new Set(['planning', 'coding', 'testing', 'blocked']);
+const AGENT_STATES = new Set(['planning', 'coding', 'testing', 'blocked', 'done', 'failed']);
+const AGENT_KINDS = new Set(['agent', 'workflow', 'codex']);
+// Half an emoji: a high surrogate with no low after it, or a low with no high
+// before it. Swift's JSONDecoder rejects the whole snapshot over one.
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+/** An id as a payload carries it — a non-empty string of sane length — or ''. */
+const idOf = (v) => (typeof v === 'string' && v !== '' && v.length <= AGENT_ID_MAX_CHARS ? v : '');
+/** A session id that may be joined into a path (see SESSION_ID_RE). */
+const pathSafeSession = (s) => SESSION_ID_RE.test(s) && s !== '.' && s !== '..';
+
+/**
+ * A subagent's id on the wire: 24 hex digits of
+ * sha256(base + "\n" + SOURCE + "\n" + session + "\n" + agent_id). The raw id
+ * never leaves the machine, in either mode: a /fork's id carries the first
+ * words of its directive, and a teammate's carries the teammate's name. The
+ * same subagent always maps to the same key on one board, and to unrelated
+ * ones on any other.
+ */
+function agentKey(base, session, agentId) {
+  return sha256(`${base}\n${SOURCE}\n${session}\n${agentId}`).slice(0, 24);
+}
+
+/**
+ * Text for a label, an activity, a marker or a summary: whitespace folded,
+ * control characters out, trimmed, half emoji out, then cut to `max` without
+ * leaving half of one at the cut. The server cleans the same way in the same
+ * order, so what the hook sends is what the board keeps. '' for a non-string.
+ */
+function clip(v, max) {
+  if (typeof v !== 'string') return '';
+  let s = v
+    .replace(/\s+/g, ' ')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .trim()
+    .replace(LONE_SURROGATE_RE, '');
+  if (s.length > max) {
+    s = s.slice(0, max);
+    const last = s.charCodeAt(s.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) s = s.slice(0, -1);
+  }
+  return s;
+}
+
+/**
+ * This board's subagent state directory, or null when it cannot be trusted:
+ *   <tmpdir>/agstatus-subtasks-<uid>-<sha256(base + "\n" + SOURCE)[0..12]>
+ *
+ * The names map already lives in the temp dir, and for the same reason: it
+ * has to work with Focus off, and host.test.ts pins that nothing is written
+ * under the Focus state dir then. On macOS and Windows the temp dir is the
+ * user's own; on Linux it is the shared /tmp, where another account can create
+ * a directory by this predictable name first. So the root is made 0700 and
+ * not recursively, and one that already exists must be a real directory (not
+ * a link), ours, and closed to everyone else. Anything else and this event
+ * runs stateless: no subagent is known, so each one takes the 1.6.3 path, and
+ * a start posts nothing. Below a verified root nobody else can create a file.
+ *
+ * `create` is false wherever a missing root simply means "nothing recorded
+ * yet" — reads, drops and prunes never create it.
+ */
+function subtaskRoot(base, create) {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const root = path.join(
+    os.tmpdir(),
+    `agstatus-subtasks-${uid === null ? 'w' : uid}-${sha256(`${base}\n${SOURCE}`).slice(0, 12)}`
+  );
+  let st;
+  try {
+    st = fs.lstatSync(root);
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT' || !create) return null;
+    try {
+      fs.mkdirSync(root, { mode: 0o700 });
+      return root;
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') return null;
+      try {
+        st = fs.lstatSync(root); // another process won the race: check what it made
+      } catch {
+        return null;
+      }
+    }
+  }
+  if (!st.isDirectory()) return null;
+  if (uid !== null && (st.uid !== uid || (st.mode & 0o077) !== 0)) {
+    dbg('subtasks: state dir is not ours alone — running stateless');
+    return null;
+  }
+  return root;
+}
+
+/**
+ * The verified root and this session's directory under it. The session's
+ * directory is named by a hash of its id, so no id ever becomes a path, and
+ * it is created lazily by the first write.
+ */
+function subtaskDir(base, session, create) {
+  const root = subtaskRoot(base, create);
+  return root ? { root, dir: path.join(root, sha256(session).slice(0, 16)) } : null;
+}
+
+/**
+ * A small JSON object from disk, or null for anything else: missing, not a
+ * regular file, over `maxBytes`, unparseable, not an object.
+ *
+ * Never blocks. The open is O_NONBLOCK, so a FIFO planted where a file belongs
+ * opens at once and is then turned away by fstat before a byte is read — a
+ * blocking open would stall the event loop, which the safety exit cannot
+ * interrupt (see readTranscriptTitle). Our own state files are also opened
+ * O_NOFOLLOW: a link in their place is refused rather than read through.
+ * Either flag is 0 where the platform lacks it.
+ */
+function readJsonFile(file, maxBytes, noFollow) {
+  let fd;
+  try {
+    const flags =
+      fs.constants.O_RDONLY |
+      (fs.constants.O_NONBLOCK || 0) |
+      (noFollow ? fs.constants.O_NOFOLLOW || 0 : 0);
+    fd = fs.openSync(file, flags);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    const buf = Buffer.alloc(st.size);
+    let filled = 0;
+    while (filled < buf.length) {
+      const got = fs.readSync(fd, buf, filled, buf.length - filled, filled);
+      if (got <= 0) break;
+      filled += got;
+    }
+    const obj = JSON.parse(buf.toString('utf8', 0, filled));
+    return isObject(obj) ? obj : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+}
+
+/** One of our own state files: version 1, or absent. */
+function readStateFile(file) {
+  const obj = readJsonFile(file, STATE_FILE_MAX_BYTES, true);
+  return obj && obj.v === 1 ? obj : null;
+}
+
+/** At most `max` names from a directory — none if it is missing. */
+function listDir(folder, max) {
+  const names = [];
+  let dir;
+  try {
+    dir = fs.opendirSync(folder);
+    for (let i = 0; i < max; i += 1) {
+      const entry = dir.readSync();
+      if (!entry) break;
+      names.push(entry.name);
+    }
+  } catch {
+    // Missing or unreadable: nothing recorded there.
+  } finally {
+    if (dir) {
+      try {
+        dir.closeSync();
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+  return names;
+}
+
+function lexists(file) {
+  try {
+    fs.lstatSync(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Writes `<dir>/<kind>/<name>` whole: a temp file beside it, created
+ * exclusively ('wx', so a link already sitting at that name is never written
+ * through) under a random name rather than the pid, then renamed over the
+ * target. 0600 files in 0700 directories. A full directory (SUBTASK_CAPS)
+ * refuses a new file. False whenever the file did not land.
+ */
+function writeStateFile(dir, kind, name, obj) {
+  const folder = path.join(dir, kind);
+  const target = path.join(folder, name);
+  let tmp = '';
+  try {
+    fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+    if (!lexists(target)) {
+      const held = listDir(folder, SUBTASK_CAPS[kind] + 64).filter((n) => n.endsWith('.json'));
+      if (held.length >= SUBTASK_CAPS[kind]) {
+        dbg(`subtasks: ${kind}/ is full`);
+        return false;
+      }
+    }
+    const candidate = `${target}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    const fd = fs.openSync(candidate, 'wx', 0o600);
+    tmp = candidate;
+    try {
+      fs.writeFileSync(fd, JSON.stringify(obj));
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, target);
+    return true;
+  } catch (err) {
+    // Only a temp file this run created is ours to clean up.
+    if (tmp) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        /* swept with the session */
+      }
+    }
+    dbg(`subtasks: ${kind} write failed: ${err && err.message ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * A subagent's own record, re-validated field by field on the way in:
+ *   {v, seen, kind, cls?, clsAt?, runCls?, label?, labelSrc?, labelSent?,
+ *    labelPosts, activitySent?, lastPostAt?, refreshAt?, metaTries, runId?,
+ *    claim?, at}
+ * `cls` is the last state the board CONFIRMED (a 2xx), never one merely sent;
+ * `runCls` the last running one, which a finished subagent's posts still
+ * carry as their compat status (see compatStatus). `lastPostAt` is when the
+ * last confirmed post was made, `refreshAt` when the last activity refresh was
+ * tried, confirmed or not (see AGENT_REFRESH_MS).
+ */
+function readAgent(dir, key) {
+  const raw = readStateFile(path.join(dir, 'agents', `${key}.json`));
+  if (!raw || raw.seen !== true) return null;
+  const num = (v) => (typeof v === 'number' && isFinite(v) ? v : 0);
+  const st = {
+    v: 1,
+    seen: true,
+    kind: AGENT_KINDS.has(raw.kind) ? raw.kind : 'agent',
+    labelPosts: Math.max(0, Math.floor(num(raw.labelPosts))),
+    metaTries: Math.max(0, Math.floor(num(raw.metaTries))),
+    at: num(raw.at),
+  };
+  if (AGENT_STATES.has(raw.cls)) {
+    st.cls = raw.cls;
+    st.clsAt = num(raw.clsAt);
+  }
+  if (RUNNING_STATES.has(raw.runCls)) st.runCls = raw.runCls;
+  const label = clip(raw.label, LABEL_MAX);
+  if (label) {
+    st.label = label;
+    st.labelSrc = raw.labelSrc === 'firm' ? 'firm' : 'tentative';
+  }
+  if (typeof raw.labelSent === 'string') st.labelSent = clip(raw.labelSent, LABEL_MAX);
+  if (typeof raw.activitySent === 'string') st.activitySent = clip(raw.activitySent, ACTIVITY_MAX);
+  if (num(raw.lastPostAt) > 0) st.lastPostAt = num(raw.lastPostAt);
+  if (num(raw.refreshAt) > 0) st.refreshAt = num(raw.refreshAt);
+  if (typeof raw.runId === 'string' && RUN_ID_RE.test(raw.runId)) st.runId = raw.runId;
+  if (idOf(raw.claim)) st.claim = raw.claim;
+  return st;
+}
+
+function writeAgent(dir, key, st) {
+  return writeStateFile(dir, 'agents', `${key}.json`, st);
+}
+
+/**
+ * The description a background launch's PostToolUse(async_launched) left in
+ * labels/<key> for a subagent it found no record of, or ''. That result and
+ * the subagent's SubagentStart fire in the same millisecond, so either hook
+ * process can get there first (see handleAgentStart and recordLaunchLabel).
+ */
+function launchedLabel(dir, key) {
+  const record = readStateFile(path.join(dir, 'labels', `${key}.json`));
+  return record ? clip(record.label, LABEL_MAX) : '';
+}
+
+/** launch/ and bind/ file name for a tool call: no tool_use_id becomes a path. */
+const toolUseFile = (toolUseId) => `${sha256(toolUseId).slice(0, 24)}.json`;
+
+/**
+ * A launch record: PreToolUse(Agent) saw a subagent launched by `by` (an agent
+ * key, or "main"). The subagent's own SubagentStart, a few milliseconds later,
+ * claims it for its label and its tool_use_id. Minimal mode stores no `desc`.
+ */
+function writeLaunch(dir, toolUseId, desc, by, at) {
+  const record = { v: 1, toolUseId, by, at };
+  if (desc) record.desc = desc;
+  return writeStateFile(dir, 'launch', toolUseFile(toolUseId), record);
+}
+
+/**
+ * Claims the OLDEST unclaimed launch record of the last LAUNCH_CLAIM_WINDOW_MS
+ * for subagent `key`, and binds its tool call to it tentatively.
+ *
+ * The oldest, because parallel Agent calls run their PreToolUse hooks at once
+ * (the tool is concurrency-safe) and this hook's own PreToolUse(Agent) does a
+ * title read, host detection and a POST before the subagent can start — so
+ * "Pre A, Pre B, Start A" happens, and the first launched usually starts first.
+ * A wrong guess is corrected by meta.json at the subagent's first tool call.
+ * The claim is an atomic rename out of launch/; losing it to another start
+ * means trying the next record.
+ */
+function claimOldestLaunch(dir, key, now) {
+  const folder = path.join(dir, 'launch');
+  const candidates = [];
+  for (const name of listDir(folder, SUBTASK_PRUNE_MAX_ENTRIES)) {
+    if (!/^[0-9a-f]{24}\.json$/.test(name)) continue;
+    const record = readStateFile(path.join(folder, name));
+    const toolUseId = record ? idOf(record.toolUseId) : '';
+    if (!toolUseId || toolUseFile(toolUseId) !== name || typeof record.at !== 'number') continue;
+    if (Math.abs(now - record.at) > LAUNCH_CLAIM_WINDOW_MS) continue;
+    candidates.push({ name, toolUseId, desc: clip(record.desc, LABEL_MAX), at: record.at });
+  }
+  candidates.sort((a, b) => a.at - b.at || (a.name < b.name ? -1 : 1));
+  for (const c of candidates) {
+    try {
+      fs.mkdirSync(path.join(dir, 'bind'), { recursive: true, mode: 0o700 });
+      fs.renameSync(path.join(folder, c.name), path.join(dir, 'bind', c.name));
+    } catch {
+      continue; // another start took it
+    }
+    writeStateFile(dir, 'bind', c.name, { v: 1, agentKey: key, firm: false });
+    return c;
+  }
+  return null;
+}
+
+/** Which subagent a tool call launched: firm from a result or meta.json, else a claim's guess. */
+function bindToolUse(dir, toolUseId, key, firm) {
+  return writeStateFile(dir, 'bind', toolUseFile(toolUseId), { v: 1, agentKey: key, firm });
+}
+
+function resolveToolUse(dir, toolUseId) {
+  const record = readStateFile(path.join(dir, 'bind', toolUseFile(toolUseId)));
+  return record && AGENT_KEY_RE.test(record.agentKey)
+    ? { key: record.agentKey, firm: record.firm === true }
+    : null;
+}
+
+/** A launch whose outcome is known needs no claiming; a stale record must not name a later start. */
+function consumeLaunch(dir, toolUseId) {
+  try {
+    fs.unlinkSync(path.join(dir, 'launch', toolUseFile(toolUseId)));
+  } catch {
+    /* claimed or consumed already */
+  }
+}
+
+/**
+ * A permission marker: `who` (an agent key, or "main") is asking for `tool`.
+ * The name carries the time, so a Notification can pick candidates by age
+ * without opening every file; two in one millisecond take the next free one.
+ */
+function writePermMarker(dir, who, tool, act, at) {
+  for (let t = at; t < at + 8; t += 1) {
+    const name = `${who}-${t}.json`;
+    if (lexists(path.join(dir, 'perm', name))) continue;
+    const record = { v: 1, who, tool, at: t };
+    if (act) record.act = act;
+    return writeStateFile(dir, 'perm', name, record);
+  }
+  return false;
+}
+
+/** A thread that moved on has had its prompts answered: its markers go. */
+function dropPermMarkers(dir, who) {
+  const folder = path.join(dir, 'perm');
+  for (const name of listDir(folder, SUBTASK_PRUNE_MAX_ENTRIES)) {
+    if (!name.startsWith(`${who}-`)) continue;
+    try {
+      fs.unlinkSync(path.join(folder, name));
+    } catch {
+      /* claimed or dropped already */
+    }
+  }
+}
+
+/**
+ * The marker a Notification(permission_prompt) is about, claimed so no other
+ * Notification can take it: among markers aged PERM_MARKER_MIN_AGE_MS to
+ * PERM_MARKER_MAX_AGE_MS, those for the tool the message names when it names
+ * one ("… to use Bash", the desktop app's wording — the terminal's names
+ * none), then the OLDEST, because queued prompts notify in arrival order. The
+ * claim renames it under a `c-` prefix, which no scan reads as a candidate.
+ */
+function claimPermMarker(dir, now, message) {
+  const folder = path.join(dir, 'perm');
+  let pool = [];
+  for (const name of listDir(folder, SUBTASK_PRUNE_MAX_ENTRIES)) {
+    const m = MARKER_NAME_RE.exec(name);
+    if (!m) continue;
+    const at = Number(m[2]);
+    if (now - at < PERM_MARKER_MIN_AGE_MS || now - at > PERM_MARKER_MAX_AGE_MS) continue;
+    const record = readStateFile(path.join(folder, name));
+    if (!record || record.who !== m[1]) continue;
+    pool.push({ name, who: m[1], at, tool: str(record.tool), act: clip(record.act, MARKER_ACT_MAX) });
+  }
+  const named = /\bto use ([A-Za-z0-9_.:-]+)/.exec(typeof message === 'string' ? message : '');
+  if (named && pool.some((c) => c.tool === named[1])) pool = pool.filter((c) => c.tool === named[1]);
+  pool.sort((a, b) => a.at - b.at || (a.name < b.name ? -1 : 1));
+  for (const c of pool) {
+    const claimed = path.join(folder, `c-${c.name}`);
+    try {
+      fs.renameSync(path.join(folder, c.name), claimed);
+    } catch {
+      continue; // another Notification took it
+    }
+    // Spent: the rename decided who claimed it, and nothing reads it again.
+    // Gone, it no longer counts against the directory's cap.
+    try {
+      fs.unlinkSync(claimed);
+    } catch {
+      /* swept with the session */
+    }
+    return c;
+  }
+  return null;
+}
+
+/**
+ * Where a session's workflow runs keep their journals:
+ * <transcript dir>/<session>/subagents/workflows. Computed, never taken from
+ * a tool result, and only for a session id that is safe in a path.
+ */
+function workflowsDir(transcript, session) {
+  if (!transcript || !pathSafeSession(session)) return '';
+  return path.join(path.dirname(transcript), session, 'subagents', 'workflows');
+}
+
+function writeRun(dir, runId, runDir, at) {
+  return writeStateFile(dir, 'runs', `${runId}.json`, { v: 1, runId, dir: runDir, at });
+}
+
+/**
+ * The label a workflow's journal gives `agentId`, from its newest 64 KiB:
+ * the label string ('' when the entry has none), or null when the journal has
+ * no `started` entry for it. Only lines that mention the id are parsed. The
+ * entry is on disk before the agent's SubagentStart fires.
+ */
+function readJournalLabel(file, agentId) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return null;
+    const start = Math.max(0, st.size - JOURNAL_TAIL_BYTES);
+    const buf = Buffer.alloc(st.size - start);
+    let filled = 0;
+    while (filled < buf.length) {
+      const got = fs.readSync(fd, buf, filled, buf.length - filled, start + filled);
+      if (got <= 0) break;
+      filled += got;
+    }
+    const lines = buf.toString('utf8', 0, filled).split('\n');
+    // Starting mid-file leaves a truncated first line; it can never parse.
+    if (start > 0) lines.shift();
+    const needle = `"agentId":"${agentId}"`;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (lines[i].indexOf(needle) === -1) continue;
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      if (isObject(entry) && entry.type === 'started' && entry.agentId === agentId) {
+        return clip(entry.label, LABEL_MAX);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+}
+
+/** The first of `runIds` whose journal (touched in the last 15 min, newest 4) starts `agentId`. */
+function searchJournals(runsDir, runIds, agentId, now) {
+  const fresh = [];
+  for (const runId of runIds) {
+    try {
+      const st = fs.statSync(path.join(runsDir, runId, 'journal.jsonl'));
+      if (st.isFile() && now - st.mtimeMs <= JOURNAL_MAX_AGE_MS) fresh.push({ runId, at: st.mtimeMs });
+    } catch {
+      /* no journal: not a run, or not this session's */
+    }
+  }
+  fresh.sort((a, b) => b.at - a.at);
+  for (const { runId } of fresh.slice(0, JOURNALS_MAX)) {
+    const label = readJournalLabel(path.join(runsDir, runId, 'journal.jsonl'), agentId);
+    if (label !== null) return { runId, label };
+  }
+  return null;
+}
+
+/**
+ * Finds a Claude subagent in a running workflow: {runId, label}, or null. The
+ * runs PostToolUse(Workflow) recorded come first. With none to match — that
+ * hook can lose the race to the run's first SubagentStart by a few ms — and
+ * only for an agent typed `workflow-subagent` (`scan`), the session's
+ * workflows directory is searched instead, bounded like everything else.
+ */
+function findWorkflowAgent(ctx, sub, scan) {
+  const runsDir = workflowsDir(ctx.transcript, ctx.session);
+  if (!runsDir || !PATH_AGENT_ID_RE.test(ctx.agentId)) return null;
+  const recorded = [];
+  for (const name of listDir(path.join(sub.dir, 'runs'), SUBTASK_CAPS.runs + 64)) {
+    const m = /^(wf_[A-Za-z0-9_-]{1,64})\.json$/.exec(name);
+    if (!m) continue;
+    const record = readStateFile(path.join(sub.dir, 'runs', name));
+    if (record && record.runId === m[1] && record.dir === path.join(runsDir, m[1])) recorded.push(m[1]);
+  }
+  const found = searchJournals(runsDir, recorded, ctx.agentId, ctx.at);
+  if (found || !scan) return found;
+  const others = [];
+  for (const name of listDir(runsDir, SUBTASK_PRUNE_MAX_ENTRIES)) {
+    if (!RUN_ID_RE.test(name) || recorded.includes(name)) continue;
+    others.push(name);
+    if (others.length >= WORKFLOW_RUNS_SCAN_MAX) break;
+  }
+  return searchJournals(runsDir, others, ctx.agentId, ctx.at);
+}
+
+/**
+ * {description, toolUseId} from a subagent's meta.json, which Claude Code
+ * writes beside the subagent's transcript by its first tool call. 112 of 400
+ * sampled files held no description; their subagents keep the label they have.
+ */
+function readAgentMeta(file) {
+  const meta = file ? readJsonFile(file, META_FILE_MAX_BYTES, false) : null;
+  return meta ? { description: clip(meta.description, LABEL_MAX), toolUseId: idOf(meta.toolUseId) } : null;
+}
+
+/** <transcript dir>/<session>/subagents/[workflows/<run>/]agent-<id>.meta.json */
+function agentMetaFile(ctx, runId) {
+  if (!PATH_AGENT_ID_RE.test(ctx.agentId)) return '';
+  if (runId) {
+    const runsDir = workflowsDir(ctx.transcript, ctx.session);
+    return runsDir ? path.join(runsDir, runId, `agent-${ctx.agentId}.meta.json`) : '';
+  }
+  if (!ctx.transcript || !pathSafeSession(ctx.session)) return '';
+  return path.join(path.dirname(ctx.transcript), ctx.session, 'subagents', `agent-${ctx.agentId}.meta.json`);
+}
+
+/**
+ * {nickname, agentPath} from a Codex sub-agent's own rollout — the file its
+ * SubagentStart and PreToolUse name in transcript_path, written before the
+ * hook runs. Its first line is session_meta, which is accepted only when it
+ * is this sub-agent's own (its `id` is the agent_id). Bounded, non-blocking.
+ */
+function readCodexAgentMeta(transcriptPath, agentId) {
+  const file = codexRolloutFromPath(transcriptPath);
+  if (!file) return null;
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return null;
+    const buf = Buffer.alloc(Math.min(st.size, CODEX_META_MAX_BYTES));
+    const got = fs.readSync(fd, buf, 0, buf.length, 0);
+    const text = buf.toString('utf8', 0, got);
+    const end = text.indexOf('\n');
+    const line = JSON.parse(end === -1 ? text : text.slice(0, end));
+    const p = isObject(line) && line.type === 'session_meta' && isObject(line.payload) ? line.payload : null;
+    if (!p || p.id !== agentId) return null;
+    const spawn =
+      isObject(p.source) && isObject(p.source.subagent) && isObject(p.source.subagent.thread_spawn)
+        ? p.source.subagent.thread_spawn
+        : {};
+    return {
+      nickname: str(p.agent_nickname) || str(spawn.agent_nickname),
+      agentPath: str(p.agent_path) || str(spawn.agent_path),
+    };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* nothing we can do */
+      }
+    }
+  }
+}
+
+/** "Feynman", else the task path's last segment ("/root/reset_scope_review" → "reset_scope_review"). */
+function codexAgentLabel(meta) {
+  if (!meta) return '';
+  return clip(meta.nickname || meta.agentPath.split('/').filter(Boolean).pop() || '', LABEL_MAX);
+}
+
+/** A minimal-mode activity: the tool's name when it is one that says nothing, else undefined. */
+const minimalActivity = (tool) => (MINIMAL_TOOL_NAMES.has(tool) ? tool : undefined);
+
+/**
+ * A permission marker's description: what the tool is about to do, from the
+ * same fields the parent's own line reads for it, and the bare tool name for
+ * every other tool — never any other tool_input field.
+ */
+function markerAct(tool, input) {
+  if (EDIT_TOOLS.has(tool)) return describeEdit(tool, input);
+  if (tool === 'Bash') return describeBash(input);
+  if (tool === 'WebSearch' || tool === 'WebFetch' || tool === 'Agent' || tool === 'Task') {
+    return describeResearch(tool, input);
+  }
+  return tool;
+}
+
+/** "Failed: <first line of the error>", or "Failed" when there is none. */
+function failedActivity(error) {
+  const first = typeof error === 'string' ? str(error.split('\n').find((l) => str(l) !== '') || '') : '';
+  return first ? clip(`Failed: ${first}`, ACTIVITY_MAX) : 'Failed';
+}
+
+const NOTE_OPEN = '<task-notification>';
+const NOTE_CLOSE = '</task-notification>';
+const NOTE_RESULT = '<result>';
+const NOTE_RESULT_CLOSE = '</result>';
+
+/** The text between `<name>` and `</name>` in `head`, or ''. */
+function tagText(head, name) {
+  const open = head.indexOf(`<${name}>`);
+  if (open === -1) return '';
+  const from = open + name.length + 2;
+  const close = head.indexOf(`</${name}>`, from);
+  return close === -1 ? '' : head.slice(from, close);
+}
+
+/**
+ * Calls `visit({open, body, headEnd, end})` for each <task-notification>
+ * block of `text`, in order, until it returns false. The block's head is
+ * text.slice(body, headEnd), from its open to its first <result> or close,
+ * whichever comes first; the block takes up text.slice(open, end), and a
+ * block never closed runs to the end of the text.
+ *
+ * A head that stops at <result> means the subagent's own final words follow.
+ * Claude Code escapes them (`<` arrives as `&lt;`), but a result that quotes a
+ * block — tags and all — must neither end this one early nor pass for another
+ * one: the result runs to its matching </result>, counting the <result>s
+ * quoted inside it, and only the first close after that ends the block. A
+ * result never closed takes the rest of the text with it.
+ *
+ * One pass, with indexOf rather than a regex (see stripHostNotices): each
+ * tag's next position is searched for again only once it has been passed, so
+ * a prompt made of nothing but tags costs no more than one read of it.
+ */
+function forEachNotification(text, visit) {
+  const tags = [NOTE_OPEN, NOTE_CLOSE, NOTE_RESULT, NOTE_RESULT_CLOSE];
+  const next = [-2, -2, -2, -2]; // -2: not looked for yet; -1: none left
+  const find = (i, pos) => {
+    if (next[i] !== -1 && next[i] < pos) next[i] = text.indexOf(tags[i], pos);
+    return next[i];
+  };
+  let pos = 0;
+  for (;;) {
+    const open = find(0, pos);
+    if (open === -1) return;
+    const body = open + NOTE_OPEN.length;
+    const close = find(1, body);
+    const result = find(2, body);
+    let headEnd;
+    let end;
+    if (result === -1 || (close !== -1 && close < result)) {
+      headEnd = close === -1 ? text.length : close;
+      end = close === -1 ? text.length : close + NOTE_CLOSE.length;
+    } else {
+      headEnd = result;
+      let depth = 1;
+      let p = result + NOTE_RESULT.length;
+      while (depth > 0) {
+        const nested = find(2, p);
+        const shut = find(3, p);
+        if (shut === -1) {
+          p = text.length;
+          break;
+        }
+        if (nested !== -1 && nested < shut) {
+          depth += 1;
+          p = nested + NOTE_RESULT.length;
+        } else {
+          depth -= 1;
+          p = shut + NOTE_RESULT_CLOSE.length;
+        }
+      }
+      const after = p < text.length ? find(1, p) : -1;
+      end = after === -1 ? text.length : after + NOTE_CLOSE.length;
+    }
+    if (visit({ open, body, headEnd, end }) === false || end >= text.length) return;
+    pos = end;
+  }
+}
+
+/**
+ * A prompt read for the <task-notification> blocks Claude Code delivers when
+ * a background subagent (or a workflow) finishes:
+ *   {notificationOnly, userText, notes: [{id, status, summary}]}
+ *
+ * Shown as-is, the block read on the card as though the user had typed it.
+ * Each block's HEAD is all that is read, for <task-id>, <status> and
+ * <summary>; <result> is the subagent's own final text and is never read or
+ * sent, nor taken for blocks or user text of its own (forEachNotification).
+ * At most NOTIFICATIONS_PER_PROMPT_MAX blocks, opening in the first 64 KB.
+ *
+ * Notification-only means the user said nothing: the prompt opens with a
+ * block (after any <system-reminder> opens), or blocks were found and nothing
+ * else is left. The first rule still matters for the one quote the parser
+ * cannot see past — a result quoting a lone </result> and then the close tag —
+ * which would turn the rest of its block into "user text".
+ */
+function parseTaskNotifications(prompt) {
+  const text = typeof prompt === 'string' ? prompt : '';
+  const notes = [];
+  // The prompt with every block cut out, the way stripHostNotices cuts reminders.
+  let rest = '';
+  let from = 0;
+  forEachNotification(text, (block) => {
+    rest += `${text.slice(from, block.open)} `;
+    from = block.end;
+    if (block.open < NOTIFICATION_SCAN_MAX_CHARS && notes.length < NOTIFICATIONS_PER_PROMPT_MAX) {
+      const head = text.slice(block.body, Math.min(block.headEnd, NOTIFICATION_SCAN_MAX_CHARS));
+      notes.push({
+        id: str(tagText(head, 'task-id')),
+        status: str(tagText(head, 'status')),
+        summary: clip(tagText(head, 'summary'), SUMMARY_MAX),
+      });
+    }
+    return true;
+  });
+  rest += text.slice(from);
+  const scan = text.length > NOTIFICATION_SCAN_MAX_CHARS ? text.slice(0, NOTIFICATION_SCAN_MAX_CHARS) : text;
+  let i = 0;
+  for (;;) {
+    while (i < scan.length && /\s/.test(scan[i])) i += 1;
+    if (!scan.startsWith(REMINDER_OPEN, i)) break;
+    i += REMINDER_OPEN.length;
+  }
+  const userText = str(stripHostNotices(rest)).replace(/\s+/g, ' ');
+  return {
+    notificationOnly: scan.startsWith(NOTE_OPEN, i) || (notes.length > 0 && userText === ''),
+    userText,
+    notes,
+  };
+}
+
+/**
+ * Why a subagent failed, from its notification's summary, which Claude Code
+ * writes as `Agent "<description>" failed: <error>`. The description is the
+ * model's own wording and can say `failed: ` itself, quotes and all ("Find out
+ * why "lint" failed: …"), so the error is what follows the LAST closing quote
+ * before `failed: `; an error seldom holds one. A summary in any other shape
+ * gives what follows its first `failed: `, or ''.
+ */
+function failureReason(summary) {
+  const quoted = summary.lastIndexOf('" failed: ');
+  if (quoted !== -1) return str(summary.slice(quoted + '" failed: '.length));
+  const bare = summary.indexOf('failed: ');
+  return bare === -1 ? '' : str(summary.slice(bare + 'failed: '.length));
+}
+
+/** A finished task's status → the agent state and activity its post carries. */
+function notificationOutcome(note) {
+  if (note.status === 'failed') {
+    const reason = MINIMAL ? '' : failureReason(note.summary);
+    return { state: 'failed', activity: reason ? clip(`Failed: ${reason}`, ACTIVITY_MAX) : 'Failed' };
+  }
+  if (note.status === 'killed') return { state: 'failed', activity: 'Stopped' };
+  // Meaning unknown; a finished worker is not running and must not raise the card.
+  if (note.status === 'blocked') return { state: 'failed', activity: 'Blocked' };
+  return { state: 'done' };
+}
+
+// Statuses a background task has stopped in. Anything else counts as running.
+const TASK_FINISHED = new Set(['completed', 'failed', 'killed', 'stopped', 'cancelled', 'error']);
+
+/**
+ * The `turn` hint on a Stop. The main turn is over, but background work may
+ * not be: Claude's Stop lists it in `background_tasks`, and the server keeps
+ * those subagents' rows (and does not call the card done) while they run.
+ * `running` holds the agent keys of the subagent entries still going, and
+ * `workflows` counts running workflows, whose agents are never listed one by
+ * one. Teammates are not listed: their task id is never their agent_id.
+ *
+ * Either list is all or nothing. An absent array means the task registry was
+ * unreachable, which is "unknown", not "none"; an entry without a usable id,
+ * or more than TURN_RUNNING_MAX of them, makes the list unknown too. Unknown
+ * sends `{phase: "end"}` alone, and the server reconciles nothing. Codex's
+ * Stop carries no background_tasks, so it always sends that.
+ */
+function stopTurn(payload, base, session) {
+  const turn = { phase: 'end' };
+  const tasks = payload.background_tasks;
+  if (!Array.isArray(tasks)) return turn;
+  const running = new Set();
+  let listed = 0;
+  let workflows = 0;
+  for (const task of tasks) {
+    if (!isObject(task)) continue;
+    if (typeof task.status === 'string' && TASK_FINISHED.has(task.status)) continue;
+    if (task.type === 'workflow') {
+      workflows += 1;
+    } else if (task.type === 'subagent') {
+      listed += 1;
+      if (typeof task.id !== 'string' || task.id === '') return turn;
+      running.add(agentKey(base, session, task.id));
+    }
+  }
+  if (listed > TURN_RUNNING_MAX) return turn;
+  turn.running = Array.from(running);
+  turn.workflows = workflows;
+  return turn;
+}
+
+/**
+ * A terminal post's `status`, for servers that predate `agent`: the last
+ * running class the board confirmed, `planning` when that was a block or is
+ * unknown. The last running one, not the last confirmed state: a failure
+ * reported after a confirmed done must not flip an old server's card to
+ * planning.
+ */
+function compatStatus(state, runCls) {
+  if (state !== 'done' && state !== 'failed') return state;
+  return runCls === 'planning' || runCls === 'coding' || runCls === 'testing' ? runCls : 'planning';
+}
+
+/**
+ * One subagent's post. `status` is required by every server and is the only
+ * thing an old one reads (it drops `agent`), so it carries the agent's state
+ * while it runs and its last class once it has finished — never `done`, which
+ * an old server would show and push mid-turn. `message` rides only on a block,
+ * as exactly what 1.6.3 posted for it, so an old server pushes the same body;
+ * `project` and `host` never ride at all, and the server carries the parent's
+ * forward.
+ */
+function agentBody(ctx, key, st, state, extra) {
+  const body = {
+    session_id: ctx.session,
+    name: lookupPinnedName(ctx.base, ctx.session, ctx.folder),
+    status: compatStatus(state, st.runCls),
+  };
+  if (state === 'blocked' && typeof extra.message === 'string') body.message = extra.message;
+  body.source = SOURCE;
+  const agent = { id: key, state, kind: st.kind };
+  if (!MINIMAL && st.label) agent.label = st.label;
+  if (extra.activity !== undefined) agent.activity = extra.activity;
+  agent.at = extra.at || ctx.at;
+  body.agent = agent;
+  return body;
+}
+
+/**
+ * Records what the board confirmed (a 2xx) about a subagent: the state, and
+ * the label and activity that went with it. Only a confirmed post counts, so a
+ * 429 or a timeout leaves the next event of the same class — or the
+ * task-notification after a lost stop — free to post it again. (A refused
+ * activity refresh is not retried that way: its attempt was put on record
+ * before it went out, see postRunning.) The record is read afresh first, and a
+ * newer event's confirmation is never overwritten.
+ */
+function confirmAgent(dir, key, at, sent) {
+  const st = readAgent(dir, key);
+  if (!st || (st.clsAt || 0) > at) return;
+  st.cls = sent.state;
+  st.clsAt = at;
+  if (RUNNING_STATES.has(sent.state)) st.runCls = sent.state;
+  if (sent.label !== undefined) st.labelSent = sent.label;
+  if (sent.activity !== undefined) st.activitySent = sent.activity;
+  st.lastPostAt = at;
+  writeAgent(dir, key, st);
+}
+
+/**
+ * Posts one subagent's state and records it if the board took it. `extra.at`
+ * stands in for the event's own clock where a post must be ordered after one
+ * it corrects (see recordLaunchLabel).
+ */
+async function postAgent(ctx, sub, key, st, state, extra = {}) {
+  const body = agentBody(ctx, key, st, state, extra);
+  const ok = await send('POST', `${ctx.base}/webhook`, body);
+  if (ok) {
+    confirmAgent(sub.dir, key, body.agent.at, { state, label: body.agent.label, activity: body.agent.activity });
+  }
+  return ok;
+}
+
+/**
+ * Whether a running event of a known subagent posts (§ flood control), and why:
+ * 'start' when no post of it was ever confirmed, 'class' on a class change,
+ * 'label' when a better label is known than the board was told and the label
+ * budget is not spent, 'refresh' when what it is doing differs from what the
+ * board last confirmed and AGENT_REFRESH_MS has passed since its last
+ * confirmed post and its last refresh attempt. '' otherwise — which is most
+ * events: within a class a subagent posts at most once a minute.
+ */
+function runningPostReason(st, state, activity, at) {
+  if (!st.cls) return 'start';
+  if (st.cls !== state) return 'class';
+  if (!MINIMAL && st.label && st.label !== st.labelSent && st.labelPosts < LABEL_POSTS_MAX) return 'label';
+  if (
+    activity !== undefined &&
+    activity !== st.activitySent &&
+    at - Math.max(st.lastPostAt || 0, st.refreshAt || 0) >= AGENT_REFRESH_MS
+  ) {
+    return 'refresh';
+  }
+  return '';
+}
+
+/**
+ * A running event of a known subagent: posts `state` when runningPostReason
+ * says so, and returns the post (or null). A post made for the label alone
+ * spends one of LABEL_POSTS_MAX, recorded before it goes out. A refresh is
+ * recorded as tried before it goes out too: if the board refuses it, or never
+ * answers, the next refresh still waits AGENT_REFRESH_MS from this one —
+ * unlike a refused class change or stop, which the next event sends again.
+ * `relabeled` says the record already changed (a label found, a try counted)
+ * and must be written either way.
+ *
+ * `asking` posts whatever the record says: a human being asked — a claimed
+ * permission prompt, a Codex escalation nobody approved — is news even for a
+ * row that is still blocked from the last prompt. It is one post per prompt,
+ * not part of the tool-call flood the class rule holds back, and it carries
+ * 1.6.3's message, so an old server whose card the parent has moved on shows
+ * the block and pushes it, as 1.6.3 did.
+ */
+function postRunning(ctx, sub, key, st, state, extra, relabeled, asking = false) {
+  const reason = asking ? 'asking' : runningPostReason(st, state, extra.activity, ctx.at);
+  if (reason === 'label') st.labelPosts += 1;
+  if (reason === 'refresh') st.refreshAt = ctx.at;
+  if (relabeled || reason === 'label' || reason === 'refresh') writeAgent(sub.dir, key, st);
+  return reason ? postAgent(ctx, sub, key, st, state, extra) : null;
+}
+
+/** Applies what meta.json says about a Claude subagent: its label, and which launch it was. */
+function applyAgentMeta(dir, key, st, meta) {
+  if (meta.description && !(st.labelSrc === 'firm' && st.label === meta.description)) {
+    st.label = meta.description;
+    st.labelSrc = 'firm';
+  }
+  if (!meta.toolUseId) return;
+  // A wrong guess at start bound someone else's launch to this subagent:
+  // undo it, unless something firmer has since claimed that tool call.
+  if (st.claim && st.claim !== meta.toolUseId) {
+    const wrong = resolveToolUse(dir, st.claim);
+    if (wrong && wrong.key === key && !wrong.firm) {
+      try {
+        fs.unlinkSync(path.join(dir, 'bind', toolUseFile(st.claim)));
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  bindToolUse(dir, meta.toolUseId, key, true);
+  consumeLaunch(dir, meta.toolUseId);
+  st.claim = meta.toolUseId;
+}
+
+/**
+ * A background launch's label its start missed, taken for an Agent-tool
+ * subagent whose own label is not firm yet: the launch result can write it a
+ * moment after the start last looked (see recordLaunchLabel). Returns whether
+ * the record changed.
+ */
+function adoptLaunchedLabel(dir, key, st) {
+  if (MINIMAL || st.kind !== 'agent' || st.labelSrc === 'firm') return false;
+  const label = launchedLabel(dir, key);
+  if (!label) return false;
+  st.label = label;
+  st.labelSrc = 'firm';
+  return true;
+}
+
+/**
+ * Looks for a better label at one of a subagent's first META_TRIES events:
+ * meta.json for a Claude subagent (the workflow run's copy for a workflow
+ * agent, whose run may itself still need finding), the rollout's session_meta
+ * for a Codex one. Detail mode only. Returns whether the record changed.
+ */
+function refreshLabel(ctx, sub, key, st) {
+  if (MINIMAL || st.metaTries >= META_TRIES) return false;
+  st.metaTries += 1;
+  if (st.kind === 'codex') {
+    const label = st.labelSrc === 'firm' ? '' : codexAgentLabel(readCodexAgentMeta(ctx.payload.transcript_path, ctx.agentId));
+    if (label) {
+      st.label = label;
+      st.labelSrc = 'firm';
+    }
+    if (st.labelSrc === 'firm') st.metaTries = META_TRIES;
+    return true;
+  }
+  adoptLaunchedLabel(sub.dir, key, st);
+  if (st.kind === 'workflow' && !st.runId) {
+    const found = findWorkflowAgent(ctx, sub, true);
+    if (found) {
+      st.runId = found.runId;
+      if (found.label && st.labelSrc !== 'firm') {
+        st.label = found.label;
+        st.labelSrc = 'firm';
+      }
+    }
+  }
+  // A workflow agent's copy sits in its run's directory, so no run, no file.
+  const file = st.kind !== 'workflow' ? agentMetaFile(ctx, '') : st.runId ? agentMetaFile(ctx, st.runId) : '';
+  const meta = readAgentMeta(file);
+  if (!meta) return true; // not written yet: the next event tries again
+  st.metaTries = META_TRIES; // it is there, and what it says will not change
+  applyAgentMeta(sub.dir, key, st, meta);
+  return true;
+}
+
+/**
+ * Usage and project reports on a Codex sub-agent's PreToolUse or
+ * PermissionRequest, exactly as 1.6.3 ran them: those are most of what Codex
+ * fires while a root waits on its sub-agents, and skipping them would freeze
+ * the bars.
+ */
+function codexReports(ctx) {
+  return [
+    maybeReportUsage(ctx.base, ctx.session, ctx.transcript),
+    reportProjectUsage(ctx.base, false),
+  ];
+}
+
+/**
+ * SubagentStart. A known subagent starting again (resumed, a teammate's next
+ * message) posts `planning` with the label it has. A first start records the
+ * subagent BEFORE posting — its kind, its label, and for a Claude Agent-tool
+ * subagent a claim on its launch record — so that its next event knows it; if
+ * that record cannot be written, nothing is posted and the subagent stays
+ * unknown, which is the 1.6.3 card. A start always posts: it is never
+ * suppressed on the strength of state another process may be writing.
+ */
+async function handleAgentStart(ctx, sub, key, known) {
+  if (!sub) return; // stateless: nothing can be recorded, so nothing is posted
+  let st = known;
+  let lookAgain = false;
+  if (!st) {
+    st = { v: 1, seen: true, kind: 'agent', labelPosts: 0, metaTries: 0, at: ctx.at };
+    if (SOURCE === 'codex') {
+      st.kind = 'codex';
+      const label = MINIMAL ? '' : codexAgentLabel(readCodexAgentMeta(ctx.payload.transcript_path, ctx.agentId));
+      if (label) {
+        st.label = label;
+        st.labelSrc = 'firm';
+      }
+    } else {
+      const typed = ctx.payload.agent_type === 'workflow-subagent';
+      // agent_type alone is not enough: a third of the agents under a run's
+      // directory are typed Explore, Plan or general-purpose, and a workflow
+      // agent taken for an Agent-tool one would be closed at the next Stop.
+      const found = MINIMAL ? null : findWorkflowAgent(ctx, sub, typed);
+      if (typed || found) st.kind = 'workflow';
+      if (found) {
+        st.runId = found.runId;
+        if (found.label) {
+          st.label = found.label;
+          st.labelSrc = 'firm';
+        }
+      }
+      if (st.kind === 'agent') {
+        // A background launch's result may have landed first, with the label.
+        const label = MINIMAL ? '' : launchedLabel(sub.dir, key);
+        if (label) {
+          st.label = label;
+          st.labelSrc = 'firm';
+        } else {
+          // Only a first start claims: a resume, a teammate's message or a
+          // /fork has no PreToolUse(Agent) of its own to claim.
+          const claim = claimOldestLaunch(sub.dir, key, ctx.at);
+          if (claim) {
+            st.claim = claim.toolUseId;
+            if (!MINIMAL && claim.desc) {
+              st.label = claim.desc;
+              st.labelSrc = 'tentative';
+            }
+          }
+          lookAgain = !MINIMAL;
+        }
+      }
+    }
+    if (!writeAgent(sub.dir, key, st)) return;
+    // The result fires in the same millisecond as this start: it may have put
+    // the label down since the first look, and consumed its launch record
+    // before the claim got there (or another launch's was taken instead). So
+    // the label is looked for again, AFTER the record is written: the result
+    // writes the label and then looks for the record, so one of the two
+    // always sees the other — this start finds the label, or the result
+    // finds the subagent and posts the label itself (recordLaunchLabel).
+    const late = lookAgain ? launchedLabel(sub.dir, key) : '';
+    if (late) {
+      st.label = late;
+      st.labelSrc = 'firm';
+      writeAgent(sub.dir, key, st);
+    }
+  }
+  await postAgent(ctx, sub, key, st, 'planning');
+}
+
+/**
+ * Every other event of a known subagent: PreToolUse, PermissionRequest,
+ * SubagentStop and a Codex sub-agent's follow-up UserPromptSubmit.
+ */
+async function handleAgentEvent(ctx, sub, key, st) {
+  const { event, payload } = ctx;
+  const input = isObject(payload.tool_input) ? payload.tool_input : {};
+  const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+
+  if (event === 'SubagentStop') {
+    dropPermMarkers(sub.dir, key);
+    const atp =
+      typeof payload.agent_transcript_path === 'string' && path.isAbsolute(payload.agent_transcript_path)
+        ? payload.agent_transcript_path
+        : '';
+    let changed = false;
+    if (SOURCE !== 'codex' && atp.replace(/\\/g, '/').includes('/subagents/workflows/') && st.kind !== 'workflow') {
+      st.kind = 'workflow';
+      changed = true;
+    }
+    // meta.json is always there by now, beside the subagent's transcript.
+    if (!MINIMAL && atp && st.labelSrc !== 'firm') {
+      if (SOURCE === 'codex') {
+        const label = codexAgentLabel(readCodexAgentMeta(atp, ctx.agentId));
+        if (label) {
+          st.label = label;
+          st.labelSrc = 'firm';
+          changed = true;
+        }
+      } else if (PATH_AGENT_ID_RE.test(ctx.agentId)) {
+        const meta = readAgentMeta(path.join(path.dirname(atp), `agent-${ctx.agentId}.meta.json`));
+        if (meta) {
+          applyAgentMeta(sub.dir, key, st, meta);
+          changed = true;
+        }
+      }
+    }
+    // A meta.json with no description (older Claude Code wrote none) leaves
+    // the label a background launch's result gave, if the start missed it.
+    if (adoptLaunchedLabel(sub.dir, key, st)) changed = true;
+    if (changed) writeAgent(sub.dir, key, st);
+    // Codex fires this at the end of every sub-agent turn; a re-tasked one
+    // comes back with its next class change.
+    if (st.cls === 'done') return;
+    await postAgent(ctx, sub, key, st, 'done');
+    return;
+  }
+
+  if (event === 'PermissionRequest' && SOURCE !== 'codex') {
+    // Claude: a marker for a later Notification(permission_prompt), never a
+    // post. This fires at once, for prompts answered within a second and for
+    // background subagents' prompts that are auto-denied unseen; the
+    // Notification fires only for a prompt still waiting after ~6 s.
+    //
+    // It is one of the subagent's own events all the same, and meta.json is
+    // tried at those: a tool no PreToolUse matcher lists (Read, an MCP tool)
+    // can be the first thing a subagent does, and the Notification after it
+    // carries no agent_id to look with. A guessed label, and the launch it
+    // was guessed from, are put right here, before the prompt is posted.
+    if (refreshLabel(ctx, sub, key, st)) writeAgent(sub.dir, key, st);
+    writePermMarker(sub.dir, key, clip(tool, 128), MINIMAL ? '' : clip(markerAct(tool, input), MARKER_ACT_MAX), ctx.at);
+    return;
+  }
+
+  let state;
+  let activity;
+  let message;
+  const reports = SOURCE === 'codex' && (event === 'PreToolUse' || event === 'PermissionRequest');
+  if (event === 'PermissionRequest') {
+    // Codex asks at once, as on the parent's line; an escalation Codex
+    // answers itself changes nothing.
+    if (codexApprovalReviewer(payload, ctx.transcript) === 'auto_review') {
+      await Promise.allSettled(codexReports(ctx));
+      return;
+    }
+    const asked = [input.description, payload.message].find((v) => typeof v === 'string' && v.trim() !== '');
+    state = 'blocked';
+    activity = MINIMAL ? minimalActivity(tool) || 'Needs approval' : clip(asked || 'Needs approval', ACTIVITY_MAX);
+    message = MINIMAL || asked === undefined ? 'Needs approval' : str(asked).replace(/\s+/g, ' ').slice(0, COMMAND_MAX);
+  } else if (event === 'PreToolUse') {
+    // A thread that makes a tool call has had its earlier prompts answered.
+    dropPermMarkers(sub.dir, key);
+    if (EDIT_TOOLS.has(tool)) {
+      state = 'coding';
+      activity = describeEdit(tool, input);
+    } else if (tool === 'Bash') {
+      state = TEST_RE.test(commandText(input)) ? 'testing' : 'coding';
+      activity = describeBash(input);
+    } else if (tool === 'Agent' || tool === 'Task') {
+      state = 'planning';
+      activity = str(input.description) ? `Delegating: ${str(input.description)}` : 'Delegating a subtask';
+      // A nested launch: its own SubagentStart will claim this.
+      const toolUseId = idOf(payload.tool_use_id);
+      if (toolUseId) writeLaunch(sub.dir, toolUseId, MINIMAL ? '' : clip(input.description, LABEL_MAX), key, ctx.at);
+    } else if (tool === 'WebSearch' || tool === 'WebFetch') {
+      state = 'planning';
+      activity = describeResearch(tool, input);
+    } else if (tool === 'Workflow') {
+      state = 'planning';
+      activity = describeWorkflow(input);
+    } else {
+      return;
+    }
+    activity = MINIMAL ? minimalActivity(tool) : clip(activity, ACTIVITY_MAX);
+  } else {
+    // A Codex sub-agent's follow-up turn. Its prompt is never sent.
+    state = 'planning';
+  }
+
+  const relabeled = refreshLabel(ctx, sub, key, st);
+  // A Codex escalation nobody approved asks a human, so it posts even for a
+  // row still blocked from the last one (see postRunning).
+  const asking = event === 'PermissionRequest';
+  const posted = postRunning(ctx, sub, key, st, state, { activity, message }, relabeled, asking);
+  const posts = posted ? [posted] : [];
+  await Promise.allSettled(reports ? [...posts, ...codexReports(ctx)] : posts);
+}
+
+/**
+ * Takes a background launch's description as its subagent's firm label, and
+ * returns the label post that calls for, if any, already under way. The
+ * result and the subagent's SubagentStart fire in the same millisecond:
+ *   - not recorded yet: the label goes to labels/<key>, where the start looks
+ *     for it, and the record is looked for once more in case the start
+ *     recorded the subagent meanwhile, after its last look;
+ *   - recorded with this label already (guessed from this launch's own
+ *     record): it is firm now, and that is all — the start's post carries
+ *     it, and if that post fails the next running event sends it again. A
+ *     second post here would repeat the start's, word for word, while it may
+ *     still be on its way;
+ *   - recorded with another label, or none: a label post, within the budget,
+ *     unless the subagent has already finished. It is stamped no earlier than
+ *     1 ms after the start (and anything since confirmed): this process can
+ *     read stdin before the start's does, and the server, which orders a
+ *     subagent's updates by that clock, would then keep the start's guess
+ *     over the correction.
+ */
+function recordLaunchLabel(ctx, sub, key, label) {
+  let st = readAgent(sub.dir, key);
+  if (!st) {
+    writeStateFile(sub.dir, 'labels', `${key}.json`, { v: 1, label });
+    st = readAgent(sub.dir, key);
+    if (!st) return null;
+  }
+  if (st.label === label) {
+    if (st.labelSrc !== 'firm') {
+      st.labelSrc = 'firm';
+      writeAgent(sub.dir, key, st);
+    }
+    return null;
+  }
+  st.label = label;
+  st.labelSrc = 'firm';
+  const post = (!st.cls || RUNNING_STATES.has(st.cls)) && label !== st.labelSent && st.labelPosts < LABEL_POSTS_MAX;
+  if (post) st.labelPosts += 1;
+  writeAgent(sub.dir, key, st);
+  if (!post) return null;
+  const at = Math.max(ctx.at, st.at + 1, (st.clsAt || 0) + 1);
+  return postAgent(ctx, sub, key, st, st.cls || 'planning', { at });
+}
+
+/**
+ * PostToolUse and PostToolUseFailure of an Agent, Task or Workflow call — on
+ * the parent's thread or a subagent's — which are about the subagent the call
+ * LAUNCHED, not the thread that made it. Claude only.
+ *
+ * The Agent tool's results are `completed`, `async_launched`,
+ * `remote_launched` and `teammate_spawned`, all successes: a failed call
+ * throws, and arrives as PostToolUseFailure instead. So PostToolUse never
+ * posts `failed`; it binds the tool call to the subagent it started, takes a
+ * background launch's description as a firm label, and consumes the launch
+ * record so it cannot name a later start.
+ *
+ * In that order, and the record last: until a background launch's label is
+ * in labels/<key>, its record is the only label the subagent's start —
+ * running at this very moment — can find. A start that claims the record in
+ * between replaces this binding with its own tentative one, which costs
+ * nothing: a tool call ends in one PostToolUse or one PostToolUseFailure,
+ * never both, so nothing asks again which subagent this call launched (and
+ * meta.json undoes a wrong guess). A result of a kind this hook does not know
+ * leaves the record alone: its start may yet need it.
+ */
+async function handleLaunchResult(ctx) {
+  if (SOURCE === 'codex') return;
+  const { payload, event } = ctx;
+  const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+  const result = isObject(payload.tool_response) ? payload.tool_response : null;
+  const toolUseId = idOf(payload.tool_use_id);
+
+  if (tool === 'Workflow') {
+    if (event !== 'PostToolUse' || !result) return;
+    const runId = typeof result.runId === 'string' && RUN_ID_RE.test(result.runId) ? result.runId : '';
+    const runsDir = workflowsDir(ctx.transcript, ctx.session);
+    if (!runId || !runsDir) return;
+    const sub = subtaskDir(ctx.base, ctx.session, true);
+    if (sub) writeRun(sub.dir, runId, path.join(runsDir, runId), ctx.at);
+    return;
+  }
+  if (tool !== 'Agent' && tool !== 'Task') return;
+  // A failure can only be about a launch something already recorded.
+  const sub = subtaskDir(ctx.base, ctx.session, event === 'PostToolUse');
+  if (!sub) return;
+
+  if (event === 'PostToolUseFailure') {
+    if (!toolUseId) return;
+    const bound = resolveToolUse(sub.dir, toolUseId);
+    consumeLaunch(sub.dir, toolUseId);
+    const st = bound ? readAgent(sub.dir, bound.key) : null;
+    if (!st || st.cls === 'failed') return;
+    const activity = payload.is_interrupt === true ? 'Stopped' : MINIMAL ? 'Failed' : failedActivity(payload.error);
+    await postAgent(ctx, sub, bound.key, st, 'failed', { activity });
+    return;
+  }
+
+  if (!result) return;
+  let labelPost = null;
+  if (result.status === 'teammate_spawned') {
+    const teammate = idOf(result.agent_id) || idOf(result.teammate_id);
+    if (toolUseId && teammate) bindToolUse(sub.dir, toolUseId, agentKey(ctx.base, ctx.session, teammate), true);
+  } else if (result.status === 'completed' || result.status === 'async_launched') {
+    const agentId = idOf(result.agentId);
+    const key = agentId ? agentKey(ctx.base, ctx.session, agentId) : '';
+    if (key && toolUseId) bindToolUse(sub.dir, toolUseId, key, true);
+    const label = key && result.status === 'async_launched' && !MINIMAL ? clip(result.description, LABEL_MAX) : '';
+    if (label) labelPost = recordLaunchLabel(ctx, sub, key, label);
+  } else if (result.status !== 'remote_launched') {
+    return;
+  }
+  // remote_launched: the subagent runs elsewhere and fires no hooks here; the
+  // consumed record is all there is to do.
+  if (toolUseId) consumeLaunch(sub.dir, toolUseId);
+  if (labelPost) await labelPost;
+}
+
+/**
+ * The agent posts a <task-notification> prompt carries: one per block whose
+ * task names a subagent this hook knows, unless the board already confirmed
+ * that it finished that way. A workflow's task id names no subagent, so a
+ * workflow's notification posts nothing of its own.
+ */
+function notificationPosts(ctx, notes) {
+  const sub = notes.length > 0 ? subtaskDir(ctx.base, ctx.session, false) : null;
+  if (!sub) return [];
+  const posts = [];
+  const seen = new Set();
+  for (const note of notes) {
+    const taskId = idOf(note.id);
+    if (!taskId) continue;
+    const key = agentKey(ctx.base, ctx.session, taskId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const st = readAgent(sub.dir, key);
+    if (!st) continue;
+    const outcome = notificationOutcome(note);
+    if (st.cls === outcome.state) continue;
+    posts.push(postAgent(ctx, sub, key, st, outcome.state, { activity: outcome.activity }));
+  }
+  return posts;
+}
+
+/**
+ * SessionStart and Stop, once their posts have gone out: entries past their
+ * age, then sibling sessions gone quiet for a day — at most
+ * SUBTASK_PRUNE_MAX_REMOVALS of them, and nothing more once
+ * SUBTASK_PRUNE_BUDGET_MS have passed. The next run takes up the rest.
+ */
+function pruneSubtaskState(root, dir, now) {
+  const until = Date.now() + SUBTASK_PRUNE_BUDGET_MS;
+  for (const kind of Object.keys(SUBTASK_AGES_MS)) {
+    const folder = path.join(dir, kind);
+    for (const name of listDir(folder, SUBTASK_PRUNE_MAX_ENTRIES)) {
+      if (Date.now() > until) return;
+      const file = path.join(folder, name);
+      try {
+        // lstat: an entry's own age, never what a link points at.
+        if (now - fs.lstatSync(file).mtimeMs > SUBTASK_AGES_MS[kind]) fs.unlinkSync(file);
+      } catch {
+        /* gone already */
+      }
+    }
+  }
+  const own = path.basename(dir);
+  let removed = 0;
+  for (const name of listDir(root, SUBTASK_PRUNE_MAX_SESSIONS)) {
+    if (removed >= SUBTASK_PRUNE_MAX_REMOVALS || Date.now() > until) return;
+    if (name === own || !SESSION_DIR_RE.test(name)) continue;
+    const full = path.join(root, name);
+    try {
+      const st = fs.lstatSync(full);
+      if (!st.isDirectory()) continue;
+      // A session's directory only changes when a kind is first written, so
+      // its age is that of its most recent write anywhere below it.
+      let newest = st.mtimeMs;
+      for (const kind of Object.keys(SUBTASK_AGES_MS)) {
+        try {
+          newest = Math.max(newest, fs.lstatSync(path.join(full, kind)).mtimeMs);
+        } catch {
+          /* never written */
+        }
+      }
+      if (now - newest > SUBTASK_SESSION_MAX_AGE_MS) {
+        fs.rmSync(full, { recursive: true, force: true });
+        removed += 1;
+      }
+    } catch {
+      /* gone already */
+    }
+  }
+}
+
+/**
+ * SessionEnd: the session's own directory goes with its card. Never anyone
+ * else's. Removed off the event loop, so the DELETE issued just before it is
+ * written to the socket while the files go, not after: a session can leave a
+ * few thousand of them, and SessionEnd hooks share a 1.5 s budget.
+ */
+function forgetSubtaskState(base, session) {
+  const sub = subtaskDir(base, session, false);
+  if (!sub) return Promise.resolve();
+  return fs.promises.rm(sub.dir, { recursive: true, force: true }).catch((err) => {
+    dbg(`subtasks: session state removal failed: ${err && err.message ? err.message : String(err)}`);
+  });
+}
+
+// Notification types that ask nobody anything. Each would otherwise turn a
+// working card blocked, and push.
+const QUIET_NOTIFICATIONS = new Set([
+  'auth_success', 'elicitation_complete', 'elicitation_response', 'agent_completed',
+  'quota_auto_resume_fired', 'quota_auto_resume_disabled', 'plugin_notification',
+]);
+// Notification types that ask a human, from a thread the payload does not name.
+const UNATTRIBUTED_NOTIFICATIONS = new Set(['elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input']);
+
 async function main() {
   const rawUrl = configValue('CLAUDE_STATUS_URL', 'url');
   if (!rawUrl) return;
   const base = boardBase(rawUrl);
 
   const payload = JSON.parse(await readStdin());
+  // The hook's own clock when the event arrived. A subagent's posts carry it
+  // (agent.at) so the server can put one subagent's updates in order, whatever
+  // order the parallel hook processes deliver them in.
+  const at = Date.now();
   if (!payload || typeof payload !== 'object') return;
 
   const event = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : '';
@@ -2729,16 +4366,18 @@ async function main() {
     // still exist instead of leaving it to the age prune. Synchronous and
     // tiny, and a failure inside it is already swallowed.
     forgetSessionName(base, session);
+    // The DELETE goes out first, then the session's subagent state is removed
+    // while it is in flight (off the event loop, see forgetSubtaskState):
+    // SessionEnd hooks share a 1.5 s budget, and the card is gone either way.
+    const removal = send('DELETE', `${base}/sessions/${encodeURIComponent(session)}`);
+    const forgotten = forgetSubtaskState(base, session);
     // Side by side: the `ps` endHostRecord may need is bounded, but running it
     // in front of the DELETE would stack two timeouts against the safety exit.
-    // allSettled, not all: send() rejects on an unreachable board, and a
-    // rejection here would abort main() while endHostRecord's `ps` is still
-    // out — so the safety exit would fire and the record would never get its
-    // `ended_at`. A board that is down must not cost us the local stamp.
-    await Promise.allSettled([
-      endHostRecord(base, session),
-      send('DELETE', `${base}/sessions/${encodeURIComponent(session)}`),
-    ]);
+    // allSettled, not all: a rejection here would abort main() while
+    // endHostRecord's `ps` is still out — so the safety exit would fire and
+    // the record would never get its `ended_at`. A board that is down must not
+    // cost us the local stamp.
+    await Promise.allSettled([endHostRecord(base, session), removal, forgotten]);
     return;
   }
 
@@ -2750,26 +4389,135 @@ async function main() {
     typeof payload.transcript_path === 'string' && path.isAbsolute(payload.transcript_path)
       ? payload.transcript_path
       : '';
+  const cwd = typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : process.cwd();
+  const folder = path.basename(cwd);
+  const ctx = { base, payload, event, session, transcript, at, folder, agentId: '' };
+
+  // Which thread this event is about. An event carrying `agent_id` comes from
+  // a subagent; one whose id is unusable is dropped outright, never taken for
+  // the main thread's, and Claude's internal agents (prompt suggestions,
+  // /btw) arrive with an empty agent_type and are nobody's business.
+  const rawAgentId = payload.agent_id;
+  if (
+    rawAgentId !== undefined &&
+    (typeof rawAgentId !== 'string' || rawAgentId === '' || rawAgentId.length > AGENT_ID_MAX_CHARS)
+  ) {
+    return;
+  }
+  ctx.agentId = rawAgentId === undefined ? '' : rawAgentId;
+  if (SOURCE === 'claude' && ctx.agentId && payload.agent_type === '') return;
+  // A launch's result is about the subagent it LAUNCHED, whoever launched it.
+  if (event === 'PostToolUse' || event === 'PostToolUseFailure') {
+    await handleLaunchResult(ctx);
+    return;
+  }
+  if (ctx.agentId) {
+    const sub = subtaskDir(base, session, event === 'SubagentStart');
+    const key = agentKey(base, session, ctx.agentId);
+    const known = sub ? readAgent(sub.dir, key) : null;
+    if (event === 'SubagentStart') {
+      await handleAgentStart(ctx, sub, key, known);
+      return;
+    }
+    if (known && ['PreToolUse', 'PermissionRequest', 'SubagentStop', 'UserPromptSubmit'].includes(event)) {
+      await handleAgentEvent(ctx, sub, key, known);
+      return;
+    }
+    // An UNKNOWN subagent's tool call, and a Codex one's approval request,
+    // take the 1.6.3 path below: the parent's line, as before. Nothing else of
+    // an unknown subagent is posted — a stop or a notification for a
+    // subagent never seen starting has nothing on the board to finish.
+    if (!(event === 'PreToolUse' || (event === 'PermissionRequest' && SOURCE === 'codex'))) return;
+  }
+  // The 1.6.3 path is the old behaviour on purpose, with one exception: host
+  // detection reads transcript_path, which on a Codex sub-agent's event names
+  // the sub-agent's own rollout, so it never runs for an agent-tagged event
+  // (the root's record could otherwise take the sub-agent's thread id). Nor
+  // does such an event pin a name or touch the main thread's local state.
+  const tagged = ctx.agentId !== '';
 
   let status = '';
   let message = '';
+  // Main-thread hints for the server (see docs/api.md): the turn boundary,
+  // and a block whose asking thread nobody can name.
+  let turn;
+  let unattributed = false;
+  // Agent posts this main-thread event produces besides (or instead of) its own.
+  let agentPosts = () => [];
+  // SessionStart and Stop prune the subagent state, once their posts are out.
+  let prune = false;
 
   if (event === 'SessionStart') {
-    // The only `idle` the hook still sends, and deliberately so: a session that
-    // exists but has not been asked for anything yet. A turn that ran to its
-    // end is `done` (see Stop, below), not idle.
-    status = 'idle';
-    message = 'Session started';
+    if (payload.source === 'compact') {
+      // Auto-compaction halfway down a turn is not a session starting; it used
+      // to flip a working card to idle "Session started".
+      status = '';
+    } else {
+      // The only `idle` the hook still sends, and deliberately so: a session
+      // that exists but has not been asked for anything yet. A turn that ran
+      // to its end is `done` (see Stop, below), not idle. A (re)started
+      // process has no subagents running, so the server drops any rows.
+      status = 'idle';
+      message = 'Session started';
+      turn = { phase: 'reset' };
+      prune = true;
+    }
   } else if (event === 'Notification') {
-    // Claude Code fires this for permission prompts and other attention-needed
-    // events. It means what it says: a human is being asked.
-    status = 'blocked';
+    const type = typeof payload.notification_type === 'string' ? payload.notification_type : '';
     // The prompt text can quote the command awaiting approval, so honor the
     // privacy switch here too: minimal mode sends only the generic label.
     message =
       MINIMAL || typeof payload.message !== 'string' || payload.message === ''
         ? 'Needs input'
         : payload.message;
+    if (QUIET_NOTIFICATIONS.has(type)) {
+      // Nobody is being asked anything; the usage report below still runs.
+      status = '';
+    } else {
+      // Permission prompts and other attention-needed events. It means what
+      // it says: a human is being asked.
+      status = 'blocked';
+      if (UNATTRIBUTED_NOTIFICATIONS.has(type)) {
+        unattributed = true;
+      } else if (type === 'permission_prompt') {
+        // The payload never says which thread is asking; the marker its
+        // PermissionRequest left says who (see claimPermMarker).
+        const sub = subtaskDir(base, session, false);
+        const claimed = sub ? claimPermMarker(sub.dir, at, payload.message) : null;
+        const key = claimed && claimed.who !== 'main' ? claimed.who : '';
+        const st = key ? readAgent(sub.dir, key) : null;
+        if (st) {
+          // A subagent is asking: its row goes blocked, the parent's line
+          // stays as it is. It posts even when the row is still blocked from
+          // an earlier prompt (see postRunning): this is a new one.
+          status = '';
+          const activity = MINIMAL
+            ? minimalActivity(claimed.tool) || 'Needs approval'
+            : clip(claimed.act ? `Approve: ${claimed.act}` : str(payload.message) || 'Needs approval', ACTIVITY_MAX);
+          agentPosts = () => {
+            const posted = postRunning(ctx, sub, key, st, 'blocked', { activity, message }, false, true);
+            return posted ? [posted] : [];
+          };
+        } else if (!claimed || claimed.who !== 'main') {
+          // No marker (a sandbox network prompt, a lost write) or one whose
+          // subagent is gone: blocked, from a thread nobody can name.
+          unattributed = true;
+        }
+      }
+    }
+  } else if (event === 'PermissionRequest' && SOURCE !== 'codex') {
+    // Claude fires this the moment a prompt appears — for prompts answered
+    // within a second, and for background subagents' prompts that are
+    // auto-denied with nobody watching — so it posts nothing. It leaves a
+    // marker for the Notification that follows a prompt still waiting after
+    // ~6 s. (The Codex check below must never run here: it reads CODEX_HOME.)
+    status = '';
+    const sub = subtaskDir(base, session, true);
+    if (sub) {
+      const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+      const input = isObject(payload.tool_input) ? payload.tool_input : {};
+      writePermMarker(sub.dir, 'main', clip(tool, 128), MINIMAL ? '' : clip(markerAct(tool, input), MARKER_ACT_MAX), at);
+    }
   } else if (event === 'PermissionRequest') {
     // Codex fires this whenever the model asks to ESCALATE — not when a human
     // is asked. Most escalations are answered by Codex itself, so taking the
@@ -2811,10 +4559,27 @@ async function main() {
     // a prompt that was nothing BUT a notice reads like an empty one. It is
     // still a turn starting, so the status is `planning` either way.
     status = 'planning';
-    const prompt = str(stripHostNotices(typeof payload.prompt === 'string' ? payload.prompt : ''))
-      .replace(/\s+/g, ' ');
-    message =
-      MINIMAL || prompt === '' ? 'Processing prompt' : prompt.slice(0, COMMAND_MAX);
+    if (SOURCE === 'codex') {
+      // A Codex root's prompt marks its turn starting, which is all it is
+      // registered for: the prompt itself never goes on the wire.
+      message = 'Processing prompt';
+      turn = { phase: 'start' };
+    } else {
+      // Claude Code also delivers a background subagent's (or a workflow's)
+      // completion as a prompt made of <task-notification> blocks. That is
+      // the parent being told, not the user speaking: it reads the results
+      // and starts no turn, and each block about a subagent this hook knows
+      // finishes its row.
+      const parsed = parseTaskNotifications(payload.prompt);
+      if (parsed.notificationOnly) {
+        message = 'Reading subagent results';
+      } else {
+        message =
+          MINIMAL || parsed.userText === '' ? 'Processing prompt' : parsed.userText.slice(0, COMMAND_MAX);
+        turn = { phase: 'start' };
+      }
+      agentPosts = () => notificationPosts(ctx, parsed.notes);
+    }
   } else if (event === 'PreToolUse') {
     const tool = typeof payload.tool_name === 'string' ? payload.tool_name : '';
     const input =
@@ -2830,13 +4595,30 @@ async function main() {
       // command means, but only the command says whether it runs tests.
       status = TEST_RE.test(commandText(input)) ? 'testing' : 'coding';
       message = MINIMAL ? 'Bash' : describeBash(input);
-    } else if (tool === 'Task' || tool === 'WebSearch' || tool === 'WebFetch') {
+    } else if (tool === 'Agent' || tool === 'Task' || tool === 'WebSearch' || tool === 'WebFetch') {
+      // Claude Code renamed Task to Agent; the check used to name only Task,
+      // so every subagent launch was silently dropped.
       status = 'planning';
       message = MINIMAL ? tool : describeResearch(tool, input);
+    } else if (tool === 'Workflow') {
+      status = 'planning';
+      message = MINIMAL ? tool : describeWorkflow(input);
     } else {
       return;
     }
     message = message.slice(0, COMMAND_MAX);
+    if (!tagged) {
+      const launch = (tool === 'Agent' || tool === 'Task') && idOf(payload.tool_use_id);
+      const sub = subtaskDir(base, session, !!launch);
+      if (sub) {
+        // The main thread is calling tools again, so its prompts are answered.
+        dropPermMarkers(sub.dir, 'main');
+        // Recorded before the post, the title read and host detection: the
+        // subagent's SubagentStart can follow within milliseconds and claims
+        // this for its label (claimOldestLaunch).
+        if (launch) writeLaunch(sub.dir, launch, MINIMAL ? '' : clip(input.description, LABEL_MAX), 'main', at);
+      }
+    }
   } else if (event === 'Stop') {
     // The end of an agent turn, and the only clean finish either agent reports.
     // Neither payload carries an error or an abort flag: Claude Code's Stop
@@ -2846,13 +4628,21 @@ async function main() {
     // interrupts fires no Stop at all (the card keeps its last tool status
     // until the next event, exactly as before). There is therefore no dirty
     // Stop to tell apart: every Stop that reaches us is a finished turn.
+    //
+    // It is the end of the MAIN turn, though, not of all the work: background
+    // subagents and workflows can still be running, and `turn` tells the
+    // server which (stopTurn), so the card keeps their rows rather than
+    // reading done — and pushing done — before they finish.
     status = 'done';
     message = 'Turn finished';
+    turn = stopTurn(payload, base, session);
+    const sub = subtaskDir(base, session, false);
+    if (sub) dropPermMarkers(sub.dir, 'main');
+    prune = true;
   } else {
     return;
   }
 
-  const cwd = typeof payload.cwd === 'string' && payload.cwd !== '' ? payload.cwd : process.cwd();
   // `name` and `project` used to be one value sent under two keys, recomputed
   // here on every event. They part company now, because they answer different
   // questions. `name` is the session's IDENTITY — its title when it has one,
@@ -2889,10 +4679,12 @@ async function main() {
   // (see pinnedName). Nor do the usage scans, which still file a worktree's
   // tokens under the worktree folder — that join is a change to those scans,
   // not to this line.
-  const folder = path.basename(cwd);
+  //
+  // A 1.6.3-path event (an unknown subagent's) names the card without pinning
+  // anything and without a transcript read: the parent's own events do that.
   const project = worktreeRepoName(cwd) || folder;
-  const title = TITLES && transcript ? readTranscriptTitle(transcript, session) : '';
-  const name = pinnedName(base, session, folder, title);
+  const title = TITLES && transcript && !tagged ? readTranscriptTitle(transcript, session) : '';
+  const name = tagged ? lookupPinnedName(base, session, folder) : pinnedName(base, session, folder, title);
 
   const body = {
     session_id: session,
@@ -2910,27 +4702,42 @@ async function main() {
   if (status !== '') {
     // Focus (opt-in): where this session lives, in three labels. Awaited before
     // the post because the post carries it; once cached it costs one file read.
-    const host = await hostSummary(base, session, cwd, transcript).catch(() => undefined);
+    // Never for an agent-tagged event (see `tagged`).
+    const host = tagged ? undefined : await hostSummary(base, session, cwd, transcript).catch(() => undefined);
     if (host !== undefined) body.host = host;
+    if (turn) body.turn = turn;
+    if (unattributed) body.unattributed = true;
     statusPost = send('POST', `${base}/webhook`, body);
   }
+  // Subagent posts go out with the status post, ahead of the reports: the
+  // project scan below reads logs synchronously before it first yields.
+  const subagentPosts = agentPosts();
   // Claude's report costs a network round trip, so it stays off PreToolUse,
   // which fires between every tool call. Codex reads a local file instead, and
-  // PreToolUse is most of what Codex fires at all (its only other events are
-  // SessionStart, Stop and PermissionRequest) — skipping it there would leave
-  // Codex bars minutes stale. The 5-minute throttle bounds the real work in
-  // both cases; off-slot invocations cost one small file read.
-  const usagePost =
-    event === 'PreToolUse' && SOURCE !== 'codex'
-      ? Promise.resolve()
-      : maybeReportUsage(base, session, transcript);
+  // PreToolUse is most of what Codex fires at all — skipping it there would
+  // leave Codex bars minutes stale, which is also why a Codex sub-agent's
+  // PreToolUse reports too (codexReports). The 5-minute throttle bounds the
+  // real work in both cases; off-slot invocations cost one small file read.
+  // Events that did not exist in 1.6.3 do not report: Claude's
+  // PermissionRequest (which posts nothing) and Codex's UserPromptSubmit.
+  const quiet =
+    (event === 'PreToolUse' && SOURCE !== 'codex') ||
+    (event === 'PermissionRequest' && SOURCE !== 'codex') ||
+    (event === 'UserPromptSubmit' && SOURCE === 'codex');
+  const usagePost = quiet ? Promise.resolve() : maybeReportUsage(base, session, transcript);
   // Same reasoning as the usage report, and cheaper: off-slot runs stop at the
   // throttle file, and a run that does scan is capped by its byte budget.
-  const projectPost =
-    event === 'PreToolUse' && SOURCE !== 'codex'
-      ? Promise.resolve(0)
-      : reportProjectUsage(base, false);
-  await Promise.all([statusPost, usagePost.catch(() => {}), projectPost.catch(() => {})]);
+  const projectPost = quiet ? Promise.resolve(0) : reportProjectUsage(base, false);
+  // Every request this event makes goes out together, and one that fails —
+  // send() never rejects, but the reports might — cannot cut the rest short.
+  await Promise.allSettled([statusPost, ...subagentPosts, usagePost, projectPost]);
+  // Housekeeping last, so the board has heard about the turn first: a prune
+  // is synchronous, and run ahead of the post it could hold it past the
+  // safety exit.
+  if (prune) {
+    const sub = subtaskDir(base, session, false);
+    if (sub) pruneSubtaskState(sub.root, sub.dir, at);
+  }
 }
 
 /**

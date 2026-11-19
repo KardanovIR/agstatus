@@ -1,0 +1,16 @@
+{
+  "about": "Codex root UserPromptSubmit: the fixed line, never the prompt, plus the turn start.",
+  "requests": [
+    {
+      "session_id": "019a2f3c-7d41-7c52-9e0b-3f6a1c2d4e5f",
+      "name": "proj",
+      "status": "planning",
+      "message": "Processing prompt",
+      "project": "proj",
+      "source": "codex",
+      "turn": {
+        "phase": "start"
+      }
+    }
+  ]
+}

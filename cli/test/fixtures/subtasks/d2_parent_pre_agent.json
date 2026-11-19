@@ -1,0 +1,22 @@
+{
+ "source": "probe run d2, events-d2.jsonl line 4 (PreToolUse, t_ms 1793138925104)",
+ "payload": {
+  "session_id": "fdabcccc-3f36-4fed-9029-f326702a365b",
+  "transcript_path": "{{projects}}/fdabcccc-3f36-4fed-9029-f326702a365b.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "5852645c-8f8d-452a-bb31-7cdaa8cde89f",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "try touch",
+   "prompt": "Run the command `touch denied-probe.txt` with the Bash tool exactly once. If it is denied, do not retry and do not try anything else; just report that it was denied.",
+   "subagent_type": "general-purpose",
+   "run_in_background": false
+  },
+  "tool_use_id": "toolu_01UGNVXKBGxkdsTXQSvJ17W1"
+ }
+}

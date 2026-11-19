@@ -1,5 +1,29 @@
 import crypto from 'crypto';
 import type { Pool } from 'pg';
+import {
+  afterApply,
+  AgentUpdate,
+  applyAgent,
+  applyMain,
+  blockedIds,
+  derive,
+  historyKey,
+  isDerivedMessage,
+  liveCount,
+  materialize,
+  MAX_LIVE_ROWS,
+  MAX_LIVE_ROWS_PER_WORKSPACE,
+  normalizeSubtaskState,
+  safeClip,
+  serializeSubtaskState,
+  SUBTASKS_COLUMN_MAX_CHARS,
+  SubtaskState,
+  sweepState,
+  toWireSubtasks,
+  trimmed,
+  TurnHint,
+  WireSubtasks,
+} from './subtasks';
 
 export const STATUSES = ['idle', 'planning', 'coding', 'testing', 'blocked', 'done'] as const;
 export type Status = (typeof STATUSES)[number];
@@ -55,9 +79,14 @@ const isHostSlug = (s: unknown): s is HostSlug =>
 const isHostKind = (s: unknown): s is HostKind =>
   typeof s === 'string' && (HOST_KINDS as readonly string[]).includes(s);
 
-/** A host label: control characters stripped, trimmed, truncated; blank or non-string → fallback. */
+/**
+ * A host label: control characters stripped, trimmed, truncated without
+ * splitting a surrogate pair (as app.ts cleans every other string); blank or
+ * non-string → fallback. Trimmed and cut as copies (trimmed, safeClip), so a
+ * card keeps 32 characters at most, not the post they came from.
+ */
 const hostName = (v: unknown, fallback: string): string => {
-  const s = typeof v === 'string' ? v.replace(CONTROL_CHARS_RE, '').trim().slice(0, HOST_NAME_MAX) : '';
+  const s = typeof v === 'string' ? safeClip(trimmed(v.replace(CONTROL_CHARS_RE, '')), HOST_NAME_MAX) : '';
   return s || fallback;
 };
 
@@ -81,12 +110,149 @@ export function normalizeHost(raw: unknown): Host | null {
   };
 }
 
+/**
+ * A bare UUID is never a folder name a person picked: Codex writes scratch
+ * workspaces under `.codex/visualizations/<date>/<uuid>`. This is the hook's
+ * UUID_NAME_RE (plugin/scripts/agstatus-hook.js), which keeps such a folder
+ * off a card's name, and the boards test a live project against the same
+ * pattern; test/home-project.test.ts holds both copies of the hook to it.
+ */
+export const UUID_FOLDER_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A project a board can file a session under, or '' for none. A name is
+ * usable unless, with the white space at its ends trimmed, it is empty, `/`,
+ * `.` or a bare UUID. An agent started at `/` reports '' from the Node hook
+ * (path.basename) and `/` from the legacy shell hook, whose POSIX `basename /`
+ * prints `/` (hooks/claude-status-hook.sh); a post without a project carries
+ * ''; white space alone, `.`, and a UUID with a space before it come from raw
+ * posts. A tab or a newline never gets this far, because sessionText strips
+ * control characters from every posted name. A usable name is kept as sent,
+ * case and white space included, and in Unicode NFC, as every name the
+ * server keeps (sessionText): a section is a folder name, nothing more. NFC
+ * here as well, so a home read back from a row an older server wrote, or
+ * worked out from its project, is held to the same form as one posted now.
+ * All of it is composed, unlike a post, because none of it is a post as
+ * sent: it is a project sessionText has cut to SESSION_NAME_MAX, or a home
+ * or project the store holds or loads, which is at most three times that
+ * (init says why, where it loads the rows). Every board applies this same
+ * rule to a session's homeProject and to its fallback, project
+ * (docs/design/project-sections.md, "Wire contract").
+ */
+export function normalizeProject(project: string): string {
+  const name = project.trim();
+  return name === '' || name === '/' || name === '.' || UUID_FOLDER_RE.test(name) ? '' : project.normalize('NFC');
+}
+
+/** A session's name and project are cut to this many UTF-16 units (sessionText). */
+export const SESSION_NAME_MAX = 120;
+
+/**
+ * The most of a posted name or project the server composes: sessionText cuts
+ * the value to this many UTF-16 units before it composes it, and to
+ * SESSION_NAME_MAX after.
+ */
+export const COMPOSE_MAX = 512;
+
+/**
+ * A session's name or project as the server keeps it and every board gets
+ * it: control characters and unpaired surrogates out, cut to COMPOSE_MAX,
+ * then Unicode NFC, then cut to SESSION_NAME_MAX. Neither cut splits a pair
+ * (safeClip), and the first takes every unpaired surrogate out of the whole
+ * value before it cuts. One folder can reach the server in two forms: a
+ * folder made in the macOS Finder is often named decomposed (NFD, an e and
+ * then its accent), a Linux checkout of the same repository composed (NFC,
+ * one é), and the boards compare names by UTF-16 code unit, by which the two
+ * are two sections. Composed here they are one, on every board. A project is
+ * kept as this leaves it; a name goes on through sessionName.
+ *
+ * In this order because each step needs the one before it. A control
+ * character or a lone surrogate between a letter and its accent keeps the
+ * two from composing. Composing can lengthen a name, since a few characters
+ * (U+0958, say) are always decomposed, and the last cut is the bound every
+ * size that counts a name relies on.
+ *
+ * The first cut bounds what composing costs. Composing puts each run of
+ * combining marks in canonical order, and ICU's sort takes time that grows
+ * with the square of the run: a 16 KB post of an underscore and then about
+ * 8,000 marks in the worst order held the one thread every board shares for
+ * about 60 ms when all of it was composed, and takes about 0.16 ms here for
+ * its first 512 units. The costliest 512 units found are of characters that
+ * composing turns into two marks each (U+0344, U+0F73), which make the run
+ * twice as long: about 0.55 ms a value, so 1.1 ms for a post whose name and
+ * project are both such, where plain letters take about 0.01 ms (Node 20.9,
+ * ICU 73.2). And 512 loses nothing a name needs. A composed
+ * character stands for at most four UTF-16 units (polytonic Greek: an alpha
+ * with psili, oxia and ypogegrammeni is four), so the 120 units kept never
+ * come from more than the first 480, and nothing a hook sends reaches 512 at
+ * all: a folder name is at most 255 bytes, and the Node hook cuts a title to
+ * 120 units. Only a raw post whose run of more than about 30 combining marks
+ * straddles unit 480 can come out other than it would if all of it were
+ * composed, and it still comes out in NFC and within 120 units.
+ */
+export function sessionText(v: string): string {
+  return safeClip(safeClip(v.replace(CONTROL_CHARS_RE, ''), COMPOSE_MAX).normalize('NFC'), SESSION_NAME_MAX);
+}
+
+/**
+ * Nothing at all, or white space alone. White space is what JavaScript's
+ * trim takes, and U+0085 (NEXT LINE) too, which Unicode and Swift count as
+ * white space where JavaScript does not: so a name that trims to nothing on
+ * any board is blank here.
+ */
+const BLANK_RE = /^[\s\u0085]*$/;
+
+/**
+ * Whether a session's name is no name at all: empty, or white space alone
+ * (BLANK_RE). Every place a name comes in treats such a name as none, so the
+ * store keeps the session's previous name, or else names the card by its id,
+ * and no board is sent a name of white space alone. Sent one, iOS and the
+ * web read the card as its agent and a comma, "Codex,", and Android shows
+ * the card's id.
+ */
+export const isBlankName = (name: string): boolean => BLANK_RE.test(name);
+
+/**
+ * A session's name as the server takes it in: kept as sessionText keeps it,
+ * and '' — no name — when nothing but white space is left (isBlankName). The
+ * store treats '' as a post with no name: the session keeps the name it has,
+ * or is named by its id. A name with words in it is kept as sent, white space
+ * at its ends included, as a folder name is.
+ */
+export function sessionName(v: string): string {
+  const name = sessionText(v);
+  return isBlankName(name) ? '' : name;
+}
+
+/**
+ * A session's home project: the one it already has, else its current project
+ * when that is usable. So the first usable folder a session reports is its
+ * home for the rest of its life, and neither a later `cd` nor a post without a
+ * project moves it, while a name that is not usable (normalizeProject) is
+ * skipped until a real folder claims the session. Both sides are normalized,
+ * so a value read back from the database is held to the same rule as one
+ * worked out here.
+ */
+export function homeProjectFor(previous: string, project: string): string {
+  return normalizeProject(previous) || normalizeProject(project);
+}
+
 export interface Session {
   id: string;
   name: string;
   status: Status;
   message: string;
+  /** Where the session is working now: the folder its latest post named. */
   project: string;
+  /**
+   * The project the boards group this session under: the first usable
+   * `project` it reported (homeProjectFor), held for the session's life so a
+   * `cd` never moves its card, and '' until a usable one arrives. A card the
+   * board drops on request keeps it for the session's return as well
+   * (DROPPED_HOME_TTL_MS). Worked out here and never taken from a post: a
+   * webhook body is read field by field, and this is not one of its fields.
+   */
+  homeProject: string;
   /** Agent kind that owns the session ("claude", "codex", …). */
   source: string;
   /** Absent or null = the hook did not report a host. Stored as null. */
@@ -97,22 +263,53 @@ export interface Session {
    * Lifetime tokens the agent's own logs attribute to this session, when the
    * board holds a total for it. Never part of the stored card: it arrives on
    * its own endpoint, is keyed by (source, id) rather than by the card, and
-   * is attached on the way out (see withTokens). Absent — not zero — when
+   * is attached on the way out (see toWire). Absent — not zero — when
    * nothing has been reported, so a card never claims a session spent nothing.
    */
   tokens?: number;
+  /**
+   * The session's running subagents, for clients. Like `tokens`, attached on
+   * the way out (toWire) and never stored as such; absent when there is
+   * nothing to show, which is every session of an older hook.
+   */
+  subtasks?: WireSubtasks;
+  /**
+   * Internal: the subtask state behind `subtasks` and behind the derived
+   * status and message (src/subtasks.ts). It lives on the stored object so
+   * that every path removing a session drops it too, and it is never
+   * serialized directly: toWire copies fields by name.
+   */
+  sub?: SubtaskState | null;
+  /**
+   * Internal: the log has said that a live-row cap turned one of this card's
+   * subagents away. On the card rather than on `sub`, which goes whenever it
+   * empties (a card with no state gets a fresh one per agent post), so it is
+   * said once per card, and it goes with the card.
+   */
+  subCapLogged?: true;
 }
 
 export interface UpsertInput {
   id: string;
   status: Status;
-  // undefined = carry the previous value forward (v1 semantics)
+  // undefined = carry the previous value forward (v1 semantics). name as
+  // sessionName leaves it, where '' is no name and carries the previous one
+  // forward too; project as sessionText leaves it. Both in Unicode NFC.
   name?: string;
   message?: string;
   project?: string;
   source?: string;
   // undefined = carry forward, null = clear (the hook opted out), object = set
   host?: Host | null;
+  /**
+   * Present: an agent post, about one subagent of this session. Its `status`
+   * and `message` are for older servers and are not applied here.
+   */
+  agent?: AgentUpdate;
+  /** Main-thread posts only: where the parent's turn is (start, end, reset). */
+  turn?: TurnHint;
+  /** Main-thread blocked posts only: a prompt the hook could not pin on any thread. */
+  unattributed?: boolean;
 }
 
 export interface Device {
@@ -249,6 +446,81 @@ const MAX_SESSION_TOTALS_PER_WORKSPACE = 500;
 const MAX_SESSION_TOTALS_WITH_LIVE_CARDS = MAX_SESSION_TOTALS_PER_WORKSPACE + MAX_SESSIONS_PER_WORKSPACE;
 
 /**
+ * How long the board remembers the homeProject of a card it dropped on
+ * request, counted from that session's last post. On request means dismissed
+ * (DELETE /sessions/:id, which a viewer's swipe and the hook's SessionEnd
+ * both send), cleared (POST /sessions/clear), or evicted by
+ * MAX_SESSIONS_PER_WORKSPACE. A session that posts again inside the window
+ * goes back under the home it had, not the folder it is in now: a card the
+ * board dropped has no `prev`, and without this a session that had run
+ * `cd web` came back filed under web, so the cd moved its card after all.
+ *
+ * 24 hours is the hook's SESSION_NAME_MAX_AGE_MS. For that long after a
+ * session's last event the hook re-sends the name it pinned, so the session
+ * comes back under its old name and, with this, in its old section. It is
+ * also the hosted board's default SESSION_TTL_MS: a dropped card's home is
+ * kept exactly as long as the card would have stayed on the board, and never
+ * past the privacy policy's 24 hours after a session's last update. A card
+ * the TTL expires is not remembered at all, because its name pin ages out
+ * with it and the two start over together. SessionEnd is the one drop after
+ * which the hook forgets its pin at once: a session resumed under the same
+ * id keeps its section and is named afresh.
+ *
+ * In memory only, like the cards of a server without a database: a restart
+ * forgets every entry, and a session dropped before the restart starts over
+ * when it next posts (docs/api.md, "The session object"). An entry past the
+ * window goes with the next drop on its board (rememberHome) or with the
+ * session sweep (sweepExpiredSessions), whichever comes first, so a board
+ * nobody posts to any more does not keep its entries until a restart. A
+ * server with no session TTL, as legacy mode is by default, runs no sweep,
+ * and its one board's entries go with its next drop.
+ */
+export const DROPPED_HOME_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Dropped cards whose home a workspace remembers at once (DROPPED_HOME_TTL_MS).
+ *
+ * Sized against the owner's machine rather than a guess: the agents' own
+ * session logs there, read in November 2026, start at most 59 sessions in a
+ * day over five months (55 of them Codex). A session holds one entry, and
+ * only for a day after its last post, so an honest board needs about one busy
+ * day's worth; 500 is eight such days, room for a small team on one board.
+ *
+ * The bound is for a token holder posting fresh ids, each a card that a
+ * DELETE or the card cap turns into an entry: 120 a minute on the webhook
+ * budget. Unlike the caps above, this one evicts rather than refuses, oldest
+ * drop first. Nothing in this map is ever written, so evicting bounds it
+ * completely, and what a flood pushes out are its own board's entries. At the
+ * bounds (a 128-character id, a 120-character name in three-byte characters)
+ * an entry is about 490 bytes of V8 heap, so a workspace holds at most about
+ * 240 KB of them; a UUID and a short folder name are about 140 bytes. A
+ * longer post costs no more, because what is kept is a copy of its cut
+ * (safeClip). Measured through the webhook, 500 entries from posts of 15,000
+ * ASCII characters hold 178 KB, and from 5,000 three-byte characters 237 KB,
+ * by DELETE or by eviction alike; before the copy each entry held its whole
+ * post, and such a board 7.5 MB.
+ */
+export const MAX_DROPPED_HOMES_PER_WORKSPACE = 500;
+
+/** A dropped card's home, kept for its session's return (DROPPED_HOME_TTL_MS). */
+interface DroppedHome {
+  homeProject: string;
+  /** The session's updatedAt when it was dropped: the clock the window runs on. */
+  lastPostAt: number;
+}
+
+/**
+ * Lets go of a board's dropped homes whose window is over. Every entry, not
+ * just the front: the window runs from each session's last post, which is not
+ * the order cards are dropped in.
+ */
+function ageOutDroppedHomes(ws: Map<string, DroppedHome>, now: number): void {
+  for (const [id, home] of ws) {
+    if (now - home.lastPostAt >= DROPPED_HOME_TTL_MS) ws.delete(id);
+  }
+}
+
+/**
  * Distinct (source, project, day) rows held per workspace.
  *
  * Sized against a real heavy board rather than a guess: one developer running
@@ -266,8 +538,11 @@ const MAX_SESSION_TOTALS_WITH_LIVE_CARDS = MAX_SESSION_TOTALS_PER_WORKSPACE + MA
  * refused rather than an old one evicted, for the reason given at
  * MAX_SESSION_TOTALS_PER_WORKSPACE: eviction only flags, so it bounds memory
  * and leaves the disk to grow. Updates to a key already held always land, and
- * days that age out of the window free their slots (pruneProjectDays). At
- * roughly 260 bytes a row this is about 1.3 MB of heap per workspace.
+ * days that age out of the window free their slots (pruneProjectDays).
+ * Measured through the webhook, a row is about 230 bytes of heap with a short
+ * folder name and 460 at the bound, 120 characters in three-byte characters
+ * (a longer name is cut to that, as a copy: safeClip), so this is 1.1 to
+ * 2.3 MB of heap per workspace.
  */
 export const MAX_PROJECT_DAYS_PER_WORKSPACE = 5000;
 
@@ -406,6 +681,28 @@ export function projectDayWindow(now: number): { oldest: string; newest: string 
   return { oldest: dayKey(now - MAX_HISTORY_DAYS * DAY_MS), newest: dayKey(now + DAY_MS) };
 }
 
+/**
+ * The one order the server sorts what it serves in: by UTF-16 code unit,
+ * which is JavaScript's own < and > on strings, as the clients compare
+ * folder names (docs/design/project-sections.md). Never localeCompare or an
+ * Intl.Collator, for three reasons:
+ * - Cost. A collation composes and reorders a string's combining marks on
+ *   every comparison, and that grows with the square of a run of them. One
+ *   board's 5,000 project days, each named with 120 units of marks in the
+ *   worst order, took localeCompare 1.6 s of the thread every board shares
+ *   to sort (Node 20.9), so 30 history reads at once held it for 45 s and
+ *   other boards' hook posts timed out. By code unit a comparison reads each
+ *   name at most once, and that sort takes 4.7 ms.
+ * - It depends on where the server runs. A collation follows the process's
+ *   locale: under LANG=da_DK.UTF-8, "aardvark" sorts after "zeta".
+ * - It calls different names equal, such as a name and its decomposed form,
+ *   or one with a soft hyphen in it, and leaves those in the order they were
+ *   stored in.
+ */
+export function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** One entry in a session's timeline: what the agent switched to, and when. */
 export interface SessionEvent {
   /** Monotonically increasing per session; stable identity for clients. */
@@ -498,7 +795,15 @@ const HISTORY_READS_PER_MINUTE = 30;
  * its own, so one /64 is more addresses than anyone needs, and 500 IPv4
  * addresses reach the MAX_WORKSPACES default of 10,000 within an hour. Each
  * of those boards then brings the whole per-board allowance with it — 5,000
- * project days alone are ~1.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE) —
+ * project days alone are up to ~2.3 MB of heap (MAX_PROJECT_DAYS_PER_WORKSPACE);
+ * the timelines of 50 cards up to ~3.5 MB (MAX_EVENTS_PER_SESSION events a
+ * card, at about 400 bytes an event with a 300-character message and 700 in
+ * three-byte characters); subtask state up to ~0.7 MB more for a pathological
+ * 50-card board: 256 live rows across the board (MAX_LIVE_ROWS_PER_WORKSPACE
+ * in subtasks.ts), plus 8 failed rows and 64 tombs per card, at about 500 and
+ * 120 bytes each in V8; and up to ~240 KB of dropped cards' homes
+ * (MAX_DROPPED_HOMES_PER_WORKSPACE). A post past a length limit costs no more
+ * than one at it, because only a copy of its cut is kept (safeClip) —
  * and a create-then-delete loop leaves a flagged workspaces row per turn
  * without ever nearing MAX_WORKSPACES. At 200 an hour, filling 10,000 takes
  * at least 50 hours from empty, however many addresses do it, and that loop
@@ -589,6 +894,11 @@ export class Store {
   // apart from `sessions` on purpose: the rows arrive on their own endpoint,
   // outlive the cards they describe, and exist for ids that never had a card.
   private sessionTotals = new Map<string, Map<string, SessionTotal>>();
+  // Where each card the board dropped on request was filed, wsId → session id
+  // → its home, so the session's next post files it there again; kept in drop
+  // order, oldest first. Like sessionTotals it outlives the card it is for,
+  // and it is for the card's return. Nothing here is persisted.
+  private droppedHomes = new Map<string, Map<string, DroppedHome>>();
   // The next session_events seq, wsId → one counter for every session of that
   // board. Not one per session: the counter this replaced was a Map entry per
   // session id ever seen, which nothing could ever remove — forgetting one
@@ -678,6 +988,8 @@ export class Store {
         updated_at BIGINT NOT NULL,
         deleted_at BIGINT,
         host TEXT,
+        subtasks TEXT,
+        home_project TEXT,
         PRIMARY KEY (workspace_id, id)
       );
       CREATE TABLE IF NOT EXISTS devices (
@@ -742,6 +1054,12 @@ export class Store {
     // Databases created before these columns existed.
     await pool.query('ALTER TABLE devices ADD COLUMN IF NOT EXISTS apns_server TEXT');
     await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS host TEXT');
+    // Nullable: the rows an older server wrote have none, nor do those
+    // scripts/migrate-sqlite-to-postgres.js inserts; the load below derives it.
+    await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS home_project TEXT');
+    // Nullable, and a column rather than a table: a session with no subagents
+    // stores NULL, and scripts/migrate-sqlite-to-postgres.js inserts without it.
+    await pool.query('ALTER TABLE sessions ADD COLUMN IF NOT EXISTS subtasks TEXT');
 
     // node-postgres returns BIGINT as string to avoid precision loss; every
     // epoch-ms value here fits a double, so Number() them on the way in.
@@ -776,7 +1094,17 @@ export class Store {
       .sort((a, b) => a - b)
       .slice(-this.workspacesPerHour);
 
-    const sessions = await pool.query('SELECT * FROM sessions WHERE deleted_at IS NULL');
+    // Named columns, not *, so the subtasks column can be guarded in SQL: an
+    // oversized value is never shipped to the process at all, for the reason
+    // given at the retired-device query below. had_subtasks tells such a value
+    // apart from no value, which the guard alone would not.
+    const sessions = await pool.query(
+      `SELECT workspace_id, id, name, status, message, project, home_project, source, host, created_at, updated_at,
+              CASE WHEN length(subtasks) <= $1 THEN subtasks END AS subtasks,
+              subtasks IS NOT NULL AS had_subtasks
+       FROM sessions WHERE deleted_at IS NULL`,
+      [SUBTASKS_COLUMN_MAX_CHARS]
+    );
     for (const row of sessions.rows as Array<Record<string, unknown>>) {
       const wsId = row.workspace_id as string;
       let map = this.sessions.get(wsId);
@@ -792,17 +1120,67 @@ export class Store {
       } catch {
         // not JSON at all
       }
-      map.set(row.id as string, {
+      const updatedAt = Number(row.updated_at);
+      // Rebuilt and re-capped like host; anything off — including a state saved
+      // with another updated_at, as a 1.6.3 server in between leaves it — loads
+      // as no state.
+      const sub = typeof row.subtasks === 'string' ? normalizeSubtaskState(row.subtasks, updatedAt) : null;
+      let status = row.status as Status;
+      let message = row.message as string;
+      if (sub) {
+        // The stored reading is the one derived from this state when it was
+        // saved. Derived again from the state as rebuilt, so that it agrees
+        // with what is listed when the rebuild dropped anything.
+        ({ status, message } = derive(sub));
+      } else if (row.had_subtasks === true && isDerivedMessage(message)) {
+        // A state was stored and did not load, so the stored line may be one
+        // derived from it: a "Needs approval: …" or "3 subagents still
+        // running" would pose as the parent's own until the parent next posts.
+        // With no state stored the line IS the parent's own, whatever it reads
+        // like — an old hook's, or the 1.7.0 hook's "Reading subagent results".
+        status = 'idle';
+        message = '';
+      }
+      // In Unicode NFC, as every name posted now is kept (sessionText): a row
+      // an older server wrote holds them as they were sent. Composed, not cut
+      // again: the server that wrote the row cut them, and a session that
+      // never posted a name is named by its id, up to 128 characters. So all
+      // of each is composed, and that costs little: every server that has
+      // written a row cut a posted name and project to 120 units, and an id
+      // is ASCII, which composing leaves alone. Composing makes at most three
+      // units of one (U+FB2C, say), so nothing composed here comes out longer
+      // than 360, and a run of marks that short is put in order in no time
+      // worth counting, about 0.03 ms at worst (sessionText says what a long
+      // one costs). An older
+      // server also kept a name of white space alone as it was sent; that is
+      // no name (isBlankName), so the card is named by its id, as a post of
+      // it would leave a new card, until the session posts a name. In memory
+      // only, like the composing: loading writes nothing.
+      const project = (row.project as string).normalize('NFC');
+      const name = (row.name as string).normalize('NFC');
+      const session: Session = {
         id: row.id as string,
-        name: row.name as string,
-        status: row.status as Status,
-        message: row.message as string,
-        project: row.project as string,
+        name: isBlankName(name) ? (row.id as string) : name,
+        status,
+        message,
+        project,
+        // NULL on a row only an older server has written: derived from the
+        // row's own project, the folder the session last reported, which is
+        // the best there is for a session this server never saw start. It
+        // goes into the column with the session's next write, so loading
+        // writes nothing, and until then every load derives it again from
+        // the row. An older server running in between, as in a rollback, can
+        // change that project, and so the home the next load derives
+        // (docs/design/project-sections.md, "Risks"). In NFC either way
+        // (normalizeProject).
+        homeProject: homeProjectFor(typeof row.home_project === 'string' ? row.home_project : '', project),
         source: (row.source as string) || 'claude',
         host,
         createdAt: Number(row.created_at),
-        updatedAt: Number(row.updated_at),
-      });
+        updatedAt,
+      };
+      if (sub) session.sub = sub;
+      map.set(session.id, session);
     }
 
     const devices = await pool.query(
@@ -1177,6 +1555,7 @@ export class Store {
     this.usagePoints.delete(wsId);
     this.projectDays.delete(wsId);
     this.sessionTotals.delete(wsId);
+    this.droppedHomes.delete(wsId);
     this.commands.delete(wsId);
     this.commandWindows.delete(wsId);
     this.listenerWindows.delete(wsId);
@@ -1199,11 +1578,35 @@ export class Store {
     return existed;
   }
 
+  /**
+   * Applies one webhook post and returns the card as it now goes on the wire.
+   *
+   * A main-thread post (no `agent`) is the parent speaking: it sets the
+   * parent's own reading. An agent post updates one subagent row and never
+   * touches that reading. Either way the status and message stored and sent
+   * are the ones derived from the two (src/subtasks.ts), which for a session
+   * with no subagents is simply what the post said, exactly as before.
+   *
+   * `session` is null for a subagent's finish when the card is not on the
+   * board, and for a start the live-row cap turned away for such a card:
+   * nothing was stored. `newlyBlocked` is true when this post put a
+   * subagent (or the parent) into waiting on a card that ends up blocked —
+   * including one that was blocked already, which a status transition alone
+   * would miss: a row stays blocked until its agent's next class change, so a
+   * second approval would otherwise never be pushed.
+   */
   upsertSession(
     wsId: string,
     input: UpsertInput,
     maxSessions: number
-  ): { session: Session; evictedId: string | null; prevStatus: Status | null } {
+  ): { session: Session | null; evictedId: string | null; prevStatus: Status | null; newlyBlocked: boolean } {
+    const agent = input.agent;
+    // A finish for a card that is not on the board (never seen, dismissed,
+    // evicted, expired, ended): there is nothing live to show, and a card made
+    // from it would be a ghost no later post updates. No upsert at all.
+    if (agent && (agent.state === 'done' || agent.state === 'failed') && !this.sessions.get(wsId)?.has(input.id)) {
+      return { session: null, evictedId: null, prevStatus: null, newlyBlocked: false };
+    }
     let map = this.sessions.get(wsId);
     if (!map) {
       map = new Map();
@@ -1218,18 +1621,80 @@ export class Store {
 
     const now = Date.now();
     const prev = map.get(input.id);
+
+    // With no subtask state, the stored reading IS the parent's own.
+    const ownBefore = prev ? (prev.sub ? prev.sub.own.status : prev.status) : null;
+    const blockedBefore = prev?.sub ? blockedIds(prev.sub) : new Set<string>();
+    let st = prev?.sub ?? null;
+    let status: Status = input.status;
+    let message = '';
+    let untracked = false;
+    if (agent) {
+      // The post's own status is its compat reading, for older servers. A card
+      // it creates starts idle, never in that status: a blocked agent then
+      // reads "Needs approval: …", and the card goes back to idle when the
+      // agent unblocks.
+      st ??= prev ? materialize(prev.status, prev.message) : materialize('idle', '');
+      untracked = applyAgent(st, agent, now, this.liveRowsIn(wsId)) === 'untracked';
+    } else {
+      message = input.message !== undefined ? input.message : st ? st.own.message : prev?.message ?? '';
+      // A turn hint applies whether or not the card holds state yet. On a card
+      // without it only one hint leaves any behind: a Stop that announces a
+      // running workflow, whose report hold must start even when none of the
+      // workflow's agents has posted yet. Every other hint empties again at
+      // once (afterApply), leaving the post's own reading as before.
+      if (input.turn) st ??= materialize(input.status, message);
+      if (st) {
+        applyMain(st, { status: input.status, message, unattributed: input.unattributed, turn: input.turn }, now);
+      }
+    }
+    let ownAfter: Status = status;
+    if (st) {
+      const kept = afterApply(st, now);
+      // Derived from the state as applied, even when afterApply let it go:
+      // an empty state derives own, which is then the stored reading again.
+      ({ status, message } = derive(st));
+      ownAfter = st.own.status;
+      st = kept;
+    }
+    // A start the board's live-row cap turned away, for a card not on the
+    // board, left nothing to show. Like a finish for such a card it makes no
+    // card: one would read idle with nothing on it, and at the card cap it
+    // would evict a real one. Nor is it logged, having no card to say it once
+    // for; the next card the cap turns a subagent away from says it.
+    if (untracked && !prev) {
+      return { session: null, evictedId: null, prevStatus: null, newlyBlocked: false };
+    }
+    const blockedAfter = st ? blockedIds(st) : new Set<string>();
+    const newlyBlocked =
+      status === 'blocked' &&
+      ([...blockedAfter].some((id) => !blockedBefore.has(id)) || (ownAfter === 'blocked' && ownBefore !== 'blocked'));
+
+    const project = input.project !== undefined ? input.project : prev?.project ?? '';
     const session: Session = {
       id: input.id,
-      name: input.name !== undefined ? input.name || prev?.name || input.id : prev?.name || input.id,
-      status: input.status,
-      message: input.message !== undefined ? input.message : prev?.message ?? '',
-      project: input.project !== undefined ? input.project : prev?.project ?? '',
+      // An agent post names only a card it creates.
+      name: agent && prev
+        ? prev.name
+        : input.name !== undefined ? input.name || prev?.name || input.id : prev?.name || input.id,
+      status,
+      message,
+      project,
+      // On every post alike, a subagent's included (the hook sends it no
+      // project, so it carries the parent's). A card the board dropped on
+      // request (dismissed, cleared, evicted) has no prev, and takes the home
+      // remembered for it; one the TTL expired, or dropped before a restart,
+      // has none remembered and starts over (DROPPED_HOME_TTL_MS).
+      homeProject: homeProjectFor(prev ? prev.homeProject : this.droppedHome(wsId, input.id, now), project),
       source: input.source ?? prev?.source ?? 'claude',
       // Always a key (null, never undefined) so the wire shape is stable.
       host: input.host !== undefined ? input.host : prev?.host ?? null,
       createdAt: prev?.createdAt ?? now,
       updatedAt: now,
     };
+    if (st) session.sub = st;
+    if (untracked && !prev?.subCapLogged) this.warnUntracked();
+    if (untracked || prev?.subCapLogged) session.subCapLogged = true;
 
     let evictedId: string | null = null;
     if (!prev && map.size >= maxSessions) {
@@ -1248,23 +1713,44 @@ export class Store {
         );
         this.dropEvents(wsId, oldest.id);
         this.cancelCommands(wsId, oldest.id);
+        this.rememberHome(wsId, oldest, now);
         evictedId = oldest.id;
       }
     }
 
     map.set(session.id, session);
+    // Back on the board, the card holds its home itself again.
+    if (!prev) this.forgetDroppedHome(wsId, session.id);
     // Timeline: record real transitions, not keep-alive re-posts of the same
-    // status+message (PreToolUse fires between every tool call).
-    if (!prev || prev.status !== session.status || prev.message !== session.message) {
-      this.recordEvent(wsId, session.id, session.status, session.message, now);
-    }
+    // status+message (PreToolUse fires between every tool call). A card with
+    // subtask state, before this post or after it, compares by historyKey,
+    // which gives every "N subagents still running" one key: a drain of thirty
+    // subagents is one reading on the timeline, not thirty. Only such a card
+    // ever derives that line, so any other compares status and message as
+    // 1.6.3 did, and an old hook's own message that merely reads like one is
+    // recorded exactly as before.
+    const moved = !prev || (prev.sub || st
+      ? historyKey(prev.status, prev.message) !== historyKey(session.status, session.message)
+      : prev.status !== session.status || prev.message !== session.message);
+    if (moved) this.recordEvent(wsId, session.id, session.status, session.message, now);
+    this.persistSession(wsId, session);
+    return { session: this.toWire(wsId, session), evictedId, prevStatus: prev?.status ?? null, newlyBlocked };
+  }
+
+  /**
+   * Writes the whole sessions row, with the subtask state in its own column
+   * (NULL when there is none) saved against this updatedAt. Memory stays
+   * authoritative; the column is read only at load.
+   */
+  private persistSession(wsId: string, session: Session): void {
     this.exec(
-      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO sessions (workspace_id, id, name, status, message, project, source, host, created_at, updated_at, subtasks, home_project)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (workspace_id, id) DO UPDATE SET
          name = EXCLUDED.name, status = EXCLUDED.status, message = EXCLUDED.message,
          project = EXCLUDED.project, source = EXCLUDED.source, host = EXCLUDED.host,
-         updated_at = EXCLUDED.updated_at, deleted_at = NULL`,
+         updated_at = EXCLUDED.updated_at, subtasks = EXCLUDED.subtasks,
+         home_project = EXCLUDED.home_project, deleted_at = NULL`,
       [
         wsId,
         session.id,
@@ -1276,9 +1762,67 @@ export class Store {
         session.host ? JSON.stringify(session.host) : null,
         session.createdAt,
         session.updatedAt,
+        session.sub ? serializeSubtaskState(session.sub, session.updatedAt) : null,
+        session.homeProject,
       ]
     );
-    return { session: this.withTokens(wsId, session), evictedId, prevStatus: prev?.status ?? null };
+  }
+
+  /** Live subtask rows across a board, for MAX_LIVE_ROWS_PER_WORKSPACE. */
+  private liveRowsIn(wsId: string): number {
+    let n = 0;
+    for (const s of this.sessions.get(wsId)?.values() ?? []) {
+      if (s.sub) n += liveCount(s.sub);
+    }
+    return n;
+  }
+
+  /** Says that a live-row cap turned a subagent away: once per card (Session.subCapLogged). */
+  private warnUntracked(): void {
+    console.warn(
+      `Subtasks: a session reached a live-row cap (${MAX_LIVE_ROWS} per card, ` +
+      `${MAX_LIVE_ROWS_PER_WORKSPACE} per board); its further subagents are not listed`
+    );
+  }
+
+  /**
+   * The subtask sweep, which app.ts runs every SUBTASK_SWEEP_MS in both modes:
+   * sweepState over every session that has state. A session whose wire reading
+   * moved gets the derived status and message, updatedAt + 1 (enough to win a
+   * REST tie on every client, without reordering the grid or resetting its
+   * "12m ago"), a timeline event when the history key moved, and a place in
+   * the list returned, for app.ts to broadcast and hand to the pusher with its
+   * previous status. A state that changed without the wire moving (a tomb
+   * retiring) is only written.
+   */
+  sweepSubtasks(now: number = Date.now()): Array<{ wsId: string; session: Session; prevStatus: Status }> {
+    const moved: Array<{ wsId: string; session: Session; prevStatus: Status }> = [];
+    for (const [wsId, map] of this.sessions) {
+      for (const s of map.values()) {
+        const st = s.sub;
+        if (!st) continue;
+        const wireBefore = JSON.stringify(toWireSubtasks(st));
+        const swept = sweepState(st, now);
+        if (!swept.changed) continue;
+        const { status, message } = derive(st);
+        const wireAfter = JSON.stringify(swept.state ? toWireSubtasks(swept.state) : null);
+        if (swept.state) s.sub = swept.state;
+        else delete s.sub;
+        const prevStatus = s.status;
+        const prevMessage = s.message;
+        if (status !== prevStatus || message !== prevMessage || wireAfter !== wireBefore) {
+          s.status = status;
+          s.message = message;
+          s.updatedAt += 1;
+          if (historyKey(prevStatus, prevMessage) !== historyKey(status, message)) {
+            this.recordEvent(wsId, s.id, status, message, now);
+          }
+          moved.push({ wsId, session: this.toWire(wsId, s), prevStatus });
+        }
+        this.persistSession(wsId, s);
+      }
+    }
+    return moved;
   }
 
   /**
@@ -1483,10 +2027,10 @@ export class Store {
   }
 
   /**
-   * Recorded utilization per (source, window) since `since`. Each series keeps
-   * the last reading from *before* the cutoff as its first point: without that
-   * anchor a step chart has nothing to draw from until the first change lands
-   * inside the window.
+   * Recorded utilization per (source, window) since `since`, by source, then
+   * window id (byCodeUnit). Each series keeps the last reading from *before*
+   * the cutoff as its first point: without that anchor a step chart has
+   * nothing to draw from until the first change lands inside the window.
    */
   getUsageHistory(
     wsId: string,
@@ -1504,7 +2048,7 @@ export class Store {
       if (points.length > 0) out.push({ source, windowId, points });
     }
     return out.sort(
-      (a, b) => a.source.localeCompare(b.source) || a.windowId.localeCompare(b.windowId)
+      (a, b) => byCodeUnit(a.source, b.source) || byCodeUnit(a.windowId, b.windowId)
     );
   }
 
@@ -1603,7 +2147,12 @@ export class Store {
     }
   }
 
-  /** Token spend per (source, project, day) on or after `sinceDay` (YYYY-MM-DD). */
+  /**
+   * Token spend per (source, project, day) on or after `sinceDay` (YYYY-MM-DD),
+   * by day, then source, then project (byCodeUnit). The clients list each
+   * agent's folders biggest spender first, and folders that spent the same in
+   * the order their first rows come in here.
+   */
   getProjectDays(wsId: string, sinceDay: string): ProjectDay[] {
     const ws = this.projectDays.get(wsId);
     if (!ws) return [];
@@ -1611,9 +2160,9 @@ export class Store {
       .filter((d) => d.day >= sinceDay)
       .sort(
         (a, b) =>
-          a.day.localeCompare(b.day) ||
-          a.source.localeCompare(b.source) ||
-          a.project.localeCompare(b.project)
+          byCodeUnit(a.day, b.day) ||
+          byCodeUnit(a.source, b.source) ||
+          byCodeUnit(a.project, b.project)
       );
   }
 
@@ -1734,28 +2283,51 @@ export class Store {
   }
 
   /**
-   * The card as it goes on the wire: the stored session plus whatever total is
-   * held under its (source, id). The key is absent, not zero, when nothing has
-   * been reported — a board with usage reporting off, an agent other than
-   * Claude or Codex, or a session whose total aged out all look the same to a
-   * client, and none of them means "this session spent nothing".
+   * The card as it goes on the wire: a fresh object, built field by field in
+   * the order clients have always received, then `homeProject`, which every
+   * card carries from 1.7.0, then `tokens` and `subtasks` when there is
+   * anything for them. Every key a 1.6.5 client read keeps its place, a card
+   * with neither of the last two emits exactly the JSON it did before they
+   * existed plus `homeProject`, and nothing internal can ride along — the
+   * subtask state above all, which lives on the stored object.
    *
-   * The stored object is returned unchanged in that case, so a board that
-   * never receives a total emits exactly the frames it emitted before.
+   * `tokens` is whatever total is held under the card's (source, id). The key
+   * is absent, not zero, when nothing has been reported — a board with usage
+   * reporting off, an agent other than Claude or Codex, or a session whose
+   * total aged out all look the same to a client, and none of them means "this
+   * session spent nothing".
    */
-  private withTokens(wsId: string, session: Session): Session {
+  private toWire(wsId: string, session: Session): Session {
+    const wire: Session = {
+      id: session.id,
+      name: session.name,
+      status: session.status,
+      message: session.message,
+      project: session.project,
+      source: session.source,
+      host: session.host ?? null,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      homeProject: session.homeProject,
+    };
     const tokens = this.getSessionTokens(wsId, session.source, session.id);
-    return tokens === null ? session : { ...session, tokens };
+    if (tokens !== null) wire.tokens = tokens;
+    const subtasks = session.sub ? toWireSubtasks(session.sub) : null;
+    if (subtasks) wire.subtasks = subtasks;
+    return wire;
   }
 
-  /** Current plan usage for a workspace, freshest first. Stale entries are dropped. */
+  /**
+   * Current plan usage for a workspace, by source (byCodeUnit). Stale entries
+   * are dropped. Sorted on every usage post and every stream's connect.
+   */
   getUsage(wsId: string): Usage[] {
     const map = this.usageBySource.get(wsId);
     if (!map) return [];
     const cutoff = Date.now() - USAGE_TTL_MS;
     return Array.from(map.values())
       .filter((u) => u.updatedAt >= cutoff)
-      .sort((a, b) => a.source.localeCompare(b.source));
+      .sort((a, b) => byCodeUnit(a.source, b.source));
   }
 
   /** Appends a timeline entry, trimming (soft-deleting) beyond the cap. */
@@ -1812,44 +2384,92 @@ export class Store {
 
   getSession(wsId: string, id: string): Session | null {
     const session = this.sessions.get(wsId)?.get(id);
-    return session ? this.withTokens(wsId, session) : null;
+    return session ? this.toWire(wsId, session) : null;
   }
 
   getSessions(wsId: string): Session[] {
     const map = this.sessions.get(wsId);
     if (!map) return [];
-    return Array.from(map.values(), (s) => this.withTokens(wsId, s)).sort(
+    return Array.from(map.values(), (s) => this.toWire(wsId, s)).sort(
       (a, b) => b.updatedAt - a.updatedAt
     );
   }
 
   deleteSession(wsId: string, id: string): boolean {
+    const session = this.sessions.get(wsId)?.get(id);
     const removed = this.sessions.get(wsId)?.delete(id) ?? false;
     if (removed) {
+      const now = Date.now();
       // Flagged, not erased. `host` stays on the row like every other column:
       // dismissing a card hides it, and hiding is not destroying.
       this.exec(
         'UPDATE sessions SET deleted_at = $3 WHERE workspace_id = $1 AND id = $2',
-        [wsId, id, Date.now()]
+        [wsId, id, now]
       );
       this.dropEvents(wsId, id);
       this.cancelCommands(wsId, id);
+      if (session) this.rememberHome(wsId, session, now);
     }
     return removed;
   }
 
   clearSessions(wsId: string): void {
     const map = this.sessions.get(wsId);
+    const now = Date.now();
     if (map) {
-      for (const id of map.keys()) this.dropEvents(wsId, id);
+      for (const s of map.values()) {
+        this.dropEvents(wsId, s.id);
+        this.rememberHome(wsId, s, now);
+      }
       map.clear();
     }
     this.cancelCommands(wsId, null);
     // Flagged, not erased — `host` survives a clear like every other column.
     this.exec(
       'UPDATE sessions SET deleted_at = $2 WHERE workspace_id = $1 AND deleted_at IS NULL',
-      [wsId, Date.now()]
+      [wsId, now]
     );
+  }
+
+  /**
+   * Remembers where a card the board is dropping on request was filed, for
+   * its session's next post (DROPPED_HOME_TTL_MS): a dismissal, a clear, or
+   * the card cap's eviction, never the TTL sweep. Nothing to remember for a
+   * card with no home yet, or one whose last post is already past the window.
+   */
+  private rememberHome(wsId: string, session: Session, now: number): void {
+    if (!session.homeProject || now - session.updatedAt >= DROPPED_HOME_TTL_MS) return;
+    let ws = this.droppedHomes.get(wsId);
+    if (!ws) {
+      ws = new Map();
+      this.droppedHomes.set(wsId, ws);
+    }
+    // Aged out on the way in, so the cap below only ever counts live entries.
+    ageOutDroppedHomes(ws, now);
+    // Re-set rather than updated, so a card dropped again moves to the end:
+    // insertion order is drop order, and the cap drops from the front.
+    ws.delete(session.id);
+    ws.set(session.id, { homeProject: session.homeProject, lastPostAt: session.updatedAt });
+    if (ws.size > MAX_DROPPED_HOMES_PER_WORKSPACE) {
+      const oldest = ws.keys().next();
+      if (!oldest.done) ws.delete(oldest.value);
+    }
+  }
+
+  /**
+   * The home remembered for a dropped card, or '' when there is none. Checked
+   * against the window on read as well, so an entry that aged out while
+   * nothing was dropped is never used.
+   */
+  private droppedHome(wsId: string, id: string, now: number): string {
+    const home = this.droppedHomes.get(wsId)?.get(id);
+    return home && now - home.lastPostAt < DROPPED_HOME_TTL_MS ? home.homeProject : '';
+  }
+
+  /** Forgets a dropped card's home once the card is back: it holds its home itself again. */
+  private forgetDroppedHome(wsId: string, id: string): void {
+    const ws = this.droppedHomes.get(wsId);
+    if (ws?.delete(id) && ws.size === 0) this.droppedHomes.delete(wsId);
   }
 
   /** Fixed-window webhook rate limit per workspace. */
@@ -2135,9 +2755,25 @@ export class Store {
     return this.takeFinishedCommands();
   }
 
-  /** Removes sessions not updated within ttlMs. Returns what was removed, for broadcasting. */
+  /**
+   * Removes sessions not updated within ttlMs. Returns what was removed, for
+   * broadcasting. Unlike a dismissal it remembers no home (rememberHome): the
+   * hook's name pin ages out with the card, so a session that posts again
+   * after this starts over, name and section alike (DROPPED_HOME_TTL_MS).
+   *
+   * It also lets go of every board's dropped homes past their day, which
+   * otherwise leave only with that board's next drop: a board nobody posts to
+   * any more would keep its entries until a restart. The pass is cheap at the
+   * worst a server can hold: over 10,000 boards of 500 entries, none of them
+   * due, it took about 30 ms on Node 20, and the sweep runs once a minute.
+   */
   sweepExpiredSessions(ttlMs: number): Array<{ wsId: string; id: string }> {
-    const cutoff = Date.now() - ttlMs;
+    const now = Date.now();
+    for (const [wsId, ws] of this.droppedHomes) {
+      ageOutDroppedHomes(ws, now);
+      if (ws.size === 0) this.droppedHomes.delete(wsId);
+    }
+    const cutoff = now - ttlMs;
     const removed: Array<{ wsId: string; id: string }> = [];
     for (const [wsId, map] of this.sessions) {
       for (const [id, s] of map) {

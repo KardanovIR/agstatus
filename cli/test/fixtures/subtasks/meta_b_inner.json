@@ -1,0 +1,12 @@
+{
+ "source": "payload-excerpts.json b_nested_inner_PreToolUse_with_meta_snapshot snap.meta (agent a39fbd03275abc4b7)",
+ "meta": {
+  "agentType": "general-purpose",
+  "description": "inner",
+  "toolUseId": "toolu_01WkfjAZQExMv7Dt45z8UX82",
+  "parentAgentId": "aeaab6e39b924707f",
+  "spawnDepth": 2,
+  "requestShape": "foreground",
+  "requestNonInteractive": true
+ }
+}

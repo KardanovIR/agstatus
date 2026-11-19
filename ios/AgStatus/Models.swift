@@ -35,7 +35,23 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     var name: String
     var status: AgentStatus
     var message: String
+    /// The folder the session is working in now: the hook's live directory,
+    /// a Claude worktree root reported as its repository. It follows a `cd`.
     var project: String
+    /// The folder the session started in, as the server pinned it: the
+    /// project its card is grouped under (`ProjectKey`).
+    ///
+    /// The server derives it and never takes it from a post: the session's
+    /// earlier value if it had one, else its `project`, with anything that
+    /// cannot name a folder (`Session.isFolderName`: `''`, `/` from a session
+    /// started at `/`, a Codex scratch folder's UUID) read as no folder at
+    /// all. Once it is a folder it stays that folder for the session's life,
+    /// so a `cd` never moves a card to another section.
+    ///
+    /// `''` when the server sent none, which is also what a server too old to
+    /// send the field looks like: the board then groups by the live folder,
+    /// and a card there does move on a `cd` (`ProjectKey.of`).
+    var homeProject: String
     /// Agent kind that owns the session ("claude", "codex", …).
     var source: String
     var createdAt: Int64 // epoch milliseconds
@@ -63,6 +79,16 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
     /// after a lost state file, or an evicted session resumes), so each frame
     /// REPLACES this value. Nothing may keep a high-water mark of it.
     var tokens: Int64?
+    /// The subagents this session is running, as the board last reported
+    /// them: the rows its card lists under its own line, the counts around
+    /// them, and whether the parent's own turn is over while they work.
+    ///
+    /// Nil means no subtask block, which is today's card exactly. The server
+    /// leaves the key out when there is nothing to show and an older server
+    /// never sends it; decoding turns null, a non-object and an empty block
+    /// into nil as well (see `Subtasks`). Like everything else on a session,
+    /// each frame replaces it whole.
+    var subtasks: Subtasks?
 
     var updatedDate: Date {
         Date(timeIntervalSince1970: Double(updatedAt) / 1000)
@@ -73,25 +99,29 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
          status: AgentStatus,
          message: String,
          project: String,
+         homeProject: String = "",
          source: String = "claude",
          createdAt: Int64,
          updatedAt: Int64,
          host: Host? = nil,
-         tokens: Int64? = nil) {
+         tokens: Int64? = nil,
+         subtasks: Subtasks? = nil) {
         self.id = id
         self.name = name
         self.status = status
         self.message = message
         self.project = project
+        self.homeProject = homeProject
         self.source = source
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.host = host
         self.tokens = tokens
+        self.subtasks = subtasks
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, status, message, project, source, createdAt, updatedAt, host, tokens
+        case id, name, status, message, project, homeProject, source, createdAt, updatedAt, host, tokens, subtasks
     }
 
     /// Tolerant decoding: unknown status strings become `.idle`, missing
@@ -104,6 +134,9 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         status = AgentStatus(rawValue: rawStatus) ?? .idle
         message = (try? container.decode(String.self, forKey: .message)) ?? ""
         project = (try? container.decode(String.self, forKey: .project)) ?? ""
+        // Absent — a server older than 1.7.0 — null or malformed: no pinned
+        // folder, and the board falls back to the live one (`ProjectKey.of`).
+        homeProject = (try? container.decode(String.self, forKey: .homeProject)) ?? ""
         let rawSource = (try? container.decode(String.self, forKey: .source)) ?? ""
         source = rawSource.isEmpty ? "claude" : rawSource
         createdAt = Self.decodeInteger(container, .createdAt) ?? 0
@@ -119,6 +152,11 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
         } else {
             tokens = nil
         }
+        // Absent, null, malformed or empty all mean "no subtask block", which
+        // is today's card. A bad item inside a good block costs that item and
+        // nothing more: a snapshot decodes as one array, and a throw from
+        // here would drop every card on the board along with this one.
+        subtasks = (try? container.decode(Subtasks.self, forKey: .subtasks)).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Accepts integral or floating JSON numbers — JavaScript emits both, for
@@ -138,6 +176,47 @@ struct Session: Identifiable, Codable, Equatable, Sendable {
 }
 
 extension Session {
+
+    /// Whether `name` can name a folder — a section, or the place a card says
+    /// it has moved to — rather than being no folder at all. The rule every
+    /// client and the server share: with the whitespace at either end left
+    /// out, it is not empty, not `/` and not `.`, and not shaped like a UUID.
+    ///
+    /// A GUI app started at `/` reports `''`, and the shipped legacy shell
+    /// hook reports `/` itself. Codex writes scratch workspaces under
+    /// `.codex/visualizations/<date>/<uuid>`, whose basename is a UUID nobody
+    /// picked (the hook's UUID_NAME_RE, cli/assets/agstatus-hook.js: eight,
+    /// four, four, four and twelve hex digits, either case, joined by
+    /// hyphens, and nothing else). None of them is a project, and none is a
+    /// place to say a session has moved to.
+    ///
+    /// Only the test leaves the whitespace out. A name that passes is used
+    /// exactly as it was sent, so " web " is a section of its own, apart
+    /// from "web". Whitespace is Unicode's White_Space property, checked
+    /// scalar by scalar, with nothing copied: this runs for every card on
+    /// every pass.
+    static func isFolderName(_ name: String) -> Bool {
+        let scalars = name.unicodeScalars
+        guard let first = scalars.firstIndex(where: { !$0.properties.isWhitespace }),
+              let last = scalars.lastIndex(where: { !$0.properties.isWhitespace }) else { return false }
+        let trimmed = Substring(scalars[first...last])
+        return trimmed != "/" && trimmed != "." && !isUUIDShaped(trimmed.utf8)
+    }
+
+    private static func isUUIDShaped(_ utf8: Substring.UTF8View) -> Bool {
+        guard utf8.count == 36 else { return false }
+        for (index, byte) in utf8.enumerated() {
+            if index == 8 || index == 13 || index == 18 || index == 23 {
+                if byte != UInt8(ascii: "-") { return false }
+            } else {
+                let hex = (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                    || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+                    || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "F"))
+                if !hex { return false }
+            }
+        }
+        return true
+    }
 
     /// This session's spend, formatted for a glance — "48.2K", "1.4M" — or nil
     /// when the board has no figure and the card must show nothing.
@@ -167,6 +246,264 @@ extension Session {
         if value >= 999.95e3 { return String(format: "%.1fM", value / 1e6) }
         if value >= 1e3 { return String(format: "%.1fK", value / 1e3) }
         return "\(max(0, tokens))"
+    }
+}
+
+// MARK: - Subtasks
+
+/// What a subagent row says it is doing.
+///
+/// Four running states and `failed`, and the server sends no others: no
+/// `researching`, and `done` is a count, never a row. A value this build does
+/// not know reads as `planning` and the row is kept — the tolerance
+/// `AgentStatus` has for an unknown status, for the same reason: one new word
+/// from a newer server must not cost a row.
+enum SubtaskState: String, Codable, CaseIterable, Sendable {
+    case planning, coding, testing, blocked, failed
+
+    init(wire: String) {
+        self = SubtaskState(rawValue: wire) ?? .planning
+    }
+
+    init(from decoder: Decoder) throws {
+        self = SubtaskState(wire: (try? decoder.singleValueContainer().decode(String.self)) ?? "")
+    }
+
+    /// Running and waiting on nobody: what "N running" counts. Blocked is
+    /// waiting on you, and failed is over.
+    var isWorking: Bool {
+        switch self {
+        case .planning, .coding, .testing: true
+        case .blocked, .failed: false
+        }
+    }
+}
+
+/// One subagent of a session, as a row of its card: running, waiting on you,
+/// or failed this turn. A subagent that finished is a count, not a row.
+struct Subtask: Identifiable, Equatable, Codable, Sendable {
+    /// Opaque. The hook sends a hash of the subagent's own id, which never
+    /// leaves the machine; unique within the session and stable for its life.
+    let id: String
+    /// The ordinal: 1, 2, 3… in the order the subagents started this turn,
+    /// and stable per subagent. "Subagent N" is this number.
+    var n: Int
+    /// What it was asked to do — the Agent tool's description, a workflow
+    /// agent's label, a Codex nickname — or "Subagent N" where none is known,
+    /// which in minimal mode is always. The server fills that in, never blank.
+    var label: String
+    var state: SubtaskState
+    /// What it is doing, as of its last post; may be empty. A subagent posts
+    /// when it starts, stops or changes state, and within a state at most once
+    /// a minute, when what it does has changed — so this is what it last
+    /// reported, not a live feed.
+    var activity: String
+
+    init(id: String, n: Int, label: String, state: SubtaskState, activity: String) {
+        self.id = id
+        self.n = n
+        self.label = label
+        self.state = state
+        self.activity = activity
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, n, label, state, activity
+    }
+
+    /// An item without a usable id or ordinal is malformed, and the decoder
+    /// above it drops it alone. Everything else falls back: an unknown state
+    /// to `planning`, a missing activity to none, a missing label to the
+    /// server's own "Subagent N".
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawID = try container.decode(String.self, forKey: .id)
+        guard Self.isValidID(rawID) else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: container,
+                                                   debugDescription: "not a subagent id")
+        }
+        guard let ordinal = decodeCount(container, .n), ordinal >= 1 else {
+            throw DecodingError.dataCorruptedError(forKey: .n, in: container,
+                                                   debugDescription: "not an ordinal")
+        }
+        id = rawID
+        n = ordinal
+        let rawLabel = (try? container.decode(String.self, forKey: .label)) ?? ""
+        label = rawLabel.isEmpty ? "Subagent \(ordinal)" : rawLabel
+        state = (try? container.decode(SubtaskState.self, forKey: .state)) ?? .planning
+        activity = (try? container.decode(String.self, forKey: .activity)) ?? ""
+    }
+
+    /// The server's `^[A-Za-z0-9._:-]{1,64}$`, checked a character at a time
+    /// the way `PairCode.canonical` checks a code. An id is this card's
+    /// identity for a row, its slot and a route to the session screen, so one
+    /// the server could not have sent is not guessed at.
+    private static let idCharacters = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-")
+
+    static func isValidID(_ id: String) -> Bool {
+        (1...64).contains(id.count) && id.allSatisfy(idCharacters.contains)
+    }
+}
+
+/// A session's subagents: the rows its card lists, and the counts around them.
+///
+/// The counts are the server's, because they know what the rows cannot:
+/// how many finished this turn (`done` — finished subagents are a count,
+/// never a row) and how many failed in all (`failed` can run past the eight
+/// failed rows it lists). Each falls back to what the items say when it is
+/// missing or malformed, and `done` to 0.
+struct Subtasks: Equatable, Codable, Sendable {
+    /// The parent's own turn is over while at least one subagent is live.
+    /// What lets a card read WORKING — see `Session.displayStatus`.
+    var turnEnded: Bool
+    /// Items in planning, coding or testing.
+    var running: Int
+    /// Items waiting on approval.
+    var blocked: Int
+    /// Failed this turn: at least the failed items, and more past eight.
+    var failed: Int
+    /// Finished this turn. It climbs within a turn and resets with it.
+    var done: Int
+    /// The live and failed rows, in start order (ascending `n`).
+    var items: [Subtask]
+
+    init(turnEnded: Bool, running: Int, blocked: Int, failed: Int, done: Int, items: [Subtask]) {
+        self.turnEnded = turnEnded
+        self.running = running
+        self.blocked = blocked
+        self.failed = failed
+        self.done = done
+        self.items = items
+    }
+
+    /// The block with its counts taken from the items, as the server would
+    /// count them. For demo boards and the checks; a real frame brings its own.
+    init(items: [Subtask], done: Int, turnEnded: Bool = false) {
+        self.init(turnEnded: turnEnded,
+                  running: items.filter(\.state.isWorking).count,
+                  blocked: items.filter { $0.state == .blocked }.count,
+                  failed: items.filter { $0.state == .failed }.count,
+                  done: done,
+                  items: items)
+    }
+
+    /// No rows and nothing finished: nothing to show. The server never sends
+    /// it, and a card that drew it would draw a hairline over nothing.
+    var isEmpty: Bool { items.isEmpty && done == 0 }
+
+    private enum CodingKeys: String, CodingKey {
+        case turnEnded, running, blocked, failed, done, items
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var seen = Set<String>()
+        items = ((try? container.decode([Lossy<Subtask>].self, forKey: .items)) ?? [])
+            .compactMap(\.value)
+            // The same id twice would be one subagent drawn as two rows, both
+            // answering to one identity. The first is the one kept.
+            .filter { seen.insert($0.id).inserted }
+        turnEnded = (try? container.decode(Bool.self, forKey: .turnEnded)) ?? false
+        running = decodeCount(container, .running) ?? items.filter(\.state.isWorking).count
+        blocked = decodeCount(container, .blocked) ?? items.filter { $0.state == .blocked }.count
+        failed = decodeCount(container, .failed) ?? items.filter { $0.state == .failed }.count
+        done = decodeCount(container, .done) ?? 0
+    }
+}
+
+/// One element of an array, decoded on its own: a bad one becomes nil and the
+/// rest still decode. Its own init never throws, so the array's position moves
+/// on by exactly one either way — the familiar trick of decoding a placeholder
+/// after a failure depends on the decoder not having moved on already.
+private struct Lossy<Wrapped: Decodable>: Decodable {
+    let value: Wrapped?
+
+    init(from decoder: Decoder) throws {
+        value = try? Wrapped(from: decoder)
+    }
+}
+
+/// A whole number of things from either JSON number shape, or nil when the key
+/// is absent, null, negative, fractional or not a number at all.
+private func decodeCount<Key>(_ container: KeyedDecodingContainer<Key>, _ key: Key) -> Int? {
+    guard let value = decodeNumber(container, key), value >= 0 else { return nil }
+    return Int(exactly: value)
+}
+
+// MARK: - Display status
+
+/// What a card wears: one of the six statuses the board sends, or WORKING.
+///
+/// WORKING is a reading of the live card, never a status on the wire, in a
+/// frame or in history. It says the parent's turn is over while its
+/// subagents still work: nobody is waiting on you, and the parent will speak
+/// again when they report. The server sends the busiest subagent's state
+/// there — which is what an older app shows — and `subtasks.turnEnded` is how
+/// this client tells "the parent is coding" from "the parent finished and its
+/// subagents are coding", which the status alone cannot say. A timeline can
+/// therefore read `testing · 2 subagents still running` while the card says
+/// WORKING: history records the wire, and WORKING is not on it.
+enum DisplayStatus: String, CaseIterable, Sendable {
+    case idle, planning, coding, testing, working, blocked, done
+
+    init(_ status: AgentStatus) {
+        switch status {
+        case .idle: self = .idle
+        case .planning: self = .planning
+        case .coding: self = .coding
+        case .testing: self = .testing
+        case .blocked: self = .blocked
+        case .done: self = .done
+        }
+    }
+
+    /// The wire status this reading is, or nil for WORKING, which is none of
+    /// them.
+    var agentStatus: AgentStatus? {
+        switch self {
+        case .idle: .idle
+        case .planning: .planning
+        case .coding: .coding
+        case .testing: .testing
+        case .working: nil
+        case .blocked: .blocked
+        case .done: .done
+        }
+    }
+
+    /// Capitalized like `AgentStatus.label`: "Working".
+    var label: String {
+        rawValue.capitalized
+    }
+
+    /// The readings of an agent at work, WORKING among them: the ones a card
+    /// can go stale in.
+    var isActive: Bool {
+        agentStatus?.isActive ?? true
+    }
+}
+
+extension Session {
+
+    /// WORKING while the turn is over and subagents still run, unless the
+    /// card is blocked, which outranks it as it outranks everything; the
+    /// status as sent otherwise.
+    var displayStatus: DisplayStatus {
+        if let subtasks, subtasks.turnEnded, status != .blocked, subtasks.running > 0 {
+            return .working
+        }
+        return DisplayStatus(status)
+    }
+
+    /// A card with a subagent running is never dimmed as stale.
+    ///
+    /// Within one state a subagent posts at most once a minute, and only when
+    /// what it does changes, so one in a long command can work in silence for
+    /// many minutes and the card's timestamp stands still. Silence is not a
+    /// sign of death here: the server closes rows that really went quiet, and
+    /// it is the authority on whether they are alive.
+    var isStaleExempt: Bool {
+        (subtasks?.running ?? 0) > 0
     }
 }
 
@@ -621,11 +958,19 @@ struct UsageInfo: Identifiable, Codable, Equatable, Sendable {
     }
 
     /// Human name for a bare source id, for screens that only carry the id.
+    ///
+    /// Claude and Codex by name; any other agent keeps its spelling with the
+    /// first letter upper-cased — gemini is "Gemini", codex-cli "Codex-cli" —
+    /// which is what the hook names its untitled sessions (`agentLabel`) and
+    /// what the web and Android call it. Not `capitalized`, which upper-cases
+    /// every word ("Codex-Cli"): a session the hook named "Codex-cli" would
+    /// then not be named after its agent, and the bar and the spoken alarm
+    /// would say the agent twice.
     static func displayName(for source: String) -> String {
         switch source {
         case "claude": return "Claude"
         case "codex": return "Codex"
-        default: return source.capitalized
+        default: return source.prefix(1).uppercased() + source.dropFirst()
         }
     }
 

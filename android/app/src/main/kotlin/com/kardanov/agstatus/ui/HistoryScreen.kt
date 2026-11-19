@@ -2,6 +2,7 @@ package com.kardanov.agstatus.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,10 +41,14 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -53,10 +59,14 @@ import androidx.compose.ui.unit.sp
 import com.kardanov.agstatus.HistoryEvent
 import com.kardanov.agstatus.Session
 import com.kardanov.agstatus.SessionStore
+import com.kardanov.agstatus.SubtaskCopy
+import com.kardanov.agstatus.SubtaskSlots
 import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.TimeFormat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -64,27 +74,88 @@ import java.util.Locale
 
 /**
  * The timeline of one agent session: every status/message transition with its
- * timestamp, newest first, in the board's color scheme.
+ * timestamp, newest first, in the board's color scheme. A session running
+ * subagents lists them first, from the live session, with the timeline under
+ * its own heading. Opened from a subagent's row ([subtaskId]), the screen
+ * arrives at that subagent.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(
     store: SessionStore,
     sessionId: String,
+    subtaskId: String?,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val sessions by store.sessions.collectAsState()
     val session = sessions.firstOrNull { it.id == sessionId }
+    val subtasks = session?.subtasks
+    val ordered = remember(subtasks) { subtasks?.let { SubtaskSlots.screenOrder(it.items) }.orEmpty() }
 
     var events by remember(sessionId) { mutableStateOf<List<HistoryEvent>>(emptyList()) }
     var loaded by remember(sessionId) { mutableStateOf(false) }
     var refreshing by remember(sessionId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val now = rememberHistoryClock()
+    val listState = rememberLazyListState()
 
-    // Live: any update to this session (a new SSE event) is a new timeline entry.
-    LaunchedEffect(sessionId, session?.updatedAt) {
+    // Arriving from a subagent's row: once, that row is scrolled to the middle,
+    // takes focus, and has its ground lit for two seconds. Saveable, so turning
+    // the phone does not arrive a second time, and a later frame never lights
+    // it again. A subagent that finished before the screen opened means the
+    // top, unlit.
+    var arrivalPending by rememberSaveable { mutableStateOf(subtaskId != null) }
+    val arrival = remember { subtaskId?.takeIf { id -> arrivalPending && ordered.any { it.id == id } } }
+    var lit by remember { mutableStateOf(arrival) }
+    val arrivalFocus = remember { FocusRequester() }
+    val currentOrder by rememberUpdatedState(ordered)
+
+    LaunchedEffect(Unit) {
+        if (!arrivalPending) return@LaunchedEffect
+        arrivalPending = false
+        val target = arrival ?: return@LaunchedEffect
+        // In list order: the header, the section's label, then its rows.
+        val position = currentOrder.indexOfFirst { it.id == target }
+        val index = position + 2
+        val laidOut = position >= 0 && withTimeoutOrNull(ARRIVAL_LAYOUT_TIMEOUT_MILLIS) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > index }
+        } != null
+        if (!laidOut) {
+            lit = null
+            return@LaunchedEffect
+        }
+        listState.scrollToItem(index)
+        val layout = listState.layoutInfo
+        val row = layout.visibleItemsInfo.firstOrNull { it.index == index }
+        if (row == null) {
+            lit = null
+            return@LaunchedEffect
+        }
+        // Focus first, while the row is on screen and so composed: a focused
+        // row stays composed whatever scroll follows, because the list pins it.
+        runCatching { arrivalFocus.requestFocus() }
+        // Then the rest of the way to the middle, from where the row is.
+        // scrollToItem puts it at the top only while a screenful follows it;
+        // in the list's last screenful the list stops short and the row sits
+        // lower. The list clamps the scroll at either end, so the row stays on
+        // screen, centred when there is room.
+        listState.scrollBy(
+            SubtaskSlots.arrivalScroll(
+                rowOffset = row.offset,
+                rowSize = row.size,
+                viewportStart = layout.viewportStartOffset,
+                viewportEnd = layout.viewportEndOffset,
+            ),
+        )
+        delay(ARRIVAL_HOLD_MILLIS)
+        lit = null
+    }
+
+    // History records status and message transitions and nothing else, so
+    // those are what refetch it. Not every updatedAt: a subagent's post bumps
+    // that without a new timeline entry, several times a minute.
+    LaunchedEffect(sessionId, session?.status, session?.message) {
         events = loadHistory(store, sessionId)
         loaded = true
     }
@@ -132,15 +203,34 @@ fun HistoryScreen(
                 .padding(padding)
                 .fillMaxSize(),
         ) {
-            if (loaded && events.isEmpty()) {
-                HistoryEmptyState()
+            if (loaded && events.isEmpty() && subtasks == null) {
+                HistoryEmptyState(Modifier.fillMaxSize())
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 24.dp),
                 ) {
                     if (session != null) {
                         item(key = "header") { HistoryHeader(session, nowMillis = now) }
+                        if (subtasks != null) {
+                            subtaskSection(
+                                subtasks = subtasks,
+                                ordered = ordered,
+                                lit = lit,
+                                arrival = arrival,
+                                arrivalFocus = arrivalFocus,
+                            )
+                            // Without a heading the timeline reads as more of
+                            // the subagent list above it.
+                            item(key = "timeline") { SessionSectionLabel(title = SubtaskCopy.TIMELINE) }
+                        }
+                    }
+                    if (loaded && events.isEmpty()) {
+                        // Only under a Subtasks section: the section is painted
+                        // from the live session, so an empty or failed history
+                        // empties the timeline and leaves the subagents be.
+                        item(key = "empty") { HistoryEmptyState(Modifier.fillMaxWidth()) }
                     }
                     itemsIndexed(events, key = { _, event -> event.seq }) { index, event ->
                         HistoryTimelineRow(
@@ -160,6 +250,9 @@ fun HistoryScreen(
 /** The server answers newest first; sorting keeps that true for any server. */
 private suspend fun loadHistory(store: SessionStore, sessionId: String): List<HistoryEvent> =
     store.history(sessionId).sortedByDescending { it.seq }
+
+/** How long an arrival waits for the list's first layout before giving up on the row. */
+private const val ARRIVAL_LAYOUT_TIMEOUT_MILLIS = 1_000L
 
 // MARK: - Header
 
@@ -194,6 +287,10 @@ private fun HistoryHeader(session: Session, nowMillis: Long) {
         // tinted pill with a tinted border, a status badge of the kind the
         // enterprise admin panel is made of, and then a copy of the card's
         // mark that did not know about stale.
+        //
+        // The card's display status, WORKING included, while the newest timeline
+        // entry may say "testing · 2 subagents still running": history records
+        // what the server sent, and WORKING is a reading of the live card alone.
         StatusMark(session = session, stale = session.isStale(nowMillis), nowMillis = nowMillis)
     }
 }
@@ -313,11 +410,9 @@ private fun HistoryTimelineRow(
 // MARK: - Empty state
 
 @Composable
-private fun HistoryEmptyState() {
+private fun HistoryEmptyState(modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(32.dp),
+        modifier = modifier.padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {

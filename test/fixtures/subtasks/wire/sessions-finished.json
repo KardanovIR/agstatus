@@ -1,0 +1,22 @@
+[
+  {
+    "id": "seed-finished",
+    "name": "Map the board layout code",
+    "status": "coding",
+    "message": "Editing BoardLayout.swift",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331859,
+    "updatedAt": 1793209331874,
+    "homeProject": "claude-status",
+    "subtasks": {
+      "turnEnded": false,
+      "running": 0,
+      "blocked": 0,
+      "failed": 0,
+      "done": 12,
+      "items": []
+    }
+  }
+]

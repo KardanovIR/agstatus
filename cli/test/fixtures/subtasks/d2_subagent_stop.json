@@ -1,0 +1,21 @@
+{
+ "source": "probe run d2, events-d2.jsonl line 11 (SubagentStop, t_ms 1793138927711)",
+ "payload": {
+  "session_id": "fdabcccc-3f36-4fed-9029-f326702a365b",
+  "transcript_path": "{{projects}}/fdabcccc-3f36-4fed-9029-f326702a365b.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "5852645c-8f8d-452a-bb31-7cdaa8cde89f",
+  "permission_mode": "default",
+  "agent_id": "a9f11cbaeca3764d9",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "{{projects}}/fdabcccc-3f36-4fed-9029-f326702a365b/subagents/agent-a9f11cbaeca3764d9.jsonl",
+  "last_assistant_message": "The `touch denied-probe.txt` command was denied, so the file was not created. The session has no way to approve a permission prompt, and the harness blocked the command automatically. I did not retry it or try anything else.",
+  "background_tasks": [],
+  "session_crons": []
+ }
+}

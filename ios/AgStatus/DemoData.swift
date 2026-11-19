@@ -117,9 +117,9 @@ enum DemoData {
         var claudeWeek: Double = 62
         #if DEBUG
         // AGSTATUS_DEMO_LIMITS=hi puts Claude's weekly window past the 85%
-        // where a limit is drawn in the alarm's red. That is the capture the
-        // head's blocked edge was designed against: a head with a red bar and
-        // nothing blocked must not read like a head that needs you.
+        // where a limit is drawn in the blocked red. Since the heads gave the
+        // alarm to the needs-you bar, red in a head can only be a limit, and
+        // this is the capture that shows it.
         let limits = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_LIMITS"]
         if limits == "hi" { claudeWeek = 91 }
         var all = claudeAndCodex(now: now, claudeWeek: claudeWeek)
@@ -182,22 +182,31 @@ enum DemoData {
     }
     #endif
 
+    /// The plan limits the demo's heads draw.
+    ///
+    /// The reset times are counted in typed units. Written as integer literals
+    /// multiplied out inside the one array literal, they took 240,000 solver
+    /// scopes and 62 MB to type-check with the solver set up as in CI's Xcode
+    /// 26.3 (Swift 6.2, its old performance hacks on): a quarter and an eighth
+    /// of what it allows an expression before it gives up. Typed, the literal
+    /// takes under 300 scopes. The values are the same.
     private static func claudeAndCodex(now: Int64, claudeWeek: Double) -> [UsageInfo] {
-        [
+        let minute: Int64 = 60_000, hour: Int64 = 3_600_000, day: Int64 = 86_400_000
+        return [
             UsageInfo(source: "claude",
                       windows: [
                           UsageWindow(id: "session",
                                       label: "Current session",
                                       usedPct: 34,
-                                      resetsAt: now + 137 * 60_000),
+                                      resetsAt: now + 137 * minute),
                           UsageWindow(id: "week",
                                       label: "Weekly (all models)",
                                       usedPct: claudeWeek,
-                                      resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
+                                      resetsAt: now + 2 * day + 5 * hour),
                           UsageWindow(id: "week_fable",
                                       label: "Weekly (Fable)",
                                       usedPct: 41,
-                                      resetsAt: now + 2 * 86_400_000 + 5 * 3_600_000),
+                                      resetsAt: now + 2 * day + 5 * hour),
                       ],
                       updatedAt: now),
             UsageInfo(source: "codex",
@@ -205,15 +214,15 @@ enum DemoData {
                           UsageWindow(id: "week",
                                       label: "Weekly (all models)",
                                       usedPct: 47,
-                                      resetsAt: now + 4 * 86_400_000 + 2 * 3_600_000),
+                                      resetsAt: now + 4 * day + 2 * hour),
                           UsageWindow(id: "session_gpt_6_astra",
                                       label: "Session (GPT-6-Astra)",
                                       usedPct: 22,
-                                      resetsAt: now + 96 * 60_000),
+                                      resetsAt: now + 96 * minute),
                           UsageWindow(id: "week_gpt_6_astra",
                                       label: "Weekly (GPT-6-Astra)",
                                       usedPct: 38,
-                                      resetsAt: now + 4 * 86_400_000 + 2 * 3_600_000),
+                                      resetsAt: now + 4 * day + 2 * hour),
                       ],
                       updatedAt: now),
         ]
@@ -431,6 +440,11 @@ enum DemoData {
 
     /// A believable timeline for a demo session, ending in its current state.
     static func history(for session: Session) -> [HistoryEvent] {
+        #if DEBUG
+        if let board = subtaskScenario, session.id == board.focus {
+            return subtaskTimeline(for: session)
+        }
+        #endif
         // A full session's worth of steps: enough to fill the timeline on the
         // largest iPhone, and to show a blocked stretch resolving.
         let steps: [(AgentStatus, String, Int64)] = [
@@ -475,11 +489,52 @@ enum DemoData {
     /// Debug builds only, like every other launch variable here. `demo` is the
     /// default and is the App Store demo board, untouched.
     ///
+    /// The subagent boards come from the 1.7 design instead,
+    /// `docs/design/prototypes/subtasks.html`: its `BASE` board around one
+    /// card, and that card in each of its `SCENARIOS` — the same subagents,
+    /// row for row, in the same order and with the same counts.
+    ///
+    /// The project boards come from the mockups of the board grouped by
+    /// project (docs/design/project-sections.md): `projects` is the board its
+    /// phone, iPad and web frames draw, card for card, and the other three
+    /// each put one strain on it — a dozen sections, sessions that have moved,
+    /// and sessions with no folder at all.
+    ///
     /// The launch variables that go with it, all read only in a debug build:
+    ///   AGSTATUS_DEMO           1 (SessionStore: starts in demo mode, on the
+    ///                           board AGSTATUS_DEMO_SCENARIO names, after
+    ///                           the verify() checks, which stop the app at
+    ///                           launch if one fails)
+    ///   AGSTATUS_BOARD_URL      <board URL> (SessionStore: adopts that board
+    ///                           as pairing does, which saves it, and streams
+    ///                           it; read before AGSTATUS_DEMO. A local
+    ///                           server's http://127.0.0.1:<port> gives the
+    ///                           simulator a real stream)
     ///   AGSTATUS_DEMO_SCENARIO  demo | busy | lopsided | solo | three |
-    ///                           three-limits | long | empty
+    ///                           three-limits | long | empty, a project
+    ///                           board: projects | manyprojects | moved |
+    ///                           noproject, or a subagent board: subtasks |
+    ///                           subtasks-ten | subtasks-thirty |
+    ///                           subtasks-blocked | subtasks-failed |
+    ///                           subtasks-finished | subtasks-background |
+    ///                           subtasks-nested | subtasks-minimal |
+    ///                           subtasks-codex | subtasks-long
     ///   AGSTATUS_DEMO_BLOCKED   claude (the first agent's blocked sessions
-    ///                           are working instead) | none (nobody is blocked)
+    ///                           are working instead) | none (nobody is
+    ///                           blocked) | <n> (the first n blocked
+    ///                           sessions stay blocked, the rest work)
+    ///   AGSTATUS_DEMO_BLOCK     <id>[,<id>…] (those cards of a scenario
+    ///                           are blocked as well, whatever it seeds them
+    ///                           as: the bar naming a card it otherwise never
+    ///                           would, such as projects' acme-api; on a
+    ///                           subagent board, any card but the one with
+    ///                           the subagents)
+    ///   AGSTATUS_DEMO_MOVE      <id>:<folder>[,…] (a second and a half
+    ///                           after launch, those cards' first real folder
+    ///                           arrives, as a 1.7 server pins it: the one
+    ///                           move a card makes between sections, out of
+    ///                           No project, after the board has drawn it
+    ///                           there)
     ///   AGSTATUS_DEMO_LIMITS    hi (Claude's weekly limit at 91%) | many
     ///                           (Codex reports six windows, and its usage
     ///                           history has six lines) | 1…6 (that many of
@@ -500,8 +555,21 @@ enum DemoData {
     ///                           the toolbar's connection lamp, in that
     ///                           state, where the DEMO badge would be;
     ///                           connecting is drawn as reconnecting)
-    ///   AGSTATUS_JUMP           <source> (BoardView: presses that agent's
-    ///                           alarm once the board is laid out)
+    ///   AGSTATUS_PRESS_BAR      <n> (BoardView: presses the needs-you bar n
+    ///                           times once the board is laid out: 1 brings
+    ///                           the first blocked card, 2 the next)
+    ///   AGSTATUS_SCROLL_TO      <folder> | none (BoardView: scrolls the board
+    ///                           to that project's section, or No project's)
+    ///   AGSTATUS_AX_DUMP        1 (BoardView: logs what VoiceOver is offered,
+    ///                           category `ax`, after any presses — see
+    ///                           `AccessibilityDump` for the simulator
+    ///                           setting it needs)
+    ///   AGSTATUS_MAGIC_TAP      <words> (BoardView, with AGSTATUS_AX_DUMP:
+    ///                           after the dump, makes VoiceOver's Magic Tap
+    ///                           from the first element whose label holds
+    ///                           the words, logs each step it takes up the
+    ///                           containers until one handles it, then
+    ///                           dumps the tree again)
     ///   AGSTATUS_ANNOUNCE_BLOCKS 1 (BoardView: says a new block aloud as if
     ///                           VoiceOver were running, which in the
     ///                           simulator it never is; the log category
@@ -510,6 +578,15 @@ enum DemoData {
     ///                           with AGSTATUS_OPEN_USAGE: scrolls to that
     ///                           part, which at the accessibility sizes is
     ///                           below a phone's first screen)
+    ///   AGSTATUS_OPEN_SHEET     settings | pair (BoardView: presents that
+    ///                           sheet over the board)
+    ///   AGSTATUS_OPEN_HISTORY   1 | <session id> (BoardView: opens the first
+    ///                           card's session screen, or that session's)
+    ///   AGSTATUS_OPEN_USAGE     <source> (BoardView: opens that agent's usage)
+    ///   AGSTATUS_OPEN_SUBTASK   <n> (BoardView: opens the session screen at
+    ///                           subagent number n, as tapping its row does)
+    ///   AGSTATUS_EXPAND_SUBTASKS 1 (BoardView: opens every card's subagent
+    ///                           list in place, as its footer does)
     enum Scenario: String {
         case demo
         /// Five and four: two full columns, something blocked in each.
@@ -531,6 +608,44 @@ enum DemoData {
         case long
         /// Nothing running. The heads are the limits and nothing else.
         case empty
+
+        // The project boards.
+        /// The mockups' board: two agents, nine sessions in five projects,
+        /// two of them blocked, one moved, one with no folder.
+        case projects
+        /// Twelve projects and No project, a blocked card near the end: the
+        /// board the bar exists for, where most labels are off the screen.
+        case manyprojects
+        /// Sessions that have moved since they started, and one from a server
+        /// too old to pin a folder: where "in <folder>" shows, and where not.
+        case moved
+        /// Codex Desktop started at `/`, a Codex scratch folder named by a
+        /// UUID, and a webhook post with no folder: the No project section.
+        case noproject
+
+        // The subagent boards: the prototype's scenarios of the same names.
+        /// Two from the Agent tool.
+        case subtasks
+        /// A workflow, ten running and fifteen done: the footer.
+        case subtasksTen = "subtasks-ten"
+        /// Thirty at once, the most the owner's Mac has run.
+        case subtasksThirty = "subtasks-thirty"
+        /// The ten, one of them waiting on approval.
+        case subtasksBlocked = "subtasks-blocked"
+        /// One failed, still listed.
+        case subtasksFailed = "subtasks-failed"
+        /// Every one finished, the turn still going: only the count.
+        case subtasksFinished = "subtasks-finished"
+        /// The turn over and two still working: WORKING.
+        case subtasksBackground = "subtasks-background"
+        /// One started by another, listed flat.
+        case subtasksNested = "subtasks-nested"
+        /// Minimal mode: numbered, and tool names for activities.
+        case subtasksMinimal = "subtasks-minimal"
+        /// Codex sub-agents, by their nicknames.
+        case subtasksCodex = "subtasks-codex"
+        /// Agent-tool descriptions at their real lengths.
+        case subtasksLong = "subtasks-long"
     }
 
     static let scenario = Scenario(
@@ -552,6 +667,34 @@ enum DemoData {
     /// nothing to be checked against.
     static let showsTitles = ProcessInfo.processInfo.environment["AGSTATUS_DEMO_TITLES"] == "1"
 
+    /// AGSTATUS_DEMO_BLOCK=<id>[,<id>…] — those cards are seeded blocked.
+    private static let blockedForScreenshots = Set(
+        (ProcessInfo.processInfo.environment["AGSTATUS_DEMO_BLOCK"] ?? "").split(separator: ",").map(String.init)
+    )
+
+    /// AGSTATUS_DEMO_MOVE=<id>:<folder>[,…] — the cards whose first real
+    /// folder arrives once the board has drawn them, and that folder.
+    static let movesForScreenshots: [String: String] = Dictionary(
+        (ProcessInfo.processInfo.environment["AGSTATUS_DEMO_MOVE"] ?? "").split(separator: ",").compactMap { pair in
+            let parts = pair.split(separator: ":", maxSplits: 1).map(String.init)
+            return parts.count == 2 ? (parts[0], parts[1]) : nil
+        },
+        uniquingKeysWith: { _, last in last }
+    )
+
+    /// The board with each card in `movesForScreenshots` given its folder,
+    /// live and pinned at once, as a 1.7 server pins the first real folder it
+    /// hears for a session that had none.
+    static func movedForScreenshots(_ sessions: [Session]) -> [Session] {
+        sessions.map { session in
+            guard let folder = movesForScreenshots[session.id] else { return session }
+            var moved = session
+            moved.project = folder
+            moved.homeProject = folder
+            return moved
+        }
+    }
+
     /// The board's sessions come from the pool below rather than from the
     /// App Store demo, which a plain launch leaves untouched.
     private static var usesPool: Bool { scenario != .demo || showsTitles }
@@ -568,9 +711,11 @@ enum DemoData {
                   updatedAt: now)
     }
 
-    /// Two more machines for the scenarios, both with a listener connected.
+    /// Three more machines for the scenarios, each with a listener connected.
     private static let studioMachine = Host.Machine(id: "5a1d93c07e2b4f86a0c3d7e915b4f260", name: "Studio")
     private static let laptopMachine = Host.Machine(id: "c7e04b1a96d3f25870b1e4a3d92c6f15", name: "MacBook Pro")
+    /// The project mockups' third machine, where the nightly backfill runs.
+    private static let miniMachine = Host.Machine(id: "e2b7c41f0a9d38652c1e7b4f90d3a815", name: "mini")
 
     /// One card of the prototype's pool. `age` is seconds since its last
     /// update; `calm` is what a blocked session is doing on a board where it
@@ -586,6 +731,11 @@ enum DemoData {
         /// Only when the session has moved; otherwise it is where it started,
         /// and the card says nothing about it.
         var project: String?
+        /// The folder the server pinned for it (`Session.homeProject`). Nil is
+        /// what a 1.7 server does: the first folder it heard, which is the
+        /// live one unless that is `''` or a UUID. `""` is a server too old to
+        /// pin one.
+        var home: String?
         var tokens: Int64?
         var calm: (status: AgentStatus, message: String)?
         /// What the Claude app calls it, under AGSTATUS_DEMO_TITLES. Claude
@@ -671,6 +821,12 @@ enum DemoData {
         case .three, .threeLimits: ids = ["api", "pipe", "web", "land", "docs", "evals", "tf"]
         case .long: ids = ["wt1", "wt2", "wt3", "wt4", "docs"]
         case .empty: ids = []
+        // Their own boards, not the pool's — see `projectBoard`.
+        case .projects, .manyprojects, .moved, .noproject: return projectBoard
+        // Their own board, not the pool's — see `subtaskBoard`.
+        case .subtasks, .subtasksTen, .subtasksThirty, .subtasksBlocked, .subtasksFailed,
+             .subtasksFinished, .subtasksBackground, .subtasksNested, .subtasksMinimal,
+             .subtasksCodex, .subtasksLong: ids = []
         }
         return ids.compactMap { id in pool.first { $0.id == id } }
     }
@@ -678,32 +834,38 @@ enum DemoData {
     /// Whether `card` is one the launch asked to be quiet.
     ///
     /// AGSTATUS_DEMO_BLOCKED=none calms every blocked session; `claude` calms
-    /// only the first agent's — the prototype's "Claude quiet", which leaves
-    /// one head with an alarm beside one without, the comparison the blocked
-    /// edge exists for.
+    /// only the first agent's — the prototype's "Claude quiet"; a number keeps
+    /// that many blocked, the first in the board's list, and calms the rest,
+    /// so the bar can be seen with none, one and two.
     private static func isCalmed(_ card: Pooled, among cards: [Pooled]) -> Bool {
         guard card.calm != nil else { return false }
         switch ProcessInfo.processInfo.environment["AGSTATUS_DEMO_BLOCKED"] {
         case "none": return true
         case "claude": return card.source == cards.map(\.source).min()
-        default: return false
+        case let value?:
+            guard let kept = Int(value) else { return false }
+            let blocked = cards.filter { $0.calm != nil }
+            return (blocked.firstIndex { $0.id == card.id } ?? 0) >= kept
+        case nil: return false
         }
     }
 
     private static func scenarioSessions() -> [Session] {
         let now = nowMillis()
+        if let board = subtaskScenario { return subtaskBoard(board, now: now) }
         let cards = scenarioCards
         return cards.map { card in
             let calm = isCalmed(card, among: cards) ? card.calm : nil
+            let blocks = blockedForScreenshots.contains(card.id)
+            // A session that stayed where it started reports its own name,
+            // which is what the card reads as "has not moved".
+            let live = card.project ?? card.name
             return Session(id: card.id,
                            name: showsTitles ? card.title ?? card.name : card.name,
-                           status: calm?.status ?? card.status,
-                           message: calm?.message ?? card.message,
-                           // A session that stayed where it started reports
-                           // its own name, which is what the card reads as
-                           // "has not moved". Under a title that folder is
-                           // no longer the name, and reads as "in <folder>".
-                           project: card.project ?? card.name,
+                           status: blocks ? .blocked : calm?.status ?? card.status,
+                           message: blocks ? "Waiting for approval" : calm?.message ?? card.message,
+                           project: live,
+                           homeProject: card.home ?? (Session.isFolderName(live) ? live : ""),
                            source: card.source,
                            createdAt: now - (card.age + 40 * 60) * 1000,
                            updatedAt: now - card.age * 1000,
@@ -727,11 +889,493 @@ enum DemoData {
             return MachinePresence(id: presence.id, name: presence.name, online: true,
                                    since: now - 20 * 60_000)
         }
-        for machine in [studioMachine, laptopMachine] {
+        for machine in [studioMachine, laptopMachine, miniMachine] {
             all.append(MachinePresence(id: machine.id, name: machine.name, online: true,
                                        since: now - 2 * 3_600_000))
         }
         return Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
+    }
+
+    // MARK: Project scenarios
+
+    /// The UUID a Codex scratch workspace is named by: no folder anybody chose.
+    private static let scratchFolder = "0f3c2a1e-6b4d-4e8f-9a7b-1c2d3e4f5a6b"
+
+    /// The project boards' cards, in the board's list order. Claude's are
+    /// named by their titles, as the Claude app names them; Codex never
+    /// titles a session, so its are named by their folders, or "Codex" where
+    /// there was none.
+    private static var projectBoard: [Pooled] {
+        switch scenario {
+        case .projects:
+            // The mockups' board, card for card: five projects, nine sessions,
+            // two blocked. One card cd'd into web/ and says so; Codex Desktop
+            // started at / has no project.
+            return [
+                Pooled(id: "login", source: "claude", name: "Fix the login redirect", status: .blocked,
+                       message: "Approve: git push --force-with-lease", age: 120, machine: laptopMachine,
+                       project: "acme-api", tokens: 41_200, calm: (.coding, "Editing src/auth/redirect.ts")),
+                Pooled(id: "limit", source: "claude", name: "Add rate limiting to /login", status: .coding,
+                       message: "Editing src/middleware/limit.ts", age: 14, machine: laptopMachine,
+                       project: "web", home: "acme-api"),
+                Pooled(id: "acme", source: "codex", name: "acme-api", status: .done, message: "Turn finished",
+                       age: 41 * 60, machine: studioMachine, project: "acme-api", tokens: 9_800),
+                Pooled(id: "org", source: "claude", name: "Session organization by agent", status: .coding,
+                       message: "Editing ios/AgStatus/BoardLayout.swift", age: 5, machine: laptopMachine,
+                       project: "claude-status", tokens: 1_100_000),
+                Pooled(id: "listener", source: "claude", name: "Fix listener reinstall leaving Focus stopped",
+                       status: .testing, message: "xcodebuild test -scheme AgStatus", age: 120,
+                       machine: studioMachine, project: "claude-status", tokens: 640_800),
+                Pooled(id: "wt", source: "codex", name: "agstatus-listener-windows-terminal-focus", status: .testing,
+                       message: "npm test -- focus/wt — 57 passed", age: 60, machine: studioMachine,
+                       project: "claude-status", tokens: 402_600),
+                Pooled(id: "docs", source: "codex", name: "docs", status: .idle, message: "Waiting for input",
+                       age: 6 * 60, project: "docs"),
+                Pooled(id: "backfill", source: "claude", name: "Nightly backfill for March", status: .blocked,
+                       message: "Approve: dbt run --full-refresh", age: 180, machine: miniMachine,
+                       project: "etl-jobs", tokens: 212_400, calm: (.coding, "Backfilling the March partitions")),
+                Pooled(id: "desk", source: "codex", name: "Codex", status: .planning, message: "Reading the brief",
+                       age: 5, project: ""),
+            ]
+        case .manyprojects:
+            // Twelve projects and No project, one card blocked near the end:
+            // on a phone most labels are off the screen, and the bar is the
+            // way to it. One folder's name is longer than a phone's label
+            // holds beside its count: the count goes, then the name is cut
+            // in the middle.
+            return [
+                Pooled(id: "m-acme", source: "claude", name: "Fix token refresh race in the auth middleware",
+                       status: .coding, message: "Editing src/auth/token.ts", age: 15, machine: onlineMachine,
+                       project: "acme-api", tokens: 486_200),
+                Pooled(id: "m-acme-x", source: "codex", name: "acme-api", status: .testing,
+                       message: "pytest -k retry — 41 passed", age: 120, machine: studioMachine,
+                       project: "acme-api", tokens: 540_300),
+                Pooled(id: "m-ag", source: "claude", name: "Port the stale card to Android", status: .coding,
+                       message: "Editing ui/SessionCard.kt", age: 40, machine: laptopMachine,
+                       project: "agstatus", tokens: 312_000),
+                Pooled(id: "m-bill", source: "claude", name: "Investigate failing proration tests in the billing worker",
+                       status: .testing, message: "Running 214 tests — 3 failing", age: 60, machine: studioMachine,
+                       project: "billing-worker", tokens: 912_400),
+                Pooled(id: "m-cs", source: "claude", name: "Session organization by agent", status: .coding,
+                       message: "Editing ios/AgStatus/BoardLayout.swift", age: 10, machine: laptopMachine,
+                       project: "claude-status", tokens: 1_100_000),
+                Pooled(id: "m-cs-x", source: "codex", name: "agstatus-listener-windows-terminal-focus",
+                       status: .testing, message: "npm test -- focus/wt — 57 passed", age: 80,
+                       machine: studioMachine, project: "claude-status", tokens: 402_600),
+                // The same repository checked out under a longer name is a
+                // section of its own: a project is a folder's name.
+                Pooled(id: "m-csd", source: "claude", name: "Investigate why the SSE stream drops after the iPad wakes",
+                       status: .done, message: "Finished — 23 files changed", age: 840, machine: studioMachine,
+                       project: "claude-status-dashboard-release-1.6", tokens: 3_400_000),
+                Pooled(id: "m-data", source: "codex", name: "data-platform", status: .coding,
+                       message: "Rewriting the partition loader", age: 25, machine: onlineMachine,
+                       project: "data-platform", tokens: 288_900),
+                Pooled(id: "m-tokens", source: "claude", name: "Migrate checkout to the new design tokens",
+                       status: .done, message: "Finished — 4 files changed", age: 1860, machine: studioMachine,
+                       project: "design-tokens", tokens: 220_500),
+                Pooled(id: "m-docs", source: "codex", name: "docs", status: .done,
+                       message: "All tasks complete — 12 files changed", age: 1560, project: "docs",
+                       tokens: 2_830_000),
+                Pooled(id: "m-etl", source: "claude", name: "Plan the March backfill", status: .planning,
+                       message: "Reading the dbt models", age: 300, machine: miniMachine, project: "etl-jobs",
+                       tokens: 88_100),
+                Pooled(id: "m-infra", source: "claude", name: "infra", status: .idle, message: "Session started",
+                       age: 720, machine: onlineMachine, project: "infra"),
+                Pooled(id: "m-ios", source: "claude", name: "Plan the push-token migration for iOS 26",
+                       status: .planning, message: "Drafting the push-token migration plan", age: 300,
+                       machine: onlineMachine, project: "ios-app", tokens: 88_100),
+                Pooled(id: "m-web", source: "claude", name: "Ship the checkout migration", status: .blocked,
+                       message: "Approve: npm run migrate -- --env production", age: 200, machine: laptopMachine,
+                       project: "web-checkout", tokens: 640_800,
+                       calm: (.coding, "Editing migrations/0042_checkout.sql")),
+                Pooled(id: "m-desk", source: "codex", name: "Codex", status: .planning, message: "Reading the brief",
+                       age: 5, project: ""),
+            ]
+        case .moved:
+            // Where each session started is its section; where it is now is
+            // said only when that is somewhere else.
+            return [
+                Pooled(id: "v-limit", source: "claude", name: "Add rate limiting to /login", status: .coding,
+                       message: "Editing src/middleware/limit.ts", age: 14, machine: laptopMachine,
+                       project: "web", home: "acme-api"),
+                Pooled(id: "v-login", source: "claude", name: "Fix the login redirect", status: .testing,
+                       message: "npm test -- auth — 18 passed", age: 90, machine: laptopMachine,
+                       project: "acme-api", tokens: 41_200),
+                // Named after its folder, and moved: both say something.
+                Pooled(id: "v-acme", source: "codex", name: "acme-api", status: .coding,
+                       message: "Editing src/routes.rs", age: 30, machine: studioMachine, project: "src",
+                       home: "acme-api", tokens: 96_400),
+                Pooled(id: "v-org", source: "claude", name: "Session organization by agent", status: .coding,
+                       message: "Editing AgStatus/BoardView.swift", age: 8, machine: laptopMachine,
+                       project: "ios", home: "claude-status", tokens: 1_100_000),
+                // A worktree root reports its repository: grouped under it,
+                // and nothing more to say.
+                Pooled(id: "v-tree", source: "claude", name: "session-organization-agents-c27901", status: .testing,
+                       message: "xcodebuild test -scheme AgStatus", age: 70, machine: studioMachine,
+                       project: "claude-status", tokens: 640_800),
+                Pooled(id: "v-backfill", source: "claude", name: "Nightly backfill for March", status: .blocked,
+                       message: "Approve: dbt run --full-refresh", age: 180, machine: miniMachine,
+                       project: "models", home: "etl-jobs", tokens: 212_400,
+                       calm: (.coding, "Backfilling the March partitions")),
+                // From a server too old to pin a folder: grouped by where it is
+                // now, and it would move with a cd.
+                Pooled(id: "v-old", source: "codex", name: "landing", status: .coding,
+                       message: "Rewriting the pricing table", age: 20, machine: onlineMachine,
+                       project: "web", home: "", tokens: 312_700),
+                // Gone into a scratch folder, which is not a place.
+                Pooled(id: "v-scratch", source: "codex", name: "docs", status: .done,
+                       message: "Rendered the usage chart", age: 600, project: scratchFolder, home: "docs",
+                       tokens: 58_000),
+            ]
+        case .noproject:
+            // No usable folder three ways, under one project with one.
+            return [
+                Pooled(id: "n-api", source: "claude", name: "Fix the login redirect", status: .coding,
+                       message: "Editing src/auth/redirect.ts", age: 40, machine: laptopMachine,
+                       project: "acme-api", tokens: 41_200),
+                // Codex Desktop, started by LaunchServices at /.
+                Pooled(id: "n-desk", source: "codex", name: "Codex", status: .planning,
+                       message: "Reading the brief", age: 5, project: ""),
+                // A Codex scratch workspace, .codex/visualizations/<date>/<uuid>.
+                Pooled(id: "n-scratch", source: "codex", name: "Codex", status: .coding,
+                       message: "Editing chart.html", age: 50, project: scratchFolder, tokens: 18_300),
+                // A raw webhook post that carried no folder.
+                Pooled(id: "n-hook", source: "claude", name: "nightly-deploy", status: .blocked,
+                       message: "Waiting for approval", age: 240, project: "",
+                       calm: (.testing, "Running the smoke tests")),
+            ]
+        default:
+            return []
+        }
+    }
+
+    // MARK: Subagent scenarios
+
+    /// One of the subagent prototype's `SCENARIOS`: the card it judges, what
+    /// that card's own session last said, and its subagents.
+    struct SubtaskBoard {
+        /// Whose subagents they are, which is what a tick starts more of.
+        enum Kind { case agent, workflow, minimal, codex }
+
+        /// The card that carries them: "F", or for Codex "X".
+        var focus = "F"
+        /// What the parent itself last said. The card's status and line are
+        /// the server's reading of this and the subagents — see `derived`.
+        let own: (status: AgentStatus, message: String)
+        let kind: Kind
+        var items: [(label: String, state: SubtaskState, activity: String)] = []
+        /// Finished this turn.
+        var done = 0
+
+        /// Minimal mode: a card named by its folder, and subagents numbered
+        /// from 3, two having finished before them.
+        var minimal: Bool { kind == .minimal }
+        var firstN: Int { minimal ? 3 : 1 }
+        /// The parent's turn is over: `done`, or `idle` for a card a subagent
+        /// made.
+        var ownEnded: Bool { own.status == .done || own.status == .idle }
+    }
+
+    /// The board the launch asked for, when it asked for a subagent one.
+    static var subtaskScenario: SubtaskBoard? {
+        switch scenario {
+        case .subtasks:
+            SubtaskBoard(own: (.coding, "Editing SessionCardView.swift"), kind: .agent, items: [
+                ("Run the migration tests", .testing, "Run the store migration tests"),
+                ("Draft release notes", .coding, "Writing RELEASE-1.6.4.md"),
+            ])
+        case .subtasksTen:
+            SubtaskBoard(own: (.planning, "Running the review-and-verify workflow"), kind: .workflow,
+                         items: review, done: 15)
+        case .subtasksThirty:
+            SubtaskBoard(own: (.coding, "Editing BoardLayout.swift"), kind: .workflow,
+                         items: thirty, done: 64 + 71 + 42 + 9)
+        case .subtasksBlocked:
+            SubtaskBoard(own: (.planning, "Running the review-and-verify workflow"), kind: .workflow,
+                         items: review.map {
+                             $0.label != "verify:hook" ? $0
+                                 : (label: $0.label, state: SubtaskState.blocked, activity: "Approve: npm test -- hook")
+                         },
+                         done: 15)
+        case .subtasksFailed:
+            SubtaskBoard(own: (.coding, "Editing RELEASE-1.6.4.md"), kind: .agent, items: [
+                ("Run the migration tests", .testing, "Run the store migration tests"),
+                ("Audit the Android strings", .failed, "Stopped: API error (overloaded)"),
+                ("Draft release notes", .coding, "Writing RELEASE-1.6.4.md"),
+            ], done: 4)
+        case .subtasksFinished:
+            SubtaskBoard(own: (.coding, "Editing BoardLayout.swift"), kind: .workflow, done: 12)
+        case .subtasksBackground:
+            SubtaskBoard(own: (.done, "Turn finished"), kind: .agent, items: [
+                ("Watch the Android CI build", .testing, "gh run watch 1841 — 6 of 9 jobs"),
+                ("Sweep docs for stale flags", .coding, "Editing docs.html"),
+            ], done: 3)
+        case .subtasksNested:
+            SubtaskBoard(own: (.planning, "Running the implement workflow"), kind: .workflow, items: [
+                ("implement:server", .coding, "Editing store.ts"),
+                ("implement:ios", .coding, "Editing SessionCardView.swift"),
+                // Started by implement:server, two levels down. Listed flat.
+                ("Find every Focus call site", .planning, "Search listener for focus calls"),
+                ("implement:web", .coding, "Editing app.js"),
+            ], done: 18 + 6)
+        case .subtasksMinimal:
+            SubtaskBoard(own: (.coding, "Edit"), kind: .minimal, items: [
+                ("Subagent 3", .testing, "Bash"),
+                ("Subagent 4", .coding, "Edit"),
+                ("Subagent 5", .planning, "WebFetch"),
+                ("Subagent 6", .coding, "Write"),
+            ], done: 2)
+        case .subtasksCodex:
+            SubtaskBoard(focus: "X", own: (.coding, "Editing merge.rs"), kind: .codex, items: [
+                ("Feynman", .testing, "cargo test -p indexer"),
+                ("Noether", .coding, "Editing shard.rs"),
+                ("Hypatia", .planning, "Reading docs.rs"),
+            ], done: 2)
+        case .subtasksLong:
+            // Agent-tool descriptions at their real lengths on the owner's
+            // Mac: 52 characters is the p90, 23 the median.
+            SubtaskBoard(own: (.coding, "Editing listener.ts"), kind: .agent, items: [
+                ("Find why the listener reinstall leaves Focus stopped", .planning,
+                 "Search listener.ts for reinstall paths"),
+                ("Run the migration tests", .testing, "Run the store migration tests"),
+                ("Check the Codex rollout schema for sub-agent ids", .planning,
+                 "Reading developers.openai.com"),
+            ], done: 2)
+        case .demo, .busy, .lopsided, .solo, .three, .threeLimits, .long, .empty,
+             .projects, .manyprojects, .moved, .noproject:
+            nil
+        }
+    }
+
+    /// The prototype's `REVIEW`: a review-and-verify workflow, ten at once.
+    private static let review: [(label: String, state: SubtaskState, activity: String)] = [
+        ("review:hook", .testing, "Run hook tests with --no-file-parallelism"),
+        ("review:listener", .coding, "Editing listener.ts"),
+        ("review:product", .planning, "Searching: SubagentStop payload fields"),
+        ("review:server", .coding, "Editing store.ts"),
+        ("review:ios", .coding, "Editing SessionCardView.swift"),
+        ("review:android", .planning, "Reading developer.android.com"),
+        ("verify:hook", .testing, "Run the hook suite — 214 tests"),
+        ("verify:server", .testing, "npm test -- store"),
+        ("verify:web", .coding, "Editing card.css"),
+        ("verify:privacy", .planning, "Search payloads for prompt text"),
+    ]
+
+    /// The prototype's `THIRTY`: a session at its peak on the owner's Mac,
+    /// across four workflows and the Agent tool.
+    private static let thirty: [(label: String, state: SubtaskState, activity: String)] = [
+        ("implement:server", .coding, "Editing store.ts"),
+        ("implement:hook", .coding, "Editing agstatus-hook.js"),
+        ("implement:ios", .coding, "Editing SessionCardView.swift"),
+        ("implement:android", .coding, "Editing SessionCard.kt"),
+        ("implement:web", .coding, "Editing card.css"),
+        ("implement:docs", .coding, "Editing docs.html"),
+        ("test:server", .testing, "npm test -- store"),
+        ("test:hook", .testing, "Run hook tests — 214 passed"),
+        ("test:ios", .testing, "xcodebuild test -scheme AgStatus"),
+        ("test:android", .testing, "./gradlew testDebugUnitTest"),
+        ("review:server", .planning, "Search store.ts for agent_id"),
+        ("review:hook", .planning, "Reading code.claude.com"),
+        ("review:ios", .coding, "Editing BoardView.swift"),
+        ("review:android", .planning, "Search for SessionCard usages"),
+        ("review:web", .planning, "Search app.js for paint()"),
+        ("review:privacy", .planning, "Search payloads for prompt text"),
+        ("verify:server", .testing, "Run the e2e suite"),
+        ("verify:hook", .testing, "Run the payload fixtures"),
+        ("verify:ios", .testing, "Snapshot the card at three widths"),
+        ("verify:android", .testing, "Run the screenshot tests"),
+        ("verify:web", .testing, "Run the card fixtures"),
+        ("verify:migration", .testing, "Run the migration on a copy"),
+        ("Map the SubagentStart payload", .planning, "Searching: SubagentStart agent_type"),
+        ("Check the Codex rollout schema", .planning, "Reading github.com"),
+        ("Draft the 1.7 release notes", .coding, "Writing RELEASE-1.7.0.md"),
+        ("Audit push copy for subtasks", .coding, "Editing NotificationManager.swift"),
+        ("map:sizing", .planning, "Count subagents per session"),
+        ("map:limits", .planning, "Search for the webhook budget"),
+        ("map:minimal", .planning, "Search the hook for MINIMAL"),
+        ("map:codex", .planning, "Reading developers.openai.com"),
+    ]
+
+    /// The prototype's `BASE`: an ordinary board, so the eye goes to the one
+    /// card being judged. Claude sessions carry titles, as they do since
+    /// 1.6.1; Codex sessions are never titled and keep their folder names.
+    private static func subtaskBoard(_ board: SubtaskBoard, now: Int64) -> [Session] {
+        func host(_ machine: Host.Machine) -> Host {
+            Host(machine: machine, app: Host.App(slug: "agterm", name: "agterm", kind: "terminal"))
+        }
+        func card(_ id: String, _ source: String, _ name: String, _ status: AgentStatus, _ message: String,
+                  age: Int64, machine: Host.Machine, project: String? = nil, tokens: Int64) -> Session {
+            Session(id: id, name: name, status: status, message: message, project: project ?? name,
+                    source: source, createdAt: now - (age + 40 * 60) * 1000, updatedAt: now - age * 1000,
+                    host: host(machine), tokens: tokens)
+        }
+        let base = [
+            card("F", "claude", "Session organization by agent", .coding, "Editing BoardLayout.swift",
+                 age: 10, machine: laptopMachine, project: "claude-status", tokens: 1_100_000),
+            card("L", "claude", "Fix listener reinstall leaving Focus stopped", .testing,
+                 "Run the listener test suite", age: 70, machine: studioMachine, project: "claude-status",
+                 tokens: 912_400),
+            card("P", "claude", "Plan the push-token migration", .planning, "Searching: APNs token rotation",
+                 age: 300, machine: onlineMachine, project: "acme-ios", tokens: 88_100),
+            card("R", "claude", "Release notes for 1.6.3", .done, "Turn finished",
+                 age: 1860, machine: studioMachine, project: "claude-status", tokens: 220_500),
+            card("land", "codex", "landing", .coding, "Editing pricing.tsx",
+                 age: 20, machine: onlineMachine, tokens: 312_700),
+            card("sdk", "codex", "sdk-python", .testing, "pytest -k retry",
+                 age: 120, machine: studioMachine, tokens: 540_300),
+            card("X", "codex", "search-indexer", .testing, "cargo test — 212 passed",
+                 age: 200, machine: studioMachine, tokens: 2_100_000),
+        ]
+        let items = board.items.enumerated().map { index, item in
+            Subtask(id: "k\(board.firstN + index)", n: board.firstN + index, label: item.label,
+                    state: item.state, activity: item.activity)
+        }
+        return base.map { session in
+            guard session.id == board.focus else {
+                // AGSTATUS_DEMO_BLOCK reaches the cards around the subagents'
+                // one too: on the iPad, a tall card beside two blocked ones.
+                guard blockedForScreenshots.contains(session.id) else { return session }
+                var blocked = session
+                blocked.status = .blocked
+                blocked.message = "Waiting for approval"
+                return blocked
+            }
+            var focus = session
+            // "just now", and so first in its project's section.
+            focus.updatedAt = now - 5_000
+            if board.minimal {
+                // Minimal mode sends no titles: the card is its folder's name.
+                focus.name = "claude-status"
+                focus.project = "claude-status"
+            }
+            return withSubtasks(focus, items: items, done: board.done, on: board)
+        }
+    }
+
+    /// `session` carrying these subagents, read as the server reads them:
+    /// the card's status and line derived from its own reading and theirs,
+    /// and the block shown only where the server would show it.
+    private static func withSubtasks(_ session: Session, items: [Subtask], done: Int,
+                                     on board: SubtaskBoard) -> Session {
+        var next = session
+        let reading = derived(own: board.own, items: items)
+        next.status = reading.status
+        next.message = reading.message
+        let live = items.contains { $0.state != .failed }
+        let shown = !items.isEmpty || (done > 0 && !board.ownEnded)
+        next.subtasks = shown
+            ? Subtasks(items: items, done: done, turnEnded: board.ownEnded && live)
+            : nil
+        return next
+    }
+
+    /// The server's reading of a card with subagents (spec §4.5): a blocked
+    /// one turns the card blocked unless the parent is itself; after the
+    /// turn, the busiest state and "N subagents still running"; otherwise the
+    /// parent's own. The demo has no server, so it has to say this itself.
+    static func derived(own: (status: AgentStatus, message: String),
+                        items: [Subtask]) -> (status: AgentStatus, message: String) {
+        let live = items.filter { $0.state != .failed }
+        let blocked = live.filter { $0.state == .blocked }
+        let working = live.filter(\.state.isWorking)
+        if own.status != .blocked, let first = blocked.first {
+            return (.blocked, "Needs approval: \(first.label)" + (blocked.count > 1 ? " +\(blocked.count - 1)" : ""))
+        }
+        if own.status == .done || own.status == .idle, !working.isEmpty {
+            let busiest: AgentStatus = working.contains { $0.state == .testing } ? .testing
+                : working.contains { $0.state == .coding } ? .coding : .planning
+            let count = working.count
+            return (busiest, "\(count) subagent\(count == 1 ? "" : "s") still running")
+        }
+        return own
+    }
+
+    /// What a tick starts, by whose subagents they are — the prototype's
+    /// `STARTS`.
+    private static func starts(_ kind: SubtaskBoard.Kind) -> [(label: String, state: SubtaskState, activity: String)] {
+        switch kind {
+        case .agent:
+            [("Check the Android build", .testing, "Run ./gradlew assembleDebug"),
+             ("Summarize the hook diff", .planning, "Searching: SubagentStop")]
+        case .workflow:
+            [("verify:android", .testing, "Run ./gradlew lint"), ("verify:docs", .coding, "Editing docs.html")]
+        case .minimal:
+            [("", .testing, "Bash"), ("", .coding, "Edit")]
+        case .codex:
+            [("Lovelace", .coding, "Editing shard.rs"), ("Turing", .testing, "cargo test -p merge")]
+        }
+    }
+
+    /// The card with subagents, a tick on: one starts, one finishes, or one is
+    /// blocked — or let go, if one already is. Those are what move a row, and
+    /// nothing else about them changes here. A subagent also posts what it is
+    /// doing within its state, at most once a minute, but that is written in
+    /// place and moves nothing. After its turn a parent starts nothing, and
+    /// Codex never runs more than three.
+    private static func advanceSubtasks(_ session: Session, on board: SubtaskBoard, at now: Int64) -> Session {
+        guard let subtasks = session.subtasks else { return session }
+        var items = subtasks.items
+        var done = subtasks.done
+        let canStart = !board.ownEnded && (board.kind != .codex || items.count < 3)
+        let working = items.indices.filter { items[$0].state.isWorking }
+        let blocked = items.firstIndex { $0.state == .blocked }
+
+        switch Int.random(in: canStart ? 0...2 : 1...2) {
+        case 0:
+            let n = nextOrdinal(items: items, done: done)
+            let start = starts(board.kind)[n % 2]
+            items.append(Subtask(id: "k\(n)", n: n, label: start.label.isEmpty ? "Subagent \(n)" : start.label,
+                                 state: start.state, activity: start.activity))
+        case 1 where !working.isEmpty:
+            if let index = working.randomElement() {
+                items.remove(at: index)
+                done += 1
+            }
+        default:
+            if let blocked {
+                items[blocked].state = .testing
+                items[blocked].activity = board.minimal ? "Bash" : "Run the suite — 214 passed"
+            } else if let index = working.last {
+                items[index].state = .blocked
+                items[index].activity = board.minimal ? "Needs approval"
+                    : board.kind == .codex ? "Approve: cargo publish --dry-run"
+                    : "Claude needs your permission to use Bash"
+            }
+        }
+        var next = withSubtasks(session, items: items, done: done, on: board)
+        next.updatedAt = now
+        return next
+    }
+
+    /// The ordinal a tick gives the subagent it starts: one past every
+    /// subagent this turn has started, the finished ones included, as the
+    /// server's `nextN` is — so never the number of one that has just
+    /// finished. Taken from the rows on show alone, Subagent 6 finishing
+    /// handed its "Subagent 6", and its id, to the next one to start. A start
+    /// adds one to `done + items.count` and a finish moves one across it, so
+    /// the sum only climbs.
+    private static func nextOrdinal(items: [Subtask], done: Int) -> Int {
+        max(items.map(\.n).max() ?? 0, done + items.count) + 1
+    }
+
+    /// The prototype's `TIMELINE` for the card being judged: its own history,
+    /// newest first, after the reading it is in now — which is the wire's,
+    /// so it can read `testing · 2 subagents still running` under a WORKING
+    /// capsule, as a real timeline does.
+    private static func subtaskTimeline(for session: Session) -> [HistoryEvent] {
+        let steps: [(AgentStatus, String, Int64)] = [
+            (.idle, "Session started", 26),
+            (.planning, "Plan subtasks on session cards", 25),
+            (.testing, "Run the board layout tests — 46 passed", 8),
+            (.coding, "Editing BoardLayout.swift", 3),
+        ]
+        var events = steps.enumerated().map { index, step in
+            HistoryEvent(seq: Int64(index), status: step.0, message: step.1,
+                         at: session.updatedAt - step.2 * 60_000)
+        }
+        events.append(HistoryEvent(seq: Int64(steps.count), status: session.status, message: session.message,
+                                   at: session.updatedAt))
+        return events.reversed()
     }
     #endif
 
@@ -856,6 +1500,455 @@ enum DemoData {
                        createdAt: 0, updatedAt: 0).tokensLabel == nil, "no figure, no label")
     }
 
+    /// The `homeProject` contract, checked beside the decoders above when
+    /// demo mode starts in a debug build.
+    ///
+    /// A server older than 1.7.0 sends no such key, and its cards must decode
+    /// as they always did and be grouped by their live folder. The tolerance
+    /// is the rest of this file's: one odd value must never cost a card, let
+    /// alone the snapshot carrying it. The web's and Android's tests take the
+    /// same cases.
+    static func verifyProjectDecoding() {
+        let decoder = JSONDecoder()
+        func session(_ json: String) -> Session? {
+            try? decoder.decode(Session.self, from: Data(json.utf8))
+        }
+        // Absent, null, a number, an object: no pin, the card decodes, and it
+        // is grouped by where it is.
+        for raw in [#"{"id":"s","project":"web"}"#, #"{"id":"s","project":"web","homeProject":null}"#,
+                    #"{"id":"s","project":"web","homeProject":7}"#, #"{"id":"s","project":"web","homeProject":{}}"#] {
+            assert(session(raw)?.homeProject == "", "no pin: \(raw)")
+            assert(session(raw)?.projectKey == .folder("web"), "the live folder: \(raw)")
+        }
+        // A pin, and a cd since: the section is the pin, the place the cd.
+        let pinned = session(#"{"id":"s","name":"Add rate limiting to /login","project":"web","homeProject":"acme-api"}"#)
+        assert(pinned?.homeProject == "acme-api" && pinned?.projectKey == .folder("acme-api")
+               && pinned?.movedTo == "web", "pinned, and moved")
+        // The server's word for no folder, and a UUID the hook passed on.
+        let desktop = session(#"{"id":"s","name":"Codex","source":"codex","project":"","homeProject":""}"#)
+        assert(desktop?.projectKey == ProjectKey.noProject, "Codex at /")
+        let scratch = session(#"{"id":"s","source":"codex","project":"0F3C2A1E-6B4D-4E8F-9A7B-1C2D3E4F5A6B"}"#)
+        assert(scratch?.projectKey == ProjectKey.noProject && scratch?.movedTo == nil, "a scratch folder")
+        // What the shipped legacy shell hook posts for a session started at
+        // /, from a server too old to pin a folder: no project, not "/".
+        let root = session(#"{"id":"s","name":"Codex","source":"codex","project":"/"}"#)
+        assert(root?.projectKey == ProjectKey.noProject && root?.movedTo == nil, "a session started at /")
+        // Round trip: the pin survives this client, and no pin stays none.
+        if let pinned, let data = try? JSONEncoder().encode(pinned) {
+            assert((try? decoder.decode(Session.self, from: data)) == pinned, "homeProject round trip")
+        } else {
+            assertionFailure("session encode")
+        }
+        // A snapshot mixing servers' shapes still yields every card.
+        let snapshot = try? decoder.decode([Session].self, from: Data(#"""
+            [{"id":"a","homeProject":"api"},{"id":"b","homeProject":false},{"id":"c"}]
+            """#.utf8))
+        assert(snapshot?.map(\.homeProject) == ["api", "", ""], "the snapshot survives")
+    }
+
+    /// The `subtasks` contract and the readings made from it, checked beside
+    /// the decoders above when demo mode starts in a debug build.
+    ///
+    /// The tolerance is what these guard. A snapshot is one array: a throw
+    /// from any card's subagents would drop the whole board, so a malformed
+    /// block is no block, a malformed item costs that item alone, and a state
+    /// or a count this build cannot read falls back rather than failing. The
+    /// Android client's ApiParsingTest carries the same cases.
+    static func verifySubtaskDecoding() {
+        let decoder = JSONDecoder()
+        func session(_ json: String) -> Session? {
+            try? decoder.decode(Session.self, from: Data(json.utf8))
+        }
+        let a = #"{"id":"3f9c1e07b2d4a85c6e1f0a92","n":3,"label":"review:hook","state":"testing","activity":"Run hook tests"}"#
+        let b = #"{"id":"a0d5b8e1c2f34a6b7d8e9f01","n":4,"label":"review:listener","state":"coding","activity":"Editing listener.ts"}"#
+        let c = #"{"id":"9b2e7c4d1a0f3e5b6c8d7a90","n":9,"label":"verify:hook","state":"blocked","activity":"Approve: Run the hook suite"}"#
+
+        // Absent, null, a string, a number, an array, or an empty block: no
+        // block, and the card itself still decodes as today's card.
+        for raw in [#"{"id":"s"}"#, #"{"id":"s","subtasks":null}"#, #"{"id":"s","subtasks":"x"}"#,
+                    #"{"id":"s","subtasks":7}"#, #"{"id":"s","subtasks":[]}"#,
+                    #"{"id":"s","subtasks":{"items":[],"done":0}}"#, #"{"id":"s","subtasks":{}}"#] {
+            assert(session(raw) != nil, "the card decodes: \(raw)")
+            assert(session(raw)?.subtasks == nil, "no block: \(raw)")
+        }
+
+        // The spec's example, whole.
+        let full = session(#"{"id":"s","status":"blocked","message":"Needs approval: verify:hook","subtasks":{"turnEnded":false,"running":9,"blocked":1,"failed":0,"done":15,"items":[\#(a),\#(b),\#(c)]}}"#)
+        assert(full?.subtasks?.items.map(\.n) == [3, 4, 9], "items in start order")
+        assert(full?.subtasks?.running == 9 && full?.subtasks?.blocked == 1 && full?.subtasks?.done == 15,
+               "counts are the server's, not the items'")
+        assert(full?.subtasks?.items.last == Subtask(id: "9b2e7c4d1a0f3e5b6c8d7a90", n: 9, label: "verify:hook",
+                                                     state: .blocked, activity: "Approve: Run the hook suite"),
+               "an item, field by field")
+
+        // A malformed item costs that item and no other: no id, a blank id, an
+        // id the server could not send, no ordinal, ordinal 0, a fractional
+        // one, not an object at all.
+        let bad = [#"{"n":2,"label":"x"}"#, #"{"id":"","n":2}"#, #"{"id":"has space","n":2}"#,
+                   #"{"id":"\#(String(repeating: "a", count: 65))","n":2}"#, #"{"id":"k1"}"#,
+                   #"{"id":"k2","n":0}"#, #"{"id":"k3","n":2.5}"#, #""string""#, "7", "null", "[]"]
+        let mixed = session(#"{"id":"s","subtasks":{"done":1,"items":[\#(a),\#(bad.joined(separator: ",")),\#(b)]}}"#)
+        assert(mixed?.subtasks?.items.map(\.n) == [3, 4], "bad items dropped, good ones kept")
+        // Missing counts are derived from what survived; `done` is the one
+        // the items cannot say, and falls back to nothing finished.
+        let derivedCounts = session(#"{"id":"s","subtasks":{"items":[\#(a),\#(b),\#(c)]}}"#)?.subtasks
+        assert(derivedCounts?.running == 2 && derivedCounts?.blocked == 1 && derivedCounts?.failed == 0
+               && derivedCounts?.done == 0 && derivedCounts?.turnEnded == false, "missing counts derived")
+        let malformedCounts = session(#"{"id":"s","subtasks":{"running":"9","blocked":-1,"failed":1.5,"done":"x","turnEnded":"yes","items":[\#(a),\#(c)]}}"#)?.subtasks
+        assert(malformedCounts?.running == 1 && malformedCounts?.blocked == 1 && malformedCounts?.failed == 0
+               && malformedCounts?.done == 0 && malformedCounts?.turnEnded == false, "malformed counts derived")
+        // Integral floats are counts like any other, as JavaScript sends them.
+        assert(session(#"{"id":"s","subtasks":{"done":12.0,"items":[]}}"#)?.subtasks?.done == 12, "float counts")
+
+        // An unknown state is planning, and the row is kept; a missing label
+        // is the server's own "Subagent N"; a missing activity is none.
+        let lenient = session(#"{"id":"s","subtasks":{"items":[{"id":"k7","n":7,"state":"researching"},{"id":"k8","n":8,"label":"","state":5}]}}"#)?.subtasks
+        assert(lenient?.items.map(\.state) == [.planning, .planning], "unknown states are planning")
+        assert(lenient?.items.map(\.label) == ["Subagent 7", "Subagent 8"], "no label is Subagent N")
+        assert(lenient?.items.allSatisfy { $0.activity.isEmpty } == true, "no activity is none")
+        assert(lenient?.running == 2, "and they count as running")
+        // The same subagent twice is one row.
+        assert(session(#"{"id":"s","subtasks":{"items":[\#(a),\#(a)]}}"#)?.subtasks?.items.count == 1, "duplicates")
+        // Only finished ones: the count-only block still shows.
+        assert(session(#"{"id":"s","subtasks":{"items":[],"done":12}}"#)?.subtasks?.done == 12, "count only")
+
+        // A snapshot whose cards carry one bad item each, and one card whose
+        // block is garbage, still yields every card.
+        let snapshot = try? decoder.decode([Session].self, from: Data(#"""
+            [{"id":"one","subtasks":{"items":[\#(a),{"n":1}]}},
+             {"id":"two","subtasks":"garbage"},
+             {"id":"three","subtasks":{"items":[7,\#(c)],"done":2}}]
+            """#.utf8))
+        assert(snapshot?.map(\.id) == ["one", "two", "three"], "the snapshot survives")
+        assert(snapshot?.map { $0.subtasks?.items.count ?? -1 } == [1, -1, 1], "each card keeps its good items")
+
+        // Round trip: what this client encodes decodes to the same session,
+        // and a card with no block encodes without the key.
+        if let full, let data = try? JSONEncoder().encode(full) {
+            assert((try? decoder.decode(Session.self, from: data)) == full, "subtasks round trip")
+        } else {
+            assertionFailure("session encode")
+        }
+        if let bare = session(#"{"id":"s"}"#), let data = try? JSONEncoder().encode(bare) {
+            assert(!String(decoding: data, as: UTF8.self).contains("subtasks"), "no block stays absent")
+        }
+
+        // The card's reading. WORKING only while the turn is over, a subagent
+        // works, and the card is not blocked — blocked outranks it.
+        func card(_ status: AgentStatus, turnEnded: Bool, items: [SubtaskState]) -> Session {
+            let subtasks = Subtasks(items: items.enumerated().map {
+                Subtask(id: "k\($0.offset + 1)", n: $0.offset + 1, label: "x", state: $0.element, activity: "")
+            }, done: 0, turnEnded: turnEnded)
+            return Session(id: "s", name: "s", status: status, message: "", project: "",
+                           createdAt: 0, updatedAt: 0, subtasks: subtasks)
+        }
+        let plain = Session(id: "s", name: "s", status: .coding, message: "", project: "", createdAt: 0, updatedAt: 0)
+        assert(plain.displayStatus == .coding && !plain.isStaleExempt, "no subagents: the status as sent")
+        let readings: [(Session, DisplayStatus, Bool)] = [
+            (card(.testing, turnEnded: true, items: [.testing, .coding]), .working, true),
+            (card(.coding, turnEnded: false, items: [.coding]), .coding, true),
+            (card(.blocked, turnEnded: true, items: [.blocked, .coding]), .blocked, true),
+            (card(.blocked, turnEnded: false, items: [.blocked]), .blocked, false),
+            (card(.done, turnEnded: false, items: [.failed]), .done, false),
+            (card(.planning, turnEnded: false, items: []), .planning, false),
+        ]
+        for (index, row) in readings.enumerated() {
+            assert(row.0.displayStatus == row.1, "display status, row \(index)")
+            // Stale is never applied while a subagent runs: it can work in
+            // silence for minutes, and the server is the judge of that.
+            assert(row.0.isStaleExempt == row.2, "stale exemption, row \(index)")
+        }
+        assert(DisplayStatus.working.isActive && DisplayStatus.coding.isActive && !DisplayStatus.done.isActive,
+               "working is an active reading")
+        assert(DisplayStatus.allCases.compactMap(\.agentStatus) == AgentStatus.allCases, "six of seven are the wire's")
+        assert(Theme.symbol(for: DisplayStatus.working) == "arrow.triangle.branch"
+               && Theme.symbol(for: DisplayStatus.blocked) == Theme.symbol(for: AgentStatus.blocked), "marks")
+        assert(Theme.symbol(for: SubtaskState.failed) == "xmark.circle", "failed's mark")
+
+        // The demo's own derivation agrees with the server's rule.
+        let two = [Subtask(id: "k1", n: 1, label: "verify:hook", state: .blocked, activity: ""),
+                   Subtask(id: "k2", n: 2, label: "b", state: .blocked, activity: ""),
+                   Subtask(id: "k3", n: 3, label: "c", state: .testing, activity: "")]
+        assert(derived(own: (.coding, "x"), items: two) == (.blocked, "Needs approval: verify:hook +1"), "blocked")
+        assert(derived(own: (.blocked, "Needs input"), items: two) == (.blocked, "Needs input"), "own block kept")
+        assert(derived(own: (.done, "Turn finished"), items: [two[2]]) == (.testing, "1 subagent still running"),
+               "after the turn")
+        assert(derived(own: (.coding, "x"), items: [two[2]]) == (.coding, "x"), "own reading")
+
+        // Nor does it hand out an ordinal twice, which the server never does:
+        // with minimal mode's Subagent 6 just finished, the next is 7.
+        func listed(_ ordinals: [Int]) -> [Subtask] {
+            ordinals.map { Subtask(id: "k\($0)", n: $0, label: "Subagent \($0)", state: .coding, activity: "") }
+        }
+        assert(nextOrdinal(items: listed([3, 4, 5, 6]), done: 2) == 7, "minimal: after the four on show")
+        assert(nextOrdinal(items: listed([3, 4, 5]), done: 3) == 7, "the highest just finished: not its number")
+        assert(nextOrdinal(items: listed(Array(1...10)), done: 15) == 26, "past the finished ones too")
+        assert(nextOrdinal(items: [], done: 12) == 13, "every row finished")
+        assert(nextOrdinal(items: listed([1, 2]), done: 0) == 3, "nothing finished yet")
+    }
+
+    /// The `subtasks` contract against the server itself, checked beside
+    /// `verifySubtaskDecoding` when demo mode starts in a debug build.
+    ///
+    /// That table holds this client to the spec; this one holds it to what a
+    /// 1.7 server actually sends. The sessions below are the snapshot frame
+    /// of `GET /events` from the merged 1.7 server, seeded with the hook's own
+    /// rules: a workflow of ten and one of thirty, one subagent waiting on
+    /// approval and then two, a failure, every row finished, the turn over
+    /// with two still working, the report hold, minimal mode, Codex, labels
+    /// at their real lengths, and a card with no subagents. Each carries the
+    /// `homeProject` the server pinned for it. Joined into one array they are
+    /// that frame's data, byte for byte, as the server's own capture holds it
+    /// (test/fixtures/subtasks/wire/snapshot.sse). Each is broken into lines
+    /// here only to be read, one subagent to a line, and joined again before
+    /// it is decoded.
+    static func verifyServerSubtasks() {
+        let decoder = JSONDecoder()
+        // In the frame's own order, the most recently updated first.
+        let frame: [(scenario: String, json: String)] = [
+            ("long", #"""
+                {"id":"seed-long","name":"Fix listener reinstall leaving Focus stopped","status":"coding","message":"Editing install.ts","project":"claude-status","source":"claude","host":null,"createdAt":1793209331895,"updatedAt":1793209331900,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":3,"blocked":0,"failed":0,"done":2,"items":[
+                {"id":"691024b85fbf8ed1fdc3dab8","n":3,"label":"Find why the listener reinstall leaves Focus stopped","state":"planning","activity":"Searching: launchctl bootstrap leaves the LaunchAgent unloaded after a reinstall"},
+                {"id":"fe5c9a2f13b1ec7e17cf7483","n":4,"label":"Run the store migration tests against Postgres 16.15","state":"testing","activity":"Run the store migration tests with --no-file-parallelism against a disposable cl"},
+                {"id":"eac87fba0a27afc05409e6d2","n":5,"label":"Check the Codex rollout schema for spawn_agent calls","state":"planning","activity":"Reading developers.openai.com"}]}}
+                """#),
+            ("codex", #"""
+                {"id":"seed-codex","name":"search-indexer","status":"coding","message":"Editing files","project":"search-indexer","source":"codex","host":null,"createdAt":1793209331890,"updatedAt":1793209331895,"homeProject":"search-indexer",
+                "subtasks":{"turnEnded":false,"running":3,"blocked":0,"failed":0,"done":2,"items":[
+                {"id":"eda034f3b538b230c6bd40eb","n":3,"label":"Feynman","state":"testing","activity":"cargo test -p indexer"},
+                {"id":"389b9beddd053d3df2cd0c32","n":4,"label":"Noether","state":"coding","activity":"Editing files"},
+                {"id":"13fb52e6f6f78f771bfa0c6e","n":5,"label":"Hypatia","state":"planning","activity":""}]}}
+                """#),
+            ("minimal", #"""
+                {"id":"seed-minimal","name":"claude-status","status":"coding","message":"Edit","project":"claude-status","source":"claude","host":null,"createdAt":1793209331884,"updatedAt":1793209331890,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":4,"blocked":0,"failed":0,"done":2,"items":[
+                {"id":"5394db0c7caa12460b2ee93c","n":3,"label":"Subagent 3","state":"testing","activity":"Bash"},
+                {"id":"acfaf4d87e271423e1e00c4a","n":4,"label":"Subagent 4","state":"coding","activity":"Edit"},
+                {"id":"7432dad7af008ed097925c74","n":5,"label":"Subagent 5","state":"planning","activity":"WebFetch"},
+                {"id":"3d93bcc479369cf4d295b2b6","n":6,"label":"Subagent 6","state":"coding","activity":"Write"}]}}
+                """#),
+            ("hold", #"""
+                {"id":"seed-hold","name":"Collect the background reports","status":"planning","message":"Reading subagent results","project":"claude-status","source":"claude","host":null,"createdAt":1793209331880,"updatedAt":1793209331884,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":0,"blocked":0,"failed":0,"done":3,"items":[]}}
+                """#),
+            ("background", #"""
+                {"id":"seed-background","name":"Land the docs and CI sweep","status":"testing","message":"2 subagents still running","project":"claude-status","source":"claude","host":null,"createdAt":1793209331874,"updatedAt":1793209331879,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":true,"running":2,"blocked":0,"failed":0,"done":3,"items":[
+                {"id":"08fee937f71c6198e80fbc87","n":4,"label":"Run the server suite on Postgres","state":"testing","activity":"Run the root suite with --no-file-parallelism"},
+                {"id":"3059021926a12f41407c831d","n":5,"label":"Sweep docs for stale flags","state":"coding","activity":"Editing docs.html"}]}}
+                """#),
+            ("finished", #"""
+                {"id":"seed-finished","name":"Map the board layout code","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331859,"updatedAt":1793209331874,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":0,"blocked":0,"failed":0,"done":12,"items":[]}}
+                """#),
+            ("failed", #"""
+                {"id":"seed-failed","name":"Prepare the 1.6.4 release","status":"coding","message":"Editing RELEASE-1.6.4.md","project":"claude-status","source":"claude","host":null,"createdAt":1793209331851,"updatedAt":1793209331859,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":2,"blocked":0,"failed":1,"done":4,"items":[
+                {"id":"e64b1cceac06588757ecc96b","n":5,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
+                {"id":"e2c73d81da1455b3eaf358cc","n":6,"label":"Audit the Android strings","state":"failed","activity":"Failed: API error (overloaded)"},
+                {"id":"caa9caff0545175d746dae6c","n":7,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"}]}}
+                """#),
+            ("two-blocked", #"""
+                {"id":"seed-two-blocked","name":"Prepare the Android release","status":"blocked","message":"Needs approval: Audit the Android strings +1","project":"claude-status","source":"claude","host":null,"createdAt":1793209331845,"updatedAt":1793209331851,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":3,"blocked":2,"failed":0,"done":0,"items":[
+                {"id":"578acf7e9e0804166a49689e","n":1,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
+                {"id":"78844cab97ff5fb50d2b0e52","n":2,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"},
+                {"id":"b5da9de92b72cca9506f79d0","n":3,"label":"Audit the Android strings","state":"blocked","activity":"Approve: Editing strings.xml"},
+                {"id":"3c80c99fd926cdb015609ece","n":4,"label":"Run the page checks","state":"testing","activity":"Run test/pages.test.ts"},
+                {"id":"3029de2f327479a99a6c53ff","n":5,"label":"Summarize the hook diff","state":"blocked","activity":"Approve: git diff origin/master -- cli"}]}}
+                """#),
+            ("blocked", #"""
+                {"id":"seed-blocked","name":"Verify the hook before release","status":"blocked","message":"Needs approval: verify:hook","project":"claude-status","source":"claude","host":null,"createdAt":1793209331823,"updatedAt":1793209331845,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":9,"blocked":1,"failed":0,"done":15,"items":[
+                {"id":"d6eb60f4020603989cf4fc11","n":13,"label":"review:hook","state":"testing","activity":"Run hook tests with --no-file-parallelism"},
+                {"id":"fbb414dd278da301e2b11d84","n":14,"label":"review:listener","state":"coding","activity":"Editing listener.ts"},
+                {"id":"462d60f8f5125275240ab941","n":15,"label":"review:product","state":"planning","activity":"Searching: SubagentStop payload fields"},
+                {"id":"d549dc809644b0887afef25e","n":16,"label":"review:server","state":"coding","activity":"Editing store.ts"},
+                {"id":"b41cc0fd5f8877cae7dc3b1c","n":17,"label":"review:ios","state":"coding","activity":"Editing SessionCardView.swift"},
+                {"id":"cd424cb9fc231993f5545373","n":18,"label":"review:android","state":"planning","activity":"Reading developer.android.com"},
+                {"id":"667bbd533aee86e94294dbf6","n":19,"label":"verify:hook","state":"blocked","activity":"Approve: npm test -- hook"},
+                {"id":"aaa1e2f4f9481280bf271125","n":20,"label":"verify:server","state":"testing","activity":"npm test -- store"},
+                {"id":"e345355ee495c85c8e44185e","n":21,"label":"verify:web","state":"coding","activity":"Editing card.css"},
+                {"id":"9670b0f4ef4ad5a9d3572c54","n":22,"label":"verify:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"}]}}
+                """#),
+            ("thirty", #"""
+                {"id":"seed-thirty","name":"Implement subtasks across all clients","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331671,"updatedAt":1793209331823,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":30,"blocked":0,"failed":0,"done":186,"items":[
+                {"id":"6b944b2ed97ca824f6d749b8","n":187,"label":"implement:server","state":"coding","activity":"Editing store.ts"},
+                {"id":"9055dd87cbfe940cc74d6561","n":188,"label":"implement:hook","state":"coding","activity":"Editing agstatus-hook.js"},
+                {"id":"ee2d8bae880193b6eda980c8","n":189,"label":"implement:ios","state":"coding","activity":"Editing SessionCardView.swift"},
+                {"id":"93e06926147934b85ad993d9","n":190,"label":"implement:android","state":"coding","activity":"Editing SessionCard.kt"},
+                {"id":"f21cbb093be1e0854d52a0ee","n":191,"label":"implement:web","state":"coding","activity":"Editing card.css"},
+                {"id":"31dc951143043d5452b3ec35","n":192,"label":"implement:docs","state":"coding","activity":"Editing docs.html"},
+                {"id":"aba0002f0691ee6a6fe13924","n":193,"label":"test:server","state":"testing","activity":"npm test -- store"},
+                {"id":"89bb1395e4b93fb2a375ea5a","n":194,"label":"test:hook","state":"testing","activity":"Run hook tests — 214 passed"},
+                {"id":"d5e763e3494c53f2241cd407","n":195,"label":"test:ios","state":"coding","activity":"xcodebuild test -scheme AgStatus"},
+                {"id":"9c293ccf6b3bd87b349d6ef8","n":196,"label":"test:android","state":"coding","activity":"./gradlew testDebugUnitTest"},
+                {"id":"f0208bf3682908cfac847fb6","n":197,"label":"review:server","state":"planning","activity":"Searching: store.ts agent_id"},
+                {"id":"240edba1286f081e2f177a46","n":198,"label":"review:hook","state":"planning","activity":"Reading code.claude.com"},
+                {"id":"94666b14292859c4ed92f716","n":199,"label":"review:ios","state":"coding","activity":"Editing BoardView.swift"},
+                {"id":"d9d353c4b5b58de54aca01b1","n":200,"label":"review:android","state":"planning","activity":"Searching: SessionCard usages"},
+                {"id":"9a9393614c7cfe617e97eb55","n":201,"label":"review:web","state":"planning","activity":"Searching: app.js paint()"},
+                {"id":"f81ad6ffdd0494661e5ad9f1","n":202,"label":"review:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"},
+                {"id":"17363a5918465b4f89898d79","n":203,"label":"verify:server","state":"testing","activity":"Run the e2e suite"},
+                {"id":"935d45b0baaab44021dc9a57","n":204,"label":"verify:hook","state":"testing","activity":"Run the payload fixtures"},
+                {"id":"8cb0d54424bfbcdb8088dc77","n":205,"label":"verify:ios","state":"coding","activity":"Snapshot the card at three widths"},
+                {"id":"653132b30469127aff3b3828","n":206,"label":"verify:android","state":"coding","activity":"Run the screenshot tests"},
+                {"id":"059dac80ccf7e503202b4320","n":207,"label":"verify:web","state":"testing","activity":"Run the card fixtures"},
+                {"id":"ac37cbca5a5d12b98c785520","n":208,"label":"verify:migration","state":"testing","activity":"Run the migration on a copy"},
+                {"id":"37198b1aeac1783cdc155f30","n":209,"label":"Map the SubagentStart payload","state":"planning","activity":"Searching: SubagentStart agent_type"},
+                {"id":"75853e47f3b95f0fa64779a6","n":210,"label":"Check the Codex rollout schema","state":"planning","activity":"Reading github.com"},
+                {"id":"c3e15533a54d147d1edc026b","n":211,"label":"Draft the 1.7 release notes","state":"coding","activity":"Writing v1.7.0.md"},
+                {"id":"25a719db4b6f7d51a6870e71","n":212,"label":"Audit push copy for subtasks","state":"coding","activity":"Editing NotificationManager.swift"},
+                {"id":"4141b3a62ee9ab57f5cae685","n":213,"label":"map:sizing","state":"planning","activity":"Delegating: Count subagents per session"},
+                {"id":"bb54c51687583f6ea70f5565","n":214,"label":"map:limits","state":"planning","activity":"Searching: webhook budget per workspace"},
+                {"id":"7fcbafa2f50d8ad21d2f7d6c","n":215,"label":"map:minimal","state":"planning","activity":"Delegating: Search the hook for MINIMAL"},
+                {"id":"9cb8c8907d472f4546ed1c22","n":216,"label":"map:codex","state":"planning","activity":"Reading developers.openai.com"}]}}
+                """#),
+            ("ten", #"""
+                {"id":"seed-ten","name":"Review and verify the subtasks branch","status":"planning","message":"Running workflow: review-and-verify","project":"claude-status","source":"claude","host":null,"createdAt":1793209331639,"updatedAt":1793209331670,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":10,"blocked":0,"failed":0,"done":15,"items":[
+                {"id":"2c6fb5642df321bc8ae2919b","n":13,"label":"review:hook","state":"testing","activity":"Run hook tests with --no-file-parallelism"},
+                {"id":"2f438243b248645cd24f356c","n":14,"label":"review:listener","state":"coding","activity":"Editing listener.ts"},
+                {"id":"0fde93dbef73e5bbadd64051","n":15,"label":"review:product","state":"planning","activity":"Searching: SubagentStop payload fields"},
+                {"id":"f2a1bd024956b34ae8dca8db","n":16,"label":"review:server","state":"coding","activity":"Editing store.ts"},
+                {"id":"d0bc857c743573ba42f7591a","n":17,"label":"review:ios","state":"coding","activity":"Editing SessionCardView.swift"},
+                {"id":"ab7ded2567f5ac7ac905f077","n":18,"label":"review:android","state":"planning","activity":"Reading developer.android.com"},
+                {"id":"5d02973dc88279cb00964bd8","n":19,"label":"verify:hook","state":"testing","activity":"Run the hook suite — 214 tests"},
+                {"id":"4847f0afc440241b25eec65f","n":20,"label":"verify:server","state":"testing","activity":"npm test -- store"},
+                {"id":"90c2d294f975ed17708b8d34","n":21,"label":"verify:web","state":"coding","activity":"Editing card.css"},
+                {"id":"71d73939988e8fcf028e3eed","n":22,"label":"verify:privacy","state":"planning","activity":"Delegating: Search payloads for prompt text"}]}}
+                """#),
+            ("two", #"""
+                {"id":"seed-two","name":"Ship the store migration","status":"planning","message":"Draft release notes","project":"claude-status","source":"claude","host":null,"createdAt":1793209331631,"updatedAt":1793209331639,"homeProject":"claude-status",
+                "subtasks":{"turnEnded":false,"running":2,"blocked":0,"failed":0,"done":0,"items":[
+                {"id":"44a4dc7558ae7a432f86b923","n":1,"label":"Run the migration tests","state":"testing","activity":"Run the store migration tests"},
+                {"id":"62668ff106691d43c7be2abe","n":2,"label":"Draft release notes","state":"coding","activity":"Writing RELEASE-1.6.4.md"}]}}
+                """#),
+            ("none", #"""
+                {"id":"seed-none","name":"Fix the iPad board layout","status":"coding","message":"Editing BoardLayout.swift","project":"claude-status","source":"claude","host":null,"createdAt":1793209331627,"updatedAt":1793209331630,"homeProject":"claude-status"}
+                """#),
+        ]
+        // The line breaks taken out again: the server's own bytes.
+        let sent = frame.map { (scenario: $0.scenario, json: $0.json.replacingOccurrences(of: "\n", with: "")) }
+
+        // The frame as SSEClient decodes a snapshot: one array, where one
+        // session this build could not read would have cost the whole board.
+        let board = try? decoder.decode([Session].self,
+                                        from: Data("[\(sent.map(\.json).joined(separator: ","))]".utf8))
+        assert(board?.map(\.id) == sent.map { "seed-\($0.scenario)" }, "the snapshot decodes, every card in it")
+
+        for (scenario, json) in sent {
+            guard let session = try? decoder.decode(Session.self, from: Data(json.utf8)),
+                  let raw = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else {
+                assertionFailure("\(scenario): the session decodes")
+                continue
+            }
+            // Field for field what the server sent, set beside a reading of
+            // the same bytes with no tolerance in it: nothing a real server
+            // sends is dropped, defaulted or re-derived on the way in.
+            assert(session.status.rawValue == raw["status"] as? String && session.message == raw["message"] as? String
+                   && session.source == raw["source"] as? String, "\(scenario): the card's reading")
+            // The folder it started in, which the server pins, and the
+            // section that makes it: the project the capture's cards share.
+            assert(session.homeProject == raw["homeProject"] as? String && session.project == raw["project"] as? String
+                   && session.projectKey == .folder(session.homeProject), "\(scenario): its project as sent")
+            if let block = raw["subtasks"] as? [String: Any] {
+                let items = block["items"] as? [[String: Any]] ?? []
+                let subtasks = session.subtasks
+                assert(subtasks?.turnEnded == block["turnEnded"] as? Bool && subtasks?.running == block["running"] as? Int
+                       && subtasks?.blocked == block["blocked"] as? Int && subtasks?.failed == block["failed"] as? Int
+                       && subtasks?.done == block["done"] as? Int, "\(scenario): the counts as sent")
+                assert(subtasks?.items.count == items.count, "\(scenario): every item kept")
+                for (item, sentItem) in zip(subtasks?.items ?? [], items) {
+                    assert(item.id == sentItem["id"] as? String && item.n == sentItem["n"] as? Int
+                           && item.label == sentItem["label"] as? String
+                           && item.state.rawValue == sentItem["state"] as? String
+                           && item.activity == sentItem["activity"] as? String, "\(scenario): item \(item.n) as sent")
+                }
+                let ordinals = subtasks?.items.map(\.n) ?? []
+                assert(zip(ordinals, ordinals.dropFirst()).allSatisfy { $0 < $1 }, "\(scenario): in start order")
+            } else {
+                assert(session.subtasks == nil, "\(scenario): no block, today's card")
+            }
+            // WORKING on the one card whose turn is over while its subagents
+            // work; every other card wears the status it was sent.
+            assert(session.displayStatus == (scenario == "background" ? .working : DisplayStatus(session.status)),
+                   "\(scenario): display status")
+            assert((try? JSONEncoder().encode(session)).flatMap { try? decoder.decode(Session.self, from: $0) }
+                   == session, "\(scenario): round trip")
+        }
+
+        // What each card draws from them, in a column's three slots and under
+        // the phone's two: the rows on show by ordinal — the oldest, with
+        // every blocked one among them — and the footer. Then the session
+        // screen's counts. The web board reads the same footers off the same
+        // frame.
+        let drawn: [String: (column: [Int], columnFooter: String?, phone: [Int], phoneFooter: String?,
+                             counts: String)] = [
+            "two": ([1, 2], nil, [1, 2], nil, "2 running"),
+            "ten": ([13, 14, 15], "+7 more · 15 done", [13, 14], "+8 more · 15 done", "10 running"),
+            "thirty": ([187, 188, 189], "+27 more · 186 done", [187, 188], "+28 more · 186 done", "30 running"),
+            "blocked": ([13, 14, 19], "+7 more · 15 done", [13, 19], "+8 more · 15 done", "9 running · 1 blocked"),
+            "two-blocked": ([1, 3, 5], "+2 more", [3, 5], "+3 more", "3 running · 2 blocked"),
+            "failed": ([5, 6, 7], "4 done", [5, 6], "+1 more · 4 done", "2 running · 1 failed"),
+            "finished": ([], "12 done", [], "12 done", ""),
+            "background": ([4, 5], "3 done", [4, 5], "3 done", "2 running"),
+            "hold": ([], "3 done", [], "3 done", ""),
+            "minimal": ([3, 4, 5], "+1 more · 2 done", [3, 4], "+2 more · 2 done", "4 running"),
+            "codex": ([3, 4, 5], "2 done", [3, 4], "+1 more · 2 done", "3 running"),
+            "long": ([3, 4, 5], "2 done", [3, 4], "+1 more · 2 done", "3 running"),
+        ]
+        for session in board ?? [] {
+            let scenario = String(session.id.dropFirst("seed-".count))
+            guard let subtasks = session.subtasks else { continue }
+            guard let expected = drawn[scenario] else {
+                assertionFailure("\(scenario): a block with nothing to check it against")
+                continue
+            }
+            for (slots, phoneRules, rows, footer) in [(3, false, expected.column, expected.columnFooter),
+                                                     (2, true, expected.phone, expected.phoneFooter)] {
+                let shown = SubtaskSlots().resolved(for: [session], slots: slots, expanded: []).rows(for: session)
+                assert(shown.map(\.n) == rows, "\(scenario): the rows in \(slots) slots")
+                assert(SubtaskFooter.resolve(items: subtasks.items.count, shown: shown.count, done: subtasks.done,
+                                             slots: slots, open: false, phoneRules: phoneRules)?.text == footer,
+                       "\(scenario): the footer in \(slots) slots")
+            }
+            assert(SubtaskCopy.counts(running: subtasks.running, blocked: subtasks.blocked, failed: subtasks.failed)
+                   == expected.counts, "\(scenario): the session screen's counts")
+        }
+        // Opened in place, the ten show whole in start order, and fold back.
+        if let ten = board?.first(where: { $0.id == "seed-ten" }), let subtasks = ten.subtasks {
+            let open = SubtaskSlots().resolved(for: [ten], slots: 3, expanded: [ten.id]).rows(for: ten)
+            assert(open.map(\.n) == Array(13...22), "ten: open in place")
+            assert(SubtaskFooter.resolve(items: subtasks.items.count, shown: open.count, done: subtasks.done,
+                                         slots: 3, open: true, phoneRules: false)?.text == "Show less · 15 done",
+                   "ten: the open footer")
+        } else {
+            assertionFailure("ten: on the board")
+        }
+        // The session screen puts whoever waits on you first.
+        func screenOrder(_ id: String) -> [Int]? {
+            board?.first { $0.id == id }?.subtasks.map { SubtaskScreenRow.ordered($0.items).map(\.n) }
+        }
+        assert(screenOrder("seed-blocked") == [19, 13, 14, 15, 16, 17, 18, 20, 21, 22], "blocked: first on the screen")
+        assert(screenOrder("seed-two-blocked") == [3, 5, 1, 2, 4], "two blocked: first, in start order")
+
+        // The demo, which has no server, reads these subagents as this one
+        // did. A parent's own reading is what its last main-thread post said.
+        let owns: [(id: String, own: (status: AgentStatus, message: String))] = [
+            ("seed-background", (.done, "Turn finished")),
+            ("seed-blocked", (.planning, "Running workflow: review-and-verify")),
+            ("seed-two-blocked", (.planning, "Summarize the hook diff")),
+        ]
+        for (id, own) in owns {
+            let session = board?.first { $0.id == id }
+            assert(session.map { derived(own: own, items: $0.subtasks?.items ?? []) == ($0.status, $0.message) } == true,
+                   "\(id): the demo derives what the server did")
+        }
+    }
+
     /// Pairing, checked alongside the decoders above when demo mode starts in
     /// a debug build. The pair command is the one string this app tells the
     /// user to paste into a terminal, and three things keep it to the words
@@ -953,6 +2046,13 @@ enum DemoData {
     // MARK: Internals
 
     private static func advance(_ session: Session, at now: Int64) -> Session {
+        #if DEBUG
+        // A card with subagents changes by them alone; its own session is
+        // held where the scenario put it.
+        if let board = subtaskScenario, session.id == board.focus, session.subtasks != nil {
+            return advanceSubtasks(session, on: board, at: now)
+        }
+        #endif
         var next = session
         let status = transitions[session.status]?.randomElement() ?? session.status
 

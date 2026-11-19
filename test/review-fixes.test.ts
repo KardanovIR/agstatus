@@ -1,10 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import { JSDOM } from 'jsdom';
 import request from 'supertest';
 import { configFromEnv } from '../src/config';
 import { makeApp } from './helpers';
+import { loadBoard, session, online, HISTORY, type Board } from './board-harness';
 
 describe('configFromEnv hardening', () => {
   it('TRUST_PROXY only enables on "1" or "true"', () => {
@@ -88,149 +86,8 @@ describe('/api/config legacy fields', () => {
   });
 });
 
-/*
- * The board script, run for real against the real shell.
- *
- * This used to drive a hand-written stub `document` whose elements held an
- * innerHTML string, on the argument that public/app.js only ever wrote whole
- * HTML strings. That stopped being true: the grid is reconciled by key now, so
- * it needs createElement, insertBefore and a live child list. The stub also
- * never exercised `paintFocus()` at all — its querySelector returned null, so
- * the function returned early every time and focus state was only ever read
- * back out of `renderFocus()`, which is the *other* producer of the same
- * markup. Half of what these tests are named for went unchecked.
- *
- * So: jsdom, seeded from public/index.html rather than a fixture, which means
- * the suite now also fails if the page stops carrying an element app.js needs.
- * `window` and `location` stay stubbed — the board assigns location.hash, and
- * jsdom treats that as navigation.
- */
-
-const BOARD_SRC = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'app.js'), 'utf8');
-// index.html loads this before app.js, and app.js reads it at definition time.
-const MARKS_SRC = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'marks.js'), 'utf8');
-const INDEX_HTML = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
-
-/** The stream the board subscribed to, with a way to push one frame into it. */
-class FakeStream {
-  private listeners = new Map<string, (e: { data: string }) => void>();
-  addEventListener(type: string, fn: (e: { data: string }) => void): void { this.listeners.set(type, fn); }
-  close(): void {}
-  emit(type: string, data: unknown): void {
-    const fn = this.listeners.get(type);
-    if (!fn) throw new Error(`the board is not listening for "${type}"`);
-    fn({ data: JSON.stringify(data) });
-  }
-}
-
-const HOST = {
-  machine: { id: 'm1', name: 'Studio' },
-  app: { slug: 'agterm', name: 'agterm', kind: 'terminal' },
-};
-const session = (over: Record<string, unknown> = {}) => ({
-  id: 's1',
-  name: 'Fix the parser',
-  status: 'coding',
-  message: 'editing src/app.ts',
-  project: 'agstatus',
-  updatedAt: Date.now(),
-  host: HOST,
-  ...over,
-});
-const online = () => [{ id: 'm1', name: 'Studio', online: true, since: Date.now() }];
-
-/** What GET /api/sessions/:id/history returns: SessionEvent[], newest first. */
-const HISTORY = [
-  { seq: 3, status: 'done', message: 'Turn finished', at: 1_700_000_300_000 },
-  { seq: 2, status: 'blocked', message: 'May I push to master?', at: 1_700_000_200_000 },
-  { seq: 1, status: 'coding', message: 'editing src/app.ts', at: 1_700_000_100_000 },
-  { seq: 0, status: 'planning', message: '', at: 1_700_000_000_000 },
-];
-
-/**
- * Evaluates public/app.js against a real DOM and returns the handles a test drives it by.
- * `usageHistory` is what GET /api/usage/history answers, built when it is asked for.
- */
-async function loadBoard(opts: { usageHistory?: () => unknown } = {}) {
-  const dom = new JSDOM(INDEX_HTML, { url: 'http://board.test/' });
-  const doc = dom.window.document;
-  const calls: Array<{ url: string; method: string; body: string }> = [];
-  let stream: FakeStream | null = null;
-  const reply = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-
-  vi.stubGlobal('document', doc);
-  // Not dom.window: the board assigns location.hash, which jsdom treats as a
-  // navigation it then refuses to perform. Only these four members are read.
-  // Captured, so a hash assignment can fire hashchange the way a browser
-  // does. The previous stub swallowed both, which meant the board's two hash
-  // routes were never exercised by a test at all — a click set a property on
-  // a plain object and nothing downstream ran.
-  const listeners: Record<string, () => void> = {};
-  vi.stubGlobal('window', {                            // marks.js writes AGSTATUS_MARKS onto this
-    addEventListener(type: string, fn: () => void) { listeners[type] = fn; },
-  });
-  // A browser global the board uses and the plain stub above does not carry.
-  vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
-  let hash = '';
-  vi.stubGlobal('location', {
-    pathname: '/', origin: 'http://board.test', href: '',
-    get hash() { return hash; },
-    set hash(v: string) {
-      // A browser normalises a bare fragment to one with '#', and leaves the
-      // empty string empty rather than making it '#'.
-      const next = v === '' ? '' : v.startsWith('#') ? v : `#${v}`;
-      if (next === hash) return;
-      hash = next;
-      listeners.hashchange?.();
-    },
-  });
-  vi.stubGlobal('navigator', { clipboard: { writeText: async () => {} } });
-  vi.stubGlobal('EventSource', class extends FakeStream {
-    constructor(_url: string) { super(); stream = this; }
-  });
-  vi.stubGlobal('fetch', async (url: string, init?: { method?: string; body?: string }) => {
-    calls.push({ url, method: init?.method || 'GET', body: init?.body || '' });
-    if (url.endsWith('/api/config')) return reply({ mode: 'legacy', webhookUrl: 'http://board.test/webhook' });
-    if (url.endsWith('/commands')) return reply({ id: JSON.parse(init!.body!).id, delivered: true });
-    if (url.includes('/api/usage/history')) {
-      return reply(opts.usageHistory ? opts.usageHistory() : { days: 30, history: [], projects: [] });
-    }
-    if (url.includes('/history')) return reply(HISTORY);
-    return reply({});
-  });
-
-  new Function(MARKS_SRC)();
-  new Function(BOARD_SRC)();
-  await vi.advanceTimersByTimeAsync(1);   // let init()'s /api/config settle and the stream open
-  if (!stream) throw new Error('the board never opened its event stream');
-
-  const gridEl = doc.getElementById('grid')!;
-  return {
-    /** The DOM's own window, for the prototypes a test has to stand in for layout on. */
-    win: dom.window,
-    grid: () => gridEl,
-    /** Element-level reads, now that there is a real tree to query. */
-    $: (sel: string) => gridEl.querySelector(sel),
-    $$: (sel: string) => [...gridEl.querySelectorAll(sel)],
-    emit: (type: string, data: unknown) => stream!.emit(type, data),
-    /** Any session event re-renders the grid, which is where focus state is readable. */
-    repaint(over: Record<string, unknown> = {}) { stream!.emit('session', session(over)); return gridEl; },
-    /** A real click on the real control, so aria-disabled is honoured as it is in a browser. */
-    tap(id: string, kind: 'focus' | 'resume' | 'dismiss' | 'open') {
-      const sel = kind === 'dismiss'
-        ? `[data-dismiss="${id}"]`
-        : kind === 'open'
-          ? `[data-open="${id}"]`
-          : `[data-focus="${id}"][data-type="${kind}"]`;
-      const btn = gridEl.querySelector(sel);
-      if (!btn) throw new Error(`no ${kind} control on the card for ${id}`);
-      btn.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-    },
-    settle: () => vi.advanceTimersByTimeAsync(1),
-    lastCommandId: () => JSON.parse(calls.filter((c) => c.url.endsWith('/commands')).pop()!.body).id as string,
-    calls,
-  };
-}
+// The board script, run for real against the real shell: see
+// board-harness.ts for why it is jsdom seeded from public/index.html.
 
 // Read off the tree rather than off a serialization of it. The old versions
 // regex-matched `class="focus-status"` out of an HTML string, which meant an
@@ -440,6 +297,22 @@ describe('board script: focus lifecycle', () => {
   describe('a working card that goes quiet', () => {
     const MIN = 60_000;
 
+    /**
+     * What a screen reader is given from an element, as card.css shows it:
+     * its text, less whatever is hidden from the tree, with the stale words
+     * only on a stale card. jsdom loads no stylesheet; this stands in for it.
+     */
+    const heard = (el: Element): string => [...el.childNodes].map((n) => {
+      if (n.nodeType === 3) return n.textContent;
+      const e = n as Element;
+      if (e.getAttribute('aria-hidden') === 'true') return '';
+      if (e.classList.contains('stale-said') && !e.closest('.card')!.classList.contains('stale')) return '';
+      return heard(e);
+    }).join('');
+    /** A control's description: what each element it is described by gives, joined by a space. */
+    const described = (el: Element) => el.getAttribute('aria-describedby')!.split(' ')
+      .map((id) => heard(el.ownerDocument.getElementById(id)!)).join(' ');
+
     it('goes stale in place on the clock, with nothing repainted and nothing animated', async () => {
       vi.useFakeTimers();
       const b = await loadBoard();
@@ -469,15 +342,16 @@ describe('board script: focus lifecycle', () => {
       // The short form the CSS falls back to on a line too narrow for the words.
       expect(card.querySelector('.ts-ago')!.textContent).toBe('14m ago');
 
-      // Heard straight after the state, with its units in words.
+      // Heard straight after the state, with its units in words, inside the
+      // state's hidden sentence.
       const row = card.querySelector('.card-state-row')!;
       expect(row.querySelector('.badge')!.textContent).toBe('coding');
-      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
-      expect(row.querySelector('.stale-said')!.classList.contains('sr-only')).toBe(true);
+      expect(row.querySelector('.sr-only .stale-said')!.textContent).toBe(', no update for 14 minutes');
+      expect(heard(row.querySelector('.sr-only')!)).toBe('Coding, no update for 14 minutes.');
 
       await vi.advanceTimersByTimeAsync(47 * MIN);
       expect(words.textContent).toBe('no update for 1h');
-      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 1 hour');
+      expect(heard(row.querySelector('.sr-only')!)).toBe('Coding, no update for 1 hour.');
     });
 
     it('is stale from its first paint when it arrives already quiet', async () => {
@@ -523,22 +397,74 @@ describe('board script: focus lifecycle', () => {
 
       const refs = title('s1').getAttribute('aria-describedby')!.split(' ');
       expect(refs).toEqual(['card-s1-state', 'card-s1-msg']);
-      const [row, msg] = refs.map((id) => doc.getElementById(id)!);
-      expect(row.classList.contains('card-state-row')).toBe(true);
-      expect(row.closest('.card')).toBe(b.$('.card[data-id="s1"]'));
+      const [said, msg] = refs.map((id) => doc.getElementById(id)!);
+      // The state row's sentence, hidden from the eye, in the card's own row.
+      expect(said.classList.contains('sr-only')).toBe(true);
+      expect(said.parentElement!.classList.contains('card-state-row')).toBe(true);
+      expect(said.closest('.card')).toBe(b.$('.card[data-id="s1"]'));
       expect(msg.textContent).toBe('editing src/app.ts');
-      // The badge, the stale words (shown to the tree only by .card.stale),
-      // and a full stop between the state and the message.
-      expect(row.querySelector('.badge')!.textContent).toBe('coding');
-      expect(row.querySelector('.stale-said')!.textContent).toBe(', no update for 14 minutes');
-      expect(row.lastElementChild!.className).toBe('sr-only');
-      expect(row.lastElementChild!.textContent).toBe('.');
-      // The name is still the words on the button, for Voice Control.
-      expect(title('s1').getAttribute('aria-label')).toBe("Fix the parser — open this session's history");
+      // The state, the stale words (shown to the tree only by .card.stale),
+      // and a full stop between the state and the message, in one sentence.
+      expect(heard(said)).toBe('Coding, no update for 14 minutes.');
+      expect(described(title('s1'))).toBe('Coding, no update for 14 minutes. editing src/app.ts');
+      // The name still holds the words on the button, for Voice Control,
+      // after the card's agent (1.7.0).
+      expect(title('s1').getAttribute('aria-label')).toBe("Claude, Fix the parser — open this session's history");
 
       // No message, no reference to one; every card's ids are its own.
       expect(title('s2').getAttribute('aria-describedby')).toBe('card-s2-state');
+      expect(described(title('s2'))).toBe('Blocked.');
       expect(doc.querySelectorAll('[id="card-s1-state"]')).toHaveLength(1);
+    });
+
+    // Chrome sets each box of a description apart with a space, a flex item
+    // or an element out of the flow, so the row described as its boxes, the
+    // badge, the stale words and a hidden full stop, read "CODING , no update
+    // for 14 minutes ." and NVDA at its default punctuation said "dot". So
+    // the description is one hidden sentence with every word inline in it,
+    // and the badge and marks the eye reads are hidden from the tree; the
+    // word is in sentence case, as iOS and Android say it.
+    it('describes the title in one sentence, its words inline in one element, kept current', async () => {
+      vi.useFakeTimers();
+      const b = await loadBoard();
+      b.emit('snapshot', [
+        session({ id: 'fresh', host: null, message: '' }),
+        session({ id: 'quiet', host: null, message: '', updatedAt: Date.now() - 14 * MIN }),
+        session({ id: 'said', host: null, message: 'Editing src/auth/token.ts' }),
+        ...['idle', 'done', 'blocked', 'planning', 'testing'].map((status) => session({ id: status, host: null, status, message: '' })),
+      ]);
+      const title = (id: string) => b.$(`.card[data-id="${id}"] .name-open`) as HTMLElement;
+      const all = () => (b.$$('.name-open') as HTMLElement[]).map((t) => described(t));
+      expect(described(title('fresh'))).toBe('Coding.');
+      expect(described(title('quiet'))).toBe('Coding, no update for 14 minutes.');
+      expect(described(title('said'))).toBe('Coding. Editing src/auth/token.ts');
+      expect(['idle', 'done', 'blocked', 'planning', 'testing'].map((id) => described(title(id))))
+        .toEqual(['Idle.', 'Done.', 'Blocked.', 'Planning.', 'Testing.']);
+
+      for (const card of b.$$('.card')) {
+        const row = card.querySelector('.card-state-row')!;
+        const said = row.querySelector('.sr-only')!;
+        // One element holds the sentence, and nothing inside it is a box of
+        // its own: the stale words and their time are inline spans.
+        expect(said.id).toBe(`card-${(card as HTMLElement).dataset.id}-state`);
+        expect(row.querySelectorAll('.sr-only')).toHaveLength(1);
+        for (const el of said.querySelectorAll('*')) {
+          expect(el.tagName).toBe('SPAN');
+          expect(el.classList.contains('sr-only')).toBe(false);
+        }
+        // What the eye reads is not read twice.
+        for (const el of row.children) if (el !== said) expect(el.getAttribute('aria-hidden')).toBe('true');
+      }
+
+      // A change of state, and the clock: the sentence follows the row.
+      b.emit('session', session({ id: 'fresh', host: null, status: 'blocked', message: 'May I push?' }));
+      expect(described(title('fresh'))).toBe('Blocked. May I push?');
+      // One tick of the board's 15 s clock past the minute, as above.
+      await vi.advanceTimersByTimeAsync(11 * MIN + 15_000);
+      expect(described(title('said'))).toBe('Coding, no update for 11 minutes. Editing src/auth/token.ts');
+      expect(described(title('quiet'))).toBe('Coding, no update for 25 minutes.');
+      // Never a space before a comma or a full stop.
+      for (const d of all()) expect(d).not.toMatch(/ [,.]/);
     });
 
     it('is only ever a working card: idle, blocked and done carry no stale form', async () => {
@@ -563,7 +489,7 @@ describe('board script: focus lifecycle', () => {
   // through. The landing page had to say "In the app, tap any session for its
   // timeline" to stay honest about it.
   describe('a card opens its own timeline', () => {
-    const openCard = async (b: Awaited<ReturnType<typeof loadBoard>>) => {
+    const openCard = async (b: Board) => {
       b.tap('s1', 'open');
       await b.settle();
       await b.settle();   // openSession awaits a fetch before it paints
@@ -575,8 +501,9 @@ describe('board script: focus lifecycle', () => {
       b.emit('snapshot', [session()]);
       const open = b.$('[data-open]') as HTMLButtonElement;
       expect(open.tagName).toBe('BUTTON');
-      // A name a screen reader can act on: what it is, then what it does.
-      expect(open.getAttribute('aria-label')).toBe("Fix the parser — open this session's history");
+      // A name a screen reader can act on: whose it is and what it is, then
+      // what it does.
+      expect(open.getAttribute('aria-label')).toBe("Claude, Fix the parser — open this session's history");
       // The card's other controls are siblings, never inside the title, so
       // one can never swallow a press meant for another.
       expect(b.$('[data-dismiss]')!.closest('[data-open]')).toBeNull();

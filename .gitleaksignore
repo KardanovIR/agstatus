@@ -1,0 +1,30 @@
+# Single findings the secret scan skips, as gitleaks fingerprints:
+# commit:file:rule:line. A fingerprint names its commit, so each line skips one
+# finding in one commit and nothing else. The same value in another file, or
+# added again by another commit, is still reported. The rule-wide exemptions
+# live in .gitleaks.toml.
+#
+# test/fixtures/subtasks/keys.json, from f215453 ("Running subagents show as
+# rows on their parent's card"): the "key" of agents a, c and cx. Each is the
+# first 24 hex digits of
+#   sha256(base + "\n" + source + "\n" + session_id + "\n" + raw agent_id)
+# of public test values beside it in the same file, and test/subtasks.test.ts
+# recomputes all five ("every agent key is the hash the hook computes"). The
+# other two score under generic-api-key's entropy floor.
+#
+# Not every scan reads f215453. CI's, gitleaks-action, reads only a pull
+# request's first 30 commits, which hold it, and the last 20 of each push, so
+# the release push to master never reaches it. What reads it, and every other
+# commit the release brings, is a scan of the whole range before that push,
+# run from the repository's root:
+#   gitleaks detect --log-opts="--no-merges --first-parent origin/master..HEAD"
+# Run from a subdirectory, the same command finds neither this file nor
+# .gitleaks.toml there, so it reports the three f215453 values and exits 1.
+# With --source naming the root, it finds both from any directory.
+# Master takes these commits as they are (it fast-forwards to the release), so
+# these fingerprints still match for any scan that reads f215453. A rebase or
+# cherry-pick gives the commit a new hash, and a scan that reads it reports
+# the three values again rather than passing them.
+f215453f1ace26b25bc30f0539dc278e737ae327:test/fixtures/subtasks/keys.json:generic-api-key:9
+f215453f1ace26b25bc30f0539dc278e737ae327:test/fixtures/subtasks/keys.json:generic-api-key:15
+f215453f1ace26b25bc30f0539dc278e737ae327:test/fixtures/subtasks/keys.json:generic-api-key:33

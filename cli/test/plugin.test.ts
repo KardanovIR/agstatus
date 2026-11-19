@@ -19,17 +19,18 @@ describe('claude code plugin bundle', () => {
     expect(pluginHook).toBe(cliHook);
   });
 
-  it('registers the same events and PreToolUse matcher as the CLI installer', () => {
+  it('registers the same events, matchers and timeouts as the CLI installer', () => {
     const raw = fs.readFileSync(path.join(ROOT, 'plugin', 'hooks', 'hooks.json'), 'utf8');
     const hooks = JSON.parse(raw).hooks as Record<
       string,
-      Array<{ matcher?: string; hooks: Array<{ command: string }> }>
+      Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>
     >;
     expect(Object.keys(hooks).sort()).toEqual(HOOK_EVENTS.map((e) => e.event).sort());
-    for (const { event, matcher } of HOOK_EVENTS) {
+    for (const { event, matcher, timeout } of HOOK_EVENTS) {
       expect(hooks[event]).toHaveLength(1);
       expect(hooks[event][0].matcher).toBe(matcher);
       expect(hooks[event][0].hooks[0].command).toContain('agstatus-hook.js');
+      expect(hooks[event][0].hooks[0].timeout, event).toBe(timeout);
     }
   });
 });

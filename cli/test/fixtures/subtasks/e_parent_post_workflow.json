@@ -1,0 +1,30 @@
+{
+ "source": "probe run e, events-e.jsonl line 4 (PostToolUse, t_ms 1793139061639)",
+ "payload": {
+  "session_id": "b10dc3bd-70ff-435e-a81d-bbd8e635c41e",
+  "transcript_path": "{{projects}}/b10dc3bd-70ff-435e-a81d-bbd8e635c41e.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "97aa754a-f47d-46ff-bd1d-b477ac548913",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Workflow",
+  "tool_input": {
+   "script": "export const meta = {\n  name: 'probe-two-echoes',\n  description: 'Hook probe: two tiny agents in one phase',\n  phases: [{ title: 'Echo', detail: 'two parallel echoes' }],\n}\nphase('Echo')\nconst out = await parallel([\n  () => agent('Run `echo wf-one` with the Bash tool and reply with only its output.', { label: 'echo:one', phase: 'Echo' }),\n  () => agent('Run `echo wf-two` with the Bash tool and reply with only its output.', { label: 'echo:two', phase: 'Echo' }),\n])\nreturn out"
+  },
+  "tool_response": {
+   "status": "async_launched",
+   "taskId": "wxtleurg3",
+   "taskType": "local_workflow",
+   "workflowName": "probe-two-echoes",
+   "runId": "wf_63757895-43f",
+   "summary": "Hook probe: two tiny agents in one phase",
+   "transcriptDir": "{{projects}}/b10dc3bd-70ff-435e-a81d-bbd8e635c41e/subagents/workflows/wf_63757895-43f",
+   "scriptPath": "{{projects}}/b10dc3bd-70ff-435e-a81d-bbd8e635c41e/workflows/scripts/probe-two-echoes-wf_63757895-43f.js"
+  },
+  "tool_use_id": "toolu_011euKqveh36tHUFSHtsatgW",
+  "duration_ms": 3
+ }
+}

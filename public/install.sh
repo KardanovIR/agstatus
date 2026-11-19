@@ -75,9 +75,10 @@ again; --no-codex has to be given again:
   --url <base>      Server to use (for a self-hosted board)
   --secret <s>      Webhook secret for self-hosted single-tenant servers
   --no-secret       Drop the webhook secret this machine has
-  --minimal         Send tool and folder names, never command text, prompts
-                    or session titles
-  --no-minimal      Send command text, prompts and session titles again
+  --minimal         Send tool and folder names, never command text, prompts,
+                    session titles or subagent tasks ("Subagent N" instead)
+  --no-minimal      Send command text, prompts, session titles and subagent
+                    tasks again
   --no-qr           Skip the QR code
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)
@@ -929,9 +930,10 @@ $CODEX_CMDS_BEFORE
 "*) return 0 ;;
   esac
   say ''
-  warn 'One-time step: run /hooks inside Codex to trust the AgStatus hook.'
+  warn 'One-time step: trust the AgStatus hook in Codex.'
+  note 'In Codex Desktop: Settings → Hooks. In the Codex CLI: /hooks.'
   note 'Codex trusts a hook by hashing its command, and this upgrade changed'
-  note 'that command — an existing install stays silent until you re-run /hooks.'
+  note 'that command — an existing install stays silent until you trust it again.'
 }
 
 # What Focus puts on the wire, printed before it is turned on. The wording

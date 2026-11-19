@@ -8,8 +8,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalConfiguration
@@ -32,10 +35,14 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kardanov.agstatus.NO_PLAN_LIMITS
+import com.kardanov.agstatus.ProjectSections
 import com.kardanov.agstatus.Theme
+import com.kardanov.agstatus.agentHeadDescription
 import com.kardanov.agstatus.rememberReduceMotion
 import com.kardanov.agstatus.UsageInfo
 import com.kardanov.agstatus.UsageWindow
@@ -44,14 +51,20 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * Full-width plan-limit bars pinned above the board: one row per reported
- * window (current 5-hour session, weekly caps, …).
+ * The agents' usage blocks, each agent's head on the board: one row per
+ * reported window (current 5-hour session, weekly caps, …), or a line saying
+ * it reports none. [usage] is the agents that get a block, in their order
+ * (agentHeads). [sessionCounts] is how many sessions each agent, by source,
+ * has on the board, done included.
  */
 @Composable
 fun UsageBars(
     usage: List<UsageInfo>,
     onOpenDetail: (String) -> Unit,
     modifier: Modifier = Modifier,
+    sessionCounts: Map<String, Int> = emptyMap(),
+    firstBlock: Modifier = Modifier,
+    lastBlock: Modifier = Modifier,
 ) {
     // Redraws every minute so the "resets in …" countdowns stay honest.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -62,46 +75,63 @@ fun UsageBars(
         }
     }
 
-    // Up to three blocks abreast, two on a phone-width screen, wrapping to
-    // further rows. Never more columns than blocks, so a lone agent spans the
-    // full width instead of leaving a hole.
     val wide = LocalConfiguration.current.screenWidthDp >= 600
-    val columns = max(1, minOf(usage.size, if (wide) 3 else 2))
-    // Sharing a phone width leaves each block too narrow for a one-line row;
-    // those stack the label above the value instead.
-    val narrow = !wide && columns > 1
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        // Up to three blocks abreast, two on a phone-width screen, wrapping to
+        // further rows. Never more columns than blocks, so a lone agent spans
+        // the full width instead of leaving a hole. And fewer where that would
+        // leave a block less than ten ems of its reading's text across, as
+        // the web board's blocks go one to a row: at 200% two on a phone left
+        // each 7, and every name and reset in them came down to a few letters
+        // ("CURRENT S…", "resets …"). Two stay at the default size on any
+        // phone from 360dp up, and on a 412dp one up to 130%.
+        val em = textDp(12.sp)
+        var columns = max(1, minOf(usage.size, if (wide) 3 else 2))
+        while (columns > 1 && (maxWidth - 10.dp * (columns - 1)) / columns - 28.dp < em * 10) columns--
+        // Sharing a phone width leaves each block too narrow for a one-line row;
+        // those stack the label above the value instead.
+        val narrow = !wide && columns > 1
 
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        for (row in usage.chunked(columns)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                for (info in row) {
-                    UsageSourceBlock(
-                        info = info,
-                        nowMillis = now,
-                        narrow = narrow,
-                        onOpenDetail = onOpenDetail,
-                        modifier = Modifier.weight(1f),
-                    )
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            usage.chunked(columns).forEachIndexed { r, row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEachIndexed { c, info ->
+                        val at = r * columns + c
+                        UsageSourceBlock(
+                            info = info,
+                            sessions = sessionCounts[info.source] ?: 0,
+                            nowMillis = now,
+                            narrow = narrow,
+                            onOpenDetail = onOpenDetail,
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(if (at == 0) firstBlock else Modifier)
+                                .then(if (at == usage.lastIndex) lastBlock else Modifier),
+                        )
+                    }
+                    // Keep a short final row aligned with the ones above it.
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
                 }
-                // Keep a short final row aligned with the ones above it.
-                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
 }
 
 /**
- * One agent's limits: its name over its own bars, in its own card. The header
- * carries the agent name so the rows inside don't repeat it. Tapping the block
- * opens that agent's 30-day usage detail; the layout is unchanged, so the
+ * One agent's limits: its name over its own bars, in its own card, or over
+ * "No plan limits reported" where it reports none. The header carries the
+ * agent name so the rows inside don't repeat it, and how many [sessions] it
+ * has on the board. Tapping the block opens that agent's 30-day usage detail,
+ * whether or not it reports limits; the layout is unchanged, so the
  * affordance is carried by the tap label screen readers announce.
  */
 @Composable
 private fun UsageSourceBlock(
     info: UsageInfo,
+    sessions: Int,
     nowMillis: Long,
     narrow: Boolean,
     onOpenDetail: (String) -> Unit,
@@ -119,21 +149,83 @@ private fun UsageSourceBlock(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(
-            text = info.displayName.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = Theme.textPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        for (window in info.windows) {
-            UsageBarRow(
-                sourceName = info.displayName,
-                window = window,
-                nowMillis = nowMillis,
-                narrow = narrow,
+        // The agent's mark beside its name: the legend for the marks that
+        // lead every card's meta line, now that Claude's and Codex's cards
+        // share a project's section. Then how many sessions it has on the
+        // board, in a label's quiet ink, where the line has room for it: the
+        // count goes before any letter of the name does, since the name is
+        // what says whose limits these are. TalkBack is not shown the mark,
+        // and hears the name and the count whether or not the count is drawn.
+        val name = @Composable { nameModifier: Modifier ->
+            AgentMark(source = info.source, size = textDp(12.sp), tint = Theme.textSecondary)
+            Text(
+                text = info.displayName.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = Theme.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = nameModifier,
             )
+        }
+        FirstFitting(Modifier.clearAndSetSemantics { contentDescription = agentHeadDescription(info.source, sessions) }) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                name(Modifier.alignByBaseline())
+                if (sessions > 0) {
+                    Text(
+                        text = ProjectSections.sessionCount(sessions),
+                        style = TextStyle(fontSize = 12.sp, fontFeatureSettings = "tnum"),
+                        color = Theme.textTertiary,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .alignByBaseline()
+                            .padding(start = 2.dp),
+                    )
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                name(Modifier)
+            }
+        }
+        val rows = @Composable { stacked: Boolean ->
+            for (window in info.windows) {
+                UsageBarRow(
+                    sourceName = info.displayName,
+                    window = window,
+                    nowMillis = nowMillis,
+                    stacked = stacked,
+                )
+            }
+        }
+        if (info.windows.isEmpty()) {
+            // An agent with sessions and no report (agentHeads): one line in
+            // the count's quiet ink where the meters would be, iOS's words,
+            // so the block says why it has none rather than looking broken.
+            // It takes a second line rather than being cut, balanced, as a
+            // limit's name does, and TalkBack hears it after the name and
+            // the count.
+            Text(
+                text = NO_PLAN_LIMITS,
+                style = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, lineBreak = LineBreak.Heading),
+                color = Theme.textTertiary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        } else if (narrow) {
+            rows(true)
+        } else {
+            // Every name beside its reading while all of them fit a line, and
+            // every one above it when one does not: one block, one form.
+            FirstFitting {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { rows(false) }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) { rows(true) }
+            }
         }
     }
 }
@@ -143,7 +235,7 @@ private fun UsageBarRow(
     sourceName: String,
     window: UsageWindow,
     nowMillis: Long,
-    narrow: Boolean = false,
+    stacked: Boolean = false,
 ) {
     val barColor = Theme.usageColor(window.usedPct)
     val pctText = "${window.usedPct.roundToInt()}%"
@@ -167,27 +259,23 @@ private fun UsageBarRow(
         modifier = Modifier.clearAndSetSemantics { contentDescription = description },
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
+        // A name takes a second line rather than being cut, balanced so its
+        // lines come out even: "SESSION" over "(GPT-6-ASTRA)". A block is
+        // never under ten ems across (UsageBars), and that holds the longest
+        // model's name on a line.
         val label: @Composable (Modifier) -> Unit = { m ->
             Text(
                 text = window.displayLabel.uppercase(),
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(lineBreak = LineBreak.Heading),
                 color = Theme.textSecondary,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 modifier = m,
             )
         }
-        // Each half of a phone screen fits the label OR the value, not both.
-        if (narrow) label(Modifier.fillMaxWidth())
-        Row(modifier = Modifier.fillMaxWidth()) {
-            if (!narrow) {
-                label(
-                    Modifier
-                        .alignByBaseline()
-                        .weight(1f)
-                        .padding(end = 8.dp),
-                )
-            }
+        // The share, then when it resets, which wraps under itself rather than
+        // being cut, with "2d 5h" kept on one line.
+        val reading: @Composable RowScope.() -> Unit = {
             Text(
                 text = pctText,
                 style = TextStyle(
@@ -201,13 +289,28 @@ private fun UsageBarRow(
             )
             if (reset != null) {
                 Text(
-                    text = " · $reset",
+                    text = " · ${holdUnits(reset)}",
                     fontSize = 11.sp,
                     color = Theme.textSecondary,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.alignByBaseline(),
                 )
+            }
+        }
+        if (stacked) {
+            // Each half of a phone screen fits the label OR the value, not both.
+            label(Modifier.fillMaxWidth())
+            Row(modifier = Modifier.fillMaxWidth(), content = reading)
+        } else {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                label(
+                    Modifier
+                        .alignByBaseline()
+                        .weight(1f)
+                        .padding(end = 8.dp),
+                )
+                reading()
             }
         }
         Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
@@ -227,6 +330,9 @@ private fun UsageBarRow(
         }
     }
 }
+
+/** "resets in 2d 5h" with its two units on one line. */
+private fun holdUnits(text: String): String = text.replace(Regex("(\\d+[dhm]) (\\d+[dhm])$"), "$1\u00A0$2")
 
 /** "resets in 2h 15m" — null once the reset time is unknown or passed. */
 internal fun resetText(resetsAt: Long?, nowMillis: Long): String? {

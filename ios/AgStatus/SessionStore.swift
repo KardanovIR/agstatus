@@ -75,6 +75,39 @@ final class SessionStore {
         let waited: TimeInterval
     }
 
+    /// When a card entered the status it holds, as this device saw it — the
+    /// baseline a beat measures its wait from — and the last frame that
+    /// baseline was carried through.
+    ///
+    /// The last of the three is what keeps it honest. A baseline holds only
+    /// for the frame straight after the one it was carried through. Anything
+    /// that reached the card another way — the snapshot after the phone was
+    /// in the background, a pull to refresh, a session back after a
+    /// dismissal — replaced it without passing through `beatStep`, and the
+    /// status it shows may have been left and entered again out of sight. A
+    /// card seen `done` at 09:01 that went back to work at the desk and
+    /// finished again at 10:58 came back in the phone's snapshot still
+    /// `done`; trusting the status alone, the next prompt said it had sat
+    /// unseen for two hours, when it had been three minutes. Where nothing
+    /// reached the card in the gap, its `updatedAt` is still the one the
+    /// baseline was carried through, and the baseline stands.
+    struct StatusSince: Equatable, Sendable {
+        let status: AgentStatus
+        let since: Date
+        /// The `updatedAt` of the last frame this was carried through.
+        let through: Int64
+    }
+
+    /// What one frame of a card does to its beat.
+    enum BeatChange: Equatable, Sendable {
+        /// Neither the status nor the line changed: the beat stands.
+        case keep
+        /// The card changed, and nothing about it is worth a line: any beat goes.
+        case clear
+        /// The card stopped waiting, and waited long enough to say so.
+        case show(WaitBeat)
+    }
+
     /// Below this, no beat. A wait you never noticed is not worth a line, and
     /// with beats persisting until a card next changes — and firing on `done`,
     /// the commonest state — every card would otherwise carry one permanently,
@@ -102,10 +135,30 @@ final class SessionStore {
     private(set) var focus: [String: FocusState] = [:]
 
     /// The closing beat each card is showing, by session id. Set when a session
-    /// leaves `blocked` or `done`, and cleared the next time that session
-    /// changes at all — so it lives exactly as long as the card it describes
+    /// leaves `blocked` or `done`, and cleared the next time its status or
+    /// line changes — so it lives exactly as long as the card it describes
     /// stays put.
     private(set) var beats: [String: WaitBeat] = [:]
+
+    /// When each card entered the status it holds, as this device saw it: the
+    /// baseline a beat measures its wait from.
+    ///
+    /// It used to be the old frame's `updatedAt`, which was the moment the
+    /// status began while every frame was a change of status or line. Since
+    /// subagents report on their own, frames that change neither — a row
+    /// starting, a count going up — arrive all the time and move `updatedAt`
+    /// with them, so a card blocked for ten minutes beside a busy subagent
+    /// would have reported waiting four seconds. An entry checks itself
+    /// against the card before it is used — see `StatusSince` — so one left
+    /// over from before a gap is simply not used.
+    @ObservationIgnored private var statusSince: [String: StatusSince] = [:]
+
+    /// The blocked cards the board took in with no frame of the stream: one
+    /// a refused dismissal put back, or a block a fetch or a snapshot brought.
+    /// They are never said aloud (`StandingBlocks`). Not observed: nothing
+    /// draws it, and the board reads it only when a card has just become
+    /// blocked.
+    @ObservationIgnored private(set) var standingBlocks = StandingBlocks()
 
     /// Consecutive days this board did any work. Derived on this device from
     /// the per-project token rows the board already stores, so it costs one
@@ -170,10 +223,12 @@ final class SessionStore {
         self.board = board
         BoardKeychain.save(board)
         sessions = []
+        standingBlocks = StandingBlocks()
         usage = []
         machines = [:]
         clearFocus()
         beats.removeAll()
+        statusSince.removeAll()
         streak = .none
         cachedPairCode = nil
         connect()
@@ -190,10 +245,12 @@ final class SessionStore {
         board = nil
         BoardKeychain.clear()
         sessions = []
+        standingBlocks = StandingBlocks()
         usage = []
         machines = [:]
         clearFocus()
         beats.removeAll()
+        statusSince.removeAll()
         streak = .none
         cachedPairCode = nil
         connection = .idle
@@ -268,7 +325,7 @@ final class SessionStore {
                     for try await event in sse.events(for: board) {
                         switch event {
                         case .snapshot(let list):
-                            sessions = Self.stableOrder(current: sessions, incoming: list)
+                            setSessions(Self.stableOrder(current: sessions, incoming: list))
                             connection = .live
                             delay = 1
                             pruneFocus()
@@ -279,6 +336,14 @@ final class SessionStore {
                             // during a reconnect, which is noise wearing the
                             // shape of news.
                             beats.removeAll()
+                            // Baselines for cards that are gone go with them.
+                            // The rest stay, but one whose card changed while
+                            // the stream was down no longer matches the card
+                            // this brought, and is not used — see
+                            // `StatusSince`. One whose card did not change
+                            // still holds, and keeps its wait exact.
+                            let present = Set(sessions.map(\.id))
+                            statusSince = statusSince.filter { present.contains($0.key) }
                             // Acks broadcast while the stream was down are gone;
                             // ask the server where anything still owed one got to.
                             if focus.values.contains(where: { $0.awaitsAck }) {
@@ -290,15 +355,20 @@ final class SessionStore {
                                 // old session is still here beside the new one;
                                 // after the assignment its status and timestamp
                                 // are gone and the wait is unrecoverable.
-                                noteBeat(was: sessions[index], is: session)
+                                let old = sessions[index]
+                                noteBeat(was: old, is: session)
+                                standingBlocks.noteFrame(session.id, was: old.status, is: session.status)
                                 sessions[index] = session
                             } else {
+                                standingBlocks.noteFrame(session.id, was: nil, is: session.status)
                                 sessions.insert(session, at: 0)
                             }
                             lastActivityAt = Date()
                         case .remove(let id):
+                            standingBlocks.noteFrame(id, was: nil, is: nil)
                             sessions.removeAll { $0.id == id }
                             setFocus(id, nil)
+                            statusSince[id] = nil
                             lastActivityAt = Date()
                         case .usage(let list):
                             usage = list
@@ -347,7 +417,8 @@ final class SessionStore {
 
     /// Fetches the session list and merges it in, never resurrecting local
     /// sessions that are newer than what the server returned, nor sessions
-    /// removed while the fetch was in flight.
+    /// removed while the fetch was in flight. A block it brings in is
+    /// standing, never said aloud: no frame brought it (`StandingBlocks`).
     func refresh() async {
         guard !isDemo, let board else { return }
         let fetchStart = Int64(Date().timeIntervalSince1970 * 1000)
@@ -393,12 +464,15 @@ final class SessionStore {
                 merged[local.id] = local // arrived via SSE mid-fetch
             }
         }
-        sessions = Self.stableOrder(current: sessions, incoming: Array(merged.values))
+        setSessions(Self.stableOrder(current: sessions, incoming: Array(merged.values)))
         pruneFocus()
     }
 
     /// Optimistically removes the session, then deletes it on the server.
     /// On failure the session returns to its old spot and the list refreshes.
+    /// A card put back is the one that left, not news: blocked, it was
+    /// blocked all along on the server, and is not said aloud again
+    /// (`StandingBlocks`).
     func dismiss(_ session: Session) async {
         if isDemo {
             sessions.removeAll { $0.id == session.id }
@@ -412,7 +486,7 @@ final class SessionStore {
         let successorID = index.flatMap { i in
             sessions.indices.contains(i + 1) ? sessions[i + 1].id : nil
         }
-        sessions.removeAll { $0.id == session.id }
+        setSessions(sessions.filter { $0.id != session.id })
         do {
             try await AgStatusAPI.deleteSession(session.id, from: board)
         } catch let error as APIError where error == .boardNotFound {
@@ -429,7 +503,9 @@ final class SessionStore {
                 } else {
                     at = min(index ?? 0, sessions.count)
                 }
-                sessions.insert(session, at: at)
+                var restored = sessions
+                restored.insert(session, at: at)
+                setSessions(restored)
             }
             await refresh()
         }
@@ -756,9 +832,13 @@ final class SessionStore {
 
     /// Records how long a session waited, at the moment it stops waiting.
     ///
-    /// Any existing beat is dropped first, whatever follows: a beat lives until
-    /// its card next changes, and this IS the card changing. Without that a
-    /// stale duration would sit under a card that has long since moved on.
+    /// A frame that changes neither the status nor the line is not the card
+    /// changing — it is a subagent reporting, or the hook's own keep-alive —
+    /// and it leaves the beat, and the wait's baseline, exactly where they
+    /// were. Any other frame drops an existing beat first, whatever follows: a
+    /// beat lives until its card next changes, and this IS the card changing.
+    /// Without that a stale duration would sit under a card that has long
+    /// since moved on.
     ///
     /// A beat is only worth a line when all three hold:
     ///   - the old state was one that waited on a HUMAN (`blocked` asked you a
@@ -768,18 +848,47 @@ final class SessionStore {
     ///     every tool call, and a keep-alive is not a resolution.
     ///   - it waited longer than the floor. A wait you never noticed is not
     ///     news, and without this every `done` card would carry a line forever.
+    ///
+    /// The decision is `beatStep`'s, kept pure so `verifyBeats` can walk it
+    /// through the gaps a demo never has; this applies it.
     private func noteBeat(was old: Session, is new: Session) {
-        // Only when there is one: a write through the subscript tells every
-        // card that reads `beats` it changed, nil over nil included, and so
-        // re-ran every card's status line on every hook event.
-        if beats[new.id] != nil { beats[new.id] = nil }
-        guard old.status == .blocked || old.status == .done else { return }
-        guard old.status != new.status else { return }
-        let waited = new.updatedDate.timeIntervalSince(old.updatedDate)
+        let step = Self.beatStep(statusSince[new.id], was: old, is: new)
+        statusSince[new.id] = step.baseline
+        switch step.beat {
+        case .keep:
+            break
+        case .clear:
+            // Only when there is one: a write through the subscript tells every
+            // card that reads `beats` it changed, nil over nil included, and so
+            // re-ran every card's status line on every hook event.
+            if beats[new.id] != nil { beats[new.id] = nil }
+        case .show(let beat):
+            beats[new.id] = beat
+        }
+    }
+
+    /// One frame of a card, `old` to `new`: the baseline it leaves for the
+    /// card's next frame, and what it does to the card's beat.
+    static func beatStep(_ held: StatusSince?, was old: Session,
+                         is new: Session) -> (baseline: StatusSince, beat: BeatChange) {
+        // The wait began when this device saw the status begin, while that
+        // baseline still holds for this frame. Otherwise — a status first met
+        // already under way, or one a snapshot handed over — it is measured
+        // from the frame the status arrived in, which can under-report but
+        // never inflate.
+        let since = held.flatMap { $0.status == old.status && $0.through == old.updatedAt ? $0.since : nil }
+            ?? old.updatedDate
+        let baseline = old.status == new.status
+            ? StatusSince(status: old.status, since: since, through: new.updatedAt)
+            : StatusSince(status: new.status, since: new.updatedDate, through: new.updatedAt)
+        guard old.status != new.status || old.message != new.message else { return (baseline, .keep) }
+        guard old.status == .blocked || old.status == .done else { return (baseline, .clear) }
+        guard old.status != new.status else { return (baseline, .clear) }
+        let waited = new.updatedDate.timeIntervalSince(since)
         // A negative gap means the two updates arrived out of order; there is
         // no honest duration to report, so report none.
-        guard waited >= Self.beatFloor else { return }
-        beats[new.id] = WaitBeat(from: old.status, waited: waited)
+        guard waited >= beatFloor else { return (baseline, .clear) }
+        return (baseline, .show(WaitBeat(from: old.status, waited: waited)))
     }
 
     private func pruneFocus() {
@@ -813,28 +922,56 @@ final class SessionStore {
         #if DEBUG
         DemoData.verifyFocusDecoding()
         DemoData.verifyTokenDecoding()
+        // The folder a session started in, which the board groups by: a
+        // server too old to send it costs no card, and groups by the live one.
+        DemoData.verifyProjectDecoding()
         DemoData.verifyPairing()
+        // Subagents: one bad item must never cost a card, let alone the
+        // snapshot that carries it — and the words are the web's and
+        // Android's too, so they are pinned.
+        DemoData.verifySubtaskDecoding()
+        // …and what a 1.7 server really sends decodes, every item of it, to
+        // the rows, footers and readings the other clients draw from it.
+        DemoData.verifyServerSubtasks()
+        SubtaskCopy.verify()
+        // The wait a beat reports, across the gaps — the phone in the
+        // background, a reconnect — that a demo board never has.
+        Self.verifyBeats()
         // The forgiveness rule is the one part of the streak a screenshot
         // cannot show: a bar reading "14 days" looks the same whether the
         // window arithmetic is right or wrong. With no test target in this
         // project, this is where it gets checked.
         Streak.verifyDerivation()
         // The same argument for the layout rule: a capture proves one width
-        // with one set of agents, and nothing about the width a point
-        // narrower or about what a dismissal does to the cards that stay.
+        // with one set of projects, and nothing about the width a point
+        // narrower, the order of names it did not hold, or what a cd, a
+        // dismissal or a message does to the cards that stay.
         BoardArrangement.verify()
         #endif
         sessions = Self.sortedByUpdate(DemoData.initialSessions())
+        standingBlocks = StandingBlocks()
         usage = DemoData.usage()
         machines = DemoData.machines()
         clearFocus()
         beats.removeAll()
+        statusSince.removeAll()
         // Derived from the same seeded rows the usage screen draws, so the demo
         // streak is a real derivation rather than a hard-coded number — and it
         // has gaps in it, because `tokenRows` skips about one day in five. A
         // demo that always showed an unbroken run would never exercise the
         // forgiveness rule, which is the part most likely to be wrong.
         streak = Streak.derive(from: DemoData.usageHistory(days: UsageHistory.streakWindowDays).projects)
+        #if DEBUG
+        // AGSTATUS_DEMO_MOVE: a card's first real folder, once the board has
+        // drawn it in No project (`DemoData.movesForScreenshots`).
+        if !DemoData.movesForScreenshots.isEmpty {
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(1500))
+                guard let self, self.connection == .demo else { return }
+                self.sessions = DemoData.movedForScreenshots(self.sessions)
+            }
+        }
+        #endif
         connection = .demo
         demoTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -864,10 +1001,12 @@ final class SessionStore {
         stopDemoTask()
         guard connection == .demo else { return }
         sessions = []
+        standingBlocks = StandingBlocks()
         usage = []
         machines = [:]
         clearFocus()
         beats.removeAll()
+        statusSince.removeAll()
         streak = .none
         connection = .idle
         if board != nil {
@@ -887,6 +1026,15 @@ final class SessionStore {
         demoTask = nil
     }
 
+    /// Puts `list` on the board in place of the cards it holds, as everything
+    /// but a frame of the stream does: a snapshot, a fetch, a dismissal, a
+    /// card put back. A block it brings is standing, and is never said aloud
+    /// (`StandingBlocks`).
+    private func setSessions(_ list: [Session]) {
+        standingBlocks.noteList(was: sessions, is: list)
+        sessions = list
+    }
+
     private static func sortedByUpdate(_ sessions: [Session]) -> [Session] {
         sessions.sorted { $0.updatedAt > $1.updatedAt }
     }
@@ -902,3 +1050,104 @@ final class SessionStore {
         return sortedByUpdate(fresh) + kept
     }
 }
+
+// MARK: - Checks
+
+#if DEBUG
+extension SessionStore {
+    /// The beat's arithmetic, checked when demo mode starts in a debug build,
+    /// beside the decoders and for their reason: there is no test target, and
+    /// "Unseen for 2h" looks the same on a card whether the two hours are true
+    /// or not. The cases that make it untrue are gaps — the phone in the
+    /// background, a reconnect — and the demo board has none.
+    static func verifyBeats() {
+        let minute: Int64 = 60_000
+        func card(_ status: AgentStatus, _ message: String, at minutes: Int64) -> Session {
+            Session(id: "c", name: "c", status: status, message: message, project: "",
+                    createdAt: 0, updatedAt: minutes * minute)
+        }
+        // One card as the store holds it. `meet` is the frame it was first
+        // met in; each `frame` is stepped against the one before it, as an
+        // upsert is; a `snapshot` replaces the card with no step and takes
+        // the beat with it, as the snapshot case does.
+        var last = card(.idle, "", at: 0)
+        var held: StatusSince?
+        var beat: WaitBeat?
+        func meet(_ met: Session) {
+            last = met
+            held = nil
+            beat = nil
+        }
+        func frame(_ next: Session) {
+            let step = beatStep(held, was: last, is: next)
+            held = step.baseline
+            switch step.beat {
+            case .keep: break
+            case .clear: beat = nil
+            case .show(let shown): beat = shown
+            }
+            last = next
+        }
+        func snapshot(_ replacement: Session) {
+            last = replacement
+            beat = nil
+        }
+        let ask = "Needs approval: verify:hook"
+
+        // A subagent reporting moves `updatedAt` and nothing else, and leaves
+        // the wait where it began: blocked at 1, a subagent at 5, approved at
+        // 11 is ten minutes, not six.
+        meet(card(.coding, "Editing a.ts", at: 0))
+        frame(card(.blocked, ask, at: 1))
+        frame(card(.blocked, ask, at: 5))
+        assert(beat == nil, "no beat while it waits")
+        frame(card(.coding, "Editing b.ts", at: 11))
+        assert(beat == WaitBeat(from: .blocked, waited: 600), "measured from the block, not the subagent")
+        // The beat stands through a frame that changes nothing, and goes at
+        // the next one that changes the card.
+        frame(card(.coding, "Editing b.ts", at: 12))
+        assert(beat == WaitBeat(from: .blocked, waited: 600), "a subagent frame keeps the beat")
+        frame(card(.coding, "Editing c.ts", at: 13))
+        assert(beat == nil, "a new line clears it")
+
+        // The phone was in the background while the card left `done` and
+        // came back to it: seen done at 1; at the desk a prompt, and done
+        // again at 118; the phone back at 120 on a snapshot; the next prompt
+        // at 121. Three minutes, not two hours: the baseline from 1 is not used.
+        meet(card(.coding, "Editing a.ts", at: 0))
+        frame(card(.done, "Turn finished", at: 1))
+        snapshot(card(.done, "Turn finished", at: 118))
+        frame(card(.planning, "Fix the footer", at: 121))
+        assert(beat == WaitBeat(from: .done, waited: 180), "a gap is not part of the wait")
+
+        // Nothing reached the card while the stream was down: the snapshot's
+        // card is the one the baseline was carried through, and the wait is
+        // still exact — 29 minutes, where the snapshot's 4 would say 26.
+        meet(card(.coding, "Editing a.ts", at: 0))
+        frame(card(.blocked, ask, at: 1))
+        frame(card(.blocked, ask, at: 4))
+        snapshot(card(.blocked, ask, at: 4))
+        frame(card(.coding, "Editing b.ts", at: 30))
+        assert(beat == WaitBeat(from: .blocked, waited: 29 * 60), "an empty gap keeps the baseline")
+
+        // Something did reach it — a subagent, still blocked — so the wait is
+        // counted from the snapshot's card: too short, never too long.
+        meet(card(.coding, "Editing a.ts", at: 0))
+        frame(card(.blocked, ask, at: 1))
+        snapshot(card(.blocked, ask, at: 20))
+        frame(card(.coding, "Editing b.ts", at: 30))
+        assert(beat == WaitBeat(from: .blocked, waited: 600), "a changed card under-reports")
+
+        // No beat: under the floor; a move nobody waited on; out of order.
+        meet(card(.done, "Turn finished", at: 0))
+        frame(card(.coding, "Editing a.ts", at: 1))
+        assert(beat == nil, "under the floor")
+        meet(card(.coding, "Editing a.ts", at: 0))
+        frame(card(.testing, "npm test", at: 20))
+        assert(beat == nil, "coding to testing waited on nobody")
+        meet(card(.blocked, ask, at: 10))
+        frame(card(.coding, "Editing a.ts", at: 5))
+        assert(beat == nil, "frames out of order")
+    }
+}
+#endif

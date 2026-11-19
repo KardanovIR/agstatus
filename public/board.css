@@ -220,7 +220,8 @@ body {
   }
 }
 
-.card.entering {
+.card.entering,
+.section-label.entering {
   animation: card-in var(--d-slow) var(--ease) both;
 }
 
@@ -244,6 +245,32 @@ body {
   transition: border-color var(--d-mid) var(--ease), background var(--d-mid) var(--ease);
 }
 
+/* A subagent row moves when it starts, finishes or is blocked, and at no
+ * other time: a new activity is written in place, and planning, coding and
+ * testing trade places without a word. A row that starts fades in where it
+ * stands; one that becomes blocked, stops being blocked or fails re-enters
+ * its state cell; a count that changed ticks. app.js adds these classes to
+ * the nodes a repaint made, from what it remembers of the card (or of the
+ * open session screen, whose rows move for the same news), so a frame about
+ * another card replays nothing — and removes them on animationend. */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes tick {
+  from {
+    opacity: 0;
+    transform: translateY(-0.45em);
+  }
+}
+
+.sub.entering { animation: row-in var(--d-mid) var(--ease) both; }
+.sub.changed .sub-st { animation: row-in var(--d-slow) var(--ease) both; }
+.n.ticked { animation: tick var(--d-mid) var(--ease) both; }
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -252,6 +279,186 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* While any card shows subagent rows, each card keeps its own height. The
+ * grid's rows are otherwise even, so the cards beside a card with subagents
+ * stretched to its height, empty above their Focus rails (card-actions sits
+ * at margin-top: auto), and reshaped whenever it expanded. Scoped to the
+ * class app.js sets, so a board with no subagents anywhere keeps its
+ * stretched rows and bottom-aligned rails exactly. Here and not in card.css,
+ * which the landing page loads without this file. */
+#grid.has-subs { align-items: start; }
+
+/* ---- Project sections ---------------------------------------------------
+ * The board is grouped by project (app.js, "Project sections"): a label per
+ * section, a full row of the one grid, and under it that section's cards.
+ * Spacing does the grouping, as it does on iOS: 24px between sections, 8px
+ * from a label to its first card, the grid's own gap between cards, and
+ * nothing boxed. Here and not in card.css, which the landing page loads for
+ * a .grid of its own that has no sections.
+ *
+ * A label sticks to the top of the window, on the page's own ground, while
+ * its cards pass under it, and the next label slides over it: every label
+ * sticks within the one grid, and a later one paints over an earlier one.
+ * A label is one line at every width and text size, so each is exactly as
+ * tall as the one it covers. */
+html {
+  /* A label's line, and what the label takes at the top of the window:
+   * until app.js measures a label (padForLabels), which it does as soon as
+   * one is drawn, since a reader's own line height can make it taller. */
+  --label-line: calc(var(--t-md) * var(--lh-tight));
+  --label-h: calc(var(--label-line) + 2 * var(--space-xs));
+}
+
+/* Whatever is scrolled into view, a control taking keyboard focus or the
+ * card the needs-you bar brings, stops 8px clear of the stuck label above
+ * it, and of the bar below it while that shows (shell.css). Without this a
+ * reader tabbing back up landed on a title under the label, and one tabbing
+ * down on a Focus button under the bar. Only on the board: a screen that
+ * takes over the page has no label to clear. */
+html:has(body:not(.detail-open) .section-label) { scroll-padding-top: calc(var(--label-h) + var(--space-xs)); }
+
+.section-label {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: 0;
+  /* Over the cards, which are positioned too (card.css). */
+  z-index: 1;
+  /* 24px after the cards above, with the grid's 12px gap, and 8px before
+   * the cards below. */
+  margin: var(--space-sm) 0 calc(var(--space-xs) - var(--space-sm));
+  padding: var(--space-xs) 0;
+  background: var(--ink-950);
+  font-family: var(--font-read);
+  font-size: var(--t-md);
+  font-weight: 600;
+  line-height: var(--lh-tight);
+  color: var(--text-1);
+}
+
+.section-label:first-child { margin-top: 0; }
+
+/* One line, whatever wraps inside it: the line's own box clips, not the
+ * label's, whose padding would show the top of a second. One line by its
+ * own line height, 1lh, and not by the token alone: a reader who sets a
+ * line height of their own (WCAG 1.4.12's 1.5) lays the name out on a
+ * taller line, and a box held to the token cut off the bottom of every
+ * letter, so 'gg' read 'qq'. The token stays for a browser without lh. */
+.section-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-xs);
+  height: var(--label-line);
+  height: 1lh;
+  overflow: hidden;
+}
+
+/* The name in exact case. It gives way after the count, and then in the
+ * middle (app.js fitLabel, which measures); the ellipsis here only cuts its
+ * end before there is anything to measure. Once fitLabel has measured a
+ * label it is `fitted`, and the cut is the script's alone: a cut that came
+ * out a fraction of a pixel too wide got a second ellipsis at its end. */
+.section-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-label.fitted .section-name { text-overflow: clip; }
+
+/* The count, quiet, in the board's figures. On a line too narrow for both
+ * it wraps under the name, where the line's one-line height hides it, until
+ * fitLabel takes it away: the count goes before any letter of the name. */
+.section-count {
+  flex: none;
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* No project is the board's words, not a folder's name. */
+.section-label.is-none .section-name {
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+/* The agent's mark, leading every card's meta line (app.js cardMeta): the
+ * asterisk, the hexagon or the diamond, in the line's own quiet ink, as a
+ * plain mark. It replaced the bordered agent chip, which card.css keeps for
+ * the landing page's cards. 12px at the default text size, in rem so it
+ * grows with the facts beside it, and set 2px low so it centres on them. */
+.meta-agent { flex: none; }
+
+.meta-agent svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  vertical-align: -0.125rem;
+}
+
+/* A usage block's name carries its agent's mark too: the legend for the
+ * marks on the cards. */
+.usage-name svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.375rem;
+  vertical-align: -0.125rem;
+}
+
+/* And how many sessions that agent has on the board, "7 sessions", in a
+ * label count's quiet ink: the count every client's head carries. One line,
+ * as a label is, by its own line height, so a reader's own spacing cuts no
+ * letter: where the name and the count do not both fit, the count goes
+ * first (app.js fitUsage), wrapping out of sight until then, and only a
+ * name that does not fit alone is cut, at its end, as iOS cuts it. The
+ * button's name keeps the count either way. Here and not in card.css,
+ * whose usage block the landing page draws without either. */
+.usage-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-xs);
+  height: calc(var(--t-xs) * var(--lh-body));
+  height: 1lh;
+  overflow: hidden;
+}
+
+.usage-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-count {
+  flex: none;
+  font-family: var(--font-ui);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* An agent with sessions and no plan limits has a block all the same
+ * (app.js renderUsage), and this one line where the meters would be: iOS's
+ * words, in the count's face and its quiet ink, since it reports an absence
+ * and is no reading. It wraps rather than losing a word to an ellipsis. */
+.usage-none {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--t-xs);
+  color: var(--text-3);
 }
 
 /* ---- Empty state --------------------------------------------------------
@@ -297,4 +504,6 @@ body {
 @media (min-width: 1100px) {
   body { padding: var(--space-lg) var(--space-lg) var(--space-2xl); }
   .grid { gap: var(--space-md); }
+  /* The same 24 and 8 around a label, with the grid's 16px gap. */
+  .section-label { margin: var(--space-xs) 0 calc(var(--space-xs) - var(--space-md)); }
 }

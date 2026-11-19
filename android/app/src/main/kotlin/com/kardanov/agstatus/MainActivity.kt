@@ -10,9 +10,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -20,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
@@ -33,6 +38,9 @@ import com.kardanov.agstatus.ui.HistoryScreen
 import com.kardanov.agstatus.ui.PairSheet
 import com.kardanov.agstatus.ui.ScannerScreen
 import com.kardanov.agstatus.ui.SettingsScreen
+import com.kardanov.agstatus.ui.Speaker
+import com.kardanov.agstatus.ui.SpokenAlarm
+import com.kardanov.agstatus.ui.SpokenLine
 import com.kardanov.agstatus.ui.UsageDetailScreen
 import com.kardanov.agstatus.ui.WelcomeScreen
 import com.kardanov.agstatus.ui.adoptBoard
@@ -68,13 +76,41 @@ import kotlinx.coroutines.withTimeoutOrNull
  *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
  *         --ez agstatus_demo true --es agstatus_open_usage codex \
  *         --ei agstatus_demo_limits 6 --es agstatus_demo_first_day all
+ *
+ * The board grouped by project with that many more projects (1 to 12), the
+ * last of them blocked, as iOS's manyprojects scenario:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ei agstatus_demo_projects 12
+ *
+ * A block that lands while the board is open, which the board says aloud
+ * for TalkBack: those demo sessions (ids, separated by commas) become blocked
+ * that many seconds after the demo starts (8 if not given), as a session
+ * frame would make them, on a board that otherwise holds still. Two or more
+ * are said together:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ez agstatus_demo_freeze true \
+ *         --es agstatus_demo_block demo-webapp --ei agstatus_demo_block_after 8
+ *
+ * The session screen can open at a subagent, by its ordinal (`n`), as the
+ * iOS app's AGSTATUS_OPEN_SUBTASK does: the first card listing that subagent
+ * opens, scrolled to it and lit. The demo starts with subagents 3 to 12:
+ *
+ *     adb shell am start -n com.kardanov.agstatus/.MainActivity \
+ *         --ez agstatus_demo true --ez agstatus_open_history true \
+ *         --es agstatus_open_subtask 9
  */
 private const val EXTRA_DEMO = "agstatus_demo"
 private const val EXTRA_DEMO_STALE = "agstatus_demo_stale"
 private const val EXTRA_DEMO_FREEZE = "agstatus_demo_freeze"
 private const val EXTRA_DEMO_LIMITS = "agstatus_demo_limits"
 private const val EXTRA_DEMO_FIRST_DAY = "agstatus_demo_first_day"
+private const val EXTRA_DEMO_PROJECTS = "agstatus_demo_projects"
+private const val EXTRA_DEMO_BLOCK = "agstatus_demo_block"
+private const val EXTRA_DEMO_BLOCK_AFTER = "agstatus_demo_block_after"
 private const val EXTRA_OPEN_HISTORY = "agstatus_open_history"
+private const val EXTRA_OPEN_SUBTASK = "agstatus_open_subtask"
 private const val EXTRA_OPEN_USAGE = "agstatus_open_usage"
 
 /** How long the screenshot hook waits for a board to produce its first session. */
@@ -101,12 +137,22 @@ class MainActivity : ComponentActivity() {
             DemoData.firstDayWindows = intent.getStringExtra(EXTRA_DEMO_FIRST_DAY)
                 ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
                 .orEmpty()
+            DemoData.extraProjects = intent.getIntExtra(EXTRA_DEMO_PROJECTS, 0)
             store.startDemo(
                 agedMinutes = intent.getIntExtra(EXTRA_DEMO_STALE, 0),
                 frozen = intent.getBooleanExtra(EXTRA_DEMO_FREEZE, false),
             )
+            store.blockDemoLater(
+                ids = intent.getStringExtra(EXTRA_DEMO_BLOCK)
+                    ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()
+                    .orEmpty(),
+                afterMillis = intent.getIntExtra(EXTRA_DEMO_BLOCK_AFTER, 8) * 1_000L,
+            )
         }
-        val openHistory = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_HISTORY, false)
+        val openSubtask =
+            if (BuildConfig.DEBUG) intent.getStringExtra(EXTRA_OPEN_SUBTASK)?.trim()?.toIntOrNull() else null
+        val openHistory = BuildConfig.DEBUG &&
+            (intent.getBooleanExtra(EXTRA_OPEN_HISTORY, false) || openSubtask != null)
         val openUsage =
             if (BuildConfig.DEBUG) intent.getStringExtra(EXTRA_OPEN_USAGE)?.ifBlank { null } else null
 
@@ -116,6 +162,7 @@ class MainActivity : ComponentActivity() {
                     AgStatusApp(
                         store = store,
                         openFirstHistory = openHistory,
+                        openSubtaskOrdinal = openSubtask,
                         openUsageSource = openUsage,
                     )
                 }
@@ -155,11 +202,17 @@ private object Route {
     const val SETTINGS = "settings"
     const val SCANNER = "scanner"
     const val ARG_SESSION_ID = "sessionId"
-    const val HISTORY = "history/{$ARG_SESSION_ID}"
+
+    /** Optional: the subagent a card's row was tapped for, to arrive at. */
+    const val ARG_SUBTASK = "subtask"
+    const val HISTORY = "history/{$ARG_SESSION_ID}?$ARG_SUBTASK={$ARG_SUBTASK}"
     const val ARG_SOURCE = "source"
     const val USAGE = "usage/{$ARG_SOURCE}"
 
-    fun history(sessionId: String): String = "history/${Uri.encode(sessionId)}"
+    fun history(sessionId: String, subtaskId: String? = null): String {
+        val session = "history/${Uri.encode(sessionId)}"
+        return if (subtaskId == null) session else "$session?$ARG_SUBTASK=${Uri.encode(subtaskId)}"
+    }
 
     fun usage(source: String): String = "usage/${Uri.encode(source)}"
 }
@@ -168,6 +221,7 @@ private object Route {
 private fun AgStatusApp(
     store: SessionStore,
     openFirstHistory: Boolean,
+    openSubtaskOrdinal: Int? = null,
     openUsageSource: String? = null,
 ) {
     val navController = rememberNavController()
@@ -199,7 +253,7 @@ private fun AgStatusApp(
     }
 
     if (openFirstHistory) {
-        OpenFirstHistoryEffect(store, navController)
+        OpenFirstHistoryEffect(store, navController, openSubtaskOrdinal)
     }
 
     if (openUsageSource != null) {
@@ -207,6 +261,13 @@ private fun AgStatusApp(
     }
 
     KeepScreenAwakeEffect(store, showsBoard)
+
+    // What the app says aloud, a block that lands while it is in front, on
+    // whichever screen shows: above the NavHost, so History, Settings and
+    // Usage hear it as the board does (SpokenAlarm).
+    val speechScope = rememberCoroutineScope()
+    val speaker = remember(speechScope) { Speaker(speechScope) }
+    SpokenAlarm(store.spoken, speaker)
 
     Box(modifier = Modifier.fillMaxSize()) {
         NavHost(navController = navController, startDestination = startDestination) {
@@ -216,7 +277,10 @@ private fun AgStatusApp(
             composable(Route.BOARD) {
                 BoardScreen(
                     store = store,
-                    onOpenHistory = { sessionId -> navController.navigate(Route.history(sessionId)) },
+                    speaker = speaker,
+                    onOpenHistory = { sessionId, subtaskId ->
+                        navController.navigate(Route.history(sessionId, subtaskId))
+                    },
                     onOpenUsage = { source -> navController.navigate(Route.usage(source)) },
                     onOpenSettings = { navController.navigate(Route.SETTINGS) },
                     onOpenPair = { showPairSheet = true },
@@ -224,11 +288,19 @@ private fun AgStatusApp(
             }
             composable(
                 route = Route.HISTORY,
-                arguments = listOf(navArgument(Route.ARG_SESSION_ID) { type = NavType.StringType }),
+                arguments = listOf(
+                    navArgument(Route.ARG_SESSION_ID) { type = NavType.StringType },
+                    navArgument(Route.ARG_SUBTASK) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
             ) { entry ->
                 HistoryScreen(
                     store = store,
                     sessionId = entry.arguments?.getString(Route.ARG_SESSION_ID).orEmpty(),
+                    subtaskId = entry.arguments?.getString(Route.ARG_SUBTASK),
                     onBack = { navController.popBackStack() },
                 )
             }
@@ -271,8 +343,21 @@ private fun AgStatusApp(
         }
 
         if (showPairSheet) {
+            // Over the board and its needs-you bar, which is then not in
+            // front of the reader and does not beat (SessionStore.beats).
+            DisposableEffect(store) {
+                store.sheetOverBoard = true
+                onDispose { store.sheetOverBoard = false }
+            }
             PairSheet(store = store, onDismiss = { showPairSheet = false })
         }
+
+        SpokenLine(
+            speaker = speaker,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .windowInsetsPadding(WindowInsets.safeDrawing),
+        )
     }
 }
 
@@ -324,18 +409,29 @@ private fun OpenUsageDetailEffect(
 
 /**
  * Debug-only deep link so screenshot automation can reach the history screen,
- * which cannot be tapped from `adb shell am start`.
+ * which cannot be tapped from `adb shell am start`. With [subtaskOrdinal], it
+ * opens the first card listing that subagent at that subagent, as a tap on
+ * its row would; with no such card, the first card at the top.
  */
 @Composable
-private fun OpenFirstHistoryEffect(store: SessionStore, navController: NavHostController) {
+private fun OpenFirstHistoryEffect(
+    store: SessionStore,
+    navController: NavHostController,
+    subtaskOrdinal: Int?,
+) {
     LaunchedEffect(Unit) {
         // Demo sessions are seeded synchronously; a real board arrives over SSE.
         val sessions = withTimeoutOrNull(OPEN_HISTORY_TIMEOUT_MS) {
             store.sessions.first { it.isNotEmpty() }
+        } ?: return@LaunchedEffect
+        val first = sessions.firstOrNull() ?: return@LaunchedEffect
+        val arrival = subtaskOrdinal?.let { n ->
+            sessions.firstNotNullOfOrNull { session ->
+                session.subtasks?.items?.firstOrNull { it.n == n }?.let { Route.history(session.id, it.id) }
+            }
         }
-        val first = sessions?.firstOrNull() ?: return@LaunchedEffect
         if (navController.currentDestination?.route == Route.BOARD) {
-            navController.navigate(Route.history(first.id))
+            navController.navigate(arrival ?: Route.history(first.id))
         }
     }
 }

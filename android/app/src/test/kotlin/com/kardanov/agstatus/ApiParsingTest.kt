@@ -2,6 +2,16 @@ package com.kardanov.agstatus
 
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -79,6 +89,47 @@ class ApiParsingTest {
         assertEquals(AgentStatus.TESTING, sessions[1].status)
     }
 
+    // MARK: - homeProject
+
+    @Test
+    fun sessionDecodesHomeProject() {
+        val session = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","project":"web","homeProject":"acme-api"}""",
+        )
+
+        assertEquals("acme-api", session.homeProject)
+        assertEquals("web", session.project)
+    }
+
+    @Test
+    fun aServerTooOldToSendHomeProjectReadsAsEmpty() {
+        val session = AgStatusJson.decodeFromString<Session>("""{"id":"s","project":"web"}""")
+
+        assertEquals("", session.homeProject)
+        assertEquals("web", ProjectSections.nameOf(session))
+    }
+
+    @Test
+    fun aHomeProjectThatIsNotAStringReadsAsEmptyWithoutFailingTheBoard() {
+        val json = """
+            [{"id":"a","homeProject":null},{"id":"b","homeProject":7},
+             {"id":"c","homeProject":{"name":"x"}},{"id":"d","homeProject":["x"]},
+             {"id":"e","homeProject":"docs"}]
+        """.trimIndent()
+
+        val sessions = AgStatusJson.decodeFromString<List<Session>>(json)
+
+        assertEquals(listOf("", "", "", "", "docs"), sessions.map { it.homeProject })
+    }
+
+    @Test
+    fun homeProjectSurvivesAnEncodeAndDecode() {
+        val session = Session(id = "s", project = "web", homeProject = "acme-api")
+        val again = AgStatusJson.decodeFromString<Session>(AgStatusJson.encodeToString(session))
+
+        assertEquals(session, again)
+    }
+
     // MARK: - Host (Focus)
 
     @Test
@@ -147,6 +198,415 @@ class ApiParsingTest {
 
         assertEquals("kitty", session.host?.app?.slug)
     }
+
+    // MARK: - Subtasks
+
+    @Test
+    fun sessionDecodesSubtasks() {
+        val json = """
+            {"id":"$SESSION_ID","status":"blocked","message":"Needs approval: verify:hook",
+             "subtasks":{"turnEnded":false,"running":9,"blocked":1,"failed":0,"done":15,"items":[
+               {"id":"3f9c1e07b2d4a85c6e1f0a92","n":3,"label":"review:hook","state":"testing",
+                "activity":"Run hook tests with --no-file-parallelism"},
+               {"id":"a0d5b8e1c2f34a6b7d8e9f01","n":4,"label":"review:listener","state":"coding",
+                "activity":"Editing listener.ts"},
+               {"id":"9b2e7c4d1a0f3e5b6c8d7a90","n":9,"label":"verify:hook","state":"blocked",
+                "activity":"Approve: Run the hook suite"}]}}
+        """.trimIndent()
+
+        val session = AgStatusJson.decodeFromString<Session>(json)
+
+        val subtasks = session.subtasks!!
+        assertFalse(subtasks.turnEnded)
+        assertEquals(9, subtasks.running)
+        assertEquals(1, subtasks.blocked)
+        assertEquals(0, subtasks.failed)
+        assertEquals(15, subtasks.done)
+        assertEquals(listOf(3, 4, 9), subtasks.items.map { it.n })
+        assertEquals(
+            Subtask(
+                id = "9b2e7c4d1a0f3e5b6c8d7a90",
+                n = 9,
+                label = "verify:hook",
+                state = SubtaskState.BLOCKED,
+                activity = "Approve: Run the hook suite",
+            ),
+            subtasks.items[2],
+        )
+        assertEquals(AgentStatus.BLOCKED, session.status)
+        assertEquals(DisplayStatus.BLOCKED, session.displayStatus)
+    }
+
+    @Test
+    fun absentNullOrMalformedSubtasksAreTodaysCard() {
+        val cases = listOf(
+            """{"id":"s","status":"coding"}""",
+            """{"id":"s","status":"coding","subtasks":null}""",
+            """{"id":"s","status":"coding","subtasks":"x"}""",
+            """{"id":"s","status":"coding","subtasks":42}""",
+            """{"id":"s","status":"coding","subtasks":true}""",
+            """{"id":"s","status":"coding","subtasks":[]}""",
+            """{"id":"s","status":"coding","subtasks":{}}""",
+            // Nothing to show: no items and nothing done.
+            """{"id":"s","status":"coding","subtasks":{"running":0,"done":0,"items":[]}}""",
+            // Every item malformed is the same as none.
+            """{"id":"s","status":"coding","subtasks":{"running":1,"items":[{"n":1},"x",7]}}""",
+        )
+
+        for (json in cases) {
+            val session = AgStatusJson.decodeFromString<Session>(json)
+            assertNull("expected no subtasks for $json", session.subtasks)
+            assertEquals(AgentStatus.CODING, session.status)
+            assertEquals(DisplayStatus.CODING, session.displayStatus)
+        }
+    }
+
+    @Test
+    fun aCountWithNoRowsStillShows() {
+        val session = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","status":"coding","subtasks":{"done":12,"items":[]}}"""
+        )
+
+        assertEquals(12, session.subtasks?.done)
+        assertEquals(emptyList<Subtask>(), session.subtasks?.items)
+    }
+
+    @Test
+    fun aSnapshotSurvivesNullAndMalformedSubtasks() {
+        val json = """
+            [{"id":"a","status":"coding","subtasks":null},
+             {"id":"b","status":"testing","subtasks":"x"},
+             {"id":"c","status":"done","subtasks":{"items":[{"id":"k1","n":"one"},{"id":"k2","n":2,"label":"ok"}]}},
+             {"id":"d","status":"idle"}]
+        """.trimIndent()
+
+        val sessions = AgStatusJson.decodeFromString<List<Session>>(json)
+
+        assertEquals(listOf("a", "b", "c", "d"), sessions.map { it.id })
+        assertNull(sessions[0].subtasks)
+        assertNull(sessions[1].subtasks)
+        assertEquals(listOf("k2"), sessions[2].subtasks?.items?.map { it.id })
+        assertNull(sessions[3].subtasks)
+    }
+
+    @Test
+    fun aMalformedItemIsDroppedAndTheOthersKept() {
+        val json = """
+            {"id":"s","status":"coding","subtasks":{"items":[
+              {"id":"first","n":1,"label":"kept","state":"coding","activity":"Editing a.ts"},
+              42,
+              "row",
+              null,
+              {"n":2,"label":"no id"},
+              {"id":7,"n":3,"label":"id not a string"},
+              {"id":"has space","n":4,"label":"id off the agent-key shape"},
+              {"id":"${"a".repeat(65)}","n":5,"label":"id too long"},
+              {"id":"no-n","label":"no ordinal"},
+              {"id":"zero-n","n":0,"label":"ordinal below one"},
+              {"id":"text-n","n":"6","label":"ordinal as text"},
+              {"id":"first","n":7,"label":"a repeated id"},
+              {"id":"last.one:9","n":8,"label":"also kept","state":"testing"}]}}
+        """.trimIndent()
+
+        val items = AgStatusJson.decodeFromString<Session>(json).subtasks!!.items
+
+        assertEquals(listOf("first", "last.one:9"), items.map { it.id })
+        assertEquals(listOf("kept", "also kept"), items.map { it.label })
+        assertEquals(listOf(1, 8), items.map { it.n })
+    }
+
+    @Test
+    fun anUnknownItemStateReadsAsPlanning() {
+        val json = """
+            {"id":"s","subtasks":{"items":[
+              {"id":"a","n":1,"label":"a","state":"researching"},
+              {"id":"b","n":2,"label":"b"},
+              {"id":"c","n":3,"label":"c","state":3},
+              {"id":"d","n":4,"label":"d","state":"failed"}]}}
+        """.trimIndent()
+
+        val items = AgStatusJson.decodeFromString<Session>(json).subtasks!!.items
+
+        assertEquals(
+            listOf(SubtaskState.PLANNING, SubtaskState.PLANNING, SubtaskState.PLANNING, SubtaskState.FAILED),
+            items.map { it.state },
+        )
+        assertEquals(SubtaskState.PLANNING, SubtaskState.fromWire(null))
+        assertEquals(SubtaskState.BLOCKED, SubtaskState.fromWire("blocked"))
+    }
+
+    @Test
+    fun aBlankOrMissingLabelOrActivityHasAFallback() {
+        val json = """
+            {"id":"s","subtasks":{"items":[
+              {"id":"a","n":7,"label":"","activity":42},
+              {"id":"b","n":8},
+              {"id":"c","n":9,"label":12,"activity":"Bash"}]}}
+        """.trimIndent()
+
+        val items = AgStatusJson.decodeFromString<Session>(json).subtasks!!.items
+
+        assertEquals(listOf("Subagent 7", "Subagent 8", "Subagent 9"), items.map { it.label })
+        assertEquals(listOf("", "", "Bash"), items.map { it.activity })
+    }
+
+    @Test
+    fun missingOrMalformedCountsAreDerivedFromTheItems() {
+        val items = """
+            "items":[{"id":"a","n":1,"label":"a","state":"coding"},
+                     {"id":"b","n":2,"label":"b","state":"testing"},
+                     {"id":"c","n":3,"label":"c","state":"blocked"},
+                     {"id":"d","n":4,"label":"d","state":"failed"},
+                     {"id":"e","n":5,"label":"e","state":"researching"}]
+        """.trimIndent()
+        val cases = listOf(
+            """{"id":"s","subtasks":{$items}}""",
+            """{"id":"s","subtasks":{"turnEnded":"true","running":-1,"blocked":"1","failed":1.5,"done":null,$items}}""",
+            """{"id":"s","subtasks":{"turnEnded":1,"running":{},"blocked":[],"failed":true,"done":"9",$items}}""",
+        )
+
+        for (json in cases) {
+            val subtasks = AgStatusJson.decodeFromString<Session>(json).subtasks!!
+            assertFalse("turnEnded for $json", subtasks.turnEnded)
+            assertEquals("running for $json", 3, subtasks.running)
+            assertEquals("blocked for $json", 1, subtasks.blocked)
+            assertEquals("failed for $json", 1, subtasks.failed)
+            assertEquals("done for $json", 0, subtasks.done)
+        }
+    }
+
+    @Test
+    fun wellFormedCountsWinOverTheItems() {
+        // The server lists at most eight failed rows and keeps the count exact.
+        val failedRows = (1..8).joinToString(",") { """{"id":"f$it","n":$it,"label":"f$it","state":"failed"}""" }
+        val session = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","subtasks":{"running":0,"blocked":0,"failed":11,"done":4,"items":[$failedRows]}}"""
+        )
+
+        assertEquals(11, session.subtasks?.failed)
+        assertEquals(8, session.subtasks?.items?.size)
+        assertEquals(4, session.subtasks?.done)
+    }
+
+    @Test
+    fun subtasksSurviveAnEncodeDecodeRoundTrip() {
+        val session = Session(
+            id = "s",
+            status = AgentStatus.DONE,
+            message = "2 subagents still running",
+            subtasks = Subtasks(
+                turnEnded = true,
+                running = 2,
+                blocked = 0,
+                failed = 1,
+                done = 3,
+                items = listOf(
+                    Subtask(id = "k1", n = 1, label = "Watch the Android CI build", state = SubtaskState.TESTING,
+                        activity = "gh run watch 1841"),
+                    Subtask(id = "k2", n = 2, label = "Audit the strings", state = SubtaskState.FAILED,
+                        activity = "Stopped"),
+                    Subtask(id = "k3", n = 4, label = "Subagent 4", state = SubtaskState.PLANNING),
+                ),
+            ),
+        )
+
+        val decoded = AgStatusJson.decodeFromString<Session>(AgStatusJson.encodeToString(session))
+
+        assertEquals(session, decoded)
+        val bare = Session(id = "s")
+        assertEquals(bare, AgStatusJson.decodeFromString<Session>(AgStatusJson.encodeToString(bare)))
+    }
+
+    @Test
+    fun workingIsTheTurnOverWithASubagentRunningAndNothingBlocked() {
+        fun display(status: String, subtasks: String): DisplayStatus =
+            AgStatusJson.decodeFromString<Session>("""{"id":"s","status":"$status","subtasks":$subtasks}""")
+                .displayStatus
+
+        val running = """ "items":[{"id":"a","n":1,"label":"a","state":"testing"}]"""
+        assertEquals(DisplayStatus.WORKING, display("done", """{"turnEnded":true,"running":1,$running}"""))
+        assertEquals(DisplayStatus.WORKING, display("idle", """{"turnEnded":true,"running":1,$running}"""))
+        // A blocked card stays BLOCKED: that is the one state that needs you.
+        assertEquals(DisplayStatus.BLOCKED, display("blocked", """{"turnEnded":true,"running":1,$running}"""))
+        // The parent's own turn still running: its own status.
+        assertEquals(DisplayStatus.PLANNING, display("planning", """{"turnEnded":false,"running":1,$running}"""))
+        // Nothing running: the wire status, whatever turnEnded says.
+        assertEquals(
+            DisplayStatus.DONE,
+            display("done", """{"turnEnded":true,"running":0,"done":3,"items":[]}"""),
+        )
+        // Without subtasks every wire status reads as itself.
+        for (status in AgentStatus.entries) {
+            val session = Session(id = "s", status = status)
+            assertEquals(status.wire, session.displayStatus.word)
+        }
+        assertEquals("Working", DisplayStatus.WORKING.label)
+        assertTrue(DisplayStatus.WORKING.isActive)
+        assertFalse(DisplayStatus.BLOCKED.isActive)
+    }
+
+    @Test
+    fun aCardWithARunningSubagentIsNeverStale() {
+        val running = """ "items":[{"id":"a","n":1,"label":"a","state":"coding"}]"""
+        val withRunning = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","status":"coding","subtasks":{"running":1,$running}}"""
+        )
+        val onlyBlocked = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","status":"blocked","subtasks":{"items":[{"id":"a","n":1,"label":"a","state":"blocked"}]}}"""
+        )
+        val onlyCount = AgStatusJson.decodeFromString<Session>(
+            """{"id":"s","status":"coding","subtasks":{"done":4,"items":[]}}"""
+        )
+
+        assertTrue(withRunning.isStaleExempt)
+        assertFalse(onlyBlocked.isStaleExempt)
+        assertFalse(onlyCount.isStaleExempt)
+        assertFalse(Session(id = "s", status = AgentStatus.CODING).isStaleExempt)
+    }
+
+    // MARK: - Subtasks: a 1.7.0 server's own JSON
+    //
+    // Not written by hand: GET /api/sessions from a 1.7.0 server, seeded through
+    // its webhook with the bodies a 1.7.0 hook posts, one session per scenario
+    // (`seed-<scenario>`), re-indented with values and key order unchanged.
+    // sessions-all.json is the whole response, which is also the data of the
+    // SSE snapshot a board starts from; each sessions-<scenario>.json is one of
+    // its sessions.
+
+    @Test
+    fun aRealServersSnapshotDecodesCompletely() {
+        val snapshot = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))
+        // Every scenario, once: no card lost to a throw in another's subtasks.
+        assertEquals(SCENARIOS.map { "seed-$it" }.sorted(), snapshot.map { it.id }.sorted())
+
+        for (name in FIXTURES) {
+            val raw = fixture(name)
+            val sent = Json.parseToJsonElement(raw).jsonArray.map { sentSession(it.jsonObject) }
+            val decoded = AgStatusJson.decodeFromString<List<Session>>(raw)
+
+            assertEquals(name, sent.map { it.id }, decoded.map { it.id })
+            for ((expected, actual) in sent.zip(decoded)) {
+                val what = "${expected.id} in $name"
+                assertEquals(what, expected.copy(subtasks = null), actual.copy(subtasks = null))
+                // The counts as sent, and every row as sent, in start order:
+                // nothing dropped, defaulted or re-read as a fallback.
+                assertEquals(
+                    "counts of $what",
+                    expected.subtasks?.copy(items = emptyList()),
+                    actual.subtasks?.copy(items = emptyList()),
+                )
+                assertEquals("rows of $what", expected.subtasks?.items, actual.subtasks?.items)
+            }
+        }
+    }
+
+    @Test
+    fun aRealServerCountsTheRowsAsTheAppDoes() {
+        for (session in AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))) {
+            val subtasks = session.subtasks ?: continue
+            val states = subtasks.items.map { it.state }
+            // What the session screen's "9 running · 1 blocked" prints, and what
+            // the decoder derives when a count is missing.
+            assertEquals("running of ${session.id}", states.count { it.isWorking }, subtasks.running)
+            assertEquals("blocked of ${session.id}", states.count { it == SubtaskState.BLOCKED }, subtasks.blocked)
+            // At most eight failed rows are listed; the count stays exact.
+            assertTrue("failed of ${session.id}", subtasks.failed >= states.count { it == SubtaskState.FAILED })
+            // pick() takes the wire order as start order.
+            val ordinals = subtasks.items.map { it.n }
+            assertEquals("order of ${session.id}", ordinals.distinct().sorted(), ordinals)
+        }
+    }
+
+    @Test
+    fun onlyTheBackgroundScenarioReadsWorking() {
+        val snapshot = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))
+
+        assertEquals(
+            listOf("seed-background"),
+            snapshot.filter { it.displayStatus == DisplayStatus.WORKING }.map { it.id },
+        )
+        // The server sends the busiest subagent's state; WORKING is the app's reading.
+        val background = snapshot.single { it.id == "seed-background" }
+        assertEquals(AgentStatus.TESTING, background.status)
+        assertEquals("2 subagents still running", background.message)
+        assertTrue(background.subtasks!!.turnEnded)
+        // Every other card reads its wire status, the report hold included.
+        for (session in snapshot - background) {
+            assertEquals(session.id, DisplayStatus.of(session.status), session.displayStatus)
+        }
+    }
+
+    @Test
+    fun aRealServersSessionsSayWhichProjectTheyStartedIn() {
+        // A 1.7.0 server pins homeProject itself; these sessions never left
+        // the folder they started in, so it is their project, and the board
+        // files them under it.
+        val snapshot = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-all.json"))
+        for (session in snapshot) {
+            assertTrue("homeProject of ${session.id}", session.homeProject.isNotEmpty())
+            assertEquals("homeProject of ${session.id}", session.project, session.homeProject)
+        }
+        val codex = AgStatusJson.decodeFromString<List<Session>>(fixture("sessions-codex.json")).single()
+        assertEquals("search-indexer", codex.homeProject)
+        assertEquals("search-indexer", ProjectSections.nameOf(codex))
+
+        val sections = ProjectSections.of(snapshot)
+        assertEquals(listOf("claude-status", "search-indexer"), sections.map { it.title })
+        assertEquals(listOf("seed-codex"), sections.last().sessions.map { it.id })
+    }
+
+    /** A capture under src/test/resources/fixtures/subtasks/, byte for byte. */
+    private fun fixture(name: String): String =
+        checkNotNull(javaClass.getResourceAsStream("/fixtures/subtasks/$name")) { "no fixture $name" }
+            .use { it.readBytes().decodeToString() }
+
+    /**
+     * A session as the server wrote it, read key by key without the app's
+     * decoder: a missing key, a value of the wrong type, or a status or state
+     * the app does not know fails here instead of reading as a fallback.
+     */
+    private fun sentSession(wire: JsonObject): Session {
+        assertEquals("host of ${wire["id"]}", JsonNull, wire["host"])
+        val status = wire.string("status")
+        return Session(
+            id = wire.string("id"),
+            name = wire.string("name"),
+            status = AgentStatus.entries.find { it.wire == status } ?: error("unknown status $status"),
+            message = wire.string("message"),
+            project = wire.string("project"),
+            homeProject = wire.string("homeProject"),
+            source = wire.string("source"),
+            createdAt = wire.literal("createdAt").long,
+            updatedAt = wire.literal("updatedAt").long,
+            subtasks = wire["subtasks"]?.jsonObject?.let { subtasks ->
+                Subtasks(
+                    turnEnded = subtasks.literal("turnEnded").boolean,
+                    running = subtasks.literal("running").int,
+                    blocked = subtasks.literal("blocked").int,
+                    failed = subtasks.literal("failed").int,
+                    done = subtasks.literal("done").int,
+                    items = subtasks.getValue("items").jsonArray.map { element ->
+                        val item = element.jsonObject
+                        val state = item.string("state")
+                        Subtask(
+                            id = item.string("id"),
+                            n = item.literal("n").int,
+                            label = item.string("label"),
+                            state = SubtaskState.entries.find { it.wire == state } ?: error("unknown state $state"),
+                            activity = item.string("activity"),
+                        )
+                    },
+                )
+            },
+        )
+    }
+
+    private fun JsonObject.string(key: String): String =
+        getValue(key).jsonPrimitive.also { assertTrue("$key is a string", it.isString) }.content
+
+    /** A number or a boolean, never the same in quotes. */
+    private fun JsonObject.literal(key: String): JsonPrimitive =
+        getValue(key).jsonPrimitive.also { assertFalse("$key is not a string", it.isString) }
 
     // MARK: - Machines
 
@@ -664,5 +1124,13 @@ class ApiParsingTest {
         val MACHINE_ID = "9f2c".padEnd(32, '0')
         val OTHER_ID = "7c2e".padEnd(32, '1')
         const val COMMAND_ID = "6c1f0a2b-3d4e-4f50-8a6b-7c8d9e0f1a2b"
+        const val SESSION_ID = "5cef7152-ef68-481f-8a4f-463f66702bf9"
+
+        /** The server captures' scenarios, one session each, `seed-<scenario>`. */
+        val SCENARIOS = listOf(
+            "none", "two", "ten", "thirty", "blocked", "two-blocked", "failed",
+            "finished", "background", "hold", "minimal", "codex", "long",
+        )
+        val FIXTURES = listOf("sessions-all.json") + SCENARIOS.map { "sessions-$it.json" }
     }
 }

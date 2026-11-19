@@ -1,0 +1,36 @@
+{
+  "about": "How every agent id in these fixtures was made (spec §0): the first 24 hex digits of sha256(base + \"\\n\" + source + \"\\n\" + session_id + \"\\n\" + raw agent_id). The server treats ids as opaque; test/subtasks.test.ts recomputes them so the fixtures cannot drift.",
+  "base": "http://test.local/w/ags_00000000000000000000000000000000",
+  "agents": {
+    "a": {
+      "raw": "a28b0e80d3d1190c2",
+      "session": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "source": "claude",
+      "key": "1e5ead29b4a350898c7e2f6e"
+    },
+    "c": {
+      "raw": "a81211a654bc21fa3",
+      "session": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+      "source": "claude",
+      "key": "fac377eb5e21506535baeb49"
+    },
+    "d2": {
+      "raw": "a9f11cbaeca3764d9",
+      "session": "fdabcccc-3f36-4fed-9029-f326702a365b",
+      "source": "claude",
+      "key": "b306b65af647c0cab171aec0"
+    },
+    "e1": {
+      "raw": "aa1129b0cbabb25ea",
+      "session": "b10dc3bd-70ff-435e-a81d-bbd8e635c41e",
+      "source": "claude",
+      "key": "04116727684b3264eb403f6d"
+    },
+    "cx": {
+      "raw": "019a2f3c-9b10-7aa1-8c33-5d2e7f9a0b1c",
+      "session": "019a2f3c-7d41-7c52-9e0b-3f6a1c2d4e5f",
+      "source": "codex",
+      "key": "8d9662e191f6438a40147b1e"
+    }
+  }
+}

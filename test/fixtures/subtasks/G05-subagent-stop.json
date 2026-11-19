@@ -1,0 +1,18 @@
+{
+  "about": "a_SubagentStop: done, with the compat status the last confirmed class (testing, after G04).",
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "testing",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "done",
+        "kind": "agent",
+        "label": "Run echo alpha",
+        "at": 1793138693838
+      }
+    }
+  ]
+}

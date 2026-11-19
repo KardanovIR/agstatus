@@ -169,6 +169,30 @@ exits, normally within a fraction of a second. If that is not done 4 s after
 the signal, it logs so and exits anyway: a stop timeout longer than 4 s is
 enough, and Docker's default is 10 s.
 
+Schema changes are applied at boot. 1.7.0 adds two nullable columns to
+`sessions`: `subtasks`, holding a session's [subagent rows](api.md#subagents),
+so they survive a restart, and `home_project`, the folder the boards group the
+session under (its [`homeProject`](api.md#the-session-object)), so its card
+keeps its section across a restart. A soft-deleted session keeps both with the
+rest of its row, and the purge above removes them with the row. A row with no
+`home_project`, as an older server or the SQLite migration below writes it,
+has its home worked out from the folder the row last reported, at every load
+until the session's next post stores it.
+
+Rolling back to an older server loses nothing: it never touches either column.
+The next 1.7.0 start ignores the stored subagent rows of any session the older
+server updated in between, rather than bring back rows it never kept current.
+A rollback can move a card, though. A row 1.7.0 never wrote, such as one for a
+session alive at the 1.7.0 deploy that did not post again before the
+rollback, has no `home_project`, so a `cd` that the older server records for
+it moves that card to another section on the roll-forward. A session that
+started during the rollback has such a row too: it is filed under the folder
+it last reported before the roll-forward, which after a `cd` is not the one
+it started in. And a card the older server brings back, after a dismissal
+or its expiry, keeps the home 1.7.0 gave it, where 1.7.0 after a restart
+starts such a card over from the folder its session then reports. Either way
+a card is filed under a folder its own session reported.
+
 ### Flagging rows written before 1.6.2's bounds
 
 Servers before 1.6.2 stored project days with any date, and capped some
@@ -393,8 +417,13 @@ Repeat alerts for the same session and kind are debounced to at most one per
 minute, which bounds a burst but not a normal back-and-forth, since most turns
 take longer than that. `blocked` is the one that fires rarely and always
 deserves a look. A session that first appears already `done` doesn't notify.
-A push payload contains the same session name and message your hook already
-sent to the board — nothing more — relayed through Apple's APNs. Device registration endpoints exist in multi-tenant mode only;
+A subagent that starts waiting on a card that is already `blocked` notifies
+again, within the same once-a-minute debounce, and `done` waits for the end of
+the report turn when background subagents ran (see
+[docs/api.md](api.md#push)). A push payload contains the session name and the
+card's message — the one your hook sent, or for a waiting subagent "Needs
+approval:" and the label your hook sent for it — nothing more, relayed through
+Apple's APNs. Device registration endpoints exist in multi-tenant mode only;
 see [docs/api.md](api.md#device-push-endpoints).
 
 ## Pointing clients at your instance

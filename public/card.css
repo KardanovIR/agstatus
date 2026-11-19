@@ -15,10 +15,12 @@
  */
 
 /* Every figure on a card sits in a column with other figures, or ticks in
- * place every 15s. Proportional numerals make both jump. */
+ * place every 15s. Proportional numerals make both jump. A subagent count
+ * (.n) ticks in place whenever it changes. */
 .meter-value,
 .ts,
-.tok {
+.tok,
+.n {
   font-variant-numeric: tabular-nums;
 }
 
@@ -33,6 +35,9 @@
    * which .card.status-* has already set. See the note in tokens.css. */
   --state-dim: oklch(from var(--state) l c h / 0.16);
   --state-line: oklch(from var(--state) l c h / 0.42);
+  /* The card's hairline, named because two things draw it: the edge, and the
+   * one rule between the card's own content and its subagents' rows. */
+  --rule: color-mix(in oklab, var(--ink-800) 62%, var(--state));
 
   position: relative;
   display: flex;
@@ -40,7 +45,7 @@
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-sm) var(--space-xs);
   background: color-mix(in oklab, var(--ink-900) 90%, var(--state));
-  border: 1px solid color-mix(in oklab, var(--ink-800) 62%, var(--state));
+  border: 1px solid var(--rule);
   border-radius: var(--r-lg);
   /* No transition here: the surface moves when the state changes, and that
    * transition lives with the change itself, on board.css's .card.changed. */
@@ -52,6 +57,9 @@
 .card.status-testing { --state: var(--st-testing); }
 .card.status-blocked { --state: var(--st-blocked); }
 .card.status-done { --state: var(--st-done); }
+/* A reading of the card, never a status the server sends: its turn is over
+ * and its subagents still run (app.js `display`). */
+.card.status-working { --state: var(--st-working); }
 
 /* Blocked still outranks the rest: a stronger mix and a brighter edge, because
  * it is the one state that means a human is required. No glow — a lit halo is
@@ -260,6 +268,214 @@
   overflow: hidden;
 }
 
+/* ---- Subagents ----------------------------------------------------------
+ * A session's running subagents, one row each, between its own line and its
+ * meta. One hairline above them and nothing else: no box, no fill, no
+ * radius. A tinted band here would be a card inside a card. A card without
+ * subagents carries none of this, and is today's card line for line. */
+.subs {
+  container: subs / inline-size;
+  padding-top: var(--space-2xs);
+  border-top: 1px solid var(--rule);
+}
+
+/* One line per subagent: its state, what it was asked to do, what it is
+ * doing now. 26px a row, not 44: a row opens the same session screen as its
+ * neighbours, only scrolled to a different subtask, so a mis-tap costs a
+ * scroll. Focus is the card's one control that reaches across to another
+ * machine, and it keeps its size. */
+.sub {
+  --rs: var(--st-idle);
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  min-height: 26px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: var(--t-sm);
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sub.st-planning { --rs: var(--st-planning); }
+.sub.st-coding { --rs: var(--st-coding); }
+.sub.st-testing { --rs: var(--st-testing); }
+.sub.st-blocked { --rs: var(--st-blocked); }
+.sub.st-failed { --rs: var(--st-failed); }
+
+/* Label and activity share what the state leaves. */
+.sub-text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+/* The label outlasts the activity, since it is how you know which row this
+ * is, but only up to 58% of the text. Past that it is cut, so the activity —
+ * the live part, the reason the row exists — always keeps a share: about
+ * 110px in a 320px column with a p90 label of 52 characters. */
+.sub-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.sub-act {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* The state leads the row, in a fixed column that starts under the badge's
+ * own mark, so the badge and the rows' marks make one column of state down
+ * the card: the shape a glance reads before a word. 4.75rem, 76px at the
+ * default text size, holds "researching" with its mark (75.8), the widest
+ * word the brief names; "planning", the widest the hook sends, takes 59. A
+ * column a new word could overflow would not be a column, so it is in rem
+ * with the word and the mark: in px it held them at the default size only,
+ * and at 200% text "planning" ran past it.
+ *
+ * The badge's condensed face at the badge's size, but its word lower case,
+ * regular weight and in the quiet ink: the badge stays the one coloured word
+ * on the card, over a column of small coloured marks, and each row's state
+ * is still a mark and a word. text-3 clears AA on every card ground. */
+.sub-st {
+  order: -1;
+  flex: 0 0 4.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-family: var(--font-label);
+  font-size: var(--t-xs);
+  line-height: 0.8125rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.sub-st svg {
+  flex: none;
+  width: 0.8125rem;
+  height: 0.8125rem;
+  color: var(--rs);
+}
+
+/* The one row that needs you: the solid mark it shares with the card, its
+ * word in red and a lit label. Not heavier: a 600-weight red word under
+ * BLOCKED would be a second BLOCKED. */
+.sub.st-blocked .sub-label { color: var(--text-1); }
+.sub.st-blocked .sub-st { color: var(--rs); }
+
+.sub:hover .sub-label { color: var(--text-1); }
+.sub:focus-visible { outline-offset: 0; }
+
+/* "+7 more · 15 done". A control when it leads somewhere, plain text when it
+ * is only a count. Secondary ink: it is the rows' summary, not a reading. */
+.sub-foot {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  width: 100%;
+  min-height: 26px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--t-xs);
+  line-height: 1rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sub-foot.is-control { cursor: pointer; }
+.sub-foot.is-control:hover { color: var(--text-1); }
+
+.sub-foot svg {
+  flex: none;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-left: 2px;
+  color: var(--text-3);
+}
+
+/* Real spaces stand either side of the dot, so the copy reads "+7 more · 15
+ * done" and a screen reader hears two phrases; the margin makes each gap up
+ * to the --space-2xs the design draws (a space is about 3px here). */
+.foot-sep {
+  margin: 0 1px;
+  color: var(--text-3);
+}
+
+/* A count is its own box so a change can tick it in place (board.css). */
+.n { display: inline-block; }
+
+/* At a reader's larger text the three parts no longer share a line: at 200%
+ * on a phone the task and the activity came down to four letters each,
+ * "Find …" beside "Se…". So the task takes the whole width, two lines if it
+ * needs them, and the state and the activity share the next, the state still
+ * leading under the badge, its mark and word together. None of the three is
+ * dropped, and the iOS and Android rows do the same.
+ *
+ * From when the rows have less than 20em of their own text across: 260px at
+ * the default size, under the 270 a 320px phone gives them, so no default
+ * layout from 320px up moves. At 150% text every card's rows are under it,
+ * and at 125% those narrower than 325px: a 320px phone's, and a desktop
+ * window's whose columns run narrow, as at 1024px. The row's name is its
+ * aria-label, so a screen reader hears the same either way. */
+@container subs (width < 20em) {
+  /* Its two lines close, and 8px between rows, so a row reads as one. */
+  .sub {
+    flex-wrap: wrap;
+    row-gap: 0;
+    padding-block: var(--space-2xs);
+  }
+
+  .sub-text { display: contents; }
+
+  /* Two lines, since it is how you know which row this is: at 300% on a
+   * phone one line held "Find why the…". */
+  .sub-label {
+    order: -2;
+    flex: 0 0 100%;
+    max-width: none;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+
+  /* The column is for one line of rows; here the state takes only its own
+   * width and leaves the rest to the activity. */
+  .sub-st { flex: 0 0 auto; }
+
+  /* "+1 more · 2 done" wraps between its words rather than run out of the
+   * card, which at 300% on a phone it did by 57px. */
+  .sub-foot { white-space: normal; }
+  .foot-words { min-width: 0; }
+}
+
 /* Wraps, because it must. Every other item here is `flex: none`, so on a
  * narrow card .host and .proj were the only things that could give — and they
  * gave everything: a 320px card carrying an agent, a machine, a project, an
@@ -310,13 +526,14 @@
 .meta-sep { color: var(--text-3); }
 .ts { flex: none; }
 
-/* Shown only when it differs from the card's name (cardMeta in app.js). The
- * name is the session's title when it has one, else the folder it started in;
- * `project` follows the live directory, a Claude worktree root reported as its
- * repo. So a titled card nearly always shows it ("in <repo>"); an untitled one
- * shows it once the session has changed directory, and from the start at a
- * worktree root, where the name is the worktree folder and the project the
- * repo. */
+/* "in <folder>", where the session is now, shown only once it has moved
+ * (cardMeta's place rule in app.js, since 1.7.0): when its live folder,
+ * `project`, is a usable name and differs from both the section the card is
+ * drawn under, which the label above already names, and the card's own name.
+ * So a session that ran `cd web` reads "in web", and one still in its
+ * project's folder says nothing, titled or not. Until 1.7.0 it showed
+ * wherever the folder differed from the name, which on a titled card was
+ * nearly always. */
 .proj {
   /* A floor, so a long project name truncates with an ellipsis instead of
    * collapsing — wrapping handles the common case, this handles the long one. */
@@ -352,8 +569,8 @@
  *     state's colour: it is what the board last heard. The row is a line of its
  *     own, so the word moving in by the glyph's spare width re-wraps nothing;
  *   - "no update for 14m" where the time was, in the secondary ink.
- * A screen reader hears ", no update for 14 minutes" after the state instead
- * (app.js cardInner), with its units in words.
+ * A screen reader hears "Coding, no update for 14 minutes." instead, one
+ * sentence with its units in words (app.js cardInner).
  *
  * Both forms of everything are in a working card's markup from its first paint,
  * and this one class picks between them, so the clock crossing the line flips
@@ -376,7 +593,8 @@
 
 .card.stale .state-mark { display: none; }
 .card.stale .stale-mark { display: block; }
-/* Visually hidden by .sr-only (board.css): this is only what is heard. */
+/* Inside the state's sentence, which .sr-only hides from the eye (board.css):
+ * this is only what is heard, and inline, so no space comes before its comma. */
 .card.stale .stale-said { display: inline; }
 
 /* The words outrank the machine and the directory: .ts never shrinks, so on a
@@ -497,7 +715,6 @@
  * dismiss target grows. Lives with the card rather than with the board,
  * because the landing page shows these cards without the board's page shell. */
 @media (max-width: 560px) {
-  .grid { grid-template-columns: 1fr; }
   .message { -webkit-line-clamp: 2; }
 }
 
@@ -509,7 +726,10 @@
  *
  * The old board grid was capped at two columns above 700px, so a 27-inch
  * monitor showed two enormous cards. This is the breakpoint-free version:
- * cards keep a sane measure and the column count follows the space. */
+ * cards keep a sane measure and the column count follows the space. A phone
+ * gets its one column from this rule too: two 320px tracks do not fit in a
+ * window under about 680px. A phone-only column rule before this one would never apply,
+ * and one after it would let a long title widen every card past the screen. */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));

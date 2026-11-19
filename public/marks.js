@@ -58,6 +58,21 @@
     blocked: punched('state-mark',
       `<path d="${DISC}M8.9 4.35v4.8a.9.9 0 0 1-1.8 0V4.35a.9.9 0 0 1 1.8 0ZM8 12.3a1.05 1.05 0 1 1 0-2.1 1.05 1.05 0 0 1 0 2.1Z"/>`),
     done: stroked('state-mark', '<circle cx="8" cy="8" r="6"/><path d="M5.3 8.2 7.2 10.1 10.8 5.9"/>'),
+    // The two that are never a session's status on the wire. `working` is a
+    // card's reading while its turn is over and its subagents still run; it
+    // is a branch, one stem forking into two arms, each ending in a node —
+    // the work handed on. The nodes are what keep it from reading as a
+    // letter (a fan of three open prongs read as "∈" at 11pt), and they are
+    // r 1.5 so they stay wider than the 1.5 stroke. Static, because nothing
+    // on this board spins (SF: arrow.triangle.branch is the nearest).
+    working: stroked('state-mark',
+      '<path d="M2 8h4.2c2.4 0 2.8-3.9 5.4-3.9M6.2 8c2.4 0 2.8 3.9 5.4 3.9"/>'
+      + '<circle cx="12.9" cy="4.1" r="1.5" fill="currentColor" stroke="none"/>'
+      + '<circle cx="12.9" cy="11.9" r="1.5" fill="currentColor" stroke="none"/>'),
+    // `failed` is a subagent row's only: done's ring with the tick struck
+    // out. An outline, so it can never be taken for blocked's solid disc
+    // (SF: xmark.circle).
+    failed: stroked('state-mark', '<circle cx="8" cy="8" r="6"/><path d="M5.9 5.9l4.2 4.2M10.1 5.9l-4.2 4.2"/>'),
   };
 
   // A stale card's mark, in place of its state's: a working card that has
@@ -81,12 +96,21 @@
   const ICON = {
     claude: stroked('', '<path d="M8 2.4v11.2M3.15 5.2l9.7 5.6M3.15 10.8l9.7-5.6"/>'),
     codex: stroked('', '<path d="M8 1.9 13.3 4.95v6.1L8 14.1 2.7 11.05v-6.1Z"/>'),
+    // Any other agent: a diamond, as tall as the hexagon. It used to wear
+    // Claude's asterisk, which said something about the session that was
+    // not true. Like the two above, neutral ink and never a colour.
+    agent: stroked('', '<path d="M8 1.9 14.1 8 8 14.1 1.9 8Z"/>'),
     // Two overlapping windows. The one behind is drawn only where the front one
     // does not cover it, so the two never cross at 15px.
     focus: stroked('',
       '<path d="M6 9.5H2.4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H9a1 1 0 0 1 1 1v2.5"/>'
       + '<path d="M6.9 6.5h6.7a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H6.9a1 1 0 0 1-1-1V7.5a1 1 0 0 1 1-1Z"/>'),
     resume: punched('', `<path d="${DISC}M6.3 5.2 11 8l-4.7 2.8Z"/>`),
+    // Where a subagent footer leads: down opens the list in place, up folds
+    // it, right goes to the session screen.
+    chevronDown: stroked('', '<path d="M3.5 6 8 10.5 12.5 6"/>'),
+    chevronUp: stroked('', '<path d="M3.5 10 8 5.5 12.5 10"/>'),
+    chevronRight: stroked('', '<path d="M6 3.5 10.5 8 6 12.5"/>'),
   };
 
   // Marks for things that are NOT states. The landing page used to label its

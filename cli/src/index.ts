@@ -34,6 +34,7 @@ import { runKeys } from './keys';
 import type { ListenerConfig } from './listener/types';
 import {
   ourCommands,
+  codexAddedEvents,
   codexConfigPath,
   codexDetected,
   codexHasOurHooks,
@@ -106,6 +107,14 @@ function installHookFile(dest: string = hookInstallPath()): string {
 }
 
 /**
+ * Where a Codex hook is trusted, which is not one place: Codex Desktop keeps
+ * it in its settings, and the Codex CLI behind a slash command in its TUI.
+ * Told only to run /hooks, a Desktop user was sent looking for a command line
+ * that Desktop does not have. public/install.sh says the same in its notice.
+ */
+const CODEX_TRUST_WHERE = 'In Codex Desktop: Settings → Hooks. In the Codex CLI: /hooks.';
+
+/**
  * Codex setup: same hook script, registered via $CODEX_HOME/hooks.json, with
  * its configuration in a sidecar agstatus-hook.json beside the script (an env
  * prefix on the command string would not run on Windows — see codex.ts).
@@ -129,12 +138,16 @@ function setupCodex(
   const command = codexHookCommand();
   // Codex trusts a hook by hashing its command string, so a CHANGED command
   // invalidates every trusted_hash and the hook goes silent until the user
-  // re-runs /hooks. A command that did not change costs them nothing — and
+  // trusts it again. A command that did not change costs them nothing — and
   // this notice used to print unconditionally, on every upgrade, saying "this
   // release changed that command" whether or not it had. A warning that is
   // wrong most of the time is one nobody acts on the time it is right.
   const previous = ourCommands(hooks);
   const retrust = previous.length > 0 && !previous.includes(command);
+  // Events this release registers that the existing install did not. Whether
+  // Codex wants entries added under an unchanged command trusted again is not
+  // known, so an upgrade says so — and only an upgrade that added some.
+  const added = previous.length > 0 ? codexAddedEvents(hooks) : [];
   const merged = mergeCodexHooks(hooks, command);
   installHookFile(codexHookInstallPath());
   // Config before registration: between these two writes the hook is on disk
@@ -146,16 +159,27 @@ function setupCodex(
   log(`  Hooks:     ${file}`);
   log(`  Config:    ${configFile} (board URL${secret ? ' and secret' : ''}, mode 0600)`);
   if (retrust) {
-    log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
+    log('  ⚠ One-time step: trust the AgStatus hook in Codex.');
+    log(`    ${CODEX_TRUST_WHERE}`);
     log('    Codex trusts a hook by hashing its command, and this release changed');
-    log('    that command — an existing install stays silent until you re-run /hooks.');
+    log('    that command — an existing install stays silent until you trust it again.');
   } else if (previous.length === 0) {
-    log('  ⚠ One-time step: run /hooks inside Codex to trust the AgStatus hook.');
+    log('  ⚠ One-time step: trust the AgStatus hook in Codex.');
+    log(`    ${CODEX_TRUST_WHERE}`);
     log('    Codex will not run a hook it has not been told to trust.');
+  } else if (added.length > 0) {
+    log(`  ⚠ Codex: AgStatus now also listens for ${listOf(added)}.`);
+    log('    If Codex lists an AgStatus entry as untrusted, trust it once.');
+    log(`    ${CODEX_TRUST_WHERE}`);
   }
 }
 
-/** Whether the installer needs to tell the user to re-run /hooks. */
+/** "A", "A and B", "A, B and C". */
+function listOf(items: string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/** Whether the installer needs to tell the user to trust the hook again. */
 export function codexNeedsRetrust(hooks: HooksFile, command: string): boolean {
   const previous = ourCommands(hooks);
   return previous.length > 0 && !previous.includes(command);
@@ -346,12 +370,15 @@ export async function runInit(opts: InitOptions = {}): Promise<void> {
     log('');
   }
   // What is sent by default, said at the moment it is decided. A Claude
-  // session's title is generated from its prompts, so it is named here beside
-  // them rather than left for the privacy page to disclose.
+  // session's title is generated from its prompts, and a subagent's label is
+  // the task it was handed, so both are named here beside them rather than
+  // left for the privacy page to disclose.
   if (!minimal) {
-    log('ℹ Status messages include truncated command text and prompts, and Claude');
-    log('  cards are named after their session titles.');
-    log('  Re-run with --minimal to send tool and folder names instead.');
+    log('ℹ Status messages include truncated command text and prompts, Claude cards');
+    log('  are named after their session titles, and subagents are listed by their');
+    log('  task descriptions and workflow labels.');
+    log('  Re-run with --minimal to send tool and folder names instead, with');
+    log('  subagents shown as "Subagent N".');
   }
   log('Start a Claude Code session and watch it appear.');
 }
@@ -463,7 +490,8 @@ export async function runStatus(log: (line: string) => void = console.log): Prom
     // and inferring from the sidecar would make this permanently silent on it.
     if (codexConfigured && codexLegacyRegistration(codexHooks)) {
       log('           ⚠ Registered with the older env-prefix command. Re-run `agstatus init`,');
-      log('             then /hooks inside Codex to trust the new one.');
+      log('             then trust the new one in Codex: Settings → Hooks in Codex');
+      log('             Desktop, /hooks in the Codex CLI.');
     }
   }
   if (!url) {
@@ -589,9 +617,10 @@ init options (a re-run keeps this machine's server, --minimal and secret):
                     its server
   --secret <s>      Webhook secret for self-hosted single-tenant servers
   --no-secret       Drop the webhook secret this machine has
-  --minimal         Send tool and folder names, never command text, prompts
-                    or session titles
-  --no-minimal      Send command text, prompts and session titles again
+  --minimal         Send tool and folder names, never command text, prompts,
+                    session titles or subagent tasks ("Subagent N" instead)
+  --no-minimal      Send command text, prompts, session titles and subagent
+                    tasks again
   --new-board       Create a second board instead of reusing this machine's
   --codex           Also set up OpenAI Codex even if ~/.codex isn't detected
   --no-codex        Skip Codex setup (default: auto-configure when detected)

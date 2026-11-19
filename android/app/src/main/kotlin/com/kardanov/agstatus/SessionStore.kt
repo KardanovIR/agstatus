@@ -1,14 +1,19 @@
 package com.kardanov.agstatus
 
 import android.app.Application
+import android.os.SystemClock
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -18,8 +23,9 @@ import kotlin.math.min
 /**
  * App state: the adopted board, the live session list (newest first when it
  * first fills; after that rows keep their position as events arrive and new
- * sessions join at the top), the SSE connection lifecycle with backoff,
- * Focus presence and commands, and demo mode. Mirrors the iOS SessionStore.
+ * sessions join at the top), each card's subtask row slots, the SSE
+ * connection lifecycle with backoff, Focus presence and commands, and demo
+ * mode. Mirrors the iOS SessionStore.
  */
 class SessionStore(app: Application) : AndroidViewModel(app) {
 
@@ -29,6 +35,15 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions.asStateFlow()
+
+    /**
+     * Which subagents hold each card's row slots, by session id. Here and not
+     * in the card because LazyColumn drops a card's `remember`ed state as soon
+     * as it scrolls off screen, and a row must not lose its slot to a scroll.
+     * Kept in step with [sessions] by [setSessions].
+     */
+    private val _subtaskSlots = MutableStateFlow<Map<String, SubtaskLedger>>(emptyMap())
+    val subtaskSlots: StateFlow<Map<String, SubtaskLedger>> = _subtaskSlots.asStateFlow()
 
     private val _usage = MutableStateFlow<List<UsageInfo>>(emptyList())
     val usage: StateFlow<List<UsageInfo>> = _usage.asStateFlow()
@@ -71,6 +86,60 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
     /** Per session, the timer its status waits on: the ack watchdog, or a success's fade. */
     private val focusTimers = HashMap<String, Job>()
 
+    /**
+     * What the app says aloud when sessions become blocked while it is
+     * watching, "Fix the login redirect, in acme-api, needs you" or "2
+     * sessions need you" ([BlockSpeech]), for the app to hand to TalkBack
+     * while it is in front, on whichever screen shows (ui/SpokenAlarm).
+     * Not kept: a sentence nobody is there to hear is not news later.
+     */
+    private val _spoken = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val spoken: SharedFlow<String> = _spoken.asSharedFlow()
+    private val blockSpeech = BlockSpeech()
+
+    /**
+     * Each time the needs-you bar beats: when the blocked count has risen
+     * while the bar shows, it comes in from the bottom edge again, once, with
+     * the new count already in it ([BarBeat]), as the bar draws it
+     * (ui/NeedsYouBar). It hears what [spoken] hears, over the same half
+     * second. Not kept: a beat is only ever called for a board in front of
+     * the reader, and one nobody saw is not news later.
+     */
+    private val _beats = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val beats: SharedFlow<Unit> = _beats.asSharedFlow()
+    private val barBeat = BarBeat()
+
+    /**
+     * Whether the board's screen is resumed: the app resumed, and no other
+     * screen over the board. The board keeps it current (ui/BoardScreen).
+     */
+    internal var boardResumed = false
+
+    /** Whether the pairing sheet is over the board (MainActivity). */
+    internal var sheetOverBoard = false
+
+    /**
+     * Whether the board is in front of the reader, where the bar's beat can
+     * be seen: its screen resumed, with no sheet over it, and the board not
+     * gone. Read as it is when a half second starts and again when it ends.
+     */
+    private val boardInFront: Boolean
+        get() = boardResumed && !sheetOverBoard && _connection.value != Connection.BOARD_GONE
+
+    /**
+     * The card the needs-you bar last brought into view, by session id: a
+     * press sets it ([bring]), and the bar walks on from it. None until the
+     * first press, and none again once the bar leaves, that is once nothing
+     * is blocked, which [setSessions] watches whatever screen is showing. It
+     * was the board's own state, cleared only while the board was composed:
+     * a walk that ended under History, Settings or Usage came back walking
+     * on from its old card, "Next" where it should have started over with
+     * "Show". Here it outlives turning the phone, as the store does, and not
+     * the process, as iOS's does not.
+     */
+    private val _brought = MutableStateFlow<String?>(null)
+    val brought: StateFlow<String?> = _brought.asStateFlow()
+
     private val sse = SseClient()
     private var streamJob: Job? = null
     private var demoJob: Job? = null
@@ -107,7 +176,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         stopDemoJob()
         _board.value = board
         BoardStorage.save(getApplication<Application>(), board)
-        _sessions.value = emptyList()
+        setSessions(emptyList())
         _usage.value = emptyList()
         clearFocus()
         cachedPairCode = null
@@ -120,7 +189,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         cancelStream()
         _board.value = null
         BoardStorage.clear(getApplication<Application>())
-        _sessions.value = emptyList()
+        setSessions(emptyList())
         _usage.value = emptyList()
         clearFocus()
         cachedPairCode = null
@@ -189,7 +258,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 sse.events(board).collect { event ->
                     when (event) {
                         is SseEvent.Snapshot -> {
-                            _sessions.value = stableOrder(_sessions.value, event.sessions)
+                            setSessions(stableOrder(_sessions.value, event.sessions))
                             _connection.value = Connection.LIVE
                             backoffMillis = INITIAL_BACKOFF_MILLIS
                             // A card that left while we were away takes its
@@ -206,15 +275,18 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                         is SseEvent.Upsert -> {
                             val current = _sessions.value
                             val index = current.indexOfFirst { it.id == event.session.id }
-                            _sessions.value = if (index >= 0) {
-                                current.toMutableList().also { it[index] = event.session }
-                            } else {
-                                listOf(event.session) + current
-                            }
+                            setSessions(
+                                if (index >= 0) {
+                                    current.toMutableList().also { it[index] = event.session }
+                                } else {
+                                    listOf(event.session) + current
+                                },
+                                live = true,
+                            )
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
                         is SseEvent.Remove -> {
-                            _sessions.value = _sessions.value.filter { it.id != event.id }
+                            setSessions(_sessions.value.filter { it.id != event.id }, live = true)
                             setFocus(event.id, null)
                             _lastActivityAt.value = System.currentTimeMillis()
                         }
@@ -313,7 +385,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                 merged[local.id] = local // arrived via SSE mid-fetch
             }
         }
-        _sessions.value = stableOrder(_sessions.value, merged.values.toList())
+        setSessions(stableOrder(_sessions.value, merged.values.toList()))
     }
 
     /**
@@ -322,7 +394,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
      */
     suspend fun dismiss(session: Session) {
         if (isDemo) {
-            _sessions.value = _sessions.value.filter { it.id != session.id }
+            setSessions(_sessions.value.filter { it.id != session.id })
             return
         }
         val current = _board.value ?: return
@@ -331,7 +403,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         // index, which SSE events arriving during the DELETE would shift.
         val index = _sessions.value.indexOfFirst { it.id == session.id }
         val successorId = if (index >= 0) _sessions.value.getOrNull(index + 1)?.id else null
-        _sessions.value = _sessions.value.filter { it.id != session.id }
+        setSessions(_sessions.value.filter { it.id != session.id })
         try {
             AgStatusApi.deleteSession(current, session.id)
         } catch (cancellation: CancellationException) {
@@ -351,7 +423,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
                     else -> index.coerceIn(0, list.size)
                 }
                 list.add(at, session)
-                _sessions.value = list
+                setSessions(list)
             }
             refresh()
         }
@@ -414,6 +486,13 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         } catch (_: Exception) {
             emptyList()
         }
+    }
+
+    // MARK: The needs-you bar
+
+    /** The bar brought [sessionId] into view: its next press walks on from there. */
+    fun bring(sessionId: String) {
+        _brought.value = sessionId
     }
 
     // MARK: Focus
@@ -627,7 +706,7 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
         cancelStream()
         stopDemoJob()
         clearFocus()
-        _sessions.value = sortedByUpdate(DemoData.aged(DemoData.initialSessions(), agedMinutes))
+        setSessions(sortedByUpdate(DemoData.aged(DemoData.initialSessions(), agedMinutes)))
         _usage.value = DemoData.usage()
         _machines.value = DemoData.machines().associateBy { it.id }
         _connection.value = Connection.DEMO
@@ -636,16 +715,38 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 delay(DEMO_TICK_MILLIS)
                 if (_connection.value != Connection.DEMO) return@launch
-                _sessions.value = stableOrder(_sessions.value, DemoData.tick(_sessions.value))
+                setSessions(stableOrder(_sessions.value, DemoData.tick(_sessions.value)), live = true)
                 _lastActivityAt.value = System.currentTimeMillis()
             }
+        }
+    }
+
+    /**
+     * The demo sessions [ids] become blocked [afterMillis] from now, as a
+     * session frame would make them, so the spoken alarm can be heard on a
+     * demo that otherwise holds still: MainActivity's debug-only
+     * agstatus_demo_block. Several in one frame are said together.
+     */
+    fun blockDemoLater(ids: Set<String>, afterMillis: Long) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            delay(afterMillis)
+            if (!isDemo) return@launch
+            val now = System.currentTimeMillis()
+            setSessions(
+                _sessions.value.map { session ->
+                    if (session.id !in ids) return@map session
+                    session.copy(status = AgentStatus.BLOCKED, message = "Needs permission approval", updatedAt = now)
+                },
+                live = true,
+            )
         }
     }
 
     fun stopDemo() {
         stopDemoJob()
         if (_connection.value != Connection.DEMO) return
-        _sessions.value = emptyList()
+        setSessions(emptyList())
         _usage.value = emptyList()
         clearFocus()
         _connection.value = Connection.IDLE
@@ -654,9 +755,72 @@ class SessionStore(app: Application) : AndroidViewModel(app) {
 
     // MARK: Helpers
 
+    /**
+     * The one way the session list changes, so each card's subtask slots
+     * move with it: resolved from the slots the card held a moment ago,
+     * dropped with its subtask block or with the card. Leaving a board or the
+     * demo empties the list, and so clears every card's slots.
+     *
+     * [live] is news as it happens, a session frame or a demo tick, and only
+     * then can a block be said aloud ([spoken]); a snapshot, a refresh or the
+     * demo's first board only shows what already stands.
+     *
+     * With nothing blocked the needs-you bar has left, and lets go of the
+     * card it brought ([brought]), so the next block starts its walk over.
+     *
+     * The half second that gathers news for the voice gathers it for the
+     * bar's beat too ([beats]), with the board in front of the reader or not
+     * as it is when the first block lands and as it is when the half second
+     * ends, and animations on or off as they are then. Both keep time by a
+     * monotonic clock since boot, which a change of the date or the time zone
+     * cannot move ([clock]).
+     */
+    private fun setSessions(sessions: List<Session>, live: Boolean = false) {
+        _sessions.value = sessions
+        _subtaskSlots.value = SubtaskSlots.resolve(_subtaskSlots.value, sessions)
+        if (_brought.value != null && sessions.none { it.isBlocked }) _brought.value = null
+        val now = clock()
+        barBeat.note(sessions, now)
+        if (blockSpeech.observe(sessions, live, now)) {
+            barBeat.gather(inFront = boardInFront)
+            viewModelScope.launch {
+                delay(BlockSpeech.GATHER_MILLIS)
+                val sentence = blockSpeech.say(_sessions.value, clock())
+                val verdict = barBeat.end(
+                    answered = sentence == null,
+                    inFront = boardInFront,
+                    moves = !animationsOff(getApplication()),
+                )
+                if (verdict == BarBeat.Verdict.BEATS) _beats.tryEmit(Unit)
+                sentence?.let { _spoken.tryEmit(it) }
+            }
+        }
+    }
+
+    /**
+     * The voice's and the beat's clock: time since boot, deep sleep included,
+     * which setting the date or the time zone cannot move. The wall clock
+     * jumps when either is set, and a minute could then never end, or a count
+     * stand at once.
+     */
+    private fun clock(): Long = SystemClock.elapsedRealtime()
+
     private fun cancelStream() {
         streamJob?.cancel()
         streamJob = null
+    }
+
+    /**
+     * Tests only: the board a live stream would leave, [sessions] and, where
+     * given, [usage], through the one way the list changes ([setSessions]).
+     * [live] makes it a session frame's news, which a block can be said for.
+     * A demo stays a demo; anything else reads as connected.
+     */
+    @VisibleForTesting
+    internal fun showForTest(sessions: List<Session>, usage: List<UsageInfo>? = null, live: Boolean = false) {
+        if (usage != null) _usage.value = usage
+        if (_connection.value != Connection.DEMO) _connection.value = Connection.LIVE
+        setSessions(sessions, live)
     }
 
     private fun stopDemoJob() {

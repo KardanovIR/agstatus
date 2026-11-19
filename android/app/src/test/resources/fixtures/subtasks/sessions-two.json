@@ -1,0 +1,37 @@
+[
+  {
+    "id": "seed-two",
+    "name": "Ship the store migration",
+    "status": "planning",
+    "message": "Draft release notes",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331631,
+    "updatedAt": 1793209331639,
+    "homeProject": "claude-status",
+    "subtasks": {
+      "turnEnded": false,
+      "running": 2,
+      "blocked": 0,
+      "failed": 0,
+      "done": 0,
+      "items": [
+        {
+          "id": "44a4dc7558ae7a432f86b923",
+          "n": 1,
+          "label": "Run the migration tests",
+          "state": "testing",
+          "activity": "Run the store migration tests"
+        },
+        {
+          "id": "62668ff106691d43c7be2abe",
+          "n": 2,
+          "label": "Draft release notes",
+          "state": "coding",
+          "activity": "Writing RELEASE-1.6.4.md"
+        }
+      ]
+    }
+  }
+]

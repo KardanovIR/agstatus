@@ -1,0 +1,58 @@
+[
+  {
+    "id": "seed-two-blocked",
+    "name": "Prepare the Android release",
+    "status": "blocked",
+    "message": "Needs approval: Audit the Android strings +1",
+    "project": "claude-status",
+    "source": "claude",
+    "host": null,
+    "createdAt": 1793209331845,
+    "updatedAt": 1793209331851,
+    "homeProject": "claude-status",
+    "subtasks": {
+      "turnEnded": false,
+      "running": 3,
+      "blocked": 2,
+      "failed": 0,
+      "done": 0,
+      "items": [
+        {
+          "id": "578acf7e9e0804166a49689e",
+          "n": 1,
+          "label": "Run the migration tests",
+          "state": "testing",
+          "activity": "Run the store migration tests"
+        },
+        {
+          "id": "78844cab97ff5fb50d2b0e52",
+          "n": 2,
+          "label": "Draft release notes",
+          "state": "coding",
+          "activity": "Writing RELEASE-1.6.4.md"
+        },
+        {
+          "id": "b5da9de92b72cca9506f79d0",
+          "n": 3,
+          "label": "Audit the Android strings",
+          "state": "blocked",
+          "activity": "Approve: Editing strings.xml"
+        },
+        {
+          "id": "3c80c99fd926cdb015609ece",
+          "n": 4,
+          "label": "Run the page checks",
+          "state": "testing",
+          "activity": "Run test/pages.test.ts"
+        },
+        {
+          "id": "3029de2f327479a99a6c53ff",
+          "n": 5,
+          "label": "Summarize the hook diff",
+          "state": "blocked",
+          "activity": "Approve: git diff origin/master -- cli"
+        }
+      ]
+    }
+  }
+]

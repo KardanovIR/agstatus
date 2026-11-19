@@ -1,0 +1,12 @@
+{
+ "source": "probe run b, events-b.jsonl line 4 (SubagentStart, t_ms 1793138780588)",
+ "payload": {
+  "session_id": "2f310006-25a7-4cd3-aaed-41d63f721448",
+  "transcript_path": "{{projects}}/2f310006-25a7-4cd3-aaed-41d63f721448.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "c44740b5-dbd2-4c90-93c1-e2c7c4b94455",
+  "agent_id": "aeaab6e39b924707f",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+ }
+}

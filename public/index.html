@@ -8,11 +8,17 @@
   <title>AgStatus</title>
   <!-- Order is load-bearing: tokens, then the card (shared with the landing
        page, so the two can never drift), then the board around it, then the
-       shell around the grid. -->
-  <link rel="stylesheet" href="/tokens.css" />
-  <link rel="stylesheet" href="/card.css" />
-  <link rel="stylesheet" href="/board.css" />
-  <link rel="stylesheet" href="/shell.css" />
+       shell around the grid.
+       Every file here names its release, "?v=", which the server ignores. A
+       page a browser keeps, as Back takes it from the cache after a deploy,
+       then finds its own release's files in the cache, not the next
+       release's, which it may not fit. Raise it with every release, to the
+       version the manifests carry: a test fails while it is behind
+       package.json's. -->
+  <link rel="stylesheet" href="/tokens.css?v=1.7.0" />
+  <link rel="stylesheet" href="/card.css?v=1.7.0" />
+  <link rel="stylesheet" href="/board.css?v=1.7.0" />
+  <link rel="stylesheet" href="/shell.css?v=1.7.0" />
 </head>
 <body>
   <header class="topbar">
@@ -32,7 +38,21 @@
 
   <section class="usage" id="usage" aria-label="Plan usage limits" hidden></section>
   <div class="stats" id="stats" hidden></div>
-  <section class="detail" id="detail" aria-label="Usage detail" hidden></section>
+  <!-- One surface for both detail routes, the usage history and a session's
+       screen, so it is named for neither. -->
+  <section class="detail" id="detail" aria-label="Detail" hidden></section>
+
+  <!-- The board's one alarm: present only while a session is blocked, fixed
+       to the bottom edge (shell.css), and one button that brings the card it
+       names. Before the grid in reading order, so a keyboard reaches it ahead
+       of the cards it leads to. Its face draws it, ground, edge and words, so
+       that when another session blocks the face alone comes in from the
+       bottom edge again, and the button stays where it is under the pointer.
+       The region beside it says a new block aloud; it is in the page from the
+       start, as a live region has to be. -->
+  <button class="needs" id="needs" type="button" aria-describedby="needs-hint" hidden><span class="needs-face" id="needs-face"></span></button>
+  <span id="needs-hint" hidden>Shows that session</span>
+  <div class="sr-only" id="needs-said" aria-live="polite"></div>
 
   <main>
     <div class="grid" id="grid"></div>
@@ -47,7 +67,7 @@
 
   <!-- The marks first: app.js reads them at definition time, and the landing
        page loads the same file so the two can never draw different icons. -->
-  <script src="/marks.js"></script>
-  <script src="/app.js"></script>
+  <script src="/marks.js?v=1.7.0"></script>
+  <script src="/app.js?v=1.7.0"></script>
 </body>
 </html>

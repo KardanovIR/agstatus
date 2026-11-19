@@ -1,0 +1,29 @@
+{
+  "about": "Notification(permission_prompt) with no claimable marker while an agent is live: main-thread blocked, unattributed. context: the live agent.",
+  "context": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "planning",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "planning",
+        "kind": "agent",
+        "label": "Run echo alpha",
+        "at": 1793138688551
+      }
+    }
+  ],
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "name": "proj",
+      "status": "blocked",
+      "message": "Claude needs your permission",
+      "project": "proj",
+      "source": "claude",
+      "unattributed": true
+    }
+  ]
+}

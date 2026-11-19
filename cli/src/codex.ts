@@ -19,16 +19,26 @@ import { HOOK_MARKER, hookCommandFor } from './settings';
  * registered command is the same bare `node "<script>"` on every platform —
  * which is what lets a Linux test run exercise the Windows path.
  *
- * Codex requires the user to trust new hooks once via `/hooks` in the TUI, and
- * that trust is a hash of the command string: changing it invalidates every
- * existing trusted_hash, so upgraders must re-run /hooks once.
+ * Codex requires the user to trust new hooks once — in Codex Desktop under
+ * Settings → Hooks, in the Codex CLI with `/hooks` in the TUI — and that trust
+ * is a hash of the command string: changing it invalidates every existing
+ * trusted_hash, so upgraders must trust the hook once more.
  */
 
+/**
+ * UserPromptSubmit marks a root turn starting (the prompt itself is never
+ * sent); SubagentStart and SubagentStop follow sub-agent threads, which the
+ * board lists on their root's card. Codex fires SubagentStop at the end of
+ * every sub-agent turn, and never SessionEnd for a sub-agent at all.
+ */
 export const CODEX_EVENTS: Array<{ event: string; matcher?: string }> = [
   { event: 'SessionStart' },
   { event: 'PreToolUse', matcher: '^(Bash|apply_patch|Edit|Write)$' },
   { event: 'PermissionRequest' },
   { event: 'Stop' },
+  { event: 'UserPromptSubmit' },
+  { event: 'SubagentStart' },
+  { event: 'SubagentStop' },
 ];
 
 /** Keep hooks snappy: our script self-exits at ~4s; Codex's default is 600s. */
@@ -177,7 +187,7 @@ export function codexHookCommand(): string {
  * Exported because Codex keys its trust on a hash of the command: comparing
  * what is registered against what we are about to write is what tells an
  * upgrade that CHANGED the command from one that did not, and therefore
- * whether the user has to re-run /hooks or can ignore the subject.
+ * whether the user has to trust the hook again or can ignore the subject.
  */
 export function ourCommands(input: HooksFile): string[] {
   if (!isPlainObject(input.hooks)) return [];
@@ -197,6 +207,24 @@ export function ourCommands(input: HooksFile): string[] {
 /** True when a parsed hooks.json currently holds our registrations. */
 export function codexHasOurHooks(input: HooksFile): boolean {
   return ourCommands(input).length > 0;
+}
+
+/**
+ * The CODEX_EVENTS a parsed hooks.json registers none of our commands for —
+ * the events an upgrade is about to add.
+ *
+ * Codex trusts a hook by a hash of its command, and an upgrade that keeps the
+ * command does not trip the re-trust warning. Whether entries ADDED under an
+ * unchanged command need trusting again is not known, so the installer says
+ * so when the set grew (cli/src/index.ts). Until they are trusted, every
+ * sub-agent takes the hook's 1.6.3 path, which strands nothing on the board.
+ */
+export function codexAddedEvents(input: HooksFile): string[] {
+  const hooks = isPlainObject(input.hooks) ? input.hooks : {};
+  return CODEX_EVENTS.map(({ event }) => event).filter((event) => {
+    const entries = hooks[event];
+    return !(Array.isArray(entries) && (entries as HookEntry[]).some((e) => isOurs(e)));
+  });
 }
 
 /**

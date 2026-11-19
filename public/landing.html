@@ -541,7 +541,7 @@
 <section id="features">
   <div class="sec-head">
     <h2>Six states, one glance.</h2>
-    <p>Every session reports as it works. The board is ordered by what changed last, so the thing that needs you rises to the top.</p>
+    <p>Every session reports as it works, in a section for its project. Cards keep their place, and while one needs you, a bar along the bottom edge names it.</p>
   </div>
   <div class="features">
 
@@ -608,9 +608,9 @@
 <section id="app">
   <div class="sec-head">
     <h2>And on the phone in your pocket.</h2>
-    <p>The iOS app shows the same sessions, grouped by agent, on iPhone and iPad, with the usage
-      charts and a timeline of everything each agent did. Try it without pairing anything — it
-      ships with a demo board.</p>
+    <p>The iOS app shows the same sessions, grouped by project, on iPhone and iPad, with the
+      needs-you bar along the bottom, the usage charts and a timeline of everything each agent
+      did. Try it without pairing anything — it ships with a demo board.</p>
   </div>
   <div class="phones">
     <figure class="phone">
@@ -663,7 +663,7 @@
           <code data-pane="posix">curl -fsSL https://agstatus.online/install.sh | sh</code>
           <code data-pane="windows" hidden>irm https://agstatus.online/install.ps1 | iex</code>
           <code data-pane="plugin" class="multi" hidden>/plugin marketplace add KardanovIR/agstatus<br />/plugin install agstatus@agstatus<br />/agstatus:setup</code>
-          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it, and <code>--minimal</code> sends tool and folder names instead of command text, prompts and session titles.</p>
+          <p class="install-note" data-pane="posix-note">On macOS the installer also sets up Focus, so a tap on the board brings that session's terminal to the front. It prints what that sends; <code>--no-focus</code> skips it, and <code>--minimal</code> sends tool and folder names instead of command text, prompts, session titles and subagent tasks.</p>
           <p class="install-note" data-pane="windows-note" hidden>Windows PowerShell 5.1 and up. Claude Code and Codex hooks, same as everywhere else; Focus is macOS-only.</p>
           <p class="install-note" data-pane="plugin-note" hidden>Runs inside Claude Code — no terminal needed. Claude Code only; for Codex use the installer.</p>
         </div>
@@ -694,9 +694,10 @@
     <div>
       <h3>What it sends</h3>
       <p>A session id, project folder name, a name for the card (that folder, or a Claude
-        session's own title), status word, and a short activity line. Install with
-        <code>--minimal</code> to send tool names and folder names only. Opt into Focus on a machine and it also
-        sends a label for that machine and the name of the app your agent runs in — never a path.</p>
+        session's own title), status word and a short activity line — and the same for each
+        subagent, named after its task. Install with <code>--minimal</code> for tool and folder names
+        only, and numbered subagents. Opt into Focus on a machine and it also sends a label for that
+        machine and the name of the app your agent runs in — never a path.</p>
     </div>
     <div>
       <h3>Plan usage stays local</h3>

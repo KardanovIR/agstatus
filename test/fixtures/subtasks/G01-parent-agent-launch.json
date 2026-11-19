@@ -1,0 +1,13 @@
+{
+  "about": "a_parent_PreToolUse_Agent: the fixed Task→Agent branch posts the launch on the parent.",
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "name": "proj",
+      "status": "planning",
+      "message": "Run echo alpha",
+      "project": "proj",
+      "source": "claude"
+    }
+  ]
+}

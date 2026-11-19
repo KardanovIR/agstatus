@@ -9,7 +9,11 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.time.Instant
@@ -62,6 +66,58 @@ object AgentStatusSerializer : KSerializer<AgentStatus> {
         encoder.encodeString(value.wire)
 }
 
+// MARK: - DisplayStatus
+
+/**
+ * What a card says it is: one of the six wire statuses, or WORKING — a
+ * reading only a client makes (docs/api.md `subtasks`). WORKING is "the
+ * parent's turn is over and its subagents still work". It is never sent and
+ * never recorded: history and every older app see the server's six-status
+ * reading of the same moment, the busiest subagent's state with "2 subagents
+ * still running".
+ */
+enum class DisplayStatus(
+    /** Lower case, as the board prints a status word. */
+    val word: String,
+) {
+    IDLE("idle"),
+    PLANNING("planning"),
+    CODING("coding"),
+    TESTING("testing"),
+    WORKING("working"),
+    BLOCKED("blocked"),
+    DONE("done");
+
+    /** Capitalized English label, e.g. "Working". */
+    val label: String get() = word.replaceFirstChar { it.uppercase() }
+
+    /** Work in progress: the three active wire statuses, and WORKING. */
+    val isActive: Boolean get() = this == PLANNING || this == CODING || this == TESTING || this == WORKING
+
+    companion object {
+        fun of(status: AgentStatus): DisplayStatus = when (status) {
+            AgentStatus.IDLE -> IDLE
+            AgentStatus.PLANNING -> PLANNING
+            AgentStatus.CODING -> CODING
+            AgentStatus.TESTING -> TESTING
+            AgentStatus.BLOCKED -> BLOCKED
+            AgentStatus.DONE -> DONE
+        }
+
+        /**
+         * WORKING exactly when the server says the turn is over and a
+         * subagent is running, unless the card is blocked: a blocked card
+         * stays BLOCKED, because that is the one state that needs you.
+         */
+        fun of(status: AgentStatus, subtasks: Subtasks?): DisplayStatus =
+            if (subtasks != null && subtasks.turnEnded && status != AgentStatus.BLOCKED && subtasks.running > 0) {
+                WORKING
+            } else {
+                of(status)
+            }
+    }
+}
+
 // MARK: - Session
 
 @Serializable
@@ -70,7 +126,20 @@ data class Session(
     val name: String = "",
     val status: AgentStatus = AgentStatus.IDLE,
     val message: String = "",
+    /** The folder the session is in now: it follows a `cd`. */
     val project: String = "",
+    /**
+     * The folder the session started in, which names its section on the board
+     * (docs/design/project-sections.md). The server works it out and pins it
+     * for the session's life, so a later `cd` never moves the card; a post
+     * cannot set it. Empty until the session reports a usable folder, and
+     * from a server too old to send it, where [ProjectSections.nameOf] falls
+     * back to [project]. Anything but a string reads as empty
+     * ([LenientStringSerializer]): the snapshot is one array, and one odd
+     * value must not cost the board.
+     */
+    @Serializable(with = LenientStringSerializer::class)
+    val homeProject: String = "",
     /** Agent kind that owns the session ("claude", "codex", …). */
     val source: String = "claude",
     /** Epoch milliseconds. */
@@ -84,17 +153,58 @@ data class Session(
      */
     @Serializable(with = SessionHostSerializer::class)
     val host: SessionHost? = null,
+    /**
+     * The session's running and failed subagents — only from a 1.7 hook on a
+     * 1.7 server. Null (absent, `null`, malformed, or nothing to show) means
+     * today's card, never an error state.
+     */
+    @Serializable(with = SubtasksSerializer::class)
+    val subtasks: Subtasks? = null,
 ) {
     /** Falls back to the id so a card is never nameless. */
     val displayName: String get() = name.ifBlank { id }
 
+    /** What the card shows: [status], or WORKING while subagents outlast the turn. */
+    val displayStatus: DisplayStatus get() = DisplayStatus.of(status, subtasks)
+
+    /**
+     * A card with a running subagent is never stale. Within one status
+     * class a subagent posts at most once a minute, and only when what it
+     * does changes, so one in a long command can be silent for many
+     * minutes and still be working; the server expires the ones that really
+     * died, and is the authority on that.
+     */
+    val isStaleExempt: Boolean get() = (subtasks?.running ?: 0) > 0
+
     /**
      * The one stale rule, kept by the card and the history it opens, so the
      * screen a stale card opens shows the same "?": a working session that
-     * has heard nothing for [STALE_AFTER_MILLIS].
+     * has heard nothing for [STALE_AFTER_MILLIS], with no subagent running
+     * ([isStaleExempt]).
      */
     fun isStale(nowMillis: Long): Boolean =
-        status.isActive && nowMillis - updatedAt > STALE_AFTER_MILLIS
+        status.isActive && !isStaleExempt && nowMillis - updatedAt > STALE_AFTER_MILLIS
+
+    /** The one state that needs a human: what the needs-you bar counts. Done never is. */
+    val isBlocked: Boolean get() = displayStatus == DisplayStatus.BLOCKED
+}
+
+/**
+ * A string field decoded leniently: a JSON string is itself, and anything
+ * else — `null`, a number, an object — is empty. AgStatusJson has no
+ * coerceInputValues, so without this an explicit `null` would throw, and the
+ * snapshot is decoded as one array.
+ */
+object LenientStringSerializer : KSerializer<String> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("LenientString", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): String {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeString()
+        return (json.decodeJsonElement() as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty()
+    }
+
+    override fun serialize(encoder: Encoder, value: String) = encoder.encodeString(value)
 }
 
 /**
@@ -106,6 +216,479 @@ data class Session(
  * iOS boards keep the same ten minutes.
  */
 const val STALE_AFTER_MILLIS = 10 * 60 * 1000L
+
+// MARK: - Project sections
+
+/**
+ * One project's section of the board: its folder name, empty for No project,
+ * and its sessions in the board's own order.
+ */
+data class ProjectSection(val name: String, val sessions: List<Session>) {
+    val isNoProject: Boolean get() = name.isEmpty()
+
+    /** What the label says: the folder in its exact case, or the board's own words. */
+    val title: String get() = if (isNoProject) NO_PROJECT else name
+
+    /** The section's LazyColumn key ([keyFor]). */
+    val key: String get() = keyFor(name)
+
+    companion object {
+        const val NO_PROJECT = "No project"
+
+        /**
+         * `project/<name>`, and `project/` for No project. A slash can be in
+         * neither a session id nor a folder name, so a label's key can never
+         * equal a card's, which is its session id — two equal keys crash a
+         * LazyColumn outright.
+         */
+        fun keyFor(name: String): String = "project/$name"
+    }
+}
+
+/**
+ * The board grouped by project (docs/design/project-sections.md), worked out
+ * on every frame from the store's flat list and never stored: a section per
+ * folder a session started in, in name order, its cards in the board's own
+ * order. iOS and the web do the same arithmetic, and the shared test vector
+ * in ProjectSectionsTest holds all three to one order.
+ */
+object ProjectSections {
+
+    /**
+     * A bare UUID is never a folder a person picked: the hook's own test
+     * (`UUID_NAME_RE`, plugin/scripts/agstatus-hook.js), which the server
+     * applies before it pins a `homeProject`.
+     */
+    private val UUID_NAME = Regex(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * Whether [name] can name a folder: a section, or the place a card says
+     * it is. Trimmed of whitespace at both ends, it must be something, not
+     * `/` or `.`, and not a bare UUID. The shipped legacy shell hook posts `/`
+     * for a session started at `/`, which names no project anyone keeps. The
+     * same rule on every client and the server, so no board opens a section
+     * the others would not. Only the test trims: a usable name is used
+     * exactly as sent.
+     */
+    fun isRealFolder(name: String): Boolean {
+        val trimmed = name.trim()
+        return trimmed.isNotEmpty() && trimmed != "/" && trimmed != "." && !UUID_NAME.matches(trimmed)
+    }
+
+    /**
+     * The section a session is in, empty for No project: the folder the
+     * server pinned for it, else (a server too old to send `homeProject`) the
+     * folder it is in now, each only where [isRealFolder] says it can name
+     * one, and exactly as sent.
+     */
+    fun nameOf(session: Session): String = when {
+        isRealFolder(session.homeProject) -> session.homeProject
+        isRealFolder(session.project) -> session.project
+        else -> ""
+    }
+
+    /**
+     * Section order, identical on every client: by name ignoring case, then by
+     * exact case (`AgStatus` before `agstatus`), with No project always last.
+     * Never by activity, state or arrival, so a section never moves because
+     * one of its cards got busy.
+     *
+     * Ignoring case means comparing the locale-independent lower case
+     * (Locale.ROOT), which, as JavaScript's toLowerCase does, applies
+     * Unicode's final-sigma rule: a Σ that ends a word becomes ς, so ΝΟΜΟΣ
+     * comes before νομος-api. iOS lowercases with lowercased(with: nil) for
+     * the same reason: Swift's plain lowercased() makes every Σ a σ. Both
+     * comparisons go by UTF-16 code unit, as a JavaScript `<` does, so a
+     * composed and a decomposed é stay apart. A collator would put `_` before
+     * `-` and differ by locale.
+     */
+    val ORDER: Comparator<String> = Comparator { a, b ->
+        when {
+            a == b -> 0
+            a.isEmpty() -> 1
+            b.isEmpty() -> -1
+            else -> {
+                val folded = a.lowercase(Locale.ROOT).compareTo(b.lowercase(Locale.ROOT))
+                if (folded != 0) folded else a.compareTo(b)
+            }
+        }
+    }
+
+    /**
+     * The board's sections, in [ORDER]. Each keeps its sessions in the order
+     * of [sessions], which is the store's stable order: filtered, never
+     * re-sorted, so a new session is on top of its section and every other
+     * card keeps its place, blocked included.
+     */
+    fun of(sessions: List<Session>): List<ProjectSection> {
+        val groups = LinkedHashMap<String, MutableList<Session>>()
+        for (session in sessions) groups.getOrPut(nameOf(session)) { mutableListOf() } += session
+        return groups.entries
+            .sortedWith(compareBy(ORDER) { it.key })
+            .map { (name, members) -> ProjectSection(name, members) }
+    }
+
+    /**
+     * Where a session is now, for its meta line: its live folder when that is
+     * real and differs from both its section and its name — a session that
+     * has moved. No card under a label says "in" that label, and an untitled
+     * session named after its folder does not say it twice.
+     */
+    fun place(session: Session): String? = session.project.takeIf {
+        isRealFolder(it) && it != nameOf(session) && it != session.displayName
+    }
+
+    /** Every card in reading order: sections in order, then each section's cards in order. */
+    fun readingOrder(sections: List<ProjectSection>): List<Session> = sections.flatMap { it.sessions }
+
+    /**
+     * The card the needs-you bar names: the first blocked card in reading
+     * order, or, once the bar has brought [shown], the next blocked card after
+     * it, round to the first — [shown] itself when it is the only one. A card
+     * unblocked since keeps its place in the order it is counted from; one no
+     * longer on the board starts the walk over. Null while nothing is blocked.
+     */
+    fun barTarget(sections: List<ProjectSection>, shown: String?): Session? {
+        val order = readingOrder(sections)
+        val first = order.firstOrNull { it.isBlocked } ?: return null
+        val at = if (shown == null) -1 else order.indexOfFirst { it.id == shown }
+        if (at < 0) return first
+        for (step in 1..order.size) {
+            val candidate = order[(at + step) % order.size]
+            if (candidate.isBlocked) return candidate
+        }
+        return first
+    }
+
+    /**
+     * Whether the bar's verb is "Next": it has brought a card that is still on
+     * the board, and there is more than one blocked card to walk.
+     */
+    fun barWalks(sections: List<ProjectSection>, shown: String?): Boolean {
+        if (shown == null) return false
+        val order = readingOrder(sections)
+        return order.any { it.id == shown } && order.count { it.isBlocked } > 1
+    }
+
+    /**
+     * The usage blocks' key, where they lead the board's LazyColumn as its
+     * first item. Like a label's ([ProjectSection.keyFor]) it has a slash,
+     * which no session id can: the server takes ids of letters, digits and
+     * `.`, `_`, `:` and `-` alone (SESSION_ID_RE, src/app.ts). It was the
+     * bare word "usage", and a session posted with that id crashed the board
+     * whenever the blocks led the list: two items with one key.
+     */
+    const val USAGE_KEY = "board/usage"
+
+    /**
+     * The card's index in the board's LazyColumn, where each section is its
+     * label and then its cards; -1 when it is not on the board. One more
+     * where the usage blocks ([USAGE_KEY]) lead the list.
+     */
+    fun listIndex(sections: List<ProjectSection>, sessionId: String): Int {
+        var index = 0
+        for (section in sections) {
+            index += 1
+            val at = section.sessions.indexOfFirst { it.id == sessionId }
+            if (at >= 0) return index + at
+            index += section.sessions.size
+        }
+        return -1
+    }
+
+    // MARK: Copy
+
+    /** "1 session", "3 sessions": a label's count. */
+    fun sessionCount(count: Int): String = if (count == 1) "1 session" else "$count sessions"
+
+    /** What TalkBack hears for a label, the one heading per project: "acme-api, 3 sessions". */
+    fun labelDescription(section: ProjectSection): String = labelDescription(section.title, section.sessions.size)
+
+    /** A label's heading from what it draws: its [title] and how many sessions it holds. */
+    fun labelDescription(title: String, count: Int): String = "$title, ${sessionCount(count)}"
+
+    /**
+     * What the bar and the spoken alarm call a session: its name, or its
+     * agent's where it has none. The same words on every client.
+     */
+    fun barName(session: Session): String = session.name.ifEmpty { sourceDisplayName(session.source) }
+
+    /**
+     * Where the bar and the spoken alarm say a session is: "in acme-api", its
+     * section, or for a session in No project its agent's name, since it has
+     * no folder to name. Null where that would only repeat [barName]: the
+     * section is the name, as for an untitled session named after its folder,
+     * or the agent is, as for Codex's untitled session at `/`. Compared
+     * exactly, as on every client.
+     */
+    fun barWhere(session: Session): String? {
+        val name = barName(session)
+        val section = nameOf(session)
+        if (section.isNotEmpty()) return "in $section".takeUnless { section == name }
+        return sourceDisplayName(session.source).takeUnless { it == name }
+    }
+
+    /**
+     * What TalkBack hears for the bar, "2 blocked: Fix the login redirect, in
+     * acme-api, Show": every word it shows, the verb last ("Next" once it
+     * [walks]), so a Voice Access user who says "tap Show" reaches it
+     * (WCAG 2.5.3). No place, no comma for it.
+     */
+    fun barDescription(blocked: Int, target: Session, walks: Boolean): String =
+        barDescription(blocked, barName(target), barWhere(target), walks)
+
+    /** The bar's accessible name from its own words: the session's [name], [where] it is, and the verb. */
+    fun barDescription(blocked: Int, name: String, where: String?, walks: Boolean): String =
+        listOfNotNull(name, where, if (walks) "Next" else "Show")
+            .joinToString(", ", prefix = "$blocked blocked: ")
+
+    /**
+     * How TalkBack starts a card, "Claude, Fix the login redirect": the
+     * agent, taken from the session itself, because Claude's and Codex's
+     * sessions share a section now and the card's mark is not read. A card
+     * named after its own agent says it once: the untitled Codex session at
+     * `/`, which the hook names "Codex", is "Codex", never "Codex, Codex",
+     * as on iOS and the web. Compared exactly, as the bar compares, so a
+     * session named "codex" is still "Codex, codex".
+     */
+    fun cardLead(session: Session): String {
+        val agent = sourceDisplayName(session.source)
+        val name = session.displayName
+        return if (name == agent) name else "$agent, $name"
+    }
+}
+
+// MARK: - The spoken alarm
+
+/**
+ * Which new blocks the board says aloud, and in what words, as iOS says them
+ * with VoiceOver and the web through its polite live region: "Fix the login
+ * redirect, in acme-api, needs you". The board itself is silent, so this is
+ * how a TalkBack user, who would otherwise hear of a block only by exploring
+ * to the bottom edge, learns that something needs them.
+ *
+ * Speech nobody asked for has to be earned, so only a block that arrives
+ * while the board is watching is said: a session frame, or a demo tick, that
+ * turns a card blocked or brings one new and blocked ([observe] with `live`).
+ * Never the first draw, a reconnect's snapshot or a refresh, whose blocks
+ * were standing before the board looked. A session said is not said again
+ * within [REPEAT_MILLIS], the server's own wait before it pushes the same
+ * block twice. Blocks that land within [GATHER_MILLIS] of the first are said
+ * together, "2 sessions need you", since a second sentence would cut off the
+ * first.
+ *
+ * The rule only; SessionStore keeps the clock and the wait. A plain object
+ * the store owns, never shown, never saved.
+ */
+class BlockSpeech {
+    /** The blocked sessions as last seen; null until the board is first drawn. */
+    private var blocked: Set<String>? = null
+    private val saidAt = HashMap<String, Long>()
+    private val gathered = LinkedHashSet<String>()
+
+    /**
+     * Takes in the board after a change. [live] is news as it happens; a
+     * snapshot is not, and only teaches what stands. True when this change
+     * starts a gathering, after which the caller waits [GATHER_MILLIS] and
+     * asks [say] what to say.
+     */
+    fun observe(sessions: List<Session>, live: Boolean, nowMillis: Long): Boolean {
+        val now = sessions.filter { it.isBlocked }.mapTo(HashSet()) { it.id }
+        val before = blocked
+        blocked = now
+        if (!live || before == null) return false
+        saidAt.entries.removeAll { nowMillis - it.value >= REPEAT_MILLIS }
+        val idle = gathered.isEmpty()
+        for (id in now) {
+            if (id !in before && id !in saidAt) gathered += id
+        }
+        return idle && gathered.isNotEmpty()
+    }
+
+    /**
+     * What to say once the gathering closes, or null: the blocks it gathered
+     * that still stand in [sessions], the board as it is now. One answered
+     * within the half second is no longer news.
+     */
+    fun say(sessions: List<Session>, nowMillis: Long): String? {
+        val ids = gathered.toList()
+        gathered.clear()
+        val still = ids.mapNotNull { id -> sessions.firstOrNull { it.id == id && it.isBlocked } }
+        for (session in still) saidAt[session.id] = nowMillis
+        return sentence(still)
+    }
+
+    companion object {
+        /** Blocks this close to the first are said in one sentence. */
+        const val GATHER_MILLIS = 500L
+
+        /** A session's block is said at most once in this long. */
+        const val REPEAT_MILLIS = 60_000L
+
+        /**
+         * "Fix the login redirect, in acme-api, needs you", with the bar's
+         * words ([ProjectSections.barName], [ProjectSections.barWhere]). The
+         * commas set the place off, so where the bar has no place it is a
+         * plain sentence, as iOS says it: "Codex needs you". "2 sessions need
+         * you" for more.
+         */
+        fun sentence(sessions: List<Session>): String? = when (sessions.size) {
+            0 -> null
+            1 -> sessions.single().let { session ->
+                val name = ProjectSections.barName(session)
+                ProjectSections.barWhere(session)?.let { "$name, $it, needs you" } ?: "$name needs you"
+            }
+            else -> "${sessions.size} sessions need you"
+        }
+    }
+}
+
+// MARK: - The bar's beat
+
+/**
+ * When the needs-you bar comes in from the bottom edge again: once for each
+ * rise in the blocked count while it already shows (the owner's decision of
+ * 2026-11-16).
+ *
+ * A second block changes one digit on the bar, a glyph far too small for the
+ * corner of the eye, which is where the board is read. The bar's arrival is
+ * the one motion on the board that peripheral vision catches, so a rise
+ * replays it, with the new count already in it, and nothing else changes: no
+ * word, no colour, no focus, no sound.
+ *
+ * It hears what the voice hears ([BlockSpeech]): a session's transition into
+ * blocked while the board watches, never a first draw, a reconnect's
+ * snapshot, a refresh or a card a refused dismissal put back. It gathers
+ * them for the voice's half second, which runs from the first block and is
+ * not drawn out by the ones after, so blocks that land together make one
+ * beat; and it keeps the voice's minute, which runs from the end of every
+ * half second for each of its sessions still blocked then, whatever was said
+ * or drawn, as on iOS and the web.
+ *
+ * When the half second is over the bar beats only if all of these hold:
+ * - one of its blocks is still blocked;
+ * - the bar rested on a count when the first of them landed, and has not
+ *   emptied since. A bar that showed nothing arrives with them, and its
+ *   arrival is their beat; so are blocks gathered in the half second that
+ *   starts with it ([rest]). One that emptied and came back has arrived
+ *   again.
+ * - the count is higher than the one the bar rested on: never on a fall,
+ *   nor for one block in place of another within half a second of it,
+ *   whichever lands first, where the bar rested on the count before them
+ *   both and no half second ends between them;
+ * - the board was in front of the reader when the first landed and is now,
+ *   each read as it is then: the board's screen resumed, so the app
+ *   resumed with no other screen over the board, and no sheet over it. So
+ *   never for blocks that landed while the reader was away, nor on the way
+ *   back, nor when the reader leaves within the half second.
+ * - animations are on. With them off the count changes in place, as
+ *   everything on the board does, and the voice carries the news.
+ *
+ * The rule only, as iOS keeps it (BarBeat) and the web (its beat):
+ * SessionStore keeps the clock and asks, and the bar draws it
+ * (ui/NeedsYouBar). A plain object the store owns, never shown, never saved.
+ */
+class BarBeat {
+    /** Why the bar beat when a half second was over, or why it did not, in the order the rule asks. */
+    enum class Verdict {
+        BEATS,
+
+        /** None of the half second's blocks is blocked any more. */
+        ANSWERED,
+
+        /** The bar rested on no count: this is its arrival, which is the beat itself. */
+        ARRIVAL,
+
+        /** The count is no higher than the one the bar rested on. */
+        NO_RISE,
+
+        /** The board was not in front of the reader, when the first block landed or now. */
+        AWAY,
+
+        /** Animations are off. */
+        STILL,
+    }
+
+    /**
+     * A half second in flight: the count the bar rested on as its first block
+     * landed, whether the board was out of the reader's sight then, and
+     * whether the bar has emptied since.
+     */
+    private class Gathering(val rest: Int, val away: Boolean) {
+        var emptied = false
+    }
+
+    /**
+     * The count the bar rests on: one that stood for half a second, or that a
+     * half second ended on; nothing while the bar is empty. A rise is measured
+     * from it, so a block that lands just after another was answered is no
+     * rise where the bar rested on the count before the answer and no half
+     * second ended between them, and a block gathered in the half second that
+     * starts with the bar's arrival finds it resting on nothing.
+     */
+    var rest = 0
+        private set
+
+    /** The blocked cards as last seen, and when they last changed. */
+    private var drawn: Set<String> = emptySet()
+    private var changedAt: Long? = null
+    private var gathering: Gathering? = null
+
+    /** Takes in the board after any change, [sessions] as they are now: how the count the bar rests on moves. */
+    fun note(sessions: List<Session>, nowMillis: Long) {
+        val blocked = sessions.filter { it.isBlocked }.mapTo(HashSet()) { it.id }
+        if (blocked == drawn) return
+        if (changedAt.let { it == null || nowMillis - it >= BlockSpeech.GATHER_MILLIS }) rest = drawn.size
+        if (blocked.isEmpty()) {
+            rest = 0
+            gathering?.emptied = true
+        }
+        changedAt = nowMillis
+        drawn = blocked
+    }
+
+    /**
+     * The voice's half second has started with its first block
+     * ([BlockSpeech.observe]), the board [inFront] of the reader or not.
+     * Asked after [note] has taken in the change that brought it.
+     */
+    fun gather(inFront: Boolean) {
+        gathering = Gathering(rest = rest, away = !inFront)
+    }
+
+    /**
+     * The half second is over: what the bar does, or null when none ran.
+     * [answered]: none of its blocks still stands ([BlockSpeech.say] has
+     * nothing to say). [inFront] and [moves] as they are now.
+     */
+    fun end(answered: Boolean, inFront: Boolean, moves: Boolean): Verdict? {
+        val done = gathering ?: return null
+        gathering = null
+        rest = drawn.size
+        return verdict(
+            rest = if (done.emptied) 0 else done.rest,
+            answered = answered,
+            count = drawn.size,
+            inFront = inFront && !done.away,
+            moves = moves,
+        )
+    }
+
+    companion object {
+        /** The rule itself, for a half second whose bar rested on [rest], now that [count] are blocked. */
+        fun verdict(rest: Int, answered: Boolean, count: Int, inFront: Boolean, moves: Boolean): Verdict = when {
+            answered -> Verdict.ANSWERED
+            rest == 0 -> Verdict.ARRIVAL
+            count <= rest -> Verdict.NO_RISE
+            !inFront -> Verdict.AWAY
+            !moves -> Verdict.STILL
+            else -> Verdict.BEATS
+        }
+    }
+}
 
 // MARK: - Host (Focus)
 
@@ -172,6 +755,164 @@ object SessionHostSerializer : KSerializer<SessionHost?> {
 
     override fun serialize(encoder: Encoder, value: SessionHost?) =
         delegate.serialize(encoder, value)
+}
+
+// MARK: - Subtasks
+
+/**
+ * A subagent row's state: the four running states, plus `failed`, which only
+ * a row can be — a session's status is always one of the six.
+ */
+@Serializable(with = SubtaskStateSerializer::class)
+enum class SubtaskState(val wire: String) {
+    PLANNING("planning"),
+    CODING("coding"),
+    TESTING("testing"),
+    BLOCKED("blocked"),
+    FAILED("failed");
+
+    /** Planning, coding or testing: what the `running` count counts. */
+    val isWorking: Boolean get() = this == PLANNING || this == CODING || this == TESTING
+
+    companion object {
+        /**
+         * Unknown states read as planning, not as a dropped row: a newer
+         * server's subagent is still a subagent, and still running.
+         */
+        fun fromWire(value: String?): SubtaskState =
+            entries.firstOrNull { it.wire == value } ?: PLANNING
+    }
+}
+
+object SubtaskStateSerializer : KSerializer<SubtaskState> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("SubtaskState", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): SubtaskState =
+        SubtaskState.fromWire(decoder.decodeString())
+
+    override fun serialize(encoder: Encoder, value: SubtaskState) =
+        encoder.encodeString(value.wire)
+}
+
+/** One running or failed subagent, as its parent's card lists it. */
+@Serializable
+data class Subtask(
+    /** The hook's opaque agent key; never a raw agent id. */
+    val id: String,
+    /** Start order within the session, unique and stable per subagent. */
+    val n: Int,
+    /** What it was asked to do; the server's "Subagent <n>" when nothing better is known. */
+    val label: String,
+    val state: SubtaskState = SubtaskState.PLANNING,
+    /** What it is doing now. May be empty. */
+    val activity: String = "",
+) {
+    companion object {
+        /**
+         * What the server accepts as an agent key (docs/api.md `agent.id`).
+         * Ids become LazyColumn keys and a navigation argument here, so one
+         * of any other shape is a malformed item.
+         */
+        val ID_REGEX = Regex("^[A-Za-z0-9._:-]{1,64}$")
+    }
+}
+
+/**
+ * `session.subtasks`: the session's live and failed subagents in start order,
+ * with exact counts. [running] and [blocked] count the live rows; [failed]
+ * and [done] count the turn so far, and [failed] can exceed the failed rows
+ * listed, because the server lists at most eight.
+ */
+@Serializable
+data class Subtasks(
+    /** The parent's own turn is over and a subagent is still live: what WORKING reads. */
+    val turnEnded: Boolean = false,
+    val running: Int = 0,
+    val blocked: Int = 0,
+    val failed: Int = 0,
+    /** Finished OK this turn; resets when the turn is over or a new prompt starts. */
+    val done: Int = 0,
+    val items: List<Subtask> = emptyList(),
+)
+
+/**
+ * Decodes `subtasks` leniently, element by element. Absent, `null`, a value
+ * that is not an object, or one with nothing to show (no items, nothing done)
+ * is null: today's card. Within an object a malformed item is dropped and the
+ * others kept, an unknown state reads as planning, a blank label as the
+ * server's own "Subagent <n>", and a missing or malformed count is derived
+ * from the items (0 for `done`).
+ *
+ * Every part of that matters because the snapshot is decoded as one array:
+ * a single throw here would cost the whole board, not one card. And it has to
+ * happen here, not in the decoder's configuration, because AgStatusJson has
+ * no coerceInputValues — an explicit `"subtasks": null` reaches this code.
+ */
+object SubtasksSerializer : KSerializer<Subtasks?> {
+    private val delegate = Subtasks.serializer().nullable
+
+    override val descriptor: SerialDescriptor = delegate.descriptor
+
+    override fun deserialize(decoder: Decoder): Subtasks? {
+        val json = decoder as? JsonDecoder ?: return delegate.deserialize(decoder)
+        return decode(json.decodeJsonElement())
+    }
+
+    override fun serialize(encoder: Encoder, value: Subtasks?) =
+        delegate.serialize(encoder, value)
+
+    fun decode(element: JsonElement): Subtasks? {
+        val wire = element as? JsonObject ?: return null
+        val items = (wire["items"] as? JsonArray).orEmpty()
+            .mapNotNull { decodeItem(it) }
+            // Ids key the card's slots and the screen's list; a repeat would
+            // take another row's place, and crash a LazyColumn outright.
+            .distinctBy { it.id }
+        val done = wire["done"].countOrNull() ?: 0
+        if (items.isEmpty() && done == 0) return null
+        return Subtasks(
+            turnEnded = wire["turnEnded"].flagOrNull() ?: false,
+            running = wire["running"].countOrNull() ?: items.count { it.state.isWorking },
+            blocked = wire["blocked"].countOrNull() ?: items.count { it.state == SubtaskState.BLOCKED },
+            failed = wire["failed"].countOrNull() ?: items.count { it.state == SubtaskState.FAILED },
+            done = done,
+            items = items,
+        )
+    }
+
+    /** An item needs an id of the agent-key shape and an ordinal; the rest has a fallback. */
+    private fun decodeItem(element: JsonElement): Subtask? {
+        val wire = element as? JsonObject ?: return null
+        val id = wire["id"].stringOrNull()?.takeIf { Subtask.ID_REGEX.matches(it) } ?: return null
+        val n = wire["n"].countOrNull()?.takeIf { it >= 1 } ?: return null
+        return Subtask(
+            id = id,
+            n = n,
+            label = wire["label"].stringOrNull()?.takeIf { it.isNotBlank() } ?: SubtaskCopy.fallbackLabel(n),
+            state = SubtaskState.fromWire(wire["state"].stringOrNull()),
+            activity = wire["activity"].stringOrNull().orEmpty(),
+        )
+    }
+
+    /** A JSON string's value; null for anything else, numbers included. */
+    private fun JsonElement?.stringOrNull(): String? =
+        (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    /** A whole JSON number from 0 up that fits an Int; null for anything else, "3" included. */
+    private fun JsonElement?.countOrNull(): Int? =
+        (this as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toIntOrNull()?.takeIf { it >= 0 }
+
+    /** A JSON boolean; null for anything else, the string "true" included. */
+    private fun JsonElement?.flagOrNull(): Boolean? {
+        val primitive = this as? JsonPrimitive ?: return null
+        if (primitive.isString) return null
+        return when (primitive.content) {
+            "true" -> true
+            "false" -> false
+            else -> null
+        }
+    }
 }
 
 // MARK: - Focus presence and commands
@@ -379,6 +1120,44 @@ fun sourceDisplayName(source: String): String = when (source) {
     "codex" -> "Codex"
     else -> source.replaceFirstChar { it.uppercase() }
 }
+
+/**
+ * What TalkBack hears an agent's usage block begin with: its name and how
+ * many sessions it has on the board, done included, "Claude, 7 sessions",
+ * as iOS's head says it, whether or not the count is drawn. The name alone
+ * where it has none, as on a board with no sessions, which still shows every
+ * agent's limits.
+ */
+fun agentHeadDescription(source: String, sessions: Int): String =
+    if (sessions > 0) "${sourceDisplayName(source)}, ${ProjectSections.sessionCount(sessions)}" else sourceDisplayName(source)
+
+/**
+ * The agents that get a usage block, which on Android is each agent's head
+ * (docs/design/project-sections.md, THE AGENTS' HEADS), by iOS's rule and in
+ * its order (AgentSummary.make): on a board with sessions, every agent with
+ * sessions, with its limits where it reports them and none where it does not;
+ * on an empty board, every agent that reports limits, which still matter
+ * between runs. By source, never by activity, so a block keeps its place
+ * while the same agents are on the board.
+ *
+ * Blocks came from the reports alone, so an agent run with an API key or with
+ * AGSTATUS_USAGE=off, posted by the shell hook or a raw post, or any source
+ * such as gemini, had none: its mark on the cards had no legend, and its
+ * session count was shown nowhere. Such an agent's block has no windows, and
+ * says so ([NO_PLAN_LIMITS]). A report with no windows, which tolerant
+ * decoding allows, is no report, as on iOS.
+ */
+fun agentHeads(sessions: List<Session>, usage: List<UsageInfo>): List<UsageInfo> {
+    val reports = LinkedHashMap<String, UsageInfo>()
+    for (info in usage) if (info.windows.isNotEmpty() && info.source !in reports) reports[info.source] = info
+    val sources = if (sessions.isEmpty()) reports.keys else sessions.mapTo(HashSet()) { it.source }
+    // By UTF-16 code unit, as Swift sorts them: the server takes sources of
+    // a-z, 0-9, '_' and '-' only, where code units and Swift's order agree.
+    return sources.sorted().map { source -> reports[source] ?: UsageInfo(source = source) }
+}
+
+/** What an agent's usage block says in place of its meters when it reports none: iOS's head's words. */
+const val NO_PLAN_LIMITS = "No plan limits reported"
 
 // MARK: - Usage history
 

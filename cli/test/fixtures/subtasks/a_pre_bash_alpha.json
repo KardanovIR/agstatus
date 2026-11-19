@@ -1,0 +1,22 @@
+{
+ "source": "probe run a, events-a.jsonl line 7 (PreToolUse, t_ms 1793138690842)",
+ "payload": {
+  "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+  "transcript_path": "{{projects}}/5cef7152-ef68-481f-8a4f-463f66702bf9.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "0a61928a-0d23-400f-b306-ce771865f1d0",
+  "permission_mode": "default",
+  "agent_id": "a28b0e80d3d1190c2",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "echo alpha",
+   "description": "Print alpha"
+  },
+  "tool_use_id": "toolu_01LqyZAMwA6Xyfs8AwkGfDxK"
+ }
+}

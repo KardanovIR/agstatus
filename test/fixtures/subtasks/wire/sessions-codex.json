@@ -1,0 +1,44 @@
+[
+  {
+    "id": "seed-codex",
+    "name": "search-indexer",
+    "status": "coding",
+    "message": "Editing files",
+    "project": "search-indexer",
+    "source": "codex",
+    "host": null,
+    "createdAt": 1793209331890,
+    "updatedAt": 1793209331895,
+    "homeProject": "search-indexer",
+    "subtasks": {
+      "turnEnded": false,
+      "running": 3,
+      "blocked": 0,
+      "failed": 0,
+      "done": 2,
+      "items": [
+        {
+          "id": "eda034f3b538b230c6bd40eb",
+          "n": 3,
+          "label": "Feynman",
+          "state": "testing",
+          "activity": "cargo test -p indexer"
+        },
+        {
+          "id": "389b9beddd053d3df2cd0c32",
+          "n": 4,
+          "label": "Noether",
+          "state": "coding",
+          "activity": "Editing files"
+        },
+        {
+          "id": "13fb52e6f6f78f771bfa0c6e",
+          "n": 5,
+          "label": "Hypatia",
+          "state": "planning",
+          "activity": ""
+        }
+      ]
+    }
+  }
+]

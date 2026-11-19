@@ -1,0 +1,80 @@
+{
+  "none": {
+    "session": "seed-none",
+    "name": "Fix the iPad board layout",
+    "source": "claude",
+    "story": "No subagents: the card exactly as 1.6.3 drew it (no subtasks key)."
+  },
+  "two": {
+    "session": "seed-two",
+    "name": "Ship the store migration",
+    "source": "claude",
+    "story": "Two foreground subagents mid-run, testing and coding; the parent waits on them."
+  },
+  "ten": {
+    "session": "seed-ten",
+    "name": "Review and verify the subtasks branch",
+    "source": "claude",
+    "story": "A workflow: 10 running (review:*/verify:*), 15 done this turn."
+  },
+  "thirty": {
+    "session": "seed-thirty",
+    "name": "Implement subtasks across all clients",
+    "source": "claude",
+    "story": "Thirty at once across four workflows and the Agent tool, 186 done; the parent edits meanwhile."
+  },
+  "blocked": {
+    "session": "seed-blocked",
+    "name": "Verify the hook before release",
+    "source": "claude",
+    "story": "The ten-agent workflow with verify:hook waiting for approval: \"Needs approval: verify:hook\"."
+  },
+  "two-blocked": {
+    "session": "seed-two-blocked",
+    "name": "Prepare the Android release",
+    "source": "claude",
+    "story": "Five foreground subagents, two waiting for approval: \"Needs approval: Audit the Android strings +1\"."
+  },
+  "failed": {
+    "session": "seed-failed",
+    "name": "Prepare the 1.6.4 release",
+    "source": "claude",
+    "story": "Background subagents: 2 running, 1 failed (\"Failed: API error (overloaded)\"), 4 done; the parent edits meanwhile."
+  },
+  "finished": {
+    "session": "seed-finished",
+    "name": "Map the board layout code",
+    "source": "claude",
+    "story": "Twelve foreground subagents all done, the parent working again: a count-only block, \"12 done\"."
+  },
+  "background": {
+    "session": "seed-background",
+    "name": "Land the docs and CI sweep",
+    "source": "claude",
+    "story": "Stop while 2 background subagents run: own done, wire testing \"2 subagents still running\", turnEnded (WORKING), 3 done."
+  },
+  "hold": {
+    "session": "seed-hold",
+    "name": "Collect the background reports",
+    "source": "claude",
+    "story": "The last background subagent finished after Stop: planning \"Reading subagent results\", 3 done, turnEnded false."
+  },
+  "minimal": {
+    "session": "seed-minimal",
+    "name": "claude-status",
+    "source": "claude",
+    "story": "Minimal mode: no labels (\"Subagent N\" from the server), tool names only, folder as name; 4 running, 2 done."
+  },
+  "codex": {
+    "session": "seed-codex",
+    "name": "search-indexer",
+    "source": "codex",
+    "story": "Codex: root \"Processing prompt\" then editing; sub-agents Feynman (testing), Noether (coding), Hypatia (planning, no activity); 2 done."
+  },
+  "long": {
+    "session": "seed-long",
+    "name": "Fix listener reinstall leaving Focus stopped",
+    "source": "claude",
+    "story": "Labels at the p90 length (52 characters) and activities near the 80-character cap; 3 running, 2 done."
+  }
+}

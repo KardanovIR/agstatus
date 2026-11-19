@@ -1,0 +1,16 @@
+{
+  "about": "UserPromptSubmit with ordinary text: the prompt, plus the turn start.",
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "name": "proj",
+      "status": "planning",
+      "message": "Run echo alpha and echo beta in two subagents",
+      "project": "proj",
+      "source": "claude",
+      "turn": {
+        "phase": "start"
+      }
+    }
+  ]
+}

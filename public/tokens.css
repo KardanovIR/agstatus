@@ -111,6 +111,25 @@
   --st-coding:   oklch(74% 0.085 240);
   --st-testing:  oklch(74% 0.080 200);
 
+  /* Two readings that are never a session's status on the wire, so both are
+   * derived from one of the six rather than typed.
+   *
+   * `working`: a card whose own turn is over while its subagents still run —
+   * worked out by the client, never sent. Coding's own colour, surface and
+   * edge: it belongs to the agent-is-working family, and its branch mark and
+   * its word tell it from coding, since no state here is carried by hue
+   * alone. Coding at half chroma was tried and left the card's word quieter
+   * than the coloured rows under it, which the card's word may never be.
+   *
+   * `failed`: a subagent row only. Blocked's hue with most of its chroma
+   * taken out (sRGB #C89790, which the native apps carry): findable on the
+   * lean-in without reading as an alarm. Nobody is waiting on you — the
+   * parent has already been told — and a second red word on a card would
+   * compete with the one state that does mean you. At 0.06 it sits under
+   * every working state's chroma. */
+  --st-working: var(--st-coding);
+  --st-failed: oklch(from var(--st-blocked) 72% 0.06 h);
+
   /* Not a state — a LIMIT. The two are different things and this is the one
    * place amber belongs: the board's accent was amber in an early pass and had
    * to go, because `coding` is the most common state and every working card

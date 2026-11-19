@@ -63,10 +63,11 @@ param(
     [string] $Url,
     # Webhook secret, for self-hosted single-tenant servers.
     [string] $Secret,
-    # Send tool and folder names, never command text, prompts or session titles.
+    # Send tool and folder names, never command text, prompts, session titles
+    # or subagent tasks ("Subagent N" instead).
     [switch] $Minimal,
-    # Send command text, prompts and session titles again. A re-run keeps
-    # -Minimal without being told, so this is how to turn it off.
+    # Send command text, prompts, session titles and subagent tasks again. A
+    # re-run keeps -Minimal without being told, so this is how to turn it off.
     [switch] $NoMinimal,
     # Drop the webhook secret this machine has; a re-run keeps it otherwise.
     [switch] $NoSecret
@@ -550,9 +551,10 @@ Unrecognised argument(s): $($unknownArgs -join ' ')
     -Url <base>       Server to use, for a self-hosted board
     -Secret <s>       Webhook secret, for self-hosted single-tenant servers
     -NoSecret         Drop the webhook secret this machine has
-    -Minimal          Send tool and folder names, never command text, prompts
-                      or session titles
-    -NoMinimal        Send command text, prompts and session titles again
+    -Minimal          Send tool and folder names, never command text, prompts,
+                      session titles or subagent tasks ("Subagent N" instead)
+    -NoMinimal        Send command text, prompts, session titles and subagent
+                      tasks again
 
   Options need the script-block form; a bare 'irm ... | iex' cannot carry any:
     & ([scriptblock]::Create((irm https://agstatus.online/install.ps1))) -Code XXXX-XXXX

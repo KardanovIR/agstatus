@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <!-- --ink-950, converted once. A meta cannot read a custom property. -->
+  <meta name="theme-color" content="#0c0f0d" />
+  <title>AgStatus</title>
+  <!-- Order is load-bearing: tokens, then the card (shared with the landing
+       page, so the two can never drift), then the board around it, then the
+       shell around the grid. -->
+  <link rel="stylesheet" href="/tokens.css" />
+  <link rel="stylesheet" href="/card.css" />
+  <link rel="stylesheet" href="/board.css" />
+  <link rel="stylesheet" href="/shell.css" />
+</head>
+<body>
+  <header class="topbar">
+    <!-- The board's h1. It was a plain span, so the page shipped with no
+         heading at all and a screen reader had nothing to navigate by. -->
+    <h1 class="logo">AgStatus</h1>
+    <!-- One bit of information, so it gets one dot — but a dot is colour
+         alone, and an empty span has no accessible name at all. The word is
+         in a live region beside it now, so the state is announced when it
+         changes instead of living only in a `title` nothing reads. -->
+    <span class="conn" id="conn" role="status">
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span class="sr-only" id="conn-text">Connecting…</span>
+    </span>
+    <span class="topbar-spacer"></span>
+  </header>
+
+  <section class="usage" id="usage" aria-label="Plan usage limits" hidden></section>
+  <div class="stats" id="stats" hidden></div>
+  <section class="detail" id="detail" aria-label="Usage detail" hidden></section>
+
+  <main>
+    <div class="grid" id="grid"></div>
+  </main>
+
+  <footer class="footer" id="footer">
+    <span class="label">Webhook</span>
+    <code id="webhook-url">—</code>
+    <button class="copy" id="copy-btn" type="button" aria-label="Copy webhook URL">Copy</button>
+    <span class="auth" id="auth-note"></span>
+  </footer>
+
+  <!-- The marks first: app.js reads them at definition time, and the landing
+       page loads the same file so the two can never draw different icons. -->
+  <script src="/marks.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

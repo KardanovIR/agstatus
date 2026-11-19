@@ -1,0 +1,26 @@
+{
+  "about": "c_UserPromptSubmit_task_notification when the stop was lost (local state still coding): the fixed line plus the done.",
+  "requests": [
+    {
+      "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+      "name": "proj",
+      "status": "planning",
+      "message": "Reading subagent results",
+      "project": "proj",
+      "source": "claude"
+    },
+    {
+      "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+      "status": "coding",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "fac377eb5e21506535baeb49",
+        "state": "done",
+        "kind": "agent",
+        "label": "bg echo",
+        "at": 1793138847870
+      }
+    }
+  ]
+}

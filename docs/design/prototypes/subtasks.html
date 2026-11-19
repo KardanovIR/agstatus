@@ -1,0 +1,2632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Subtasks on cards</title>
+<!--
+  PROTOTYPE — subtasks on session cards.
+
+  A static, self-contained mock for judging how a session's running subagents
+  show inside its card. It is not an implementation and talks to no server.
+  Inside the iPhone and the iPad, sizes are iOS points, taken from
+  ios/AgStatus/SessionCardView.swift, AgentSections.swift, BoardView.swift and
+  Theme.swift: the per-agent board with two-line titles, as it ships next. The
+  type there is the system face, because the app bundles none. The web board
+  is drawn at its real CSS sizes from public/app.js, card.css, board.css and
+  tokens.css on origin/master. Its faces are the board's own self-hosted files,
+  loaded from public/fonts by relative path. Opened outside the repo, it falls
+  back to the system face. It makes no other request.
+
+  DECIDED by the owner, 2026-10-28 (the brief this mock draws):
+    · Watch each one. Every RUNNING subagent (Agent tool, background agent,
+      workflow agent, Codex sub-agent) is its own row inside its parent's
+      card: label, status mark and word, activity. Today the hook folds all of
+      it into the parent's one activity line, and on the owner's Mac 90% of
+      what that line shows comes from subagents.
+    · No card inside a card. The rows are flat lines under one hairline. The
+      card's status word stays the loudest thing on it; a row's status is the
+      same mark-and-word system, smaller.
+    · Layout: name and status → the parent's own line → rows → footer → meta.
+      At most 3 rows in an iPad or web column, 2 on a phone; then a footer:
+      "+4 more · 12 done". Rows keep their start order (see AUDITED: keeping
+      their place wins), and a blocked subagent always takes a visible slot. A card with no subagents looks
+      exactly as it does today.
+    · Expand in place / the phone opens the session screen. On an iPad or the
+      web the footer opens the full list inside the card ("Show less" folds
+      it). On a phone it opens the session screen, with the subtasks listed
+      above the timeline. A row opens the session screen at that subtask.
+      Focus still raises the parent's window.
+    · A blocked subagent turns the card blocked. Its line names the subagent
+      ("verify:hook needs approval"; see AUDITED for the copy this mock now
+      uses), the row is marked, and push works as today.
+    · Finished subagents fold into a count. A failed one stays listed,
+      "failed", until the parent's turn ends.
+    · Background subagents still running after the parent's turn ended: the
+      card does not say DONE.
+    · Nested subagents are listed flat. Minimal mode labels them
+      "Subagent 1, 2…", since labels come from prompts. Older app versions
+      ignore the data and get a calmer card.
+    · Motion: a row moves only when it starts, finishes or gets blocked. It
+      fades in or out, and the done count ticks. Nothing spins and nothing
+      loops. With reduced motion, every change is instant.
+
+  OPEN — each one is switchable here, by key and by link:
+    · rows=oldest|active       When more run than fit, which rows show: the
+                               first to start (stable), or the most recently
+                               active. Either way a row keeps its slot until
+                               it finishes (see AUDITED below).
+    · bgstatus=busiest|working The card's word while only background subagents
+                               work after the parent's turn: the most urgent
+                               subtask's state, or a new word. This mock
+                               proposes "working" over "waiting". On this board
+                               "waiting" reads as waiting on YOU (blocked and
+                               done are both your turn), and here nobody is
+                               waiting on you. It wears coding's colour and a
+                               branch mark of its own.
+    · done=session|batch       When a fresh batch starts, the done count
+                               either keeps counting the whole turn or starts
+                               again for the batch.
+
+  FOUND while building it, for the owner:
+    · Neither "failed" nor "working" may be sent as a session's status. iOS's
+      AgentStatus (Models.swift) is a plain String enum with no unknown case,
+      so a shipped app fails to decode it. The parent's status on the wire
+      stays one of the six. "working" is worked out on the client, from the
+      subtask data an older app ignores. An older app then shows the busiest
+      subtask's state, which is what bgstatus=busiest draws.
+    · The hook sends no "researching". WebSearch, WebFetch and Agent all
+      report planning, so this mock uses planning.
+    · The web grid's rows are even. The cards beside one with subtasks
+      stretched to its height, empty above their Focus bars (card-actions
+      sits at margin-top: auto), and reshaped whenever it expanded. This mock
+      adds align-items: start to the grid (public/card.css .grid on
+      origin/master), so each card keeps its own height; the next row of
+      cards still moves down when one grows. If no movement at all is
+      wanted, CSS columns (masonry) would do it, at the cost of reading order.
+    · "<label> needs approval" lost its reason on a phone. A two-line title
+      leaves the message one line, and a median Agent-tool label already
+      pushed "needs approval" past it. The background line "Turn finished —
+      2 agents still running" lost its reason the same way, and contradicted
+      TESTING under bgstatus=busiest and on an older app.
+
+  AUDITED, 2026-10-28 — changed in this mock, for the owner to confirm:
+    · Copy. A blocked subagent's line is "Needs approval: <label>", and
+      "Needs approval: <label> +1" for more than one: the reason first, so a
+      cut line keeps it. This departs from the brief's "<label> needs
+      approval". After the turn, while subagents run, the server's line is
+      "2 subagents still running": one phone line, one term (subagents, as
+      the rows and minimal mode say), and true under either word above it.
+    · Row status ink. A row's mark is in its state colour; its word is in
+      text-3, regular weight. The badge is the one coloured word on a card.
+      Size could not do it: caption2 (11pt), the smallest Dynamic Type
+      style, is the badge's own size. Only a blocked row's word is red, and
+      at the badge's weight no longer. text-3 at 11pt is 4.6:1 on the
+      blocked card's ground, the lowest, and passes AA.
+    · On the web the row's state leads, in a 76px column under the badge's
+      mark, so the badge and the rows share one column of state, as the
+      iOS rail gives them one on the right.
+    · "Working" has coding's colour, not half its chroma, which left the
+      card's word quieter than the rows under it. Its mark is a branch with
+      a node at each arm's end; the three-prong fan read as "∈" or "€". The
+      web's stats strip gives "working" a slot while a card wears it, so
+      the strip still sums to the board.
+    · Rows keep their place, and that wins over exact start order. A row
+      holds its slot until it finishes; then the next hidden row takes that
+      slot in place (rows=active: a hidden row that reports in takes the
+      stalest slot). A blocked subagent takes the lowest slot whose row is
+      not blocked (the stalest, under rows=active); once approved it keeps
+      the slot until it finishes, and the row it displaced comes back only
+      into a slot freed by a finish. No row travels unless it started,
+      finished or changed state; a slot nothing takes closes as part of its
+      row's going. Opening the list keeps the rows on show where they are
+      and adds the rest below.
+    · A label takes at most 58% of a row's text (on iOS, a maxWidth of that
+      fraction beside the layoutPriority), so with a p90 label of 52
+      characters the activity keeps about 100pt on a phone and 110px in a
+      web column. "Long labels" shows it.
+    · The session screen counts running, blocked and failed apart
+      ("9 running · 1 blocked"), and lists blocked subagents first, so the
+      phone's footer lands on the one that needs you. On a wide screen the
+      state leads each row in an 80pt column, as the timeline's does, so it
+      sits beside its label, not 1,000pt away.
+    · Arriving at a subtask lights its row's ground (ink-850) for two
+      seconds, then it goes out. The 2px ring in the brightest ink was the
+      brightest thing on the screen and boxed the row.
+
+  Every state is addressable, so it can be linked or captured:
+
+    ?device=iphone|ipad-l|web
+    &scenario=none|two|ten|thirty|blocked|failed|finished|background|nested
+             |minimal|codex|long|expanded|phone-session
+    &rows=oldest|active
+    &bgstatus=busiest|working
+    &done=session|batch
+    &app=next|older      (older: an app that ignores the subtask data)
+    &step=0…4            (the state after that many of Play's events)
+    &bare=1              (the device alone at 1:1, for screenshots)
+-->
+<style>
+/* ---- Tokens ---------------------------------------------------------------
+ * Colour, space, radius and motion are public/tokens.css, verbatim; Theme.swift
+ * carries the same values as sRGB. --tier-silver exists only on iOS. The two
+ * at the end are this proposal's, and each is derived from a shipped token —
+ * none is typed by hand. */
+:root {
+  color-scheme: dark;
+  --hue: 155;
+  --ink-950: oklch(16.5% 0.008 var(--hue));
+  --ink-900: oklch(20.5% 0.009 var(--hue));
+  --ink-850: oklch(24.5% 0.010 var(--hue));
+  --ink-800: oklch(30% 0.011 var(--hue));
+  --ink-700: oklch(38% 0.012 var(--hue));
+  --text-1: oklch(94% 0.010 var(--hue));
+  --text-2: oklch(74% 0.012 var(--hue));
+  --text-3: oklch(64.5% 0.012 var(--hue));
+  --st-done:     oklch(76% 0.125 155);
+  --st-blocked:  oklch(68% 0.190 28);
+  --st-idle:     oklch(66% 0.020 155);
+  --st-planning: oklch(78% 0.100 320);
+  --st-coding:   oklch(74% 0.085 240);
+  --st-testing:  oklch(74% 0.080 200);
+  --st-limit-warn: oklch(78% 0.150 80);
+  --tier-silver: oklch(82% 0.010 240);
+  --blocked-edge: oklch(from var(--st-blocked) l c h / 0.42);
+
+  /* A failed subagent: blocked's hue with most of its chroma taken out. It
+   * has to be findable on the lean-in without reading as an alarm. Nobody is
+   * waiting on you (the parent has already been told), and a second red word
+   * on a card would compete with the one state that does mean you. At 0.06 it
+   * sits under every working state's chroma. */
+  --st-failed: oklch(from var(--st-blocked) 72% 0.06 h);
+  /* The proposed "working": coding's own colour. It belongs to the
+   * agent-is-working family, and its mark and word tell it from coding, since
+   * no state on this board is carried by hue alone. It was coding at half
+   * chroma, which left the card's word quieter than the coloured rows under
+   * it: the one thing the card's word may never be. */
+  --st-working: var(--st-coding);
+
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --d-fast: 120ms;
+  --d-mid: 220ms;
+  --d-slow: 420ms;
+
+  /* The native app sets everything in the system face, and the limit blocks
+   * in its rounded cut. Chrome has no `ui-rounded` and falls back to the
+   * upright face. */
+  --font-sys: system-ui, -apple-system, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  --font-round: ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, sans-serif;
+  /* The web board's three faces (tokens.css). */
+  --font-read: 'Barlow', ui-sans-serif, system-ui, sans-serif;
+  --font-label: 'Barlow Semi Condensed', 'Barlow', ui-sans-serif, system-ui, sans-serif;
+  --font-ui: 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* The viewer's own ground: a step below the board's, so the device reads as
+   * the lit thing on the page and the controls do not. */
+  --pv-ground: oklch(12.5% 0.006 var(--hue));
+}
+
+/* The board's own files, so the web card is measured in the face it ships in.
+ * Relative to docs/design/prototypes/. */
+@font-face { font-family: 'Barlow'; src: url('../../../public/fonts/barlow-400.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Barlow'; src: url('../../../public/fonts/barlow-600.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+@font-face { font-family: 'Barlow'; src: url('../../../public/fonts/barlow-700.woff2') format('woff2'); font-weight: 700; font-display: swap; }
+@font-face { font-family: 'Barlow Semi Condensed'; src: url('../../../public/fonts/barlow-semi-condensed-500.woff2') format('woff2'); font-weight: 500; font-display: swap; }
+@font-face { font-family: 'Barlow Semi Condensed'; src: url('../../../public/fonts/barlow-semi-condensed-600.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+@font-face { font-family: 'Barlow Semi Condensed'; src: url('../../../public/fonts/barlow-semi-condensed-700.woff2') format('woff2'); font-weight: 700; font-display: swap; }
+@font-face { font-family: 'Public Sans'; src: url('../../../public/fonts/public-sans.woff2') format('woff2-variations'); font-weight: 400 700; font-display: swap; }
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body { margin: 0; }
+
+body {
+  min-height: 100dvh;
+  background: var(--pv-ground);
+  color: var(--text-1);
+  font-family: var(--font-sys);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--st-done);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ==========================================================================
+ * VIEWER — the frame around the prototype. Quieter than the board it shows.
+ * ========================================================================== */
+
+.pv-bar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-sm) var(--space-lg);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--pv-ground);
+  border-bottom: 1px solid var(--ink-800);
+}
+
+.pv-title {
+  flex: 1 0 100%;
+  margin: 0;
+  font-family: var(--font-round);
+  font-size: 0.9375rem;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.pv-title small {
+  margin-left: var(--space-xs);
+  font-family: var(--font-sys);
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* Two rows, because they are two different questions: what the board is
+ * holding, and which of the open answers is being shown. */
+.pv-rows { display: flex; flex-direction: column; gap: var(--space-sm); min-width: 0; }
+.pv-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-sm) var(--space-lg); }
+
+.pv-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.pv-group legend {
+  padding: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Separate keys rather than one joined control: a joined control that wraps
+ * onto a second row leaves its own background showing through the gap. */
+.pv-seg { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
+
+.pv-seg button, .pv-act {
+  appearance: none;
+  min-height: 30px;
+  padding: 0 var(--space-sm);
+  background: transparent;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background var(--d-fast) var(--ease), color var(--d-fast) var(--ease),
+    border-color var(--d-fast) var(--ease);
+}
+
+.pv-seg button:hover, .pv-act:hover { color: var(--text-1); background: var(--ink-850); }
+
+/* Pressed is carried by fill, edge and weight together, not by colour alone. */
+.pv-seg button[aria-pressed='true'] {
+  background: var(--ink-850);
+  border-color: var(--text-3);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.pv-act { border-color: var(--ink-700); color: var(--text-1); }
+.pv-act:disabled { color: var(--text-3); cursor: default; }
+.pv-act:disabled:hover { background: transparent; }
+.pv-acts { display: flex; flex-wrap: wrap; gap: var(--space-2xs); }
+
+/* The open questions are set apart from what the board holds. */
+.pv-row.is-open {
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--ink-800);
+}
+
+@media (pointer: coarse) {
+  .pv-seg button, .pv-act { min-height: 44px; }
+}
+
+@media (max-width: 760px), (max-height: 700px) {
+  .pv-bar { position: static; }
+}
+
+.pv-rule {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--space-xs) var(--space-xl);
+  max-width: 110rem;
+  padding: var(--space-md) var(--space-md) 0;
+  color: var(--text-2);
+}
+
+.pv-rule p { max-width: 92ch; margin: 0; }
+.pv-rule b { color: var(--text-1); font-weight: 600; }
+
+.pv-stage { padding: var(--space-md) var(--space-md) var(--space-2xl); }
+
+/* Holds the scaled device's footprint, since a transform does not. */
+.pv-fit { position: relative; }
+
+.pv-caption {
+  margin: var(--space-xs) 0 0;
+  font-size: 0.6875rem;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+ * DEVICE — a screen in iOS points (or CSS pixels, for the web), scaled to fit.
+ * ========================================================================== */
+
+.device {
+  --pad: 16px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--w);
+  height: var(--h);
+  overflow: hidden;
+  background: var(--ink-950);
+  outline: 1px solid var(--ink-700);
+  border-radius: var(--corner, 20px);
+  transform-origin: 0 0;
+  font-family: var(--font-sys);
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.statusbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--pad);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.statusbar svg { width: 24px; height: 12px; display: block; }
+
+.device.is-phone .statusbar {
+  height: 62px;
+  padding: 10px 44px 0;
+  font-size: 16px;
+}
+
+.device.is-phone::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 3;
+  width: 124px;
+  height: 36px;
+  margin-left: -62px;
+  border-radius: var(--r-pill);
+  background: oklch(8% 0.004 var(--hue));
+}
+
+.navbar {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  column-gap: 14px;
+  height: 44px;
+  margin-bottom: 10px;
+  padding: 0 10px;
+}
+
+.device.is-phone .navbar { grid-template-columns: auto 1fr auto; padding: 0 20px; }
+.navbar.is-push { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+.device.is-phone .navbar.is-push { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+
+.capsule {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-pill);
+  background: var(--ink-900);
+  color: var(--text-1);
+}
+
+button.capsule { appearance: none; font: inherit; cursor: pointer; padding: 0; }
+.capsule.is-trailing { justify-self: end; }
+.capsule svg { width: 20px; height: 20px; display: block; }
+
+.conn {
+  width: 9px;
+  height: 9px;
+  margin: 0 12px;
+  border-radius: var(--r-pill);
+  background: var(--st-done);
+}
+
+.nav-title {
+  font-family: var(--font-round);
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* A pushed screen's inline title: the system face, cut to one line. */
+.nav-title.is-plain {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sys);
+  font-weight: 600;
+}
+
+.pinned { flex: none; padding: 10px var(--pad) 2px; }
+
+.board-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.board-scroll::-webkit-scrollbar { display: none; }
+
+.board { padding: 6px var(--pad) 18px; }
+
+.streak {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 12px;
+  padding: 8px var(--pad) 24px;
+  background: var(--ink-900);
+  border-top: 1px solid var(--ink-800);
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.device.is-phone .streak { padding-bottom: 38px; }
+.streak > svg { width: 13px; height: 13px; margin-top: 3px; color: var(--tier-silver); }
+.streak-line { display: flex; align-items: baseline; gap: 8px; }
+.streak-name { font-size: 15px; font-weight: 600; color: var(--tier-silver); }
+.streak-next { margin-left: auto; }
+.pips { display: inline-flex; gap: 4px; align-self: center; }
+.pips i { width: 5px; height: 5px; border-radius: var(--r-pill); border: 1px solid var(--ink-800); }
+.pips i.on { background: var(--tier-silver); border-color: var(--tier-silver); }
+.streak-track { height: 2px; margin-top: 4px; border-radius: var(--r-pill); background: var(--ink-850); }
+.streak-track i { display: block; width: 31.25%; height: 100%; border-radius: var(--r-pill); background: var(--text-3); }
+
+/* ==========================================================================
+ * BOARD — the agent heads and the sections, as agent-sections.html draws them
+ * ========================================================================== */
+
+.meter-value, .ts, .tok, .count, .alarm b, .n { font-variant-numeric: tabular-nums; }
+
+.heads {
+  display: grid;
+  grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr));
+  gap: 10px;
+}
+
+.heads.is-narrow { align-items: start; }
+.is-cols { column-gap: 24px; }
+
+.head {
+  container: head / inline-size;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: 14px;
+}
+
+.head.has-blocked { border-color: var(--blocked-edge); }
+
+.head-in { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.head-line { display: flex; align-items: center; gap: 8px; min-height: 18px; min-width: 0; }
+
+.ident {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-round);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+.ident-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.count {
+  flex: none;
+  font-family: var(--font-sys);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.mark { flex: none; width: 16px; height: 16px; display: block; color: var(--text-2); }
+
+.alarm {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 0 auto;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--st-blocked);
+  white-space: nowrap;
+}
+
+.alarm svg { width: 15px; height: 15px; flex: none; }
+.alarm .alarm-go { width: 11px; height: 11px; margin-left: -1px; }
+
+.meters { display: grid; gap: 10px; }
+
+.meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.meter-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-round);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.meter-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-round);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.meter-reset { font-size: 11px; font-weight: 400; color: var(--text-2); }
+
+.meter-track {
+  grid-column: 1 / -1;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: oklch(100% 0 0 / 0.06);
+  overflow: hidden;
+}
+
+.meter-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--r-pill);
+  transform-origin: left center;
+  background: var(--st-done);
+}
+
+.meter-fill.mid { background: var(--st-limit-warn); }
+.meter-fill.high { background: var(--st-blocked); }
+
+@container head (max-width: 300px) {
+  .meter { grid-template-columns: minmax(0, 1fr); }
+  .count, .alarm-word { display: none; }
+}
+
+@container head (min-width: 520px) {
+  .meters { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 20px; }
+  .meter { grid-template-columns: minmax(0, 1fr); }
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(var(--n, 2), minmax(0, 1fr));
+  align-items: start;
+}
+
+.stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.groups { display: flex; flex-direction: column; gap: 8px; }
+
+.group-label {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 calc(var(--pad) * -1) -4px;
+  padding: 8px calc(var(--pad) + 2px);
+  background: var(--ink-950);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* ---- Card (iOS) -----------------------------------------------------------
+ * The card as it ships next, unchanged where it has no subtasks. The border is
+ * drawn inside the 8 / 12 padding, as strokeBorder draws it. */
+.card {
+  --state: var(--st-idle);
+  /* The card's own edge, which is also the colour of the one hairline inside
+   * it: derived from the state, as the edge is, so the two cannot drift. */
+  --rule: color-mix(in oklab, var(--ink-800) 62%, var(--state));
+  min-width: 0;
+  padding: 7px 11px;
+  background: color-mix(in oklab, var(--ink-900) 90%, var(--state));
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.card.status-planning { --state: var(--st-planning); }
+.card.status-coding { --state: var(--st-coding); }
+.card.status-testing { --state: var(--st-testing); }
+.card.status-blocked { --state: var(--st-blocked); }
+.card.status-done { --state: var(--st-done); }
+.card.status-working { --state: var(--st-working); }
+
+.card.status-blocked {
+  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+  border-color: var(--blocked-edge);
+}
+
+.card-row { display: flex; align-items: flex-start; gap: 12px; }
+
+.card-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+/* Up to two lines, and when it takes two the message gives one back (the
+ * ViewThatFits in SessionCardView.nameAndMessage). */
+.name {
+  margin: 0;
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--text-1);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.message {
+  margin: 0;
+  font-size: 15px;
+  line-height: 18px;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card.is-two-line .message { -webkit-line-clamp: 1; }
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 16px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.meta > * { flex: none; }
+.meta .sep { color: var(--text-3); }
+
+/* Under the rows, where the brief puts it, the meta line closes the card. */
+.meta.is-foot { margin-top: 4px; }
+
+.rail { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 13px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--state);
+  white-space: nowrap;
+}
+
+.badge svg { width: 12px; height: 12px; }
+
+.focus {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 12px;
+  background: var(--ink-850);
+  border: 1px solid var(--ink-800);
+  border-radius: 8px;
+  color: var(--text-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.focus svg { width: 18px; height: 18px; }
+.focus.is-off { color: var(--text-3); opacity: 0.5; }
+
+/* ==========================================================================
+ * SUBTASKS — the proposal
+ * ========================================================================== */
+
+/* One hairline between the card's own content and its subagents, and nothing
+ * else: no box, no fill, no radius. A tinted band here would be a card inside
+ * a card. */
+.subs {
+  margin-top: 8px;
+  padding-top: 2px;
+  border-top: 1px solid var(--rule);
+}
+
+/* One line per subagent: what it was asked to do, what it is doing, and its
+ * state. The state stands in the badge's column. On iOS the badge is in the
+ * rail, so the state sits at the trailing edge and the badge and the rows'
+ * marks make one column down the right-hand side. On the web the badge is
+ * under the name at the left, so there the state leads the row (see WEB).
+ * Either way that column is the shape a glance reads, before a word is.
+ *
+ * 28pt a row, not 44. A row opens the same session screen as its neighbours,
+ * only scrolled to a different subtask, so a mis-tap costs a scroll. Focus is
+ * the card's one control that reaches across to another machine, and it keeps
+ * its 44. */
+.sub {
+  --rs: var(--st-idle);
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sub.st-planning { --rs: var(--st-planning); }
+.sub.st-coding { --rs: var(--st-coding); }
+.sub.st-testing { --rs: var(--st-testing); }
+.sub.st-blocked { --rs: var(--st-blocked); }
+.sub.st-done { --rs: var(--st-done); }
+.sub.st-failed { --rs: var(--st-failed); }
+
+/* Label and activity share what the state leaves. */
+.sub-text {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The label outlasts the activity, since it is how you know which row this
+ * is, but only up to 58% of the text. Past that it is cut, so the activity
+ * (the live part, the reason the row exists) always keeps a share: about
+ * 100pt on a phone, 110px in a web column, with a p90 label of 52
+ * characters. Basis auto against basis 0 is the CSS for SwiftUI's
+ * layoutPriority; the cap is a maxWidth of 0.58 of the text's width. */
+.sub-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.sub-act {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+/* The badge's own mark, a size down, in the row's state colour; its word in
+ * the quiet ink, lower case, regular weight. Size cannot keep the badge the
+ * loudest word, because caption2 (11pt) is the smallest Dynamic Type style
+ * and the badge already uses it. Ink does: the badge is the one coloured
+ * word on the card, with a column of small coloured marks under it, and
+ * each row's state is still a mark and a word. text-3 at 11pt clears AA on
+ * every card ground, 4.6:1 on the blocked one, the lowest. */
+.sub-st {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 13px;
+  font-weight: 400;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.sub-st svg { width: 11px; height: 11px; flex: none; color: var(--rs); }
+
+/* The one row that needs you: the solid mark it shares with the card, its
+ * word in red and a lit label. Not heavier: a 600-weight red word under
+ * BLOCKED would be a second BLOCKED. */
+.sub.st-blocked .sub-label { color: var(--text-1); }
+.sub.st-blocked .sub-st { color: var(--rs); }
+
+.sub:hover .sub-label { color: var(--text-1); }
+
+.sub:focus-visible { outline-offset: 0; }
+
+/* "+4 more · 12 done". A control when it leads somewhere, plain text when it
+ * is only a count. Secondary ink: it is the rows' summary, not a reading. */
+.sub-foot {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.sub-foot.is-control { cursor: pointer; }
+.sub-foot.is-control:hover { color: var(--text-1); }
+.sub-foot svg { width: 10px; height: 10px; flex: none; margin-left: 2px; color: var(--text-3); }
+.foot-sep { margin: 0 4px; color: var(--text-3); }
+.n { display: inline-block; }
+
+/* ---- Motion ---------------------------------------------------------------
+ * A row moves when it starts, finishes or is blocked, and at no other time.
+ * A new activity is written in place; it is not news. Rows hold slots: a
+ * finished row's slot is taken in place by the next hidden one (it fades
+ * out, the next fades in, nothing else moves), and a slot that nothing takes
+ * closes as part of the finished row's going. */
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+
+@keyframes tick {
+  from { opacity: 0; transform: translateY(-0.45em); }
+}
+
+@keyframes state-change {
+  50% { border-color: var(--state); }
+}
+
+.sub.entering { animation: row-in var(--d-mid) var(--ease) both; }
+.sub.leaving { overflow: hidden; opacity: 0; transition: opacity var(--d-mid) var(--ease); }
+.sub.changed .sub-st { animation: row-in var(--d-slow) var(--ease) both; }
+.n.ticked { animation: tick var(--d-mid) var(--ease) both; }
+.card.changed, .w-card.changed { animation: state-change 900ms var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ==========================================================================
+ * SESSION SCREEN — SessionHistoryView, with the subtasks above the timeline
+ * ========================================================================== */
+
+.ss {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px var(--pad) 40px;
+  scrollbar-width: none;
+}
+
+.ss::-webkit-scrollbar { display: none; }
+
+.ss-head { display: flex; align-items: center; gap: 10px; }
+
+.ss-proj {
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--ink-800);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.ss-status {
+  --state: var(--st-idle);
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: oklch(from var(--state) l c h / 0.16);
+  border: 1px solid oklch(from var(--state) l c h / 0.35);
+  color: var(--state);
+  font-family: var(--font-round);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.ss-section { margin-top: 22px; }
+
+/* The section's name, set as the board sets a meter's label. */
+.ss-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-family: var(--font-round);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.ss-count {
+  font-family: var(--font-sys);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.ss-list { container: sslist / inline-size; }
+
+/* Here there is room, so a subagent gets two lines on a phone (its activity
+ * whole on the second) and a 44pt target. */
+.sub.is-roomy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'label st' 'act act';
+  align-content: center;
+  column-gap: 12px;
+  row-gap: 3px;
+  min-height: 52px;
+  padding: 7px 0;
+  font-size: 13px;
+}
+
+.sub.is-roomy .sub-text { display: contents; }
+.sub.is-roomy .sub-label { grid-area: label; max-width: none; font-size: 15px; line-height: 19px; color: var(--text-1); }
+.sub.is-roomy .sub-act { grid-area: act; }
+.sub.is-roomy .sub-st { grid-area: st; font-size: 12px; }
+.sub.is-roomy .sub-st svg { width: 12px; height: 12px; }
+
+/* On a wide screen the state leads, in a column of its own, as the
+ * timeline's state leads each event below it. Trailing, it stood 1,000pt
+ * from its label across an iPad, and the eye could not join the two. */
+@container sslist (min-width: 600px) {
+  .sub.is-roomy {
+    grid-template-columns: 80px minmax(0, max-content) minmax(0, 1fr);
+    grid-template-areas: 'st label act';
+    min-height: 44px;
+  }
+}
+
+/* Arrived from a card's row: a lit ground for two seconds, then it goes out
+ * (at once, with reduced motion). Not a ring: a full-width outline in the
+ * brightest ink was the brightest thing on the screen, and boxed the row
+ * like a card inside a card. The padding is given back by the margin, so
+ * the text does not move when it goes. After the roomy rows, whose own
+ * padding would otherwise win. */
+.sub.is-arrived {
+  width: calc(100% + 16px);
+  margin-inline: -8px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  background: var(--ink-850);
+}
+
+.sub.is-arrived.is-settled {
+  background: transparent;
+  transition: background-color 600ms var(--ease);
+}
+
+.ss-done { margin: 4px 0 0; font-size: 13px; color: var(--text-3); }
+
+.hrow { display: flex; gap: 12px; }
+
+.hgut { position: relative; flex: none; width: 12px; display: flex; justify-content: center; }
+.hgut::before { content: ''; position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink-800); }
+.hrow:first-child .hgut::before { top: 15px; }
+.hrow:last-child .hgut::before { bottom: calc(100% - 15px); }
+
+.hdot {
+  --state: var(--st-idle);
+  position: relative;
+  margin-top: 11px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--r-pill);
+  background: var(--state);
+}
+
+.hbody { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 auto; padding: 10px 0; }
+.hhead { display: flex; align-items: baseline; gap: 8px; }
+
+.hstatus {
+  --state: var(--st-idle);
+  font-family: var(--font-round);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--state);
+  text-transform: capitalize;
+}
+
+.hat { margin-left: auto; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.hago { font-size: 11px; color: oklch(from var(--text-2) l c h / 0.6); }
+.hmsg { font-size: 15px; line-height: 19px; color: var(--text-2); }
+.hrow:first-child .hmsg { color: var(--text-1); }
+
+.st-c-planning { --state: var(--st-planning); }
+.st-c-coding { --state: var(--st-coding); }
+.st-c-testing { --state: var(--st-testing); }
+.st-c-blocked { --state: var(--st-blocked); }
+.st-c-done { --state: var(--st-done); }
+.st-c-working { --state: var(--st-working); }
+
+/* ==========================================================================
+ * WEB — the board on origin/master: one grid, a source chip on every card
+ * ========================================================================== */
+
+.device.is-web {
+  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.wb {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-lg) var(--space-lg) var(--space-2xl);
+  scrollbar-width: none;
+}
+
+.wb::-webkit-scrollbar { display: none; }
+
+.w-top { display: flex; align-items: baseline; gap: var(--space-sm); }
+
+.w-logo {
+  margin: 0;
+  font-family: var(--font-read);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.w-conn { width: 7px; height: 7px; border-radius: var(--r-pill); background: var(--st-done); align-self: center; }
+
+.w-usage { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+
+.w-usage-block {
+  flex: 1 1 calc(33.333% - var(--space-xs));
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--ink-900);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-lg);
+}
+
+.w-usage-src {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.w-usage-src span { color: var(--text-3); font-weight: 400; }
+
+.w-meter { display: flex; flex-direction: column; gap: var(--space-2xs); }
+
+.w-meter-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-xs);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.w-meter-value {
+  font-family: var(--font-read);
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.w-meter-value span { color: var(--text-3); font-weight: 400; font-family: var(--font-ui); }
+
+.w-track { height: 6px; border-radius: var(--r-sm); background: var(--ink-850); overflow: hidden; }
+.w-fill { width: 100%; height: 100%; border-radius: var(--r-sm); transform-origin: left center; background: var(--st-done); }
+.w-fill.mid { background: var(--st-limit-warn); }
+.w-fill.high { background: var(--st-blocked); }
+
+.w-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs) var(--space-md);
+  font-size: 0.75rem;
+  color: var(--text-3);
+}
+
+.w-stat { display: inline-flex; align-items: center; gap: var(--space-2xs); letter-spacing: 0.04em; text-transform: uppercase; }
+.w-stat b { color: var(--text-1); font-weight: 600; font-family: var(--font-read); font-size: 0.8125rem; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.w-stat.zero { opacity: 0.45; }
+.w-stat.zero b { color: var(--text-3); }
+/* No --state default here: this selector outranks .st-c-*, and would pin
+ * every dot to idle. The fallback does the same job without the fight. */
+.w-stat i { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--state, var(--st-idle)); }
+
+/* align-items: start is this proposal's (public/card.css .grid, when it
+ * ships). Without it the grid's rows are even, and the cards beside one with
+ * subtasks stretch to its height, empty above their Focus bars, and reshape
+ * whenever it expands. Each card keeps its own height; the next row of cards
+ * moves down when one grows, which is true. */
+.w-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: var(--space-md);
+  align-content: start;
+  align-items: start;
+}
+
+.w-card {
+  --state: var(--st-idle);
+  --rule: color-mix(in oklab, var(--ink-800) 62%, var(--state));
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-sm) var(--space-xs);
+  background: color-mix(in oklab, var(--ink-900) 90%, var(--state));
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+}
+
+.w-card.status-planning { --state: var(--st-planning); }
+.w-card.status-coding { --state: var(--st-coding); }
+.w-card.status-testing { --state: var(--st-testing); }
+.w-card.status-blocked { --state: var(--st-blocked); }
+.w-card.status-done { --state: var(--st-done); }
+.w-card.status-working { --state: var(--st-working); }
+
+.w-card.status-blocked {
+  background: color-mix(in oklab, var(--ink-900) 86%, var(--state));
+  border-color: oklch(from var(--state) l c h / 0.42);
+}
+
+.w-head { display: flex; flex-direction: column; gap: var(--space-2xs); }
+.w-title-row { display: flex; align-items: center; gap: var(--space-xs); }
+
+.w-name-open { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: var(--space-2xs); cursor: pointer; }
+
+.w-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-read);
+  font-size: 1.25rem;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.w-more { flex: none; font-size: 0.9375rem; color: var(--text-3); }
+
+.w-state-row { display: flex; align-items: center; gap: var(--space-2xs); }
+.w-state-row svg { flex: none; width: 15px; height: 15px; color: var(--state); display: block; }
+
+.w-badge {
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--state);
+}
+
+.w-message {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.8125rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.w-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--space-xs);
+  color: var(--text-3);
+  font-size: 0.75rem;
+  min-width: 0;
+}
+
+.w-source {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--space-2xs);
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-sm);
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.w-source svg { width: 12px; height: 12px; vertical-align: -1px; margin-right: 3px; }
+
+.w-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  margin-top: auto;
+  padding-top: var(--space-2xs);
+  border-top: 1px solid var(--ink-800);
+}
+
+.w-act {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font-size: 0.8125rem;
+}
+
+.w-act svg { width: 15px; height: 15px; flex: none; margin-right: var(--space-2xs); }
+
+/* The rows on the web: the board's own faces, one step looser than iOS. The
+ * state is the badge's condensed face at the badge's size, its word in lower
+ * case and the quiet ink, as on iOS. It leads the row, in a fixed column
+ * that starts at the badge's own mark, so the badge and the rows' marks
+ * share one left-hand column, as the rail gives them one on the right on
+ * iOS. 76px holds "researching", the widest word the brief names, with its
+ * mark (measured 75.8); "planning", the widest the hook sends today, takes
+ * 59. A column that a new word could overflow would not be a column. */
+.w-card .subs { margin-top: 0; padding-top: var(--space-2xs); }
+.w-card .sub { min-height: 26px; font-size: 0.8125rem; line-height: 1.3; }
+.w-card .sub-st {
+  order: -1;
+  flex: 0 0 76px;
+  font-family: var(--font-label);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  gap: var(--space-2xs);
+}
+.w-card .sub-st svg { width: 13px; height: 13px; }
+.w-card .sub-foot { min-height: 26px; font-size: 0.75rem; }
+
+/* The web's session detail (renderSession in app.js), centred at 980. */
+.w-detail { width: 100%; max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-md); }
+.dv-head { display: flex; align-items: center; gap: var(--space-sm); }
+
+.dv-back {
+  appearance: none;
+  min-height: 34px;
+  padding: var(--space-2xs) var(--space-sm);
+  background: transparent;
+  border: 1px solid var(--ink-800);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.dv-title { margin: 0; font-family: var(--font-read); font-size: 0.9375rem; font-weight: 600; line-height: 1.2; }
+.w-detail .ss-section { margin-top: 0; }
+.w-detail .ss-label { font-family: var(--font-label); font-size: 0.75rem; letter-spacing: 0.09em; }
+.w-detail .sub.is-roomy .sub-label { font-size: 0.875rem; }
+.w-detail .sub.is-roomy .sub-st { font-family: var(--font-label); font-size: 0.75rem; }
+.w-detail .hstatus { font-family: var(--font-label); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.w-detail .hmsg { font-size: 0.8125rem; }
+
+/* ---- Bare: the device alone, for capture ---------------------------------- */
+.is-bare .pv-bar, .is-bare .pv-rule, .is-bare .pv-caption { display: none; }
+.is-bare .pv-stage { padding: 0; }
+.is-bare .device { outline: 0; border-radius: 0; }
+</style>
+</head>
+<body>
+
+<header class="pv-bar">
+  <h1 class="pv-title">Subtasks on session cards<small>AgStatus prototype</small></h1>
+
+  <div class="pv-rows">
+    <div class="pv-row">
+      <fieldset class="pv-group">
+        <legend>Device</legend>
+        <div class="pv-seg" data-key="device">
+          <button type="button" data-v="iphone">iPhone</button>
+          <button type="button" data-v="ipad-l">iPad landscape</button>
+          <button type="button" data-v="web">Web board</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>The session's subagents</legend>
+        <div class="pv-seg" data-key="scenario">
+          <button type="button" data-v="none">None</button>
+          <button type="button" data-v="two">Two</button>
+          <button type="button" data-v="ten">Ten</button>
+          <button type="button" data-v="thirty">Thirty</button>
+          <button type="button" data-v="blocked">Blocked</button>
+          <button type="button" data-v="failed">Failed</button>
+          <button type="button" data-v="finished">All finished</button>
+          <button type="button" data-v="background">Background</button>
+          <button type="button" data-v="nested">Nested</button>
+          <button type="button" data-v="minimal">Minimal mode</button>
+          <button type="button" data-v="codex">Codex</button>
+          <button type="button" data-v="long">Long labels</button>
+          <button type="button" data-v="expanded">Expanded</button>
+          <button type="button" data-v="phone-session">Session screen</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>App</legend>
+        <div class="pv-seg" data-key="app">
+          <button type="button" data-v="next">With subtasks</button>
+          <button type="button" data-v="older">Older version</button>
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="pv-row is-open">
+      <fieldset class="pv-group">
+        <legend>Open · rows shown</legend>
+        <div class="pv-seg" data-key="rows">
+          <button type="button" data-v="oldest">Oldest</button>
+          <button type="button" data-v="active">Most active</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>Open · card after its turn</legend>
+        <div class="pv-seg" data-key="bgstatus">
+          <button type="button" data-v="busiest">Busiest subtask</button>
+          <button type="button" data-v="working">“Working”</button>
+        </div>
+      </fieldset>
+
+      <fieldset class="pv-group">
+        <legend>Open · done count</legend>
+        <div class="pv-seg" data-key="done">
+          <button type="button" data-v="session">Whole turn</button>
+          <button type="button" data-v="batch">This batch</button>
+        </div>
+      </fieldset>
+
+      <div class="pv-acts">
+        <button class="pv-act" type="button" id="play">Play</button>
+        <button class="pv-act" type="button" id="reset">Reset</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="pv-rule" id="rule"></div>
+
+<main class="pv-stage">
+  <div class="pv-fit" id="fit">
+    <div class="device" id="device"></div>
+  </div>
+  <p class="pv-caption" id="caption"></p>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---- Icons ---------------------------------------------------------------
+  // The six state marks and the focus mark are public/marks.js's own, which
+  // mirror the SF Symbols the native card draws. `failed` and `working` are
+  // this proposal's, drawn on the same 16-unit grid at the same stroke.
+
+  const stroked = (body, attrs = '') =>
+    `<svg ${attrs} viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor"`
+    + ` stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  const punched = (body, attrs = '') =>
+    `<svg ${attrs} viewBox="0 0 16 16" aria-hidden="true" fill="currentColor" fill-rule="evenodd">${body}</svg>`;
+  const DISC = 'M8 1.25a6.75 6.75 0 1 0 0 13.5 6.75 6.75 0 0 0 0-13.5Z';
+
+  const STATE_MARK = {
+    idle: stroked('<circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.6 1.5"/>'),
+    planning: stroked('<path d="M6.5 4.3h7M6.5 8h7M6.5 11.7h7"/>'
+      + '<circle cx="3" cy="4.3" r="1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="3" cy="8" r="1" fill="currentColor" stroke="none"/>'
+      + '<circle cx="3" cy="11.7" r="1" fill="currentColor" stroke="none"/>'),
+    coding: stroked('<path d="M5.6 4.4 2.2 8l3.4 3.6M10.4 4.4 13.8 8l-3.4 3.6M9.4 3.4 6.6 12.6"/>'),
+    testing: stroked('<path d="M4.6 2.2h6.8M6.2 2.2v8.3a1.8 1.8 0 0 0 3.6 0V2.2M6.2 8.2h3.6"/>'),
+    blocked: punched(`<path d="${DISC}M8.9 4.35v4.8a.9.9 0 0 1-1.8 0V4.35a.9.9 0 0 1 1.8 0ZM8 12.3a1.05 1.05 0 1 1 0-2.1 1.05 1.05 0 0 1 0 2.1Z"/>`),
+    done: stroked('<circle cx="8" cy="8" r="6"/><path d="M5.3 8.2 7.2 10.1 10.8 5.9"/>'),
+    // A crossed circle: done's ring with the tick struck out. An outline, so
+    // it can never be taken for blocked's solid disc (SF: xmark.circle).
+    failed: stroked('<circle cx="8" cy="8" r="6"/><path d="M5.9 5.9l4.2 4.2M10.1 5.9l-4.2 4.2"/>'),
+    // A branch: one stem forking into two arms, each ending in a node. The
+    // work handed on. The nodes are what keep it from reading as a letter;
+    // the earlier fan of three open prongs read as "∈" or "€" at 11pt. The
+    // nodes are r 1.5, not 1.2: at 1.2 they are barely wider than the 1.5
+    // stroke at 11pt. Static, because nothing on this board spins
+    // (SF: arrow.triangle.branch is the nearest).
+    working: stroked('<path d="M2 8h4.2c2.4 0 2.8-3.9 5.4-3.9M6.2 8c2.4 0 2.8 3.9 5.4 3.9"/>'
+      + '<circle cx="12.9" cy="4.1" r="1.5" fill="currentColor" stroke="none"/>'
+      + '<circle cx="12.9" cy="11.9" r="1.5" fill="currentColor" stroke="none"/>'),
+  };
+
+  const FOCUS = stroked(
+    '<path d="M6 9.5H2.4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H9a1 1 0 0 1 1 1v2.5"/>'
+    + '<path d="M6.9 6.5h6.7a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H6.9a1 1 0 0 1-1-1V7.5a1 1 0 0 1 1-1Z"/>');
+  const GEAR = stroked('<circle cx="8" cy="8" r="2.1"/>'
+    + '<path d="M8 1.5l1 1.7 1.9-.5.6 1.9 1.9.6-.5 1.9 1.6.9-1.6.9.5 1.9-1.9.6-.6 1.9-1.9-.5-1 1.7-1-1.7-1.9.5-.6-1.9-1.9-.6.5-1.9L1.5 8l1.6-.9-.5-1.9 1.9-.6.6-1.9 1.9.5Z"/>');
+  const LAPTOP = stroked('<path d="M3.2 3.6h9.6v6.6H3.2zM1.4 12.4h13.2"/>');
+  const DOWN = stroked('<path d="M3.5 6 8 10.5 12.5 6"/>', 'class="alarm-go"');
+  const CHEV_R = stroked('<path d="M6 3.5 10.5 8 6 12.5"/>');
+  const CHEV_D = stroked('<path d="M3.5 6 8 10.5 12.5 6"/>');
+  const CHEV_U = stroked('<path d="M3.5 10 8 5.5 12.5 10"/>');
+  const BACK = stroked('<path d="M10 3 5 8l5 5"/>');
+  const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="currentColor"><path d="M8 1.2l2 4.4 4.8.5-3.6 3.2 1 4.7L8 11.6 3.8 14l1-4.7L1.2 6.1 6 5.6Z"/></svg>';
+  const BATTERY = '<svg viewBox="0 0 24 12" aria-hidden="true" fill="none" stroke="currentColor"><rect x=".5" y=".5" width="20" height="11" rx="3"/><rect x="2.2" y="2.2" width="13" height="7.6" rx="1.6" fill="currentColor" stroke="none"/><path d="M22.5 4v4" stroke-linecap="round" stroke-width="1.5"/></svg>';
+
+  // The shipped geometric marks. No vendor logo goes on this board.
+  const MARKS = {
+    claude: stroked('<path d="M8 2.4v11.2M3.15 5.2l9.7 5.6M3.15 10.8l9.7-5.6"/>', 'class="mark"'),
+    codex: stroked('<path d="M8 1.9 13.3 4.95v6.1L8 14.1 2.7 11.05v-6.1Z"/>', 'class="mark"'),
+  };
+  const AGENT_NAMES = { claude: 'Claude', codex: 'Codex' };
+  const AGENTS = ['claude', 'codex'];
+
+  // ---- Data ----------------------------------------------------------------
+  // The rest of the board is ordinary, so the eye goes to the one card that is
+  // being judged. Claude sessions carry titles, as they do since 1.6.1; Codex
+  // sessions are never titled, so they keep their folder names. `t` is seconds
+  // since the last update.
+
+  const S = (id, source, name, status, message, age, t, extra = {}) =>
+    ({ id, source, name, status, message, age, t, ...extra });
+
+  const BASE = () => [
+    S('F', 'claude', 'Session organization by agent', 'coding', 'Editing BoardLayout.swift', 'just now', 10,
+      { host: 'MacBook Pro', project: 'claude-status', tokens: '1.1M', focus: true }),
+    S('L', 'claude', 'Fix listener reinstall leaving Focus stopped', 'testing', 'Run the listener test suite', '1m ago', 70,
+      { host: 'Studio', project: 'claude-status', tokens: '912.4K', focus: true }),
+    S('P', 'claude', 'Plan the push-token migration', 'planning', 'Searching: APNs token rotation', '5m ago', 300,
+      { host: 'Mac', project: 'acme-ios', tokens: '88.1K', focus: true }),
+    S('R', 'claude', 'Release notes for 1.6.3', 'done', 'Turn finished', '31m ago', 1860,
+      { host: 'Studio', project: 'claude-status', tokens: '220.5K', focus: true }),
+    S('land', 'codex', 'landing', 'coding', 'Editing pricing.tsx', 'just now', 20,
+      { host: 'Mac', tokens: '312.7K', focus: true }),
+    S('sdk', 'codex', 'sdk-python', 'testing', 'pytest -k retry', '2m ago', 120,
+      { host: 'Studio', tokens: '540.3K', focus: true }),
+    S('X', 'codex', 'search-indexer', 'testing', 'cargo test — 212 passed', '3m ago', 200,
+      { host: 'Studio', tokens: '2.1M', focus: true }),
+  ];
+
+  // One subagent: its label, its state, what it last did, and how long ago
+  // (for rows=active). Labels are what the hook would have: the Agent tool's
+  // description, a workflow agent's own label, a Codex nickname.
+  const SUB = (label, status, activity, t = 30, extra = {}) => ({ label, status, activity, t, ...extra });
+
+  const REVIEW = () => [
+    SUB('review:hook', 'testing', 'Run hook tests with --no-file-parallelism', 4),
+    SUB('review:listener', 'coding', 'Editing listener.ts', 11),
+    SUB('review:product', 'planning', 'Searching: SubagentStop payload fields', 26),
+    SUB('review:server', 'coding', 'Editing store.ts', 2),
+    SUB('review:ios', 'coding', 'Editing SessionCardView.swift', 7),
+    SUB('review:android', 'planning', 'Reading developer.android.com', 40),
+    SUB('verify:hook', 'testing', 'Run the hook suite — 214 tests', 1),
+    SUB('verify:server', 'testing', 'npm test -- store', 15),
+    SUB('verify:web', 'coding', 'Editing card.css', 5),
+    SUB('verify:privacy', 'planning', 'Search payloads for prompt text', 19),
+  ];
+
+  // A session at its peak on the owner's Mac: thirty at once, across four
+  // workflows and the Agent tool.
+  const THIRTY = () => [
+    ['implement:server', 'coding', 'Editing store.ts'],
+    ['implement:hook', 'coding', 'Editing agstatus-hook.js'],
+    ['implement:ios', 'coding', 'Editing SessionCardView.swift'],
+    ['implement:android', 'coding', 'Editing SessionCard.kt'],
+    ['implement:web', 'coding', 'Editing card.css'],
+    ['implement:docs', 'coding', 'Editing docs.html'],
+    ['test:server', 'testing', 'npm test -- store'],
+    ['test:hook', 'testing', 'Run hook tests — 214 passed'],
+    ['test:ios', 'testing', 'xcodebuild test -scheme AgStatus'],
+    ['test:android', 'testing', './gradlew testDebugUnitTest'],
+    ['review:server', 'planning', 'Search store.ts for agent_id'],
+    ['review:hook', 'planning', 'Reading code.claude.com'],
+    ['review:ios', 'coding', 'Editing BoardView.swift'],
+    ['review:android', 'planning', 'Search for SessionCard usages'],
+    ['review:web', 'planning', 'Search app.js for paint()'],
+    ['review:privacy', 'planning', 'Search payloads for prompt text'],
+    ['verify:server', 'testing', 'Run the e2e suite'],
+    ['verify:hook', 'testing', 'Run the payload fixtures'],
+    ['verify:ios', 'testing', 'Snapshot the card at three widths'],
+    ['verify:android', 'testing', 'Run the screenshot tests'],
+    ['verify:web', 'testing', 'Run the card fixtures'],
+    ['verify:migration', 'testing', 'Run the migration on a copy'],
+    ['Map the SubagentStart payload', 'planning', 'Searching: SubagentStart agent_type'],
+    ['Check the Codex rollout schema', 'planning', 'Reading github.com'],
+    ['Draft the 1.7 release notes', 'coding', 'Writing RELEASE-1.7.0.md'],
+    ['Audit push copy for subtasks', 'coding', 'Editing NotificationManager.swift'],
+    ['map:sizing', 'planning', 'Count subagents per session'],
+    ['map:limits', 'planning', 'Search for the webhook budget'],
+    ['map:minimal', 'planning', 'Search the hook for MINIMAL'],
+    ['map:codex', 'planning', 'Reading developers.openai.com'],
+  ].map(([l, s, a], i) => SUB(l, s, a, ((i * 7) % 37) + 1));
+
+  // `finished` counts subagents that have finished this turn, by batch; `batch`
+  // is the one running now. Finished subagents are not kept: they are a count.
+  const SCENARIOS = {
+    none: { status: 'coding', message: 'Editing BoardLayout.swift', kind: 'agent' },
+    two: {
+      status: 'coding', message: 'Editing SessionCardView.swift', kind: 'agent',
+      subs: () => [
+        SUB('Run the migration tests', 'testing', 'Run the store migration tests', 8),
+        SUB('Draft release notes', 'coding', 'Writing RELEASE-1.6.4.md', 3),
+      ],
+    },
+    ten: {
+      status: 'planning', message: 'Running the review-and-verify workflow', kind: 'workflow',
+      subs: REVIEW, finished: { 1: 12, 2: 3 }, batch: 2,
+    },
+    thirty: {
+      status: 'coding', message: 'Editing BoardLayout.swift', kind: 'workflow',
+      subs: THIRTY, finished: { 1: 64, 2: 71, 3: 42, 4: 9 }, batch: 4,
+    },
+    blocked: {
+      status: 'planning', message: 'Running the review-and-verify workflow', kind: 'workflow',
+      subs: () => REVIEW().map((x) => (x.label === 'verify:hook'
+        ? { ...x, status: 'blocked', activity: 'Approve: npm test -- hook', t: 0 } : x)),
+      finished: { 1: 12, 2: 3 }, batch: 2,
+    },
+    failed: {
+      status: 'coding', message: 'Editing RELEASE-1.6.4.md', kind: 'agent',
+      subs: () => [
+        SUB('Run the migration tests', 'testing', 'Run the store migration tests', 6),
+        SUB('Audit the Android strings', 'failed', 'Stopped: API error (overloaded)', 140),
+        SUB('Draft release notes', 'coding', 'Writing RELEASE-1.6.4.md', 2),
+      ],
+      finished: { 1: 4 },
+    },
+    finished: {
+      status: 'coding', message: 'Editing BoardLayout.swift', kind: 'workflow',
+      subs: () => [], finished: { 1: 12 },
+    },
+    // The line while they run ("2 subagents still running") is worked out
+    // in view(), as the server would send it.
+    background: {
+      status: 'done', message: 'Turn finished', kind: 'agent', turnEnded: true,
+      subs: () => [
+        SUB('Watch the Android CI build', 'testing', 'gh run watch 1841 — 6 of 9 jobs', 9),
+        SUB('Sweep docs for stale flags', 'coding', 'Editing docs.html', 4),
+      ],
+      finished: { 1: 3 },
+    },
+    nested: {
+      status: 'planning', message: 'Running the implement workflow', kind: 'workflow',
+      subs: () => [
+        SUB('implement:server', 'coding', 'Editing store.ts', 3),
+        SUB('implement:ios', 'coding', 'Editing SessionCardView.swift', 9),
+        // Started by implement:server, two levels down. Listed flat.
+        SUB('Find every Focus call site', 'planning', 'Search listener for focus calls', 1, { depth: 2 }),
+        SUB('implement:web', 'coding', 'Editing app.js', 14),
+      ],
+      finished: { 1: 18, 2: 6 }, batch: 2,
+    },
+    // Minimal mode sends tool names and folder names: no title, no command
+    // text, no prompt — and a subagent's label is its prompt's description.
+    minimal: {
+      status: 'coding', message: 'Edit', kind: 'minimal', minimal: true,
+      subs: () => [
+        SUB('Subagent 3', 'testing', 'Bash', 3),
+        SUB('Subagent 4', 'coding', 'Edit', 6),
+        SUB('Subagent 5', 'planning', 'WebFetch', 12),
+        SUB('Subagent 6', 'coding', 'Write', 1),
+      ],
+      finished: { 1: 2 },
+    },
+    codex: {
+      focus: 'X', status: 'coding', message: 'Editing merge.rs', kind: 'codex',
+      subs: () => [
+        SUB('Feynman', 'testing', 'cargo test -p indexer', 5),
+        SUB('Noether', 'coding', 'Editing shard.rs', 2),
+        SUB('Hypatia', 'planning', 'Reading docs.rs', 30),
+      ],
+      finished: { 1: 2 },
+    },
+  };
+  // Agent-tool descriptions at their real lengths on the owner's Mac: 52
+  // characters is the p90, 23 the median. No other scenario has a label past
+  // 30, so without this one the activity's share of a row is never tested.
+  SCENARIOS.long = {
+    status: 'coding', message: 'Editing listener.ts', kind: 'agent',
+    subs: () => [
+      SUB('Find why the listener reinstall leaves Focus stopped', 'planning', 'Search listener.ts for reinstall paths', 6),
+      SUB('Run the migration tests', 'testing', 'Run the store migration tests', 3),
+      SUB('Check the Codex rollout schema for sub-agent ids', 'planning', 'Reading developers.openai.com', 9),
+    ],
+    finished: { 1: 2 },
+  };
+  SCENARIOS.expanded = { ...SCENARIOS.ten, expand: true };
+  SCENARIOS['phone-session'] = { ...SCENARIOS.ten, screen: true };
+
+  // What Play starts, by the kind of subagent the session already runs.
+  const STARTS = {
+    agent: [['Check the Android build', 'testing', 'Run ./gradlew assembleDebug'],
+      ['Summarize the hook diff', 'planning', 'Searching: SubagentStop']],
+    workflow: [['verify:android', 'testing', 'Run ./gradlew lint'], ['verify:docs', 'coding', 'Editing docs.html']],
+    minimal: [['Subagent 7', 'testing', 'Bash'], ['Subagent 8', 'coding', 'Edit']],
+    codex: [['Lovelace', 'coding', 'Editing shard.rs'], ['Turing', 'testing', 'cargo test -p merge']],
+  };
+
+  const LIMITS = {
+    claude: [
+      { label: 'Current session', pct: 34, reset: 'resets in 2h 17m' },
+      { label: 'Weekly (all models)', pct: 62, reset: 'resets in 2d 5h' },
+      { label: 'Weekly (Fable)', pct: 41, reset: 'resets in 2d 5h' },
+    ],
+    codex: [
+      { label: 'Weekly (all models)', pct: 47, reset: 'resets in 4d 2h' },
+      { label: 'Session (GPT-6-Astra)', pct: 22, reset: 'resets in 1h 36m' },
+      { label: 'Weekly (GPT-6-Astra)', pct: 38, reset: 'resets in 4d 2h' },
+    ],
+  };
+
+  // The parent's own history, newest first after the one it is in now.
+  const TIMELINE = [
+    ['coding', 'Editing BoardLayout.swift', '14:03', '3m ago'],
+    ['testing', 'Run the board layout tests — 46 passed', '13:58', '8m ago'],
+    ['planning', 'Plan subtasks on session cards', '13:41', '25m ago'],
+    ['idle', 'Session started', '13:40', '26m ago'],
+  ];
+
+  const DEVICES = {
+    iphone: { w: 393, h: 852, corner: 52, name: 'iPhone 6.1″', phone: true, slots: 2, unit: 'pt' },
+    'ipad-l': { w: 1376, h: 1032, corner: 22, name: 'iPad 13″ landscape', slots: 3, unit: 'pt' },
+    web: { w: 1280, h: 880, corner: 10, name: 'Web board', web: true, slots: 3, unit: 'px' },
+  };
+
+  // ---- State ---------------------------------------------------------------
+
+  const DEFAULTS = { device: 'ipad-l', scenario: 'ten', app: 'next', rows: 'oldest', bgstatus: 'working', done: 'session' };
+  const params = new URLSearchParams(location.search);
+  const state = { ...DEFAULTS };
+  // A value is taken from the link only if one of the keys on the page offers it.
+  document.querySelectorAll('.pv-seg').forEach((seg) => {
+    const asked = params.get(seg.dataset.key);
+    if ([...seg.querySelectorAll('button')].some((b) => b.dataset.v === asked)) state[seg.dataset.key] = asked;
+  });
+  const BARE = params.has('bare');
+  document.body.classList.toggle('is-bare', BARE);
+
+  const WORKING = new Set(['planning', 'coding', 'testing']);
+  // For bgstatus=busiest: the state that would want you soonest goes first.
+  const URGENCY = ['blocked', 'testing', 'coding', 'planning', 'idle'];
+
+  let sessions = [];
+  let focusId = 'F';
+  let expanded = new Set();
+  let screen = null;
+  let nextKey = 0;
+  let played = 0;
+
+  const byRecent = (a, b) => a.t - b.t;
+  const focusSession = () => sessions.find((s) => s.id === focusId);
+
+  function loadScenario() {
+    const sc = SCENARIOS[state.scenario];
+    sessions = BASE();
+    focusId = sc.focus || 'F';
+    const f = focusSession();
+    Object.assign(f, { status: sc.status, message: sc.message, age: 'just now', t: 5 });
+    if (sc.minimal) Object.assign(f, { name: 'claude-status', project: 'claude-status' });
+    f.kind = sc.kind;
+    f.turnEnded = Boolean(sc.turnEnded);
+    f.batch = sc.batch || 1;
+    f.finished = { ...(sc.finished || {}) };
+    f.subs = (sc.subs ? sc.subs() : []).map((x) => ({ ...x, key: `k${nextKey++}` }));
+    f.starts = 0;
+    expanded = new Set(sc.expand ? [focusId] : []);
+    screen = sc.screen ? { id: focusId, sub: null } : null;
+    played = 0;
+  }
+
+  // ---- What a card says -----------------------------------------------------
+
+  const sumDone = (s) => Object.values(s.finished || {}).reduce((a, b) => a + b, 0);
+
+  /**
+   * The card's reading, worked out from the parent and its subagents.
+   *
+   *   a blocked subagent      → BLOCKED, and the line says why, then which:
+   *                             "Needs approval: verify:hook" (+1 for each more)
+   *   the turn has ended and
+   *   subagents still work    → "working", or the busiest one's state, and
+   *                             the line "2 subagents still running"
+   *   otherwise               → the parent's own state and line
+   *
+   * An older app gets the same status and line, both from the server (the
+   * status as one of the six), and no rows. The lines lead with the reason
+   * because a phone gives the line one row under a two-line title, and a
+   * label can fill it.
+   */
+  function view(s) {
+    const subs = s.subs || [];
+    const blocked = subs.filter((x) => x.status === 'blocked');
+    const working = subs.filter((x) => WORKING.has(x.status));
+    let { status, message } = s;
+    if (s.status !== 'blocked' && blocked.length) {
+      status = 'blocked';
+      message = `Needs approval: ${blocked[0].label}${blocked.length > 1 ? ` +${blocked.length - 1}` : ''}`;
+    } else if (s.turnEnded && working.length) {
+      status = state.app === 'next' && state.bgstatus === 'working'
+        ? 'working'
+        : URGENCY.find((u) => working.some((x) => x.status === u));
+      // The badge already says the turn has ended (it is not DONE); the line
+      // says what is still going. It cannot contradict either variant's word.
+      message = `${plural(working.length, 'subagent')} still running`;
+    }
+    const done = state.done === 'batch' ? (s.finished?.[s.batch] || 0) : sumDone(s);
+    // A count with nothing running stays until the turn ends, and goes with it.
+    const show = state.app === 'next' && (subs.length > 0 || (done > 0 && !s.turnEnded));
+    return { status, message, subs, done, show };
+  }
+
+  /**
+   * The rows that fit, slot by slot. A row keeps its slot until it finishes:
+   * "keep their place" wins over exact start order, so a row that takes a
+   * freed slot can stand above one that started before it.
+   *
+   *   · First drawing: blocked rows, then the first to start (oldest) or the
+   *     most recently active (active), in start order.
+   *   · A slot freed by a finish is taken in place by the next hidden row:
+   *     the first to start (oldest) or the most recently active (active).
+   *     No other row moves.
+   *   · A blocked subagent always takes a slot: a free one, else the slot of
+   *     the row next in line to give one up, the lowest that is not blocked
+   *     (oldest) or the stalest (active). The row it displaces comes back
+   *     only into a slot freed by a finish.
+   *   · Once approved, a row keeps its slot until it finishes.
+   *   · active only: a hidden row that reports in takes the slot of the
+   *     stalest row on show, in place.
+   *
+   * Opened in place (`open`), the list is the rows on show, where they were,
+   * then the rest in start order. While it is open a finished row's place
+   * closes and a new row joins the end; nothing is pulled up into a gap,
+   * since every row is already on show. Folded again, the first rows keep
+   * their slots.
+   *
+   * It keeps the order on the session, and the same subagents give the same
+   * rows, so it can be asked as often as needed.
+   */
+  function pick(s, slots, open = false) {
+    const subs = s.subs || [];
+    const live = new Map(subs.map((x) => [x.key, x]));
+    const active = state.rows === 'active';
+    const rank = (list) => (active ? [...list].sort((a, b) => a.t - b.t) : list);
+    const fresh = `${slots}:${state.rows}`;
+    if (!s.shown || s.shownFor !== fresh) {
+      const blocked = subs.filter((x) => x.status === 'blocked').slice(0, slots);
+      const rest = rank(subs.filter((x) => x.status !== 'blocked')).slice(0, slots - blocked.length);
+      const chosen = new Set([...blocked, ...rest]);
+      s.shown = subs.filter((x) => chosen.has(x)).map((x) => x.key);
+      s.shownFor = fresh;
+    }
+    if (open) {
+      const kept = s.shown.filter((k) => live.has(k));
+      s.shown = [...kept, ...subs.filter((x) => !kept.includes(x.key)).map((x) => x.key)];
+      return s.shown.map((k) => live.get(k));
+    }
+    const at = s.shown.slice(0, slots).map((k) => (live.has(k) ? k : null));
+    const onShow = () => new Set(at.filter(Boolean));
+    for (const x of subs) {
+      if (x.status !== 'blocked' || onShow().has(x.key)) continue;
+      let i = at.indexOf(null);
+      if (i < 0 && at.length < slots) i = at.length;
+      if (i < 0) {
+        const free = at.map((k, j) => [live.get(k), j]).filter(([y]) => y.status !== 'blocked');
+        if (active) free.sort((a, b) => b[0].t - a[0].t);
+        else free.reverse();
+        if (free.length) i = free[0][1];
+      }
+      if (i >= 0) at[i] = x.key;
+    }
+    const hidden = rank(subs.filter((x) => !onShow().has(x.key)));
+    for (let i = 0; i < slots && hidden.length; i += 1) {
+      if (i >= at.length) at.push(null);
+      if (at[i] === null) at[i] = hidden.shift().key;
+    }
+    if (active) {
+      for (const x of hidden) {
+        const stalest = at.map((k, i) => [live.get(k), i])
+          .filter(([y]) => y && y.status !== 'blocked')
+          .sort((a, b) => b[0].t - a[0].t)[0];
+        if (!stalest || x.t >= stalest[0].t) break;
+        at[stalest[1]] = x.key;
+      }
+    }
+    // A slot nothing could take closes.
+    s.shown = at.filter(Boolean);
+    return s.shown.map((k) => live.get(k));
+  }
+
+  // ---- Markup --------------------------------------------------------------
+
+  const esc = (v) => String(v).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const agentName = (src) => AGENT_NAMES[src] || src;
+
+  function subRowHTML(id, x, slot, { roomy = false } = {}) {
+    const arrived = screen && screen.sub === x.key && roomy;
+    return `<button class="sub st-${x.status}${roomy ? ' is-roomy' : ''}${arrived ? ' is-arrived' : ''}" type="button"
+        data-row="${id}:${x.key}" data-slot="${slot}" data-status="${x.status}" data-open-sub="${x.key}" data-of="${id}"
+        aria-label="${esc(x.label)}, ${x.status}: ${esc(x.activity)}">`
+      + `<span class="sub-text"><span class="sub-label">${esc(x.label)}</span>`
+      + `<span class="sub-act">${esc(x.activity)}</span></span>`
+      + `<span class="sub-st">${STATE_MARK[x.status]}<span>${x.status}</span></span></button>`;
+  }
+
+  /** "+4 more · 12 done": a control where it leads somewhere, else a count. */
+  function footHTML(id, { hidden, done, open, canExpand, phone }) {
+    // The words sit in one span: left loose in the flex row, "+" and the
+    // number would each become an item and take the row's gap between them.
+    const sep = '<span class="foot-sep" aria-hidden="true">·</span>';
+    const more = hidden ? `+<span class="n" data-count="${id}:more">${hidden}</span> more` : '';
+    const dn = done ? `<span class="n" data-count="${id}:done">${done}</span> done` : '';
+    const words = (html) => `<span class="foot-words">${html}</span>`;
+    const text = [more, dn].filter(Boolean).join(sep);
+    if (phone && hidden) {
+      return `<button class="sub-foot is-control" type="button" data-screen="${id}">${words(text)}${CHEV_R}</button>`;
+    }
+    if (!phone && open && canExpand) {
+      return `<button class="sub-foot is-control" type="button" data-expand="${id}" aria-expanded="true">`
+        + `${words(`${dn ? dn + sep : ''}Show less`)}${CHEV_U}</button>`;
+    }
+    if (!phone && hidden) {
+      return `<button class="sub-foot is-control" type="button" data-expand="${id}" aria-expanded="false">${words(text)}${CHEV_D}</button>`;
+    }
+    return text ? `<div class="sub-foot">${words(text)}</div>` : '';
+  }
+
+  function subsHTML(s, v) {
+    const d = DEVICES[state.device];
+    const open = !d.phone && expanded.has(s.id);
+    const rows = pick(s, d.slots, open);
+    return `<div class="subs" role="group" aria-label="Subagents">`
+      + rows.map((x, i) => subRowHTML(s.id, x, i)).join('')
+      + footHTML(s.id, {
+        hidden: v.subs.length - rows.length,
+        done: v.done,
+        open,
+        canExpand: v.subs.length > d.slots,
+        phone: d.phone,
+      })
+      + '</div>';
+  }
+
+  function metaHTML(s, foot) {
+    const facts = [];
+    if (s.host) facts.push(`<span data-fact="host">${esc(s.host)}</span>`);
+    if (s.project && s.project !== s.name) facts.push(`<span data-fact="project">in ${esc(s.project)}</span>`);
+    facts.push(`<span class="ts">${esc(s.age)}</span>`);
+    if (s.tokens) facts.push(`<span class="tok">${esc(s.tokens)}</span>`);
+    return `<div class="meta${foot ? ' is-foot' : ''}" data-titled="${s.name.includes(' ')}">`
+      + facts.map((f, i) => (i ? `<span class="sep" aria-hidden="true">·</span>${f}` : f)).join('') + '</div>';
+  }
+
+  /** The iOS card. Without subagents it is today's card, line for line. */
+  function cardHTML(s) {
+    const v = view(s);
+    const focus = s.host ? `<span class="focus${s.focus ? '' : ' is-off'}">${FOCUS}Focus</span>` : '';
+    return `<article class="card status-${v.status}${v.show ? ' has-subs' : ''}" data-card="${s.id}" data-status="${v.status}"
+        aria-label="${esc(agentName(s.source))}, ${esc(s.name)}, ${v.status}">
+      <div class="card-row">
+        <div class="card-main" data-open-card="${s.id}">
+          <h3 class="name">${esc(s.name)}</h3>
+          ${v.message ? `<p class="message">${esc(v.message)}</p>` : ''}
+          ${v.show ? '' : metaHTML(s, false)}
+        </div>
+        <div class="rail"><span class="badge">${STATE_MARK[v.status]}${v.status}</span>${focus}</div>
+      </div>
+      ${v.show ? subsHTML(s, v) + metaHTML(s, true) : ''}
+    </article>`;
+  }
+
+  function metersHTML(src) {
+    return `<div class="meters">${LIMITS[src].map((w) => {
+      const level = w.pct >= 85 ? 'high' : w.pct >= 60 ? 'mid' : 'low';
+      return `<div class="meter">
+        <span class="meter-label">${esc(w.label)}</span>
+        <span class="meter-value">${w.pct}% <span class="meter-reset">· ${esc(w.reset)}</span></span>
+        <div class="meter-track"><div class="meter-fill ${level}" style="transform:scaleX(${w.pct / 100})"></div></div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  function headHTML(src, list) {
+    const n = list.filter((s) => view(s).status === 'blocked').length;
+    const alarm = n ? `<span class="alarm">${STATE_MARK.blocked}<b>${n}</b><span class="alarm-word">blocked</span>${DOWN}</span>` : '';
+    return `<section class="head${n ? ' has-blocked' : ''}"><div class="head-in">
+      <div class="head-line"><h2 class="ident">${MARKS[src]}<span class="ident-name">${agentName(src)}</span></h2>
+        <span class="count">${plural(list.length, 'session')}</span>${alarm}</div>
+      ${metersHTML(src)}</div></section>`;
+  }
+
+  const by = (src) => sessions.filter((s) => s.source === src).sort(byRecent);
+
+  /** The native board: columns on the iPad, named groups on the phone. */
+  function iosBoardHTML(d) {
+    const heads = AGENTS.map((src) => headHTML(src, by(src))).join('');
+    if (d.phone) {
+      return {
+        pinned: `<div class="heads is-narrow" style="--n:2">${heads}</div>`,
+        scroll: `<div class="groups">${AGENTS.map((src) => {
+          const list = by(src);
+          return `<div class="stack"><h2 class="group-label">${MARKS[src]}${agentName(src)}`
+            + `<span class="count">${plural(list.length, 'session')}</span></h2>${list.map(cardHTML).join('')}</div>`;
+        }).join('')}</div>`,
+      };
+    }
+    return {
+      pinned: `<div class="heads is-cols" style="--n:2">${heads}</div>`,
+      scroll: `<div class="columns is-cols" style="--n:2">${AGENTS.map((src) =>
+        `<div class="stack">${by(src).map(cardHTML).join('')}</div>`).join('')}</div>`,
+    };
+  }
+
+  // ---- The web board (origin/master) -----------------------------------------
+
+  function webCardHTML(s) {
+    const v = view(s);
+    const facts = [];
+    if (s.host) facts.push(`<span>${esc(s.host)}</span>`);
+    if (s.project && s.project !== s.name) facts.push(`<span>in ${esc(s.project)}</span>`);
+    facts.push(`<span class="ts">${esc(s.age)}</span>`);
+    if (s.tokens) facts.push(`<span class="tok">${esc(s.tokens)} tokens</span>`);
+    const chip = `<span class="w-source">${MARKS[s.source].replace('class="mark"', '')}${esc(s.source)}</span>`;
+    return `<article class="w-card status-${v.status}" data-card="${s.id}" data-status="${v.status}">
+      <div class="w-head">
+        <div class="w-title-row"><span class="w-name-open" data-open-card="${s.id}"><span class="w-name">${esc(s.name)}</span><span class="w-more" aria-hidden="true">›</span></span></div>
+        <div class="w-state-row">${STATE_MARK[v.status]}<span class="w-badge">${v.status}</span></div>
+      </div>
+      ${v.message ? `<p class="w-message">${esc(v.message)}</p>` : ''}
+      ${v.show ? subsHTML(s, v) : ''}
+      <div class="w-meta">${chip}${facts.map((f) => `<span aria-hidden="true">·</span>${f}`).join('')}</div>
+      ${s.host ? `<div class="w-actions"><span class="w-act">${FOCUS}Focus</span></div>` : ''}
+    </article>`;
+  }
+
+  function webBoardHTML() {
+    const usage = AGENTS.map((src) => `<section class="w-usage-block">
+        <h2 class="w-usage-src">${agentName(src)}<span aria-hidden="true">›</span></h2>
+        ${LIMITS[src].map((w) => {
+          const level = w.pct >= 85 ? 'high' : w.pct >= 60 ? 'mid' : 'low';
+          return `<div class="w-meter"><div class="w-meter-head"><span>${esc(w.label)}</span>`
+            + `<span class="w-meter-value">${w.pct}% <span>· ${esc(w.reset)}</span></span></div>`
+            + `<div class="w-track"><div class="w-fill ${level}" style="transform:scaleX(${w.pct / 100})"></div></div></div>`;
+        }).join('')}
+      </section>`).join('');
+    const counts = {};
+    sessions.forEach((s) => { const st = view(s).status; counts[st] = (counts[st] || 0) + 1; });
+    // "working" is worked out on the client, as the badge is, and has a slot
+    // only while a card wears it, so the strip always sums to the board.
+    const stats = ['idle', 'planning', 'coding', 'testing', 'working', 'blocked', 'done']
+      .filter((st) => st !== 'working' || counts.working).map((st) =>
+      `<span class="w-stat${counts[st] ? '' : ' zero'}"><i class="st-c-${st}"></i><b>${counts[st] || 0}</b>${st}</span>`).join('');
+    return `<div class="wb">
+      <header class="w-top"><h1 class="w-logo">AgStatus</h1><span class="w-conn" title="Live"></span></header>
+      <div class="w-usage">${usage}</div>
+      <div class="w-stats">${stats}</div>
+      <div class="w-grid">${[...sessions].sort(byRecent).map(webCardHTML).join('')}</div>
+    </div>`;
+  }
+
+  // ---- The session screen -----------------------------------------------------
+
+  function screenInnerHTML(s, v) {
+    // Each class counted apart: a blocked subagent is not running, it is
+    // waiting on you.
+    const n = (test) => v.subs.filter(test).length;
+    const count = [
+      [n((x) => WORKING.has(x.status)), 'running'],
+      [n((x) => x.status === 'blocked'), 'blocked'],
+      [n((x) => x.status === 'failed'), 'failed'],
+    ].filter(([k]) => k).map(([k, w]) => `${k} ${w}`).join(' · ');
+    const doneLine = v.done
+      ? `<p class="ss-done"><span class="n" data-count="${s.id}:ssdone">${v.done}</span> done ${state.done === 'batch' ? 'in this batch' : 'this turn'}</p>`
+      : '';
+    // The card's slot rule, here too: whoever needs you comes first, so the
+    // phone's footer lands on it. The rest keep their start order.
+    const list = [...v.subs.filter((x) => x.status === 'blocked'), ...v.subs.filter((x) => x.status !== 'blocked')];
+    const subs = v.show
+      ? `<section class="ss-section" data-box="ss"><h2 class="ss-label">Subtasks<span class="ss-count">${count}</span></h2>`
+        + `<div class="ss-list">${list.map((x, i) => subRowHTML(s.id, x, i, { roomy: true })).join('')}</div>${doneLine}</section>`
+      : '';
+    const events = [[v.status, v.message, '14:06', 'just now'], ...TIMELINE];
+    const tl = events.map(([st, msg, at, ago]) => `<div class="hrow">
+        <div class="hgut" aria-hidden="true"><i class="hdot st-c-${st}"></i></div>
+        <div class="hbody"><div class="hhead"><span class="hstatus st-c-${st}">${st}</span>
+          <span class="hat">${at}</span><span class="hago">${ago}</span></div>
+          <div class="hmsg">${esc(msg)}</div></div></div>`).join('');
+    return { subs, tl };
+  }
+
+  function screenHTML(d) {
+    const s = sessions.find((x) => x.id === screen.id);
+    const v = view(s);
+    const { subs, tl } = screenInnerHTML(s, v);
+    if (d.web) {
+      return `<div class="wb"><div class="w-detail">
+        <div class="dv-head"><button class="dv-back" type="button" data-back>‹ Board</button><h2 class="dv-title">${esc(s.name)}</h2></div>
+        ${subs}
+        <section class="ss-section"><h2 class="ss-label">Timeline</h2>${tl}</section>
+      </div></div>`;
+    }
+    return `<div class="navbar is-push">
+        <button class="capsule" type="button" data-back aria-label="Back">${BACK}</button>
+        <span class="nav-title is-plain">${esc(s.name)}</span><span></span>
+      </div>
+      <div class="ss">
+        <div class="ss-head">${s.project ? `<span class="ss-proj">${esc(s.project)}</span>` : ''}
+          <span class="ss-status st-c-${v.status}">${v.status}</span></div>
+        ${subs}
+        <section class="ss-section"><h2 class="ss-label">Timeline</h2>${tl}</section>
+      </div>`;
+  }
+
+  // ---- The device ------------------------------------------------------------
+
+  function deviceHTML() {
+    const d = DEVICES[state.device];
+    if (d.web) return screen ? screenHTML(d) : webBoardHTML();
+    const bar = `<div class="statusbar"><span>${d.phone ? '9:41' : '9:41 AM&ensp;Wed 28 Oct'}</span>${BATTERY}</div>`;
+    if (screen) return bar + screenHTML(d);
+    const { pinned, scroll } = iosBoardHTML(d);
+    return `${bar}
+      <div class="navbar">
+        <span class="capsule"><i class="conn" title="Live"></i></span>
+        <span class="nav-title">AgStatus</span>
+        <span class="capsule is-trailing">${LAPTOP}${GEAR}</span>
+      </div>
+      <div class="pinned">${pinned}</div>
+      <div class="board-scroll"><div class="board">${scroll}</div></div>
+      <div class="streak">${STAR}<div>
+        <div class="streak-line"><span class="streak-name">Silver</span>
+          <span class="pips"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></span>
+          <span>19 days active</span><span class="streak-next">11d to Gold</span></div>
+        <div class="streak-track"><i></i></div>
+      </div></div>`;
+  }
+
+  // ---- Fit passes (the ViewThatFits cascades in SessionCardView) -------------
+
+  function fitCards(root) {
+    root.querySelectorAll('.card').forEach((card) => {
+      const name = card.querySelector('.name');
+      card.classList.toggle('is-two-line', name.scrollHeight > 30);
+    });
+    // Nothing on the meta line is ever cut. Under a title the machine goes
+    // first; under a folder name, the directory.
+    root.querySelectorAll('.meta').forEach((meta) => {
+      const order = meta.dataset.titled === 'true' ? ['host', 'project'] : ['project', 'host'];
+      for (const fact of order) {
+        if (meta.scrollWidth <= meta.clientWidth) return;
+        const el = meta.querySelector(`[data-fact="${fact}"]`);
+        if (!el) continue;
+        (el.previousElementSibling?.classList.contains('sep') ? el.previousElementSibling : el.nextElementSibling)?.remove();
+        el.remove();
+      }
+    });
+  }
+
+  // ---- Paint ---------------------------------------------------------------
+  // Every change redraws the device. What moves is worked out by comparing the
+  // drawing before with the drawing after: a row that is gone fades out first
+  // (and, if no row takes its slot, folds its own height, so the rows under it
+  // close up as part of its going), a row that is new fades in where it
+  // stands, a card that changed place travels there, a count that changed
+  // ticks, and a card whose word changed lifts its edge once — the board's
+  // existing state-change. A row that did not start, finish or change state
+  // never travels; only opening or folding the list, the reader's own act,
+  // may carry one.
+
+  const deviceEl = document.getElementById('device');
+  const fitEl = document.getElementById('fit');
+  const captionEl = document.getElementById('caption');
+  const ruleEl = document.getElementById('rule');
+  const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const wait = (ms) => new Promise((r) => { setTimeout(r, ms); });
+  const scaleK = () => { const r = deviceEl.getBoundingClientRect(); return r.width / deviceEl.offsetWidth || 1; };
+  const boxOf = (el) => el.closest('[data-card], [data-box]');
+
+  function snapshot() {
+    const m = { cards: new Map(), rows: new Map(), counts: new Map(), cardStatus: new Map(), rowStatus: new Map() };
+    deviceEl.querySelectorAll('[data-card]').forEach((el) => {
+      m.cards.set(el.dataset.card, el.getBoundingClientRect());
+      m.cardStatus.set(el.dataset.card, el.dataset.status);
+    });
+    deviceEl.querySelectorAll('[data-row]').forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const b = boxOf(el)?.getBoundingClientRect() || r;
+      m.rows.set(el.dataset.row, { x: r.left - b.left, y: r.top - b.top });
+      m.rowStatus.set(el.dataset.row, el.dataset.status);
+    });
+    deviceEl.querySelectorAll('[data-count]').forEach((el) => m.counts.set(el.dataset.count, el.textContent));
+    return m;
+  }
+
+  let chain = Promise.resolve();
+  /** Redraw. `animate` is for news (Play, expand); a new scenario is drawn still. */
+  const paint = (opts = {}) => { chain = chain.then(() => paintNow(opts)).catch((e) => console.error(e)); return chain; };
+
+  async function paintNow({ animate = false, revealFocus = false, expand = false } = {}) {
+    const d = DEVICES[state.device];
+    const moving = animate && !reduced();
+    const scroller = deviceEl.querySelector('.board-scroll, .ss, .wb');
+    const scrollTop = scroller ? scroller.scrollTop : 0;
+    const tpl = document.createElement('template');
+    tpl.innerHTML = deviceHTML();
+    const before = snapshot();
+
+    if (moving) {
+      const keep = new Set([...tpl.content.querySelectorAll('[data-row]')].map((el) => el.dataset.row));
+      const leaving = [...deviceEl.querySelectorAll('[data-row]')].filter((el) => !keep.has(el.dataset.row));
+      if (leaving.length) {
+        leaving.forEach((el) => el.classList.add('leaving'));
+        await wait(220);
+        // A slot a new row takes is a crossfade: the new one fades in where
+        // the old one stood. A slot nothing new takes closes.
+        const closing = leaving.filter((el) => {
+          const box = boxOf(el);
+          const sel = box.dataset.card ? `[data-card="${box.dataset.card}"]` : `[data-box="${box.dataset.box}"]`;
+          const heir = tpl.content.querySelector(`${sel} [data-row][data-slot="${el.dataset.slot}"]`);
+          return !heir || before.rows.has(heir.dataset.row);
+        });
+        await Promise.all(closing.map((el) => el.animate(
+          [{ height: `${el.offsetHeight}px`, minHeight: '0px' }, { height: '0px', minHeight: '0px' }],
+          { duration: 200, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', fill: 'forwards' }).finished));
+        // The cards under a closed slot have already travelled with it; they
+        // are measured again, so they are not sent back to travel twice.
+        deviceEl.querySelectorAll('[data-card]').forEach((el) => before.cards.set(el.dataset.card, el.getBoundingClientRect()));
+      }
+    }
+
+    deviceEl.className = `device${d.phone ? ' is-phone' : ''}${d.web ? ' is-web' : ''}`;
+    deviceEl.style.setProperty('--w', `${d.w}px`);
+    deviceEl.style.setProperty('--h', `${d.h}px`);
+    deviceEl.style.setProperty('--corner', `${d.corner}px`);
+    deviceEl.replaceChildren(tpl.content);
+    fitCards(deviceEl);
+    scale();
+
+    const list = deviceEl.querySelector('.board-scroll, .ss, .wb');
+    if (list) list.scrollTop = animate ? scrollTop : 0;
+    if (revealFocus && list && !screen) reveal(list);
+
+    const k = scaleK();
+    deviceEl.querySelectorAll('[data-card]').forEach((el) => {
+      const id = el.dataset.card;
+      const was = before.cards.get(id);
+      if (animate && before.cardStatus.has(id) && before.cardStatus.get(id) !== el.dataset.status) el.classList.add('changed');
+      if (!moving || !was) return;
+      const now = el.getBoundingClientRect();
+      const dx = (was.left - now.left) / k;
+      const dy = (was.top - now.top) / k;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      el.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }],
+        { duration: 420, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+    });
+    deviceEl.querySelectorAll('[data-row]').forEach((el) => {
+      const key = el.dataset.row;
+      const was = before.rows.get(key);
+      if (!animate) return;
+      if (!was) { if (moving) el.classList.add('entering'); return; }
+      if (before.rowStatus.get(key) !== el.dataset.status) el.classList.add('changed');
+      if (!moving || !expand) return;
+      const r = el.getBoundingClientRect();
+      const b = boxOf(el)?.getBoundingClientRect() || r;
+      const dy = (was.y - (r.top - b.top)) / k;
+      if (Math.abs(dy) < 1) return;
+      el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }],
+        { duration: 320, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' });
+    });
+    if (moving) {
+      deviceEl.querySelectorAll('[data-count]').forEach((el) => {
+        const was = before.counts.get(el.dataset.count);
+        if (was !== undefined && was !== el.textContent) el.classList.add('ticked');
+      });
+    }
+
+    ruleEl.innerHTML = ruleHTML().map((t) => `<p>${t}</p>`).join('');
+    document.querySelectorAll('.pv-seg').forEach((seg) => {
+      seg.querySelectorAll('button').forEach((b) =>
+        b.setAttribute('aria-pressed', String(b.dataset.v === state[seg.dataset.key])));
+    });
+    if (!BARE) {
+      const q = new URLSearchParams(state);
+      if (played) q.set('step', String(played));
+      try { history.replaceState(null, '', `${location.pathname}?${q}`); } catch { /* a sandboxed frame */ }
+    }
+  }
+
+  /** Bring the card being judged into the list, clear of a stuck group name. */
+  function reveal(list) {
+    const card = deviceEl.querySelector(`[data-card="${focusId}"]`);
+    if (!card) return;
+    const lead = deviceEl.querySelector('.group-label') ? 44 : 8;
+    const k = scaleK();
+    const top = (card.getBoundingClientRect().top - list.getBoundingClientRect().top) / k;
+    const bottom = top + card.offsetHeight;
+    if (bottom > list.clientHeight - 8 || top < 0) list.scrollTop += top - lead;
+  }
+
+  /** The row you arrived at stays lit for two seconds, then goes out: with a
+   * fade, or at once with reduced motion (the transition is then 0.01ms). It
+   * is not lit again by a later redraw. */
+  let arrivalTimer = 0;
+  function settleArrival() {
+    clearTimeout(arrivalTimer);
+    arrivalTimer = setTimeout(() => {
+      deviceEl.querySelector('.sub.is-arrived')?.classList.add('is-settled');
+      if (screen) screen.sub = null;
+    }, 2000);
+  }
+
+  function scale() {
+    const d = DEVICES[state.device];
+    if (BARE) {
+      deviceEl.style.transform = '';
+      fitEl.style.width = fitEl.style.height = '';
+      return;
+    }
+    const availW = fitEl.parentElement.clientWidth - 32;
+    const availH = innerHeight - document.querySelector('.pv-bar').offsetHeight - 150;
+    const k = Math.min(1, availW / d.w, Math.max(availH / d.h, 0.5));
+    deviceEl.style.transform = k < 1 ? `scale(${k})` : '';
+    fitEl.style.width = `${d.w * k}px`;
+    fitEl.style.height = `${d.h * k}px`;
+    const hint = screen
+      ? 'Back returns to the board'
+      : d.phone ? 'Click the footer for the session screen, a row for that subtask' : 'Click the footer to expand in place, a row for the session screen';
+    captionEl.textContent = `${d.name} · ${d.w} × ${d.h} ${d.unit} · shown at ${Math.round(k * 100)}% · ${hint}`;
+  }
+
+  // ---- What it is, and what is open ------------------------------------------
+  // Figures are read off the drawing, so they are true of the device on show.
+
+  /** How much taller the subagents make the card being judged, measured. */
+  function growth() {
+    const card = deviceEl.querySelector(`[data-card="${focusId}"]`);
+    if (!card || !card.querySelector('.subs')) return 0;
+    const s = focusSession();
+    const bare = document.createElement('div');
+    const saved = { subs: s.subs, finished: s.finished };
+    s.subs = []; s.finished = {};
+    bare.innerHTML = DEVICES[state.device].web ? webCardHTML(s) : cardHTML(s);
+    Object.assign(s, saved);
+    const el = bare.firstElementChild;
+    el.style.width = `${card.offsetWidth}px`;
+    el.style.position = 'absolute';
+    el.style.visibility = 'hidden';
+    card.parentElement.append(el);
+    fitCards(el.parentElement);
+    const h = el.offsetHeight;
+    el.remove();
+    return card.offsetHeight - h;
+  }
+
+  function ruleHTML() {
+    const d = DEVICES[state.device];
+    const f = focusSession();
+    const v = view(f);
+    const p = [];
+    const slots = d.slots;
+    const where = d.phone ? 'on a phone' : d.web ? 'in a web column' : 'in an iPad column';
+    const sc = state.scenario;
+
+    if (state.app === 'older') {
+      p.push('<b>An older app.</b> It ignores the subtask data, so the card has no rows. It is calmer than today all the same: the parent\'s line is its own, where today the subagents\' tool calls overwrite it (90% of what that line showed on the owner\'s Mac). A blocked subagent still turns it BLOCKED and still sends the push, because the server sets the parent\'s status. After the turn it shows the busiest subtask\'s state: an unknown status would fail to decode on a shipped iPhone.');
+    } else if (screen) {
+      p.push(`<b>The session screen.</b> On a phone the footer opens this screen; on any device a row does, scrolled to that subtask, which is lit for two seconds and then goes out. Every subtask still running is listed above the timeline${d.phone ? ', with room for its activity on a line of its own' : ', its state leading in a column of its own as the timeline\'s does'}. A blocked one comes first, so the footer lands on it, and the header counts running, blocked and failed apart. The finished ones are a count.`);
+    } else {
+      const LEAD = {
+        none: '<b>No subagents.</b> The card is today\'s card, line for line. Nothing is set aside for subtasks: no empty hairline, no zero.',
+        two: `<b>Two subagents from the Agent tool.</b> Each is a row under one hairline: what it was asked to do, what it is doing now, and its state. The state is the badge's mark in its colour, with its word beside it in the quiet ink, so the badge stays the one coloured word on the card${d.web ? '. On the web it leads the row, under the badge\'s own mark' : ''}. The parent's line is its own again.`,
+        ten: `<b>A workflow, ten running.</b> ${slots === 2 ? 'Two rows fit on a phone' : 'Three rows fit in a column'}; the rest are counted in the footer with the finished ones. Labels are the workflow's own, so phase and target read in one word.`,
+        thirty: `<b>A session at its peak.</b> Thirty run at once on the owner's Mac, across four workflows and the Agent tool, with ${sumDone(f)} finished this turn. The card is no taller than it is for ten: the count carries the size, not the card.`,
+        blocked: '<b>One subagent needs approval.</b> The card turns BLOCKED: the same word, edge and alarm as any blocked session, and the same push. Its line says why, then which: "Needs approval: verify:hook", so a phone that cuts the line still keeps the reason. That row takes a visible slot though it started seventh, and it is the only row whose word is coloured. Once approved, it keeps that slot until it finishes.',
+        failed: '<b>One failed.</b> It stays listed as "failed", with a crossed circle in a muted red derived from blocked\'s. It is there for the lean-in and is not an alarm: nobody is waiting on you, and the parent already has the error. It goes when the parent\'s turn ends.',
+        finished: '<b>All finished, the turn still going.</b> The rows have folded into the count, which stays until the parent\'s turn ends and then goes with it.',
+        background: '<b>The turn has ended, and two background subagents still work.</b> The card must not say DONE: done means your turn, and the parent will speak again when they report. Its line, from the server, says only "2 subagents still running", so it fits a phone and agrees with either word above it.',
+        nested: '<b>Nested.</b> "Find every Focus call site" was started by implement:server, two levels down. It is listed flat, in start order like the rest. Only 5 of about 3,800 subagents on the owner\'s Mac were nested, too few to earn an indent.',
+        minimal: '<b>Minimal mode.</b> A label comes from a prompt, which minimal mode never sends, so subagents are numbered in the order they started this turn, and a number stays with its subagent. Activity is the tool\'s name, as the card\'s own line already is.',
+        codex: '<b>Codex.</b> Sub-agents go by their nicknames. On the owner\'s Mac Codex never ran more than three at once, so its footer is rare.',
+        long: '<b>Long labels.</b> Agent-tool descriptions at their real lengths: 52 characters is the p90 on the owner\'s Mac, 23 the median. A label takes at most 58% of the row\'s text and is cut past that, so the activity, the live part of the row, always keeps a share of it.',
+        expanded: '<b>Expanded in place.</b> On an iPad or the web the footer opens the whole list inside the card, and "Show less" folds it. The cards below move down once.',
+      };
+      p.push(LEAD[sc] || LEAD.ten);
+      if (sc === 'expanded' && d.phone) {
+        p.push('<b>Not on a phone.</b> There the footer opens the session screen instead, where every subagent has two lines. Choose "Session screen" to see it.');
+      }
+    }
+
+    const g = growth();
+    if (g > 0) p.push(`<b>Cost.</b> The subagents make this card ${g} ${d.unit} taller ${where}.${d.web ? ' Each card in the grid keeps its own height (align-items: start), so the cards beside it do not stretch; the next row of cards moves down.' : ''}`);
+
+    // The open questions, where the state on show touches them.
+    const hidden = v.show && !expanded.has(f.id) && v.subs.length > slots;
+    if (hidden && state.app === 'next') {
+      p.push(state.rows === 'oldest'
+        ? '<b>Open: rows shown — oldest.</b> The rows that fit are the first to start, and each keeps its slot until it finishes. Then the next to start takes that slot in place, and no other row moves. It is stable: the eye comes back to the same place. Its cost is that a subagent busy lower in the list is only a number.'
+        : '<b>Open: rows shown — most active.</b> The rows that fit are the most recently active. A hidden one that reports in takes the slot of the stalest row on show, in place. On the owner\'s Mac a session posts subagent events 36 times a minute at the median, so in a workflow a slot changes hands every few seconds. Press Play: the new subagent and the one that reports in each take a slot, in place.');
+    }
+    if (f.turnEnded && v.subs.some((x) => WORKING.has(x.status)) && state.app === 'next') {
+      p.push(state.bgstatus === 'working'
+        ? `<b>Open: card after its turn — "working" (proposed).</b> A word of its own and a branch mark (one stem forking into two arms, each ending in a node), in coding's colour: the parent has stopped, and its subagents have not. The mark and the word tell it from coding, as every state here is told. "Working" over "waiting", because on this board waiting reads as waiting on you (blocked and done are both your turn), and nobody is. It is worked out on the client, never sent as a status: see the note in this file's header.${d.web ? ' The stats strip gives it a slot while a card wears it, so the strip still sums to the board.' : ''}`
+        : '<b>Open: card after its turn — busiest subtask.</b> The card wears its most urgent subagent\'s state (blocked, testing, coding, planning, in that order). It needs no new word. But it reads as if the parent were still at work, and it changes whenever that subagent does: more motion, for news about a row.');
+    }
+    if (v.show && v.done > 0 && state.app === 'next' && f.batch > 1) {
+      p.push(state.done === 'session'
+        ? `<b>Open: done count — whole turn.</b> "${sumDone(f)} done" counts every subagent finished this turn, so it only climbs, until the turn ends.`
+        : `<b>Open: done count — this batch.</b> "${f.finished[f.batch] || 0} done" counts only the batch running now. It went back to 0 when this phase started, which tells you how far through the phase it is, at the price of a number that drops.`);
+    }
+    return p;
+  }
+
+  // ---- Play ------------------------------------------------------------------
+  // A few seconds of a busy session: a subagent starts, one finishes and folds
+  // into the count, a hidden one reports in (which only rows=active shows), and
+  // one is blocked — or, if one already is, it is let go.
+
+  function steps() {
+    const f = focusSession();
+    const start = () => {
+      const pool = STARTS[f.kind] || STARTS.agent;
+      const [label, status, activity] = pool[f.starts % pool.length];
+      f.starts += 1;
+      f.subs.push({ ...SUB(label, status, activity, 0), key: `k${nextKey++}` });
+    };
+    // Read when each event lands: the device can change between them.
+    const slots = () => DEVICES[state.device].slots;
+    const open = () => expanded.has(f.id) && !DEVICES[state.device].phone;
+    // "Shown" for the demo's choices: the rows in the card's first slots.
+    const firstRows = () => new Set(pick(f, slots(), open()).slice(0, slots()));
+    const finish = () => {
+      const shown = pick(f, slots(), open());
+      const x = shown.find((y) => WORKING.has(y.status)) || f.subs.find((y) => WORKING.has(y.status));
+      if (!x) return;
+      f.subs = f.subs.filter((y) => y !== x);
+      f.finished[f.batch] = (f.finished[f.batch] || 0) + 1;
+    };
+    const report = () => {
+      f.subs.forEach((y) => { y.t += 6; });
+      const shown = firstRows();
+      const x = [...f.subs].reverse().find((y) => !shown.has(y) && WORKING.has(y.status))
+        || f.subs.find((y) => WORKING.has(y.status));
+      if (!x) return;
+      x.t = 0;
+      x.activity = {
+        testing: 'Run the suite again — 3 failing',
+        coding: 'Editing CHANGELOG.md',
+        planning: 'Searching: SubagentStop hook_event_name',
+      }[x.status];
+    };
+    const block = () => {
+      const waiting = f.subs.find((y) => y.status === 'blocked');
+      if (waiting) { Object.assign(waiting, { status: 'testing', activity: 'Run the suite — 214 passed', t: 0 }); return; }
+      const shown = firstRows();
+      const x = [...f.subs].reverse().find((y) => !shown.has(y) && WORKING.has(y.status))
+        || [...f.subs].reverse().find((y) => WORKING.has(y.status));
+      // What Claude Code's Notification hook says when it asks for permission.
+      if (x) Object.assign(x, { status: 'blocked', activity: 'Claude needs your permission to use Bash', t: 0 });
+    };
+    if (!f.subs.length && !sumDone(f)) return [start, start, finish, block];
+    // After its turn a parent starts nothing; Codex never runs more than three.
+    if (f.turnEnded) return [finish, report, block];
+    if (f.kind === 'codex') return [finish, start, report, block];
+    return [start, finish, report, block];
+  }
+
+  let plan = [];
+  let playing = false;
+  const playBtn = document.getElementById('play');
+
+  async function play() {
+    if (playing) return;
+    playing = true;
+    playBtn.disabled = true;
+    playBtn.textContent = 'Playing…';
+    if (played >= plan.length) { loadScenario(); plan = steps(); await paint(); }
+    while (played < plan.length) {
+      await wait(1100);
+      plan[played]();
+      played += 1;
+      await paint({ animate: true });
+    }
+    playing = false;
+    playBtn.disabled = false;
+    playBtn.textContent = 'Play again';
+  }
+
+  // ---- Controls ------------------------------------------------------------
+
+  function restart({ reveal: r = true } = {}) {
+    loadScenario();
+    plan = steps();
+    playBtn.textContent = 'Play';
+    return paint({ revealFocus: r });
+  }
+
+  document.querySelectorAll('.pv-seg').forEach((seg) => {
+    seg.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b || playing) return;
+      const key = seg.dataset.key;
+      state[key] = b.dataset.v;
+      if (key === 'scenario') restart().then(() => b.focus());
+      else paint({ revealFocus: key === 'device' }).then(() => b.focus());
+    });
+  });
+
+  playBtn.addEventListener('click', play);
+  document.getElementById('reset').addEventListener('click', () => { if (!playing) restart(); });
+
+  // Inside the device: the footer, a row, a card, the way back.
+  deviceEl.addEventListener('click', (e) => {
+    if (playing) return;
+    const expand = e.target.closest('[data-expand]');
+    if (expand) {
+      const id = expand.dataset.expand;
+      if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+      paint({ animate: true, expand: true });
+      return;
+    }
+    const toScreen = e.target.closest('[data-screen]');
+    if (toScreen) { screen = { id: toScreen.dataset.screen, sub: null }; paint(); return; }
+    const row = e.target.closest('[data-open-sub]');
+    if (row && !screen) {
+      screen = { id: row.dataset.of, sub: row.dataset.openSub };
+      paint().then(() => {
+        deviceEl.querySelector('.sub.is-arrived')?.scrollIntoView({ block: 'center' });
+        settleArrival();
+      });
+      return;
+    }
+    const open = e.target.closest('[data-open-card]');
+    if (open) { screen = { id: open.dataset.openCard, sub: null }; paint(); return; }
+    if (e.target.closest('[data-back]')) {
+      screen = null;
+      if (state.scenario === 'phone-session') state.scenario = 'ten';
+      paint({ revealFocus: true });
+    }
+  });
+
+  addEventListener('resize', scale);
+
+  // ---- Start ---------------------------------------------------------------
+
+  loadScenario();
+  plan = steps();
+  // A link can ask for the state after some of Play's events, for a capture.
+  const asked = Math.min(Number(params.get('step')) || 0, plan.length);
+  for (let i = 0; i < asked; i += 1) { plan[i](); played += 1; }
+  if (played) playBtn.textContent = played >= plan.length ? 'Play again' : 'Play';
+  paint({ revealFocus: true });
+  // The web faces arrive after the first layout; the meta line is fitted again
+  // in the face it will be read in.
+  document.fonts?.ready.then(() => { if (DEVICES[state.device].web) paint(); });
+})();
+</script>
+</body>
+</html>

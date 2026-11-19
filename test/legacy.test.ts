@@ -190,6 +190,37 @@ describe('legacy mode (multiTenant: false)', () => {
       expect(res.body.session.name).toBe('abcdef');
       expect(res.body.session.message).toBe('onetwotree');
     });
+
+    it('never splits a surrogate pair when it truncates, and drops one that arrived unpaired', async () => {
+      // A lone surrogate is not text: Swift's JSONDecoder rejects it, and both
+      // apps decode a snapshot as one array, so one cut emoji cost the board.
+      const { app } = legacyApp();
+      const res = await request(app)
+        .post('/webhook')
+        .send(webhookBody('s1', {
+          name: 'n'.repeat(119) + '\u{1F600}',
+          message: 'm'.repeat(299) + '\u{1F680}',
+          project: 'p\uD83Dq',
+          host: {
+            machine: { id: 'ab'.repeat(16), name: 'm'.repeat(31) + '\u{1F600}' },
+            app: { slug: 'iterm2', name: '\uDE00iTerm', kind: 'terminal' },
+          },
+        }))
+        .expect(200);
+      expect(res.body.session).toMatchObject({
+        name: 'n'.repeat(119),
+        message: 'm'.repeat(299),
+        project: 'pq',
+        host: { machine: { name: 'm'.repeat(31) }, app: { name: 'iTerm' } },
+      });
+
+      // A pair that fits whole is kept whole.
+      const whole = await request(app)
+        .post('/webhook')
+        .send(webhookBody('s2', { name: 'n'.repeat(118) + '\u{1F600}' }))
+        .expect(200);
+      expect(whole.body.session.name).toBe('n'.repeat(118) + '\u{1F600}');
+    });
   });
 
   describe('health', () => {

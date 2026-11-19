@@ -46,8 +46,9 @@ so you step away from the keyboard without losing the thread.
    dependency-free Node hook, registers it in `~/.claude/settings.json` (with
    a backup) — and in `~/.codex/hooks.json` when Codex is detected — then
    prints your board URL plus a QR code to open it on your phone. (Codex asks
-   you to trust the hook: run `/hooks` inside Codex — and again after an
-   upgrade that changes the hook command, or Codex silently stops firing it.)
+   you to trust the hook: in Codex Desktop under Settings → Hooks, in the
+   Codex CLI with `/hooks` — and again after an upgrade that changes the hook
+   command, or Codex silently stops firing it.)
    Re-run the same command to upgrade: it keeps this machine's server,
    `--minimal` and webhook secret (only `--no-codex` has to be given again).
    On macOS it also sets up [Focus](docs/design/focus-protocol.md) — it
@@ -72,6 +73,19 @@ Details in [docs/hooks.md](docs/hooks.md).
 - **Claude Code + OpenAI Codex** — one hook script speaks both tools'
   hook systems; sessions from both land on the same board.
 - **Live board** — SSE-streamed updates, no polling, no refresh.
+- **A section per project** — sessions are grouped by the folder each one
+  started in, one labelled section per project, in name order. A session that
+  runs `cd` keeps its card where it was, and every card carries its agent's
+  mark. See [docs/hooks.md](docs/hooks.md#card-names-and-projects).
+- **The needs-you bar** — while anything is blocked, one bar along the bottom
+  edge names the session and its project. Press it and that card comes into
+  view, ringed for two seconds; press again for the next one.
+- **Subagents on the card** — each running subagent of a session (Agent
+  tool, background, workflow, Codex sub-agent) is a row on its parent's card:
+  what it was asked to do, what it is doing, its state. One waiting on approval
+  turns the card blocked and names itself; background ones keep the card from
+  reading done until they have finished. On the web board, and since 1.7.0 in
+  the phone apps too. See [docs/hooks.md](docs/hooks.md#subagents).
 - **No accounts** — a board is a capability URL with an unguessable token,
   like a Slack webhook. The server stores only a hash of it.
 - **Push when blocked** — APNs notification the moment an agent needs you;
@@ -90,8 +104,9 @@ Details in [docs/hooks.md](docs/hooks.md).
   active days is visible. iOS only for now.
 - **Demo mode** — try the iOS app with fake sessions, no server, no data sent.
 - **Privacy switch** — `--minimal` sends tool names only, never command text,
-  and names cards after their folder, never a Claude session's title (which
-  is generated from your prompts).
+  names cards after their folder, never a Claude session's title (which is
+  generated from your prompts), and numbers subagents ("Subagent 1") instead
+  of describing them.
 - **Focus (opt-in)** — tap a session on the board to bring its terminal to
   the front on the machine running it; see
   [docs/design/focus-protocol.md](docs/design/focus-protocol.md).

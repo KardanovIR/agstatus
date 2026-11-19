@@ -171,7 +171,10 @@ describe('agstatus init against a real multi-tenant server', () => {
       );
       expect(env.CLAUDE_STATUS_URL).not.toContain('misconfigured.example');
       expect(Object.keys(settings.hooks as object).sort()).toEqual(
-        ['Notification', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort()
+        [
+          'Notification', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse',
+          'SessionEnd', 'SessionStart', 'Stop', 'SubagentStart', 'SubagentStop', 'UserPromptSubmit',
+        ].sort()
       );
 
       // Fire the REAL installed hook with a SessionStart payload.

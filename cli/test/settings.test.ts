@@ -17,9 +17,13 @@ import {
 const OPTS = { url: 'https://s.example/w/ags_x', hookCommand: 'node "$HOME/.claude/hooks/agstatus-hook.js"' };
 
 describe('mergeSettings', () => {
-  it('registers all six events and the env block on a fresh config', () => {
+  it('registers all eleven events and the env block on a fresh config', () => {
     const out = mergeSettings({}, OPTS);
-    const hooks = out.hooks as Record<string, Array<{ matcher?: string; hooks: Array<{ command: string }> }>>;
+    const hooks = out.hooks as Record<
+      string,
+      Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number }> }>
+    >;
+    expect(Object.keys(hooks)).toHaveLength(11);
     for (const { event, matcher } of HOOK_EVENTS) {
       expect(hooks[event]).toHaveLength(1);
       expect(hooks[event][0].hooks[0].command).toContain('agstatus-hook');
@@ -29,6 +33,30 @@ describe('mergeSettings', () => {
     expect((out.env as Record<string, string>).CLAUDE_STATUS_URL).toBe(OPTS.url);
     expect(out.env).not.toHaveProperty('CLAUDE_STATUS_SECRET');
     expect(out.env).not.toHaveProperty('AGSTATUS_DETAIL');
+  });
+
+  it('follows subagents: Agent and Workflow launches, their results, starts and stops', () => {
+    const hooks = mergeSettings({}, OPTS).hooks as Record<
+      string,
+      Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; async?: boolean }> }>
+    >;
+    // Agent is the tool Claude Code launches subagents with; Task stays for
+    // older versions, which the matcher would otherwise stop matching.
+    expect(hooks.PreToolUse[0].matcher).toBe(
+      'Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task|WebSearch|WebFetch|Workflow'
+    );
+    expect(hooks.PostToolUse[0].matcher).toBe('Agent|Task|Workflow');
+    expect(hooks.PostToolUseFailure[0].matcher).toBe('Agent|Task');
+    for (const event of ['SubagentStart', 'SubagentStop', 'PermissionRequest']) {
+      expect(hooks[event][0]).not.toHaveProperty('matcher');
+    }
+    // Ten seconds everywhere but SessionEnd, whose 1.5 s budget a timeout
+    // would raise; nothing async.
+    for (const [event, entries] of Object.entries(hooks)) {
+      const h = entries[0].hooks[0];
+      expect(h.timeout, event).toBe(event === 'SessionEnd' ? undefined : 10);
+      expect(h, event).not.toHaveProperty('async');
+    }
   });
 
   it('preserves unrelated settings, hooks, and env vars', () => {
@@ -41,6 +69,7 @@ describe('mergeSettings', () => {
           { matcher: 'Bash', hooks: [{ type: 'command', command: 'my-other-hook.sh' }] },
         ],
         PostToolUse: [{ hooks: [{ type: 'command', command: 'echo done' }] }],
+        PreCompact: [{ hooks: [{ type: 'command', command: 'save-notes.sh' }] }],
       },
     };
     const out = mergeSettings(input, OPTS);
@@ -48,9 +77,12 @@ describe('mergeSettings', () => {
     expect(out.permissions).toEqual({ allow: ['Bash(ls *)'] });
     expect((out.env as Record<string, string>).FOO).toBe('bar');
     const hooks = out.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    expect(hooks.PostToolUse).toHaveLength(1);
+    expect(hooks.PreCompact).toHaveLength(1);
     expect(hooks.PreToolUse).toHaveLength(2);
     expect(hooks.PreToolUse[0].hooks[0].command).toBe('my-other-hook.sh');
+    // An event we register too keeps the other entry, ahead of ours.
+    expect(hooks.PostToolUse).toHaveLength(2);
+    expect(hooks.PostToolUse[0].hooks[0].command).toBe('echo done');
   });
 
   it('is idempotent — re-running replaces our entries instead of duplicating', () => {
@@ -82,8 +114,9 @@ describe('mergeSettings', () => {
     expect(() => mergeSettings({ hooks: 'oops' }, OPTS)).toThrow(/"hooks".*string/);
     expect(() => mergeSettings({ env: [] }, OPTS)).toThrow(/"env".*array/);
     expect(() => mergeSettings({ hooks: { Stop: { my: 'data' } } }, OPTS)).toThrow(/"hooks\.Stop"/);
+    expect(() => mergeSettings({ hooks: { PostToolUse: { my: 'data' } } }, OPTS)).toThrow(/"hooks\.PostToolUse"/);
     // Non-agstatus events with odd shapes are none of our business.
-    expect(() => mergeSettings({ hooks: { PostToolUse: { odd: true } } }, OPTS)).not.toThrow();
+    expect(() => mergeSettings({ hooks: { PreCompact: { odd: true } } }, OPTS)).not.toThrow();
   });
 });
 

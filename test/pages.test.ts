@@ -139,6 +139,27 @@ describe('static pages', () => {
         expect(rule(sel), `${sel} needs a min-width floor`).toMatch(/min-width:\s*[1-9]/);
       }
     });
+
+    // The same trap one row down. A subagent's label is prompt text with a p90
+    // of 52 characters; uncapped, it takes the whole row and the activity —
+    // the live part, the reason the row exists — renders zero pixels wide.
+    it('a subagent label leaves the activity a share of its row', () => {
+      expect(rule('.sub-label')).toMatch(/max-width:\s*58%/);
+      expect(rule('.sub-act')).toMatch(/min-width:\s*0/);
+    });
+  });
+
+  // Cards keep their own height only while one of them shows subagent rows.
+  // That is the board's grid, and the landing page loads card.css without
+  // board.css precisely so it does not inherit the board's page: a rule in
+  // card.css would reach a page that never draws a subagent.
+  it('scopes the subagent grid alignment to the board', () => {
+    const read = (f: string) => fs.readFileSync(path.resolve(__dirname, '..', 'public', f), 'utf8');
+    expect(read('board.css')).toMatch(/\n#grid\.has-subs \{\s*align-items:\s*start;\s*\}/);
+    expect(read('card.css')).not.toContain('has-subs');
+    // And never unconditionally: a board with no subagents keeps its rows.
+    expect(read('card.css')).not.toMatch(/\n\.grid \{[^}]*align-items/);
+    expect(read('board.css')).not.toMatch(/\n(?:#grid|\.grid) \{[^}]*align-items/);
   });
 
   // A stale card was the whole card at 0.62 opacity: over the ground its
@@ -207,6 +228,49 @@ describe('static pages', () => {
       }
       expect(checked).toBeGreaterThanOrEqual(7);
     });
+  });
+
+  // A window's column in the table of days is headed by its key: its mark,
+  // 12px, while it has a single reading, then a 26px sample of its line from
+  // the day a second reading lands. Heads that wide set the column's width,
+  // so the column was 14px narrower on its first day than ever after. In the
+  // table the mark takes up a sample's width, with the room it does not fill
+  // before it. jsdom lays nothing out, so this pins the rule and its tie to
+  // the sample's width in app.js.
+  it("heads a first-day column in the table of days as wide as a line's", () => {
+    const app = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'app.js'), 'utf8');
+    const keyW = Number(/\bconst KEY_W = (\d+);/.exec(app)?.[1]);
+    expect(keyW, 'app.js no longer declares KEY_W').toBeGreaterThan(0);
+    const shell = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'shell.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '');
+    const decl = (selector: string, property: string) => {
+      const body = new RegExp(`\\n${selector.replace(/\./g, '\\.')} \\{([^}]*)\\}`).exec(shell)?.[1];
+      return new RegExp(`(?:^|;)\\s*${property}:\\s*([^;]+?)\\s*(?:;|$)`).exec(body ?? '')?.[1];
+    };
+    const own = decl('.dv-swatch-mark', 'width');
+    expect(own, 'shell.css has no width for .dv-swatch-mark').toBeDefined();
+    // The room a sample takes that the mark does not, before the mark: mark
+    // and room together are the sample's width, or the mark's own past it.
+    expect(decl('.dv-table .dv-swatch-mark', 'margin-left')).toBe(`max(0px, ${keyW}px - ${own})`);
+  });
+
+  // A session screen's history, or why there is none, and the note under it
+  // were children of .detail, spaced by its gap. The subtasks section moved
+  // them into a part of their own; without the same gap there, every screen
+  // (with subagents or without) lost the air above its note. jsdom has no
+  // layout, so this asserts the contract.
+  it('spaces the session timeline as the detail spaced it', () => {
+    const css = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'shell.css'), 'utf8');
+    const rule = (selector: string) => {
+      const m = new RegExp(`\\n\\${selector} \\{([^}]*)\\}`).exec(css);
+      if (!m) throw new Error(`no rule for ${selector} in shell.css`);
+      return m[1];
+    };
+    const gap = (selector: string) => /\bgap:\s*([^;]+);/.exec(rule(selector))?.[1];
+    expect(rule('.dv-timeline')).toMatch(/display:\s*flex/);
+    expect(rule('.dv-timeline')).toMatch(/flex-direction:\s*column/);
+    expect(gap('.detail')).toBeTruthy();
+    expect(gap('.dv-timeline')).toBe(gap('.detail'));
   });
 
   // The install one-liners are the documented way in, so both routes have to

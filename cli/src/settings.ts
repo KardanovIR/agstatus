@@ -5,13 +5,43 @@ import path from 'path';
 /** Marker every hook command we install carries; used to find our entries. */
 export const HOOK_MARKER = 'agstatus-hook';
 
-export const HOOK_EVENTS: Array<{ event: string; matcher?: string }> = [
-  { event: 'SessionStart' },
-  { event: 'UserPromptSubmit' },
-  { event: 'PreToolUse', matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Task|WebSearch|WebFetch' },
-  { event: 'Stop' },
-  { event: 'Notification' },
+/**
+ * Seconds Claude Code waits for one hook run before giving up on it. Its own
+ * default is 600. The hook exits by itself at ~4s, but that timer cannot fire
+ * while a syscall blocks the event loop, and this bounds whatever is left.
+ */
+const HOOK_TIMEOUT_SECONDS = 10;
+
+/**
+ * Every event the hook is registered for, with its matcher and timeout. The
+ * plugin's hooks.json must say exactly the same (cli/test/plugin.test.ts).
+ *
+ * `Agent` is the tool Claude Code launches subagents with (it was `Task`,
+ * which stays for older versions); `Workflow` runs a dynamic workflow.
+ * SubagentStart, SubagentStop, PostToolUse and PostToolUseFailure follow those
+ * subagents, and PermissionRequest only leaves a marker for the Notification
+ * that follows a prompt nobody has answered. Nothing is async: a subagent's
+ * label is claimed from its PreToolUse(Agent), which has to finish first.
+ *
+ * SessionEnd alone has no timeout: Claude Code gives SessionEnd hooks a shared
+ * 1.5s budget, and a timeout on one of them would raise it.
+ */
+export const HOOK_EVENTS: Array<{ event: string; matcher?: string; timeout?: number }> = [
+  { event: 'SessionStart', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'UserPromptSubmit', timeout: HOOK_TIMEOUT_SECONDS },
+  {
+    event: 'PreToolUse',
+    matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash|Agent|Task|WebSearch|WebFetch|Workflow',
+    timeout: HOOK_TIMEOUT_SECONDS,
+  },
+  { event: 'Stop', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'Notification', timeout: HOOK_TIMEOUT_SECONDS },
   { event: 'SessionEnd' },
+  { event: 'SubagentStart', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'SubagentStop', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'PermissionRequest', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'PostToolUse', matcher: 'Agent|Task|Workflow', timeout: HOOK_TIMEOUT_SECONDS },
+  { event: 'PostToolUseFailure', matcher: 'Agent|Task', timeout: HOOK_TIMEOUT_SECONDS },
 ];
 
 export interface MergeOptions {
@@ -29,7 +59,7 @@ type Settings = Record<string, unknown>;
 
 interface HookEntry {
   matcher?: string;
-  hooks?: Array<{ type?: string; command?: string }>;
+  hooks?: Array<{ type?: string; command?: string; timeout?: number }>;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -147,8 +177,8 @@ const isOurs = (entry: HookEntry): boolean =>
   entry.hooks.some((h) => typeof h?.command === 'string' && h.command.includes(HOOK_MARKER));
 
 /**
- * Pure merge: registers our five hook events and env vars, replacing any
- * previous agstatus entries and leaving everything else untouched.
+ * Pure merge: registers our hook events (HOOK_EVENTS) and env vars, replacing
+ * any previous agstatus entries and leaving everything else untouched.
  */
 export function mergeSettings(input: Settings, opts: MergeOptions): Settings {
   if (input.hooks !== undefined && !isPlainObject(input.hooks)) {
@@ -176,12 +206,12 @@ export function mergeSettings(input: Settings, opts: MergeOptions): Settings {
   const settings = structuredClone(input);
 
   const hooks = (settings.hooks ?? {}) as Record<string, unknown>;
-  for (const { event, matcher } of HOOK_EVENTS) {
+  for (const { event, matcher, timeout } of HOOK_EVENTS) {
     const existing = Array.isArray(hooks[event]) ? (hooks[event] as HookEntry[]) : [];
     const kept = existing.filter((e) => !isOurs(e));
     const entry: HookEntry = {
       ...(matcher ? { matcher } : {}),
-      hooks: [{ type: 'command', command: opts.hookCommand }],
+      hooks: [{ type: 'command', command: opts.hookCommand, ...(timeout ? { timeout } : {}) }],
     };
     hooks[event] = [...kept, entry];
   }

@@ -1,0 +1,19 @@
+{
+  "about": "Two Edits then Bash \"npm test\" from the same agent: the Edits post nothing (coding → coding), the test run posts testing.",
+  "requests": [
+    {
+      "session_id": "5cef7152-ef68-481f-8a4f-463f66702bf9",
+      "status": "testing",
+      "source": "claude",
+      "name": "proj",
+      "agent": {
+        "id": "1e5ead29b4a350898c7e2f6e",
+        "state": "testing",
+        "kind": "agent",
+        "label": "Run echo alpha",
+        "activity": "npm test",
+        "at": 1793138692104
+      }
+    }
+  ]
+}

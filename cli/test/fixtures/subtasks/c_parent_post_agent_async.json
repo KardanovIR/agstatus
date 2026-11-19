@@ -1,0 +1,34 @@
+{
+ "source": "probe run c, events-c.jsonl line 5 (PostToolUse, t_ms 1793138845221)",
+ "payload": {
+  "session_id": "ce4d79fa-d133-4666-ac0b-be13150d339a",
+  "transcript_path": "{{projects}}/ce4d79fa-d133-4666-ac0b-be13150d339a.jsonl",
+  "cwd": "{{cwd}}",
+  "prompt_id": "515a7cd7-d990-431d-985e-e4dece2d6e24",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "bg echo",
+   "prompt": "Run `echo bg` with Bash and return the output.",
+   "subagent_type": "general-purpose",
+   "run_in_background": true
+  },
+  "tool_response": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "a81211a654bc21fa3",
+   "description": "bg echo",
+   "resolvedModel": "claude-sonnet-5-5",
+   "prompt": "Run `echo bg` with Bash and return the output.",
+   "outputFile": "{{tmp}}/ce4d79fa-d133-4666-ac0b-be13150d339a/tasks/a81211a654bc21fa3.output",
+   "canReadOutputFile": true,
+   "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_01YVVGrXfUNFtuyoSsHLDoHV",
+  "duration_ms": 4
+ }
+}
