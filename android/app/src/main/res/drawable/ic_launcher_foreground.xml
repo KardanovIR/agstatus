@@ -1,34 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The iOS icon's 2×2 grid of status tiles: planning, coding, testing, done,
-     reading left to right and top to bottom. The 43dp block stays inside the
-     66dp adaptive-icon safe circle so no launcher mask can clip a corner.
-
-     Solid fills, in the four tokens exactly. Each tile used to be a two-stop
-     vertical gradient between two hand-typed hexes — eight values that belonged
-     to no token, from the palette this release retires — and at launcher size
-     a 19dp gradient is invisible anyway: it was gloss, not information.
-
-     In the new palette the four run violet → blue → teal → green, which is the
-     hue sweep of the board's own state order rather than four unrelated hues. -->
+<!-- The adaptive icon's foreground layer: the brand mark, drawn for Android on
+     the 108 dp layer.
+     Generated from the icon artwork (every shape as absolute path data): change
+     the artwork and regenerate it, rather than editing this file. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- planning: oklch(78% 0.100 320) -->
     <path
-        android:fillColor="#D4A3DF"
-        android:pathData="M37,32.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z" />
-    <!-- coding: oklch(74% 0.085 240) -->
-    <path
-        android:fillColor="#78B2DB"
-        android:pathData="M61,32.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z" />
-    <!-- testing: oklch(74% 0.080 200) -->
-    <path
-        android:fillColor="#69BABF"
-        android:pathData="M37,56.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z" />
-    <!-- done: oklch(76% 0.125 155) — the accent, and the brightest tile -->
+        android:fillColor="#446851"
+        android:pathData="M29.63,36.5 L68.38,36.5 C68.72,36.5,69,36.78,69,37.13 L69,45.88 C69,46.22,68.72,46.5,68.38,46.5 L29.63,46.5 C29.28,46.5,29,46.22,29,45.88 L29,37.13 C29,36.78,29.28,36.5,29.63,36.5 Z" />
     <path
         android:fillColor="#69C88E"
-        android:pathData="M61,56.5 h10 a4.5,4.5 0 0 1 4.5,4.5 v10 a4.5,4.5 0 0 1 -4.5,4.5 h-10 a4.5,4.5 0 0 1 -4.5,-4.5 v-10 a4.5,4.5 0 0 1 4.5,-4.5 z" />
+        android:pathData="M39.63,49 L78.38,49 C78.72,49,79,49.28,79,49.63 L79,58.38 C79,58.72,78.72,59,78.38,59 L39.63,59 C39.28,59,39,58.72,39,58.38 L39,49.63 C39,49.28,39.28,49,39.63,49 Z" />
+    <path
+        android:fillColor="#446851"
+        android:pathData="M29.63,61.5 L68.38,61.5 C68.72,61.5,69,61.78,69,62.13 L69,70.88 C69,71.22,68.72,71.5,68.38,71.5 L29.63,71.5 C29.28,71.5,29,71.22,29,70.88 L29,62.13 C29,61.78,29.28,61.5,29.63,61.5 Z" />
 </vector>
