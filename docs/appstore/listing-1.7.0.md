@@ -13,7 +13,7 @@ version takes 8.
 
 ---
 
-## What's New in This Version (4000 max — this is 2,286)
+## What's New in This Version (4000 max — this is 2,416)
 
 ```
 Your board grouped by project, subagents on their session's card, and one bar for whatever needs you.
@@ -33,6 +33,7 @@ Subagent rows need AgStatus 1.7.0 on the computer your agents run on: run its in
 
 ALSO
 • Sessions with no usable folder, such as one started in the root folder, wait in a "No project" section at the end until they report one.
+• A new icon: three strips, one lit and pulled out of line, the way an air traffic controller flags the flight that needs action.
 ```
 
 Not claimed, on purpose:

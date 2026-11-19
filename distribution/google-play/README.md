@@ -36,7 +36,7 @@ anything.
 | Content rating + app content declarations | **done** — transcribe into Console |
 | **Privacy policy text for the Android app** — https://agstatus.online/privacy | **done in 1.7.0** — `docs/privacy.md` and `public/privacy.html`, both dated November 19, 2026, now cover "the AgStatus apps for iOS and Android" and say nothing of where the app is published, so they hold during the closed test and after it ([content-rating.md](content-rating.md), R1). It is live once the 1.7.0 push to `master` redeploys agstatus.online: check that the live page serves it before the closed-test release |
 | **Screenshots regenerated for 1.7.0** | **done** — the board by project with the agents' heads and the needs-you bar, and a session's subagents (below) |
-| **Icon and feature graphic regenerated** | **done** for 1.7.0 — redrawn from the launcher icon (below) |
+| **Icon and feature graphic regenerated** | **done** for 1.7.0 — AgStatus's new mark, from the same art as the launcher icon (below) |
 | **Signed App Bundle built at versionCode 7** | **TODO** — `scripts/build-play-bundle.sh`, on your Mac, from the integrated 1.7.0 release tip; CI builds no bundle |
 | Create the app in Play Console and pay the one-time $25 registration | you |
 | Fill Data safety, content rating, and app content from the docs here | you |
@@ -48,13 +48,17 @@ anything.
 Until 1.7.0, `graphics/icon-512.png` and `graphics/feature-graphic.png` were
 exported from the palette this project retired in 1.5 — the near-black
 `#0B0D12` ground with Tailwind's `blue-500` / `purple-500` / `amber-500` on
-it. For 1.7.0 both were redrawn from the launcher icon in the app itself
-(`res/drawable/ic_launcher_foreground.xml` and its background): four solid
-tiles, planning `#D4A3DF`, coding `#78B2DB`, testing `#69BABF`, done
-`#69C88E`, on `#0C0F0D`. The icon is that vector rasterised at 512×512; the
-feature graphic, 1024×500, sets the same tiles beside the name and the
-landing page's line "Live status for your coding agents". The icon is a
-32-bit PNG with every pixel opaque, as Play's icon specification asks; the
+it. 1.7.0 gives AgStatus one mark on every platform: three strips on
+`#0C0F0D`, two in line and unlit in done's card-edge tint `#446851`
+(`color-mix(in oklab, --ink-800 60%, --st-done)`), and one lit in done
+`#69C88E`, slid out of line by one strip's height. It is the air traffic
+controller's cocked strip, pulled out of line to flag the one flight that
+needs action. The launcher icon (`res/drawable/ic_launcher_foreground.xml`,
+`ic_launcher_monochrome.xml` and the background colour) and both graphics are
+written from the same art: the icon at 512×512, and the feature graphic,
+1024×500, with the mark beside the name and the landing page's line "Live
+status for your coding agents". The icon is a 32-bit PNG with every pixel
+opaque, as Play's icon specification asks; the
 feature graphic is a 24-bit PNG with no alpha. Nothing in this repo renders
 them, so a change to the icon means exporting them again.
 
