@@ -169,7 +169,7 @@ Note this is independent of the target-audience selection in Part 2 — a 3+ con
 
 | Section | Answer | One-line reason |
 |---|---|---|
-| **Privacy policy** | `https://agstatus.online/privacy` | Required for every app; this is the canonical URL, and it is the same URL the app links to in Settings → About (`ui/SettingsScreen.kt:66`). **See risk R1 — the policy text must be updated before you paste this URL.** |
+| **Privacy policy** | `https://agstatus.online/privacy` | Required for every app; this is the canonical URL, and it is the same URL the app links to in Settings → About (`ui/SettingsScreen.kt:66`). **See risk R1 — the text that covers the Android app is 1.7.0's, live once its push deploys; check the page before you paste this URL.** |
 | **App access** | "All functionality is available without any access restrictions" | There is no login, no account, no password, no region lock — verified: nothing in the app gates functionality behind credentials. |
 | **Ads** | "No, my app does not contain ads" | No ad SDK, no ad network, no in-app promotional content — the full dependency list in `gradle/libs.versions.toml` contains no advertising library. |
 | **Content ratings** | Complete the IARC questionnaire per Part 1 | Result: 3+ / Everyone, no descriptors. |
@@ -201,7 +201,7 @@ Note this is independent of the target-audience selection in Part 2 — a 3+ con
 
 Ordered by severity.
 
-### R1 — Privacy policy that doesn't cover the Android app → ~~rejection~~ **fixed 2026-10-05, one clause left**
+### R1 — Privacy policy that doesn't cover the Android app → ~~rejection~~ **fixed 2026-10-05; its last clause fixed in 1.7.0**
 **The problem (historical):** the live policy said *"This policy covers the AgStatus iOS app and the hosted server at agstatus.online"*, contained a **Push notifications** section describing APNs, and claimed **iOS Keychain** storage. None of that was true of the Android app, and the policy did not name it.
 
 **What is true now** (`public/privacy.html`, repo-relative; the mirror at `docs/privacy.md` is kept in step):
@@ -210,7 +210,7 @@ Ordered by severity.
 - scopes push explicitly: *"Push is iOS only; the Android app has no push and contacts no notification service"*;
 - states that camera frames are decoded on device and that no image is stored or transmitted.
 
-**Still to do before submitting:** the policy currently says the Android client *"is not published to any store"*. That sentence has to change in the same commit that publishes it, or the reviewer reads a policy that disclaims the app they are reviewing.
+**Done in 1.7.0:** the policy said the Android client *"is not published to any store"*, so a reviewer would have read a policy that disclaims the app under review. Both copies, dated November 19, 2026, now cover *"the AgStatus apps for iOS and Android"* and say nothing of where the app is published, which is true in a closed test and after. The page serves it once the 1.7.0 push to `master` deploys agstatus.online; check it there before submitting.
 **Why it bites:** Play requires the privacy policy to be applicable to, and comprehensive for, the app being submitted. A policy that names only the iOS app is a standard, easily-caught rejection, and reviewers do open the URL.
 **Safe answer / fix before submitting:** update the policy so it names the AgStatus **Android** app explicitly, states that the Android app stores the board URL and token in `EncryptedSharedPreferences` on the device, states that the camera is used only to decode a pairing QR code and that no image is stored or transmitted, and either scopes the push-notification section to the iOS app explicitly or notes that the Android app has no notifications. Do not submit until the URL serves that text.
 
