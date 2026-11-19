@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The brand mark alone, for the welcome screen's tile: the icon artwork's
+     mark on a square centred on the icon's centre, just big enough for the
+     mark.
+     Generated from the icon artwork: change the artwork and regenerate it,
+     rather than editing this file. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="36dp"
+    android:height="36dp"
+    android:viewportWidth="36"
+    android:viewportHeight="36">
+    <path
+        android:fillColor="#D4A3DF"
+        android:pathData="M4.047,0.353 L12.254,0.353 C14.294,0.353,15.948,2.007,15.948,4.047 L15.948,12.254 C15.948,14.294,14.294,15.948,12.254,15.948 L4.047,15.948 C2.007,15.948,0.353,14.294,0.353,12.254 L0.353,4.047 C0.353,2.007,2.007,0.353,4.047,0.353 Z" />
+    <path
+        android:fillColor="#78B2DB"
+        android:pathData="M23.746,0.353 L31.953,0.353 C33.993,0.353,35.647,2.007,35.647,4.047 L35.647,12.254 C35.647,14.294,33.993,15.948,31.953,15.948 L23.746,15.948 C21.706,15.948,20.052,14.294,20.052,12.254 L20.052,4.047 C20.052,2.007,21.706,0.353,23.746,0.353 Z" />
+    <path
+        android:fillColor="#69BABF"
+        android:pathData="M4.047,20.052 L12.254,20.052 C14.294,20.052,15.948,21.706,15.948,23.746 L15.948,31.953 C15.948,33.993,14.294,35.647,12.254,35.647 L4.047,35.647 C2.007,35.647,0.353,33.993,0.353,31.953 L0.353,23.746 C0.353,21.706,2.007,20.052,4.047,20.052 Z" />
+    <path
+        android:fillColor="#69C88E"
+        android:pathData="M23.746,20.052 L31.953,20.052 C33.993,20.052,35.647,21.706,35.647,23.746 L35.647,31.953 C35.647,33.993,33.993,35.647,31.953,35.647 L23.746,35.647 C21.706,35.647,20.052,33.993,20.052,31.953 L20.052,23.746 C20.052,21.706,21.706,20.052,23.746,20.052 Z" />
+</vector>

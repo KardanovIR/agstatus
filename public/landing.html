@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>AgStatus — live status for your coding agents</title>
 <meta name="description" content="See what Claude Code and Codex are doing right now, from your phone — then tap the one that needs you and its terminal comes to the front. Open source, self-hostable." />
-<!-- --ink-950 (#0c0f0d), --ink-900 (#141815) and --st-done (#69c88e), converted
-     once. A meta tag and a data-URI cannot read a custom property. -->
+<!-- --ink-950 (#0c0f0d), converted once: a meta tag cannot read a custom
+     property. The favicon, like the mark in the nav, is written from the icon
+     artwork that the app icons are made from. -->
 <meta name="theme-color" content="#0c0f0d" />
 <meta property="og:title" content="AgStatus — live status for your coding agents" />
 <meta property="og:description" content="See what Claude Code and Codex are doing right now, and tap the one that needs you to bring its terminal to the front." />
@@ -756,7 +757,7 @@
 
 <nav class="nav">
   <div class="nav-inner">
-    <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>AgStatus</a>
+    <a class="brand" href="/"><svg class="mark" aria-hidden="true" viewBox="0 0 36 36"><path fill="#d4a3df" d="M4.047.353L12.254.353C14.294.353 15.948 2.007 15.948 4.047L15.948 12.254C15.948 14.294 14.294 15.948 12.254 15.948L4.047 15.948C2.007 15.948.353 14.294.353 12.254L.353 4.047C.353 2.007 2.007.353 4.047.353Z"/><path fill="#78b2db" d="M23.746.353L31.953.353C33.993.353 35.647 2.007 35.647 4.047L35.647 12.254C35.647 14.294 33.993 15.948 31.953 15.948L23.746 15.948C21.706 15.948 20.052 14.294 20.052 12.254L20.052 4.047C20.052 2.007 21.706.353 23.746.353Z"/><path fill="#69babf" d="M4.047 20.052L12.254 20.052C14.294 20.052 15.948 21.706 15.948 23.746L15.948 31.953C15.948 33.993 14.294 35.647 12.254 35.647L4.047 35.647C2.007 35.647.353 33.993.353 31.953L.353 23.746C.353 21.706 2.007 20.052 4.047 20.052Z"/><path fill="#69c88e" d="M23.746 20.052L31.953 20.052C33.993 20.052 35.647 21.706 35.647 23.746L35.647 31.953C35.647 33.993 33.993 35.647 31.953 35.647L23.746 35.647C21.706 35.647 20.052 33.993 20.052 31.953L20.052 23.746C20.052 21.706 21.706 20.052 23.746 20.052Z"/></svg>AgStatus</a>
     <div class="nav-links">
       <a href="#features" class="hide-sm">Features</a>
       <a href="#setup" class="hide-sm">Setup</a>
@@ -806,7 +807,7 @@
          five seconds needs a way to stop it. This ran for as long as the page
          was open. The control is present even under reduced motion, where it
          starts paused, so it stays honest about what the board is doing. -->
-    <button class="board-pause" id="board-pause" type="button" aria-pressed="false">Pause</button>
+    <button class="board-pause" id="board-pause" type="button">Pause</button>
   </div>
   <!-- Illustration, not document structure: these carry no heading tags, or
        "Claude" and "Codex" would outrank every real section on the page. The
@@ -1382,8 +1383,11 @@
   function setPaused(next) {
     paused = next;
     pauseBtn.textContent = paused ? 'Play' : 'Pause';
-    pauseBtn.setAttribute('aria-pressed', String(paused));
-    pauseBtn.setAttribute('aria-label', paused ? 'Resume the demo board' : 'Pause the demo board');
+    // WCAG 2.5.3, Label in Name: each name starts with the word on the button,
+    // which is what Voice Control matches and a screen reader says first. No
+    // aria-pressed: the word already says the state, and a toggle's name should
+    // not change with it.
+    pauseBtn.setAttribute('aria-label', paused ? 'Play the demo board' : 'Pause the demo board');
   }
   pauseBtn.addEventListener('click', () => setPaused(!paused));
   setPaused(paused);

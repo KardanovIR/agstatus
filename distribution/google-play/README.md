@@ -12,7 +12,7 @@ distribution/google-play/
 │   ├── full-description.txt      3968 / 4000
 │   └── whats-new.txt             478 / 500
 ├── graphics/
-│   ├── icon-512.png              512×512, no alpha
+│   ├── icon-512.png              512×512, 32-bit, every pixel opaque
 │   ├── feature-graphic.png       1024×500, no alpha
 │   └── screenshots/              1080×1920 phone screenshots
 ├── data-safety.md                every Data safety answer, with reasons
@@ -53,9 +53,10 @@ it. For 1.7.0 both were redrawn from the launcher icon in the app itself
 tiles, planning `#D4A3DF`, coding `#78B2DB`, testing `#69BABF`, done
 `#69C88E`, on `#0C0F0D`. The icon is that vector rasterised at 512×512; the
 feature graphic, 1024×500, sets the same tiles beside the name and the
-landing page's line "Live status for your coding agents". Both are PNG with
-no alpha, as Play wants, and nothing in this repo renders them, so a change
-to the icon means exporting them again by hand.
+landing page's line "Live status for your coding agents". The icon is a
+32-bit PNG with every pixel opaque, as Play's icon specification asks; the
+feature graphic is a 24-bit PNG with no alpha. Nothing in this repo renders
+them, so a change to the icon means exporting them again.
 
 ## Rebuilding the bundle
 

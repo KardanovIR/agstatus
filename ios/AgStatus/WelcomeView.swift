@@ -35,17 +35,23 @@ struct WelcomeView: View {
 
     private var header: some View {
         VStack(spacing: 12) {
+            // The brand mark on the app icon's ground: Assets.xcassets' BrandMark (the
+            // icon's mark alone, a vector PDF) and BrandGround, both written from the
+            // icon artwork. 36 pt is the span of the ink of the SF Symbol this replaced
+            // (waveform.path.ecg at 36 pt medium, about 35 by 37 pt). The symbols are
+            // the asset catalog's generated ones, so a missing asset fails the build.
             ZStack {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Theme.card)
+                    .fill(Color(.brandGround))
                     .frame(width: 84, height: 84)
                     .overlay(
                         RoundedRectangle(cornerRadius: 22, style: .continuous)
                             .strokeBorder(Theme.cardBorder)
                     )
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundStyle(Theme.color(for: .coding))
+                Image(.brandMark)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 36, height: 36)
             }
             .accessibilityHidden(true)
             Text("AgStatus")

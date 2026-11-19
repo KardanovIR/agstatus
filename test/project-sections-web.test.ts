@@ -2512,7 +2512,8 @@ describe('1.6.5\'s page, taken from the cache with these scripts', () => {
   // the URL a kept 1.6.5 page asks for.
   it('names every file it loads with one release, never behind the server\'s', () => {
     const html = fs.readFileSync(path.resolve(__dirname, '..', 'public', 'index.html'), 'utf8');
-    const urls = [...html.matchAll(/\s(?:href|src)="([^"]+)"/g)].map((m) => m[1]);
+    // Not the favicon: a data: URI is no file the server sends, so no cache keeps an old one.
+    const urls = [...html.matchAll(/\s(?:href|src)="([^"]+)"/g)].map((m) => m[1]).filter((u) => !u.startsWith('data:'));
     expect(urls.map((u) => u.replace(/\?.*$/, ''))).toEqual(['/tokens.css', '/card.css', '/board.css', '/shell.css', '/marks.js', '/app.js']);
     const releases = new Set(urls.map((u) => /\?v=(\d+\.\d+\.\d+)$/.exec(u)?.[1]));
     expect(releases.size, `one release for all six: ${[...releases].join(', ')}`).toBe(1);

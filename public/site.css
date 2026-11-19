@@ -187,14 +187,14 @@ pre code {
   color: var(--text-1);
 }
 
-/* A dot, not a logotype. It is the board's own connection dot — the one piece
- * of visual vocabulary this product already had — rather than the gradient
- * square with a purple halo that was standing in for one. */
+/* The brand mark, the app icons' own, written into each page's nav from the
+ * icon artwork. It stands where a 7px dot stood, and the board's dot means
+ * "live connection", so the two no longer share a shape. As tall as the
+ * wordmark's capitals (Barlow's are 0.700em), and in em, so it grows with the
+ * text. */
 .mark {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--r-pill);
-  background: var(--st-done);
+  width: 0.7em;
+  height: 0.7em;
   flex: none;
 }
 

@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -37,7 +38,6 @@ import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.QrCodeScanner
-import androidx.compose.material.icons.rounded.ShowChart
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,6 +69,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +82,7 @@ import androidx.compose.ui.unit.sp
 import com.kardanov.agstatus.AgStatusApi
 import com.kardanov.agstatus.ApiException
 import com.kardanov.agstatus.Board
+import com.kardanov.agstatus.R
 import com.kardanov.agstatus.SessionStore
 import com.kardanov.agstatus.Theme
 import com.kardanov.agstatus.rememberReduceMotion
@@ -254,20 +257,22 @@ private fun WelcomeHeader() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // The brand mark on the launcher icon's ground: res/drawable/ic_brand_mark (the
+        // icon's mark alone) and the icon's background colour, both written from the
+        // icon artwork. 36 dp is about the span of the ink of the Material glyph this
+        // replaced (ShowChart in a 44 dp box, about 37 by 24 dp).
         Box(
             modifier = Modifier
                 .size(84.dp)
                 .clip(RoundedCornerShape(22.dp))
-                .background(Theme.card)
+                .background(colorResource(R.color.ic_launcher_background))
                 .border(1.dp, Theme.cardBorder, RoundedCornerShape(22.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                imageVector = Icons.Rounded.ShowChart,
+            Image(
+                painter = painterResource(R.drawable.ic_brand_mark),
                 contentDescription = null,
-                // The app's own mark, which is not a session state: the accent.
-                tint = Theme.accent,
-                modifier = Modifier.size(44.dp),
+                modifier = Modifier.size(36.dp),
             )
         }
         Text(
