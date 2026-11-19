@@ -9,7 +9,7 @@ the Apple Developer portal.
 | Step | Status |
 | --- | --- |
 | `DEVELOPMENT_TEAM` set so `xcodebuild archive` succeeds | **done** |
-| Version 1.6.5 (build 7) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.6.5.md](appstore/listing-1.6.5.md) | **done** |
+| Version 1.7.0 (build 8) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.7.0.md](appstore/listing-1.7.0.md) | **done** |
 | `aps-environment` driven by `APS_ENVIRONMENT` (production in Release) | **done** |
 | In-app privacy link → https://agstatus.online/privacy | **done** |
 | APNs configured on the hosted server (`/api/config` reports `push: true`) | **done** |
@@ -72,7 +72,7 @@ ai,monitor,dashboard,session,developer,terminal,cli,devtool,tracker,remote,usage
 
 > Agents run for minutes, then quietly wait for you. See every session, what it is doing, and how much of your plan is left — without walking back to the desk.
 
-**Description** (3817/4000)
+**Description** (3981/4000)
 
 ```
 AgStatus turns your phone into a live status board for the AI coding agents running on your computer.
@@ -86,6 +86,7 @@ ON THE BOARD
 • Sessions grouped by project, each under its own label, with the cards two across on iPad
 • One card per session, color-coded through six states: idle, planning, coding, testing, blocked, done
 • The last thing the agent reported — the file it is editing, the test command it ran, the approval it is waiting for
+• A session's running subagents as rows on its card: what each was asked to do, what it is doing and its state; one waiting on your approval turns the card blocked
 • Blocked and finished cards carry the color while busy ones recede, so the ones that need you stand out; a session that has gone quiet loses its color, shows a “?” and says how long it has been silent
 • While a session is blocked, a bar along the bottom names it and its project; tap the bar to bring that card into view, and again for the next one
 • Updates stream in as they happen — no polling, no refresh button

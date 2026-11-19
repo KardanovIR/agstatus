@@ -4,7 +4,7 @@ The mechanical parts are scripted; the parts that need a human are the
 metadata and the review notes. This is the order that works.
 
 Written while preparing **1.3.0 (build 4)** and last brought up to date for
-**1.6.5 (build 7)**. Where an example needs a version it uses one of those two;
+**1.7.0 (build 8)**. Where an example needs a version it uses one of those two;
 everything else is reusable.
 
 ## 0. Before you start
@@ -22,7 +22,8 @@ grep -m1 CURRENT_PROJECT_VERSION ios/AgStatus.xcodeproj/project.pbxproj
 this marketing version — App Store Connect rejects a repeat. This project keeps
 one counter across versions and moves it once per uploaded version: 1.2.0
 shipped as build 3, 1.3.0 as 4, and 1.5.0 as 6 (5 was 1.4.x, which never
-reached the store). 1.6.2 was staged as 7 but never uploaded, so 1.6.5 is 7.
+reached the store). 1.6.2 was staged as 7 but never uploaded, so 1.6.5 is 7,
+and 1.7.0 is 8.
 `MARKETING_VERSION` is the repo release the build is cut from, so it skips the
 releases that left the app alone.
 
@@ -106,10 +107,10 @@ the version's **Build** section.
 ## 3. Fill in the version in App Store Connect
 
 Create the new version (**+ Version or Platform** → the `MARKETING_VERSION` in
-`ios/AgStatus.xcodeproj/project.pbxproj`, currently `1.6.5`), then:
+`ios/AgStatus.xcodeproj/project.pbxproj`, currently `1.7.0`), then:
 
 - **What's New** — required for every update. Each version's copy is in
-  `listing-<version>.md` beside this file (`listing-1.6.5.md` now). Do not
+  `listing-<version>.md` beside this file (`listing-1.7.0.md` now). Do not
   reuse the Play text: the Android app has never been published, so its
   what's-new is written for a first release and covers different ground.
 - **Screenshots** — upload the refreshed sets, iPhone and iPad. The first image
@@ -119,10 +120,9 @@ Create the new version (**+ Version or Platform** → the `MARKETING_VERSION` in
 
 Nothing else needs revisiting for a feature release: the description, keywords,
 category, age rating, and the privacy answers all carry over. The exception for
-1.6.5 is the description: the board it describes changed, and two lines had
-been untrue since 1.2.0 and 1.5.0; `listing-1.6.5.md` says what to paste. The
-privacy answers in
-particular stay correct — the app only ever *reads* a board, and anything new
+1.7.0 is the description: the board it describes changed again, and it gains
+the subagent rows; `listing-1.7.0.md` says what to paste. The privacy answers
+in particular stay correct — the app only ever *reads* a board, and anything new
 it displays is reported by the hook on the user's own machine.
 
 ## 4. Review notes

@@ -129,13 +129,15 @@ each shows, so change it with the image.
 cwebp -q 80 -resize 570 1240 6.9/02-board.png -o ../../public/img/board.webp
 ```
 
-## What 1.6.5's set was captured with
+## What 1.7.0's set was captured with
 
 Demo mode, frozen so a capture cannot race a status change, with Claude's
-cards named by session titles as a real board names them:
-`AGSTATUS_DEMO=1 AGSTATUS_DEMO_FREEZE=1 AGSTATUS_DEMO_TITLES=1`. The iPhones
-show the default demo board, which puts both agents' sections on screen. The
-iPads add `AGSTATUS_DEMO_SCENARIO=busy`, five Claude sessions and four Codex
-ones, which fills both columns. History and usage add `AGSTATUS_OPEN_HISTORY=1`
-and `AGSTATUS_OPEN_USAGE=claude` to the same variables. The welcome images
-were taken first, on each device's first launch.
+cards named by session titles as a real board names them, on the subagent
+board with one card blocked, on every device:
+`AGSTATUS_DEMO=1 AGSTATUS_DEMO_FREEZE=1 AGSTATUS_DEMO_TITLES=1
+AGSTATUS_DEMO_SCENARIO=subtasks AGSTATUS_DEMO_BLOCK=P`. 1.6.5's variables
+(the default board on the iPhones, `AGSTATUS_DEMO_SCENARIO=busy` on the
+iPads) draw the project sections and the bar but no card with subagent rows.
+History and usage add `AGSTATUS_OPEN_HISTORY=1` and
+`AGSTATUS_OPEN_USAGE=claude` to the same variables. The welcome images were
+taken first, on each device's first launch.
