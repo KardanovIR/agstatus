@@ -167,8 +167,8 @@ OPTIONAL: EXERCISING THE LIVE PATH
    Repeat with "status":"blocked" or "done" to watch the card change, then tap the card for its history timeline.
 3. Settings → Danger zone → “Delete board and all its data” removes everything created during review.
 
-PUSH NOTIFICATIONS — PLEASE NOTE
-The app implements APNs push (opt-in alerts when an agent is blocked or finishes), but the hosted server at agstatus.online does not have APNs credentials configured yet. It reports push as unavailable, so the app disables the notification toggles and shows “This server doesn't send push notifications.” The app will not prompt for notification permission there, and the App Store description does not promise that the hosted service delivers notifications. The feature works against a self-hosted server configured with APNs credentials (the server is open source, MIT).
+PUSH NOTIFICATIONS
+The app implements APNs push: opt-in alerts when an agent is blocked or finishes a turn. The hosted server at agstatus.online has APNs configured and reports push as available, so on a board created there notifications can be turned on in Settings → Notifications. The app asks for notification permission only then, or when “Enable” is tapped on the one-time tip the board shows once it has a card.
 
 CAMERA
 The camera does exactly one thing: scan the pairing QR code printed by the setup command on the user's computer (“Scan setup QR code”). Declining camera access loses nothing — “Enter board URL” and the typed pairing code cover the same setup, and demo mode needs neither. Nothing is recorded or uploaded.
@@ -222,11 +222,13 @@ The primary CTA on /Users/ikardanov/Desktop/claude-status/ios/AgStatus/WelcomeVi
 
 **Likelihood:** high
 
-After "Create a status board" succeeds the board is empty, the connection dot is green, and the pair sheet hands out a code that visibly counts down and expires (PairSheet.swift:58-65, expiredView). Settings then shows a Notifications section whose toggles are permanently disabled (SettingsView.swift:124-143 + 224-241) because the hosted server reports push:false. The composite impression is "half-finished app": live indicator, no content, dead toggles, expiring code that does nothing.
+After "Create a status board" succeeds the board is empty, the connection dot is green, and the pair sheet hands out a code that visibly counts down and expires (PairSheet.swift:58-65, expiredView). ~~Settings then shows a Notifications section whose toggles are permanently disabled (SettingsView.swift:124-143 + 224-241) because the hosted server reports push:false.~~ **Resolved:** agstatus.online now reports `push: true` (the checklist's APNs row), so those toggles are enabled. The composite impression is "half-finished app": live indicator, no content, ~~dead toggles,~~ expiring code that does nothing.
 
 **Mitigation:** Add an inline fallback in BoardView.emptyState — e.g. after ~20s with zero sessions on a fresh board, surface "Not at your computer? See a demo board" that calls store.startDemo(). Hide the Notifications section entirely when notifications.serverPushAvailable == false instead of rendering disabled toggles.
 
 ### 2.3.1 Accurate Metadata / 2.1 — Push notifications are shipped in the binary but disabled on the hosted server
+
+**Resolved:** APNs is configured on agstatus.online and `/api/config` reports `push: true` (the checklist's APNs row), so a reviewer can turn notifications on. The rest of this entry is the risk as it stood.
 
 **Likelihood:** high
 
