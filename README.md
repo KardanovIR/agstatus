@@ -8,8 +8,8 @@
 
 <p align="center">
   <img src="docs/screenshots/ios-welcome.png" width="230" alt="AgStatus iOS — setup screen, with the option to try the demo board">
-  <img src="docs/screenshots/ios-board.png" width="320" alt="AgStatus iOS — the live board: plan-limit blocks for Claude and Codex above four session cards, one of them blocked">
-  <img src="docs/screenshots/ios-usage.png" width="230" alt="AgStatus iOS — thirty days of token spend, with the plan limits drawn over it and a breakdown per project">
+  <img src="docs/screenshots/ios-board.png" width="320" alt="AgStatus iOS — the live board: plan-limit blocks for Claude and Codex, then two project sections, one holding a blocked card, the other a card listing two running subagents above a testing card; along the bottom, the needs-you bar names the blocked session and its project">
+  <img src="docs/screenshots/ios-usage.png" width="230" alt="AgStatus iOS — thirty days of token spend, with three plan limits drawn over it as solid, dashed and dotted lines, and a breakdown per project">
 </p>
 
 ## How it works
@@ -119,7 +119,7 @@ Details in [docs/hooks.md](docs/hooks.md).
 
 ## Self-hosting
 
-[![The AgStatus web board: plan-limit blocks for Claude and Codex, above five session cards across planning, testing, done, coding and blocked — each with its state icon, agent, machine, age and token count](docs/dashboard.webp)](docs/self-hosting.md)
+[![The AgStatus web board: plan-limit blocks for Claude and Codex headed with their session counts, a count of sessions per state, then sessions grouped by project — coding and done cards in acme-api, each with its state icon, agent mark and age, and a blocked one in AgStatus — and along the bottom the needs-you bar, counting four blocked sessions and naming the first](docs/dashboard.webp)](docs/self-hosting.md)
 
 ```bash
 docker run -d -p 3000:3000 ghcr.io/kardanovir/agstatus
