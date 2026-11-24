@@ -4,7 +4,7 @@ The mechanical parts are scripted; the parts that need a human are the
 metadata and the review notes. This is the order that works.
 
 Written while preparing **1.3.0 (build 4)** and last brought up to date for
-**1.7.0 (build 8)**. Where an example needs a version it uses one of those two;
+**1.7.0 (build 9)**. Where an example needs a version it uses one of those two;
 everything else is reusable.
 
 ## 0. Before you start

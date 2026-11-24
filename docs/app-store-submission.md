@@ -9,7 +9,7 @@ the Apple Developer portal.
 | Step | Status |
 | --- | --- |
 | `DEVELOPMENT_TEAM` set so `xcodebuild archive` succeeds | **done** |
-| Version 1.7.0 (build 8) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.7.0.md](appstore/listing-1.7.0.md) | **done** |
+| Version 1.7.0 (build 9) — numbering in [appstore/SUBMITTING.md](appstore/SUBMITTING.md), this version's copy in [appstore/listing-1.7.0.md](appstore/listing-1.7.0.md) | **done** |
 | `aps-environment` driven by `APS_ENVIRONMENT` (production in Release) | **done** |
 | In-app privacy link → https://agstatus.online/privacy | **done** |
 | APNs configured on the hosted server (`/api/config` reports `push: true`) | **done** |

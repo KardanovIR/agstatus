@@ -1,9 +1,12 @@
 # App Store listing copy — 1.7.0
 
-Paste into App Store Connect. The build is **1.7.0 (8)**: `MARKETING_VERSION`
+Paste into App Store Connect. The build is **1.7.0 (9)**: `MARKETING_VERSION`
 follows the repo release the build is cut from, and `CURRENT_PROJECT_VERSION`
-goes up by one for each version that is uploaded. 1.6.5 is build 7, so this
-version takes 8.
+goes up by one for each build that is uploaded. 1.5.0 went to the store as
+build 6, and 1.6.2 and 1.6.5 were each staged as build 7 and never uploaded.
+1.7.0's build 8 was uploaded with each project's name running down its
+section's side, which the owner took out before review, and was never
+submitted; so this version goes to review as build 9.
 
 > **Scope.** This covers everything that changed in the app since **1.6.5
 > (build 7)**, the version on the store. The web board and the server go out
