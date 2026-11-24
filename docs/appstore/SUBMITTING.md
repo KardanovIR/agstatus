@@ -20,10 +20,11 @@ grep -m1 CURRENT_PROJECT_VERSION ios/AgStatus.xcodeproj/project.pbxproj
 
 `CURRENT_PROJECT_VERSION` must be higher than any build already uploaded for
 this marketing version — App Store Connect rejects a repeat. This project keeps
-one counter across versions and moves it once per uploaded version: 1.2.0
+one counter across versions and moves it once per uploaded build: 1.2.0
 shipped as build 3, 1.3.0 as 4, and 1.5.0 as 6 (5 was 1.4.x, which never
-reached the store). 1.6.2 was staged as 7 but never uploaded, so 1.6.5 is 7,
-and 1.7.0 is 8.
+reached the store). 1.6.2 and 1.6.5 were each staged as 7 and never uploaded.
+1.7.0's build 8 was uploaded with the project names down the sections' sides,
+which were taken out before review, so 1.7.0 goes to review as 9.
 `MARKETING_VERSION` is the repo release the build is cut from, so it skips the
 releases that left the app alone.
 

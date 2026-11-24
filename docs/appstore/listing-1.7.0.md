@@ -134,13 +134,13 @@ The description can only be changed alongside a new version, and the store
 still shows 1.5.0's: the corrections written for 1.6.2 and 1.6.5 never reached
 it. Against 1.5.0's, this one changes four lines and adds three. Paste the
 whole description from [../app-store-submission.md](../app-store-submission.md)
-(3981 of 4000 characters; 1.5.0's is 3346) rather than editing in place. What
+(3996 of 4000 characters; 1.5.0's is 3346) rather than editing in place. What
 differs from what the store shows for 1.5.0
 (`git show v1.5.0:docs/app-store-submission.md`):
 
 | Was | Now | Why |
 | --- | --- | --- |
-| — | Sessions grouped by project, each under its own label, with the cards two across on iPad | 1.5.0 drew every device as one list. |
+| — | Sessions grouped by project, each under its own label, with the cards two across where an iPad has room | 1.5.0 drew every device as one list. |
 | — | A session's running subagents as rows on its card: what each was asked to do, what it is doing and its state; one waiting on your approval turns the card blocked | Subagent rows are new in 1.7.0. |
 | Blocked cards glow; finished and long-silent ones fade, so the sessions that need you stand out | Blocked and finished cards carry the color while busy ones recede, so the ones that need you stand out; a session that has gone quiet loses its color, shows a “?” and says how long it has been silent | Untrue of 1.5.0 already: no card glows, and a finished one is not dimmed. A quiet card still faded in 1.5.0; it now keeps its words, untinted. |
 | — | While a session is blocked, a bar along the bottom names it and its project; tap the bar to bring that card into view, and again for the next one | The bar is new in 1.7.0, and is the board's one alarm. |
